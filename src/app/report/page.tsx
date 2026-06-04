@@ -107,23 +107,42 @@ export default function ReportPage() {
       const decoder = new TextDecoder();
       let buffer = "";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
 
-        // Split on double newline (SSE message boundary)
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
+          if (value) {
+            buffer += decoder.decode(value, { stream: !done });
+          }
 
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith("data:")) continue;
-          try {
-            const json = JSON.parse(line.slice(5)); // after "data:"
-            handleSSEEvent(json);
-          } catch { /* skip malformed */ }
+          if (done) {
+            // Flush decoder: finalize any pending multi-byte sequences
+            buffer += decoder.decode();
+            // Process remaining buffer (last SSE message)
+            if (buffer.trim()) {
+              const line = buffer.trim();
+              if (line.startsWith("data:")) {
+                try {
+                  handleSSEEvent(JSON.parse(line.slice(5)));
+                } catch { /* skip */ }
+              }
+            }
+            break;
+          }
+
+          // Extract complete SSE messages (delimited by \n\n)
+          let idx: number;
+          while ((idx = buffer.indexOf("\n\n")) !== -1) {
+            const part = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            if (!part.startsWith("data:")) continue;
+            try {
+              handleSSEEvent(JSON.parse(part.slice(5)));
+            } catch { /* skip */ }
+          }
         }
+      } finally {
+        reader.releaseLock();
       }
 
       setBatchLoading(false);
