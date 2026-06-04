@@ -38,9 +38,9 @@ export async function POST(
       return NextResponse.json({ error: "课次编码已存在", existing }, { status: 409 });
     }
 
-    // Get next semester number
+    // Get next semester number (per-class within semester)
     const lastSession = await prisma.classSession.findFirst({
-      where: { semesterId },
+      where: { semesterId, class: className ?? null },
       orderBy: { semesterNumber: "desc" },
     });
     const nextNumber = (lastSession?.semesterNumber ?? 0) + 1;
@@ -126,19 +126,27 @@ export async function DELETE(
   }
 }
 
-// Helper: reorder semesterNumber for all sessions in a semester (by code order)
+// Helper: reorder semesterNumber per-class (each class has independent numbering)
 async function reorderSemesterNumbers(semesterId: string) {
-  const sessions = await prisma.classSession.findMany({
+  // Get distinct classes for this semester
+  const classes = await prisma.classSession.findMany({
     where: { semesterId },
-    orderBy: { code: "asc" },
-    select: { code: true },
+    select: { class: true },
+    distinct: ["class"],
   });
 
-  for (let i = 0; i < sessions.length; i++) {
-    await prisma.classSession.update({
-      where: { code: sessions[i].code },
-      data: { semesterNumber: i + 1 },
+  for (const cls of classes) {
+    const sessions = await prisma.classSession.findMany({
+      where: { semesterId, class: cls.class },
+      orderBy: { code: "asc" },
+      select: { code: true },
     });
+    for (let i = 0; i < sessions.length; i++) {
+      await prisma.classSession.update({
+        where: { code: sessions[i].code },
+        data: { semesterNumber: i + 1 },
+      });
+    }
   }
 }
 
