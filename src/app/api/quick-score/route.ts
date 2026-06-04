@@ -164,19 +164,31 @@ export async function POST(request: NextRequest) {
       const b = Math.max(0, Math.min(5, entry.scoreB ?? 3));
       const c = Math.max(0, Math.min(5, entry.scoreC ?? 3));
 
-      // v0.5: archive existing before upsert
-      const existing = await prisma.dailyMetric.findUnique({
-        where: { studentId_sessionId: { studentId: entry.studentId, sessionId } },
-      });
-      if (existing) {
-        await archiveMetricBeforeUpdate(existing.id);
+      // v0.5: archive existing before upsert (handle null sessionId)
+      if (sessionId) {
+        const existing = await prisma.dailyMetric.findUnique({
+          where: { studentId_sessionId: { studentId: entry.studentId, sessionId } },
+        });
+        if (existing) await archiveMetricBeforeUpdate(existing.id);
+        await prisma.dailyMetric.upsert({
+          where: { studentId_sessionId: { studentId: entry.studentId, sessionId } },
+          create: { studentId: entry.studentId, date: entry.date, sessionId, scoreA: a, scoreB: b, scoreC: c },
+          update: { scoreA: a, scoreB: b, scoreC: c },
+        });
+      } else {
+        // No session: findFirst + create/update (SQLite NULLs distinct in unique)
+        const existing = await prisma.dailyMetric.findFirst({
+          where: { studentId: entry.studentId, date: entry.date, sessionId: null },
+        });
+        if (existing) {
+          await archiveMetricBeforeUpdate(existing.id);
+          await prisma.dailyMetric.update({ where: { id: existing.id }, data: { scoreA: a, scoreB: b, scoreC: c } });
+        } else {
+          await prisma.dailyMetric.create({
+            data: { studentId: entry.studentId, date: entry.date, sessionId: null, scoreA: a, scoreB: b, scoreC: c },
+          });
+        }
       }
-
-      await prisma.dailyMetric.upsert({
-        where: { studentId_sessionId: { studentId: entry.studentId, sessionId } },
-        create: { studentId: entry.studentId, date: entry.date, sessionId, scoreA: a, scoreB: b, scoreC: c },
-        update: { scoreA: a, scoreB: b, scoreC: c },
-      });
 
       if (entry.note && entry.note.trim()) {
         await prisma.event.create({
