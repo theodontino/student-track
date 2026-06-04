@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
   if (!cached) return NextResponse.json({ error: "无缓存，请先生成" }, { status: 404 });
   if (Date.now() - cached.timestamp > CACHE_TTL) { cache.delete(code); return NextResponse.json({ error: "缓存已过期" }, { status: 410 }); }
 
-  return new NextResponse(cached.buffer, {
+  return new Response(cached.buffer as BodyInit, {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "Content-Disposition": `attachment; filename="feedback_${code}.xlsx"`,

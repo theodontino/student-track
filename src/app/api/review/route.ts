@@ -102,20 +102,6 @@ export async function POST(request: NextRequest) {
           }
         }
       }
-          });
-        } else {
-          await prisma.dailyMetric.create({
-            data: {
-              studentId: student.id,
-              date: today,
-              sessionId: null,
-              scoreA: stu.scores.A ?? 3,
-              scoreB: stu.scores.B ?? 3,
-              scoreC: stu.scores.C ?? 3,
-            },
-          });
-        }
-      }
 
       // Create Events
       if (stu.events && stu.events.length > 0) {
