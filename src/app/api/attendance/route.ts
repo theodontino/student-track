@@ -75,15 +75,16 @@ export async function PUT(request: NextRequest) {
           ? Math.round((5 * presentCount) / totalSessions)
           : 3;
 
-        // v0.4: scoreD has no session, use findFirst+update/create
-        const existingD = await prisma.dailyMetric.findFirst({
-          where: { studentId: u.studentId, date: today, sessionId: null },
+        // v0.4: update scoreD on student's latest metric (don't create A/B/C=0 rows)
+        const latestMetric = await prisma.dailyMetric.findFirst({
+          where: { studentId: u.studentId },
+          orderBy: { createdAt: "desc" },
         });
-        if (existingD) {
-          await prisma.dailyMetric.update({ where: { id: existingD.id }, data: { scoreD } });
+        if (latestMetric) {
+          await prisma.dailyMetric.update({ where: { id: latestMetric.id }, data: { scoreD } });
         } else {
           await prisma.dailyMetric.create({
-            data: { studentId: u.studentId, date: today, sessionId: null, scoreA: 0, scoreB: 0, scoreC: 0, scoreD },
+            data: { studentId: u.studentId, date: today, sessionId: null, scoreA: 3, scoreB: 3, scoreC: 3, scoreD },
           });
         }
       }

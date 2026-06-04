@@ -10,22 +10,19 @@ export async function GET() {
       },
     });
 
-    // Class overview: calculate average scores per class
-    const allMetrics = await prisma.dailyMetric.findMany({
-      include: { student: { select: { class: true, name: true, id: true } } },
-    });
-
-    // Group by class
+    // Class overview: use latest metric per student (v0.4: avoid double-counting)
     const classMap: Record<string, { totalA: number; totalB: number; totalC: number; totalD: number; count: number }> = {};
-    for (const m of allMetrics) {
-      const cls = m.student.class;
+    for (const student of students) {
+      const latest = student.metrics[0];
+      if (!latest) continue;
+      const cls = student.class;
       if (!classMap[cls]) {
         classMap[cls] = { totalA: 0, totalB: 0, totalC: 0, totalD: 0, count: 0 };
       }
-      classMap[cls].totalA += m.scoreA;
-      classMap[cls].totalB += m.scoreB;
-      classMap[cls].totalC += m.scoreC;
-      classMap[cls].totalD += m.scoreD;
+      classMap[cls].totalA += latest.scoreA;
+      classMap[cls].totalB += latest.scoreB;
+      classMap[cls].totalC += latest.scoreC;
+      classMap[cls].totalD += latest.scoreD;
       classMap[cls].count += 1;
     }
 

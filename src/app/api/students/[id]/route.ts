@@ -11,7 +11,7 @@ export async function GET(
     const student = await prisma.student.findUnique({
       where: { id },
       include: {
-        metrics: { orderBy: { date: "desc" }, take: 30 },
+        metrics: { orderBy: [{ date: "desc" }, { createdAt: "desc" }], take: 30 },
         events: { orderBy: { date: "desc" } },
         communications: { orderBy: { date: "desc" } },
       },
