@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// 1. 学生基础档案
+model Student {
+  id         String   @id @default(cuid())
+  name       String
+  class      String
+  studentId  String   @unique
+  gender     String   // "男" | "女"
+  labels     String   @default("[]") // JSON array, e.g. ["#逻辑强","#敏感"]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  metrics         DailyMetric[]
+  events          Event[]
+  communications  Communication[]
+  attendances     Attendance[]
+}
+
+// 2. 每日四维评分（同一天多次输入时覆盖最新一条）
+model DailyMetric {
+  id        String   @id @default(cuid())
+  studentId String
+  date      String   // YYYY-MM-DD
+  scoreA    Int      // 0-5
+  scoreB    Int      // 0-5
+  scoreC    Int      // 0-5
+  scoreD    Int      @default(3) // 0-5，考勤自动计算
+  operator  String   @default("教师")
+  createdAt DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, date])
+}
+
+// 3. 关键事件记录
+model Event {
+  id          String   @id @default(cuid())
+  studentId   String
+  date        String   // YYYY-MM-DD
+  type        String   // "课堂表现" | "测验成绩" | "心理状态" | "家校沟通"
+  description String
+  rawText     String   // 原始输入文本片段
+  createdAt   DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+}
+
+// 4. 家校沟通记录
+model Communication {
+  id          String   @id @default(cuid())
+  studentId   String
+  date        String   // YYYY-MM-DD
+  target      String   // 沟通对象，如 "父亲"、"母亲"
+  summary     String   // 内容摘要
+  createdAt   DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+}
+
+// 5. 待复核草案
+model DraftRecord {
+  id           String   @id @default(cuid())
+  rawText      String
+  parsedResult String   // JSON
+  reviewResult String?  // JSON
+  status       String   @default("pending") // "pending" | "confirmed" | "rejected"
+  createdAt    DateTime @default(now())
+}
+
+// 6. 学期
+model Semester {
+  id        String   @id @default(cuid())
+  name      String   // "2024-2025学年第一学期"
+  startDate String   // YYYY-MM-DD
+  endDate   String   // YYYY-MM-DD
+  createdAt DateTime @default(now())
+
+  sessions ClassSession[]
+}
+
+// 7. 课次记录（v0.2 重构：编码体系 + 班级 + 学期序号）
+model ClassSession {
+  id             String   @id @default(cuid())
+  code           String   @unique         // YYYYMMDDNN，全局唯一标识
+  semesterId     String
+  semesterNumber Int                       // 学期内序号（1,2,3...），增删后应用层重排
+  date           String                    // YYYY-MM-DD，冗余，从 code 推导方便索引
+  class          String?                   // 可空，班级名；null 表示全校
+  createdAt      DateTime @default(now())
+
+  semester    Semester    @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  attendances Attendance[]
+}
+
+// 8. 考勤记录
+model Attendance {
+  id        String   @id @default(cuid())
+  sessionId String
+  studentId String
+  present   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, studentId])
+}
