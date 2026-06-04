@@ -61,12 +61,16 @@ export default function ReportPage() {
         body: JSON.stringify({ sessionCode: selectedSessionCode }),
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
-      // Download as Excel
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url;
+      const arr = await res.arrayBuffer();
+      const blob = new Blob([arr], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
       a.download = `反馈_${selectedClass}_${selectedSessionCode}.xlsx`;
-      a.click(); URL.revokeObjectURL(url);
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
     } catch (e: any) { alert(e.message); }
     finally { setBatchLoading(false); }
   }

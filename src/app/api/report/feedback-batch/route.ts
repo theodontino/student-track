@@ -67,8 +67,8 @@ export async function POST(request: NextRequest) {
       const rows = results.map((r) => ({ 姓名: r.name, 家校反馈: r.feedback }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "家校反馈");
-      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-      return new NextResponse(buf, {
+      const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+      return new NextResponse(new Uint8Array(buf), {
         headers: {
           "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           "Content-Disposition": `attachment; filename="反馈_${className}_${sessionCode}.xlsx"`,
