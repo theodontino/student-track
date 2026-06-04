@@ -58,6 +58,58 @@ ${rawText}
 }
 
 /**
+ * v0.5: Fuzzy-match LLM-returned name to exact DB student name.
+ * Handles common discrepancies: extra suffixes, partial names, character swaps.
+ */
+export function fuzzyMatchName(llmName: string, candidates: string[]): string | null {
+  const input = llmName.trim();
+  if (!input || candidates.length === 0) return null;
+
+  // 1. Exact match
+  if (candidates.includes(input)) return input;
+
+  // 2. Remove common suffixes and try again
+  const noSuffix = input.replace(/同学|小朋友|老师/g, "").trim();
+  if (noSuffix && candidates.includes(noSuffix)) return noSuffix;
+
+  // 3. Substring match (LLM name contained in DB name, or vice versa)
+  for (const c of candidates) {
+    if (c.includes(input) || input.includes(c)) return c;
+    if (noSuffix && (c.includes(noSuffix) || noSuffix.includes(c))) return c;
+  }
+
+  // 4. Character overlap ratio (for multi-char names)
+  let bestMatch: string | null = null;
+  let bestScore = 0;
+  for (const c of candidates) {
+    if (c.length < 2 || input.length < 2) continue;
+    const overlap = [...input].filter((ch) => c.includes(ch)).length;
+    const score = overlap / Math.max(input.length, c.length);
+    if (score > 0.6 && score > bestScore) {
+      bestScore = score;
+      bestMatch = c;
+    }
+  }
+
+  return bestMatch;
+}
+
+/**
+ * v0.5: Post-process parse result — correct student names using fuzzy match.
+ */
+export function correctNames(result: ParseResult, studentNames: string[]): ParseResult {
+  const corrected = result.students.map((stu) => {
+    const match = fuzzyMatchName(stu.name, studentNames);
+    if (match && match !== stu.name) {
+      console.log(`[fuzzyMatch] Corrected "${stu.name}" → "${match}"`);
+      return { ...stu, name: match };
+    }
+    return stu;
+  });
+  return { ...result, students: corrected };
+}
+
+/**
  * Call LLM to self-review the parsed result
  */
 export async function reviewParsed(rawText: string, parsedResult: ParseResult): Promise<ReviewResult> {

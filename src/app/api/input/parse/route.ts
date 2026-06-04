@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { parseInput, reviewParsed } from "@/lib/parser";
+import { parseInput, reviewParsed, correctNames } from "@/lib/parser";
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,7 +17,10 @@ export async function POST(request: NextRequest) {
     const studentNames = students.map((s) => s.name);
 
     // Step 1: LLM parse
-    const parsedResult = await parseInput(rawText, studentNames);
+    let parsedResult = await parseInput(rawText, studentNames);
+
+    // v0.5: fuzzy-correct student names to exact DB names
+    parsedResult = correctNames(parsedResult, studentNames);
 
     // Step 2: LLM self-review
     let reviewResult = null;
