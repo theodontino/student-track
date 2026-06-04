@@ -14,6 +14,7 @@ export default function ReportPage() {
   const [selectedSessionCode, setSelectedSessionCode] = useState("");
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyReport, setDailyReport] = useState("");
+  const [batchLoading, setBatchLoading] = useState(false);
 
   // Feedback
   const [selectedStudentId, setSelectedStudentId] = useState("");
@@ -49,6 +50,25 @@ export default function ReportPage() {
       setDailyReport(data.report);
     } catch (e: any) { alert(e.message); }
     finally { setDailyLoading(false); }
+  }
+
+  async function handleBatchFeedback() {
+    if (!selectedSessionCode) return;
+    setBatchLoading(true);
+    try {
+      const res = await fetch("/api/report/feedback-batch", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionCode: selectedSessionCode }),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+      // Download as Excel
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `反馈_${selectedClass}_${selectedSessionCode}.xlsx`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch (e: any) { alert(e.message); }
+    finally { setBatchLoading(false); }
   }
 
   async function generateFeedback() {
@@ -107,6 +127,10 @@ export default function ReportPage() {
             <button onClick={generateDaily} disabled={dailyLoading || !selectedSessionCode}
               className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
               {dailyLoading ? "生成中..." : "生成日报"}
+            </button>
+            <button onClick={handleBatchFeedback} disabled={batchLoading || !selectedSessionCode}
+              className="bg-purple-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50">
+              {batchLoading ? "批量生成中..." : "批量反馈 → Excel"}
             </button>
           </div>
         )}
