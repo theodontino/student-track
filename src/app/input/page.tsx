@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 interface ParseResult {
@@ -33,6 +33,27 @@ export default function InputPage() {
   const [result, setResult] = useState<ParseResult | null>(null);
   const [error, setError] = useState("");
 
+  // v0.7: semester/class/session selector
+  const [semesters, setSemesters] = useState<{ id: string; name: string }[]>([]);
+  const [classes, setClasses] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<{ code: string; className: string | null; semesterNumber: number }[]>([]);
+  const [selectedSemesterId, setSelectedSemesterId] = useState("");
+  const [selectedClass, setSelectedClass] = useState("");
+  const [selectedSessionCode, setSelectedSessionCode] = useState("");
+
+  useEffect(() => {
+    fetch("/api/semesters").then(r => r.json()).then(setSemesters);
+    fetch("/api/students").then(r => r.json()).then((ss: { class: string }[]) =>
+      setClasses([...new Set(ss.map(s => s.class))])
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!selectedSemesterId || !selectedClass) { setSessions([]); return; }
+    fetch(`/api/sessions?semesterId=${selectedSemesterId}&className=${encodeURIComponent(selectedClass)}`)
+      .then(r => r.json()).then(setSessions);
+  }, [selectedSemesterId, selectedClass]);
+
   async function handleSubmit() {
     if (!rawText.trim()) return;
     setLoading(true);
@@ -43,7 +64,7 @@ export default function InputPage() {
       const res = await fetch("/api/input/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawText }),
+        body: JSON.stringify({ rawText, sessionCode: selectedSessionCode || undefined }),
       });
 
       const data = await res.json();
@@ -66,9 +87,37 @@ export default function InputPage() {
   return (
     <div className="max-w-3xl mx-auto">
       <h2 className="text-2xl font-bold text-gray-800 mb-2">自然语言录入</h2>
-      <p className="text-sm text-gray-500 mb-6">
+      <p className="text-sm text-gray-500 mb-4">
         用自然语言描述学生表现，LLM 将自动解析并生成结构化草案。
       </p>
+
+      {/* v0.7: 课次选择器 */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <select value={selectedSemesterId} onChange={(e) => { setSelectedSemesterId(e.target.value); setSelectedClass(""); setSelectedSessionCode(""); }}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
+          <option value="">选择学期</option>
+          {semesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        {selectedSemesterId && (
+          <select value={selectedClass} onChange={(e) => { setSelectedClass(e.target.value); setSelectedSessionCode(""); }}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
+            <option value="">选择班级</option>
+            {classes.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+        {selectedClass && sessions.length > 0 && (
+          <select value={selectedSessionCode} onChange={(e) => setSelectedSessionCode(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono outline-none">
+            <option value="">不关联课次</option>
+            {sessions.map(s => (
+              <option key={s.code} value={s.code}>{s.code} — 第{s.semesterNumber}次课</option>
+            ))}
+          </select>
+        )}
+        {selectedSessionCode && (
+          <span className="text-xs text-blue-600 font-medium">✓ 将关联到此课次</span>
+        )}
+      </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
         <textarea

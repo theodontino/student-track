@@ -4,7 +4,7 @@ import { parseInput, reviewParsed, correctNames } from "@/lib/parser";
 
 export async function POST(request: NextRequest) {
   try {
-    const { rawText } = await request.json();
+    const { rawText, sessionCode } = await request.json();
 
     if (!rawText || rawText.trim().length === 0) {
       return NextResponse.json({ error: "请输入文本内容" }, { status: 400 });
@@ -38,6 +38,7 @@ export async function POST(request: NextRequest) {
         parsedResult: JSON.stringify(parsedResult),
         reviewResult: reviewResult ? JSON.stringify(reviewResult) : null,
         status: "pending",
+        sessionCode: sessionCode || null,
       },
     });
 
@@ -47,6 +48,7 @@ export async function POST(request: NextRequest) {
       parsedResult,
       reviewResult,
       status: draft.status,
+      sessionCode: draft.sessionCode,
       createdAt: draft.createdAt,
     });
   } catch (error) {

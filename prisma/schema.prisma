@@ -91,6 +91,7 @@ model DraftRecord {
   parsedResult String   // JSON
   reviewResult String?  // JSON
   status       String   @default("pending") // "pending" | "confirmed" | "rejected"
+  sessionCode  String?  // v0.7: 关联课次编码（可选）
   createdAt    DateTime @default(now())
 }
 

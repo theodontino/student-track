@@ -55,6 +55,13 @@ export async function POST(request: NextRequest) {
     const parsedData = edits || JSON.parse(draft.parsedResult);
     const today = new Date().toISOString().split("T")[0];
 
+    // v0.7: resolve sessionCode to sessionId
+    let sessionId: string | null = null;
+    if (draft.sessionCode) {
+      const session = await prisma.classSession.findUnique({ where: { code: draft.sessionCode } });
+      sessionId = session?.id ?? null;
+    }
+
     for (const stu of parsedData.students) {
       // Find student by name
       const student = await prisma.student.findFirst({
@@ -66,20 +73,35 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // v0.4: NL input has no session, use findFirst+update/create (sessionId=null)
+      // v0.7: write with sessionId if draft has sessionCode, else null
       if (stu.scores && Object.values(stu.scores).some((v) => v !== null)) {
-        const existing = await prisma.dailyMetric.findFirst({
-          where: { studentId: student.id, date: today, sessionId: null },
-        });
-        if (existing) {
-          await archiveMetricBeforeUpdate(existing.id);
-          await prisma.dailyMetric.update({
-            where: { id: existing.id },
-            data: {
-              scoreA: stu.scores.A ?? 3,
-              scoreB: stu.scores.B ?? 3,
-              scoreC: stu.scores.C ?? 3,
-            },
+        if (sessionId) {
+          const existing = await prisma.dailyMetric.findUnique({
+            where: { studentId_sessionId: { studentId: student.id, sessionId } },
+          });
+          if (existing) await archiveMetricBeforeUpdate(existing.id);
+          await prisma.dailyMetric.upsert({
+            where: { studentId_sessionId: { studentId: student.id, sessionId } },
+            create: { studentId: student.id, date: today, sessionId, scoreA: stu.scores.A ?? 3, scoreB: stu.scores.B ?? 3, scoreC: stu.scores.C ?? 3 },
+            update: { scoreA: stu.scores.A ?? 3, scoreB: stu.scores.B ?? 3, scoreC: stu.scores.C ?? 3 },
+          });
+        } else {
+          const existing = await prisma.dailyMetric.findFirst({
+            where: { studentId: student.id, date: today, sessionId: null },
+          });
+          if (existing) {
+            await archiveMetricBeforeUpdate(existing.id);
+            await prisma.dailyMetric.update({
+              where: { id: existing.id },
+              data: { scoreA: stu.scores.A ?? 3, scoreB: stu.scores.B ?? 3, scoreC: stu.scores.C ?? 3 },
+            });
+          } else {
+            await prisma.dailyMetric.create({
+              data: { studentId: student.id, date: today, sessionId: null, scoreA: stu.scores.A ?? 3, scoreB: stu.scores.B ?? 3, scoreC: stu.scores.C ?? 3 },
+            });
+          }
+        }
+      }
           });
         } else {
           await prisma.dailyMetric.create({
