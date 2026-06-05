@@ -13,8 +13,10 @@ export async function GET(request: NextRequest) {
     if (semesterId) where.semesterId = semesterId;
     if (date) where.date = date;
     if (className) {
-      // Look up class by name to get classId
-      const cls = await prisma.class.findFirst({ where: { name: className } });
+      // Look up class by name or code to get classId
+      const cls = await prisma.class.findFirst({
+        where: { OR: [{ name: className }, { code: className }] },
+      });
       where.classId = cls?.id ?? null;
     }
 

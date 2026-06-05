@@ -14,8 +14,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "缺少 class 以及 date 或 sessionCode 参数" }, { status: 400 });
     }
 
-    // Resolve classId from className
-    const cls = await prisma.class.findFirst({ where: { name: className } });
+    // Resolve classId from className (by name or code)
+    const cls = await prisma.class.findFirst({
+      where: { OR: [{ name: className }, { code: className }] },
+    });
     const classId = cls?.id;
     if (!classId) {
       return NextResponse.json({ error: "班级不存在" }, { status: 404 });

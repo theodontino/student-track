@@ -63,7 +63,7 @@ export async function GET() {
     // ── 按班级分组 ──
     const classStudents = new Map<string, typeof students>();
     for (const s of students) {
-      const clsName = s.class.name ?? "";
+      const clsName = s.class.name ?? s.class.code;
       const arr = classStudents.get(clsName) || [];
       arr.push(s);
       classStudents.set(clsName, arr);
@@ -185,7 +185,7 @@ export async function GET() {
           studentAlerts.push({
             studentId: student.id,
             studentName: student.name,
-            class: student.class.name ?? "",
+            class: student.class.name ?? student.class.code,
             dimension: DIM_LABEL[dim],
             score,
             classAvg: avg,
@@ -198,7 +198,7 @@ export async function GET() {
           studentAlerts.push({
             studentId: student.id,
             studentName: student.name,
-            class: student.class.name ?? "",
+            class: student.class.name ?? student.class.code,
             dimension: DIM_LABEL[dim],
             score,
             classAvg: avg,
@@ -217,7 +217,7 @@ export async function GET() {
           studentAlerts.push({
             studentId: s.id,
             studentName: s.name,
-            class: s.class.name ?? "",
+            class: s.class.name ?? s.class.code,
             dimension: DIM_LABEL.D,
             score: absences,
             classAvg: totalSessions,
@@ -228,7 +228,7 @@ export async function GET() {
           studentAlerts.push({
             studentId: s.id,
             studentName: s.name,
-            class: s.class.name ?? "",
+            class: s.class.name ?? s.class.code,
             dimension: DIM_LABEL.D,
             score: absences,
             classAvg: totalSessions,
