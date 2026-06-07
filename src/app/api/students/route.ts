@@ -26,19 +26,22 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { name, classCode, studentId, gender, labels } = body;
+    const { name, classCode, class: className, studentId, gender, labels } = body;
+    const code = classCode || className;  // accept both classCode (new) and class (legacy)
 
-    if (!name || !classCode || !studentId || !gender) {
+    if (!name || !code || !studentId || !gender) {
       return NextResponse.json(
         { error: "姓名、班级编号、学号、性别为必填项" },
         { status: 400 }
       );
     }
 
-    // Find or create class by code
-    let cls = await prisma.class.findUnique({ where: { code: classCode } });
+    // Find or create class by code/name
+    let cls = await prisma.class.findFirst({
+      where: { OR: [{ code }, { name: code }] },
+    });
     if (!cls) {
-      cls = await prisma.class.create({ data: { code: classCode } });
+      cls = await prisma.class.create({ data: { code } });
     }
 
     const student = await prisma.student.create({

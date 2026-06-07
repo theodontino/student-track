@@ -7,6 +7,7 @@ interface Student {
   id: string;
   name: string;
   class: string;
+  classCode: string;
   studentId: string;
   gender: string;
   labels: string[];
@@ -29,7 +30,7 @@ export default function StudentsPage() {
 
   const [form, setForm] = useState({
     name: "",
-    class: "",
+    classCode: "",
     studentId: "",
     gender: "男",
     labels: [] as string[],
@@ -62,7 +63,7 @@ export default function StudentsPage() {
 
   function openCreate() {
     setEditingStudent(null);
-    setForm({ name: "", class: "", studentId: "", gender: "男", labels: [] });
+    setForm({ name: "", classCode: "", studentId: "", gender: "男", labels: [] });
     setLabelInput("");
     setError("");
     setShowModal(true);
@@ -72,7 +73,7 @@ export default function StudentsPage() {
     setEditingStudent(s);
     setForm({
       name: s.name,
-      class: s.class,
+      classCode: s.classCode || s.class,
       studentId: s.studentId,
       gender: s.gender,
       labels: s.labels,
@@ -301,15 +302,15 @@ export default function StudentsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    班级 *
+                    班级编号 *
                   </label>
                   <input
                     type="text"
-                    value={form.class}
+                    value={form.classCode}
                     onChange={(e) =>
-                      setForm({ ...form, class: e.target.value })
+                      setForm({ ...form, classCode: e.target.value })
                     }
-                    placeholder="如：高三(1)班"
+                    placeholder="如：G3-01"
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
                     required
                   />
