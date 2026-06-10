@@ -19,6 +19,7 @@ export default function FeedbackWizardPage() {
   const [sessionCode, setSessionCode] = useState("");
   const [rawText, setRawText] = useState("");
   const [parsing, setParsing] = useState(false);
+  const [parseStatus, setParseStatus] = useState("");
   const [streamContent, setStreamContent] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -77,6 +78,9 @@ export default function FeedbackWizardPage() {
           if (!line.startsWith("data: ")) continue;
           const msg = JSON.parse(line.slice(6));
           switch (msg.type) {
+            case "status":
+              setParseStatus(msg.message);
+              break;
             case "chunk":
               setStreamContent((prev) => prev + msg.content);
               break;
@@ -247,7 +251,7 @@ export default function FeedbackWizardPage() {
             <span className="text-xs text-gray-400">{rawText.length} 字</span>
             <button onClick={handleParse} disabled={parsing || !rawText.trim()}
               className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
-              {parsing ? "解析中..." : "① 解析 →"}
+              {parsing ? (parseStatus || "解析中…") : "① 解析 →"}
             </button>
           </div>
 

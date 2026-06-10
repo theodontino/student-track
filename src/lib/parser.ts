@@ -1,5 +1,5 @@
 import { createLLMClient, getLLMModel } from "./llm";
-import { SYSTEM_PROMPT, REVIEW_PROMPT } from "./prompts";
+import { SYSTEM_PROMPT, REVIEW_PROMPT, NAME_FIX_SYSTEM_PROMPT } from "./prompts";
 
 interface ParsedStudent {
   name: string;
@@ -84,6 +84,24 @@ export async function llmCallStream(
     }
   }
   throw lastErr || new Error("LLM failed after retries");
+}
+
+/** v0.13: pre-correct student names in raw text via LLM */
+export async function correctNamesWithLLM(
+  rawText: string,
+  studentNames: string[]
+): Promise<string> {
+  const userPrompt = `学生名单：${studentNames.join("、")}
+
+原始文本：
+${rawText}
+
+修正后文本：`;
+
+  return await llmCall([
+    { role: "system", content: NAME_FIX_SYSTEM_PROMPT },
+    { role: "user", content: userPrompt },
+  ], 0.1, 1);
 }
 
 /**
