@@ -161,20 +161,35 @@ async function reorderSemesterNumbers(semesterId: string) {
 }
 
 // Helper: recalculate scoreD = ROUND(5 * present_count / total_sessions)
+// v0.11.4: 按学生班级过滤分母（含全校课次 classId=null），修复多班 D 分失真
 async function recalculateScoreD(semesterId: string, date: string) {
-  const totalSessions = await prisma.classSession.count({
-    where: { semesterId },
+  const students = await prisma.student.findMany({
+    select: { id: true, classId: true },
   });
-  if (totalSessions === 0) return;
-
-  const students = await prisma.student.findMany({ select: { id: true } });
 
   for (const student of students) {
+    const totalSessions = await prisma.classSession.count({
+      where: {
+        semesterId,
+        OR: [
+          { classId: student.classId },
+          { classId: null },
+        ],
+      },
+    });
+    if (totalSessions === 0) continue;
+
     const presentCount = await prisma.attendance.count({
       where: {
         studentId: student.id,
         present: true,
-        session: { semesterId },
+        session: {
+          semesterId,
+          OR: [
+            { classId: student.classId },
+            { classId: null },
+          ],
+        },
       },
     });
 

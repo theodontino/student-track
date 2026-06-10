@@ -96,7 +96,7 @@ export async function GET() {
         totalA += latest.scoreA;
         totalB += latest.scoreB;
         totalC += latest.scoreC;
-        // D: 系统计算，不参与均分统计
+        totalD += latest.scoreD;
         count++;
       }
 
@@ -108,8 +108,9 @@ export async function GET() {
       const avgA = +(totalA / count).toFixed(1);
       const avgB = +(totalB / count).toFixed(1);
       const avgC = +(totalC / count).toFixed(1);
+      const avgD = +(totalD / count).toFixed(1);
 
-      classOverview.push({ name: className, avgA, avgB, avgC, avgD: 0, studentCount: stuList.length });
+      classOverview.push({ name: className, avgA, avgB, avgC, avgD, studentCount: stuList.length });
 
       // 班级预警：仅 ≥5 人班级触发
       if (stuList.length >= 5) {

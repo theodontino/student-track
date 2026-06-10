@@ -207,14 +207,32 @@ export async function POST(request: NextRequest) {
           });
           attUpdated++;
         }
-        const totalSessions = await prisma.classSession.count({ where: { semesterId: session.semesterId } });
-        if (totalSessions > 0) {
-          const students = await prisma.student.findMany({ select: { id: true } });
-          for (const s of students) {
-            const presentCount = await prisma.attendance.count({
-              where: { studentId: s.id, present: true, session: { semesterId: session.semesterId } },
-            });
-            const scoreD = Math.round((5 * presentCount) / totalSessions);
+        // v0.11.4: 按学生班级过滤分母（含全校课次 classId=null），修复多班 D 分失真
+        const students = await prisma.student.findMany({ select: { id: true, classId: true } });
+        for (const s of students) {
+          const totalSessions = await prisma.classSession.count({
+            where: {
+              semesterId: session.semesterId,
+              OR: [
+                { classId: s.classId },
+                { classId: null },
+              ],
+            },
+          });
+          if (totalSessions === 0) continue;
+          const presentCount = await prisma.attendance.count({
+            where: {
+              studentId: s.id, present: true,
+              session: {
+                semesterId: session.semesterId,
+                OR: [
+                  { classId: s.classId },
+                  { classId: null },
+                ],
+              },
+            },
+          });
+          const scoreD = Math.round((5 * presentCount) / totalSessions);
             const latestMetric = await prisma.sessionMetric.findFirst({
               where: { studentId: s.id },
               orderBy: { createdAt: "desc" },
@@ -228,7 +246,6 @@ export async function POST(request: NextRequest) {
               });
             }
           }
-        }
       }
     }
 

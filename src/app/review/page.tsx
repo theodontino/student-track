@@ -112,6 +112,12 @@ export default function ReviewPage() {
         throw new Error(data.error || "操作失败");
       }
 
+      // v0.11.4: 显示 warnings（无课次导致 Event/Comm 被跳过）
+      const data = await res.json();
+      if (data.warnings && data.warnings.length > 0) {
+        alert("⚠ 注意：\n" + data.warnings.join("\n"));
+      }
+
       fetchDrafts(filterStatus);
       setExpandedId(null);
     } catch (err: any) {
