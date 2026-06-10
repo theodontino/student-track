@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { DIM_LABEL } from "@/lib/constants";
 
 interface Draft {
   id: string;
@@ -140,12 +141,6 @@ export default function ReviewPage() {
       setProcessingId(null);
     }
   }
-
-  const dimLabel: Record<string, string> = {
-    A: "学习&测验",
-    B: "精神&纪律",
-    C: "课后任务",
-  };
 
   /** v0.5.1: Get review info for a specific student */
   function studentReview(draft: Draft, studentName: string) {
@@ -331,7 +326,7 @@ export default function ReviewPage() {
                             <div className="text-xs text-amber-700 mb-1">
                               💡 建议调整：
                               {Object.entries(review.revisedScores as Record<string,number|null>).filter(([, v]) => v != null).map(([dim, val]) => (
-                                <span key={dim} className="font-mono font-medium ml-1">{dimLabel[dim]||dim}→{val}分</span>
+                                <span key={dim} className="font-mono font-medium ml-1">{DIM_LABEL[dim]||dim}→{val}分</span>
                               ))}
                             </div>
                           )}
@@ -348,7 +343,7 @@ export default function ReviewPage() {
                           return (
                           <div key={dim}>
                             <label className={`text-xs block mb-1 ${suggested!=null?"text-amber-600 font-medium":"text-gray-500"}`}>
-                              {dimLabel[dim]}{suggested!=null?` →${suggested}`:""}
+                              {DIM_LABEL[dim]}{suggested!=null?` →${suggested}`:""}
                             </label>
                             <select value={stu.scores[dim]??""} onChange={(e)=>updateScore(draft.id,si,dim,e.target.value===""?null!:Number(e.target.value))}
                               className={`w-full border rounded px-2 py-1.5 text-sm ${suggested!=null?"border-amber-300 bg-amber-50":"border-gray-300"}`}>

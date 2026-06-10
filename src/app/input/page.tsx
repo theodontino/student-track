@@ -1,58 +1,21 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-
-interface ParseResult {
-  draftId: string;
-  rawText: string;
-  parsedResult: {
-    students: {
-      name: string;
-      scores: { A: number | null; B: number | null; C: number | null };
-      events: string[];
-      communication: { type: string; summary: string } | null;
-    }[];
-    alert_suggestion: string;
-  };
-  reviewResult: {
-    is_valid: boolean;
-    issues: string[];
-    suggestions: string[];
-    revised_scores: Record<string, any>;
-    revised_events: Record<string, string[]>;
-  } | null;
-  status: string;
-  createdAt: string;
-}
+import SemesterPicker from "@/components/SemesterPicker";
+import { DIM_LABEL } from "@/lib/constants";
+import type { DraftParseResult } from "@/lib/types";
 
 export default function InputPage() {
   const router = useRouter();
   const [rawText, setRawText] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<ParseResult | null>(null);
+  const [result, setResult] = useState<DraftParseResult | null>(null);
   const [error, setError] = useState("");
 
-  // v0.7: semester/class/session selector
-  const [semesters, setSemesters] = useState<{ id: string; name: string }[]>([]);
-  const [classes, setClasses] = useState<string[]>([]);
-  const [sessions, setSessions] = useState<{ code: string; className: string | null; semesterNumber: number }[]>([]);
   const [selectedSemesterId, setSelectedSemesterId] = useState("");
   const [selectedClass, setSelectedClass] = useState("");
   const [selectedSessionCode, setSelectedSessionCode] = useState("");
-
-  useEffect(() => {
-    fetch("/api/semesters").then(r => r.json()).then(setSemesters);
-    fetch("/api/students").then(r => r.json()).then((ss: { class: string }[]) =>
-      setClasses([...new Set(ss.map(s => s.class))])
-    );
-  }, []);
-
-  useEffect(() => {
-    if (!selectedSemesterId || !selectedClass) { setSessions([]); return; }
-    fetch(`/api/sessions?semesterId=${selectedSemesterId}&className=${encodeURIComponent(selectedClass)}`)
-      .then(r => r.json()).then(setSessions);
-  }, [selectedSemesterId, selectedClass]);
 
   async function handleSubmit() {
     if (!rawText.trim()) return;
@@ -78,12 +41,6 @@ export default function InputPage() {
     }
   }
 
-  const dimLabel: Record<string, string> = {
-    A: "学习目标 & 测验",
-    B: "精神面貌 & 纪律",
-    C: "课后任务",
-  };
-
   return (
     <div className="max-w-3xl mx-auto">
       <h2 className="text-2xl font-bold text-gray-800 mb-2">自然语言录入</h2>
@@ -91,29 +48,16 @@ export default function InputPage() {
         用自然语言描述学生表现，LLM 将自动解析并生成结构化草案。
       </p>
 
-      {/* v0.7: 课次选择器 */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <select value={selectedSemesterId} onChange={(e) => { setSelectedSemesterId(e.target.value); setSelectedClass(""); setSelectedSessionCode(""); }}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
-          <option value="">选择学期</option>
-          {semesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-        {selectedSemesterId && (
-          <select value={selectedClass} onChange={(e) => { setSelectedClass(e.target.value); setSelectedSessionCode(""); }}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
-            <option value="">选择班级</option>
-            {classes.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        )}
-        {selectedClass && sessions.length > 0 && (
-          <select value={selectedSessionCode} onChange={(e) => setSelectedSessionCode(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono outline-none">
-            <option value="">不关联课次</option>
-            {sessions.map(s => (
-              <option key={s.code} value={s.code}>{s.code} — 第{s.semesterNumber}次课</option>
-            ))}
-          </select>
-        )}
+      {/* Semester/class/session picker */}
+      <div className="mb-4">
+        <SemesterPicker
+          semesterId={selectedSemesterId}
+          onSemesterChange={setSelectedSemesterId}
+          className={selectedClass}
+          onClassChange={setSelectedClass}
+          sessionCode={selectedSessionCode}
+          onSessionChange={setSelectedSessionCode}
+        />
         {selectedSessionCode && (
           <span className="text-xs text-blue-600 font-medium">✓ 将关联到此课次</span>
         )}
@@ -235,7 +179,7 @@ export default function InputPage() {
                     className="bg-gray-50 rounded-lg p-3 text-center"
                   >
                     <div className="text-xs text-gray-500 mb-1">
-                      {dimLabel[dim]}
+                      {DIM_LABEL[dim]}
                     </div>
                     <div
                       className={`text-2xl font-bold ${

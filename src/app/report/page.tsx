@@ -1,22 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import SemesterPicker from "@/components/SemesterPicker";
+import { readSSEStream } from "@/lib/sse";
 
-interface StudentCard {
-  id: string;
-  name: string;
-  labels: string[];
-  feedback?: string;
-}
+interface StudentCard { id: string; name: string; labels: string[]; feedback?: string; }
 
 export default function ReportPage() {
-  const [semesters, setSemesters] = useState<{ id: string; name: string }[]>([]);
-  const [classes, setClasses] = useState<string[]>([]);
-  const [students, setStudents] = useState<{ id: string; name: string; class: string }[]>([]);
   const [selectedSemesterId, setSelectedSemesterId] = useState("");
   const [selectedClass, setSelectedClass] = useState("");
-
-  // Daily report — session-based
   const [sessions, setSessions] = useState<{ code: string; semesterNumber: number; date: string }[]>([]);
   const [selectedSessionCode, setSelectedSessionCode] = useState("");
   const [dailyLoading, setDailyLoading] = useState(false);
@@ -35,15 +27,15 @@ export default function ReportPage() {
   const [feedbackDays, setFeedbackDays] = useState(14);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
+  const [students, setStudents] = useState<{ id: string; name: string; class: string }[]>([]);
 
   useEffect(() => {
-    fetch("/api/semesters").then((r) => r.json()).then(setSemesters);
     fetch("/api/students").then((r) => r.json()).then((ss: any[]) => {
-      setClasses([...new Set(ss.map((s: any) => s.class))]);
       setStudents(ss);
     });
   }, []);
 
+  // Reload sessions when semester/class change
   useEffect(() => {
     if (!selectedSemesterId || !selectedClass) { setSessions([]); return; }
     fetch(`/api/sessions?semesterId=${selectedSemesterId}&className=${encodeURIComponent(selectedClass)}`)
@@ -102,40 +94,7 @@ export default function ReportPage() {
         return;
       }
 
-      // NDJSON stream (one JSON per line)
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-
-          if (value) {
-            buffer += decoder.decode(value, { stream: !done });
-          }
-
-          // Process complete lines
-          let nlIdx: number;
-          while ((nlIdx = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, nlIdx);
-            buffer = buffer.slice(nlIdx + 1);
-            if (!line.trim()) continue;
-            try { handleEvent(JSON.parse(line)); } catch { /* skip */ }
-          }
-
-          if (done) {
-            // Flush decoder + process residual
-            buffer += decoder.decode();
-            if (buffer.trim()) {
-              try { handleEvent(JSON.parse(buffer.trim())); } catch { /* skip */ }
-            }
-            break;
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
+      await readSSEStream(res.body!.getReader(), handleEvent);
 
       setBatchLoading(false);
     } catch (e: any) {
@@ -211,19 +170,15 @@ export default function ReportPage() {
       <h2 className="text-2xl font-bold text-gray-800 mb-2">报告生成</h2>
       <p className="text-sm text-gray-500 mb-6">AI 生成班级日报和家校反馈文本。</p>
 
-      <div className="flex items-center gap-3 mb-8 flex-wrap">
-        <select value={selectedSemesterId} onChange={(e) => { setSelectedSemesterId(e.target.value); setSelectedClass(""); }}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
-          <option value="">选择学期</option>
-          {semesters.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
-        </select>
-        {selectedSemesterId && (
-          <select value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
-            <option value="">选择班级</option>
-            {classes.map((c) => (<option key={c} value={c}>{c}</option>))}
-          </select>
-        )}
+      <div className="mb-8">
+        <SemesterPicker
+          semesterId={selectedSemesterId}
+          onSemesterChange={(id) => { setSelectedSemesterId(id); setSelectedClass(""); }}
+          className={selectedClass}
+          onClassChange={setSelectedClass}
+          sessionCode=""
+          onSessionChange={() => {}}
+        />
       </div>
 
       {/* Daily Report — by session */}

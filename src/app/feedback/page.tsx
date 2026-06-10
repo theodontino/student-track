@@ -1,19 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import SemesterPicker from "@/components/SemesterPicker";
+import { readSSEStream } from "@/lib/sse";
+import { DIM_SHORT } from "@/lib/constants";
 
 const STEPS = [
-  { num: 1, label: "输入" },
-  { num: 2, label: "确认" },
-  { num: 3, label: "反馈" },
-  { num: 4, label: "导出" },
+  { num: 1, label: "输入" }, { num: 2, label: "确认" },
+  { num: 3, label: "反馈" }, { num: 4, label: "导出" },
 ];
 
 export default function FeedbackWizardPage() {
   const [step, setStep] = useState(1);
-  const [semesters, setSemesters] = useState<{ id: string; name: string }[]>([]);
-  const [classes, setClasses] = useState<string[]>([]);
-  const [sessions, setSessions] = useState<{ code: string; date: string; semesterNumber: number }[]>([]);
   const [semesterId, setSemesterId] = useState("");
   const [className, setClassName] = useState("");
   const [sessionCode, setSessionCode] = useState("");
@@ -24,6 +22,14 @@ export default function FeedbackWizardPage() {
   const [confirming, setConfirming] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+  const [sessions, setSessions] = useState<{ code: string; date: string; semesterNumber: number }[]>([]);
+
+  // Load sessions when semester + class selected
+  function loadSessions(sId: string, cls: string) {
+    if (!sId || !cls) { setSessions([]); return; }
+    fetch(`/api/sessions?semesterId=${sId}&className=${encodeURIComponent(cls)}`)
+      .then((r) => r.json()).then(setSessions);
+  }
 
   // Step 2 state
   const [draftId, setDraftId] = useState("");
@@ -36,23 +42,9 @@ export default function FeedbackWizardPage() {
   const [feedbackTotal, setFeedbackTotal] = useState(0);
   const [feedbackDone, setFeedbackDone] = useState(0);
 
-  useEffect(() => {
-    Promise.all([
-      fetch("/api/semesters").then((r) => r.json()),
-      fetch("/api/students").then((r) => r.json()),
-    ]).then(([sems, stus]: any) => {
-      setSemesters(sems);
-      setClasses([...new Set(stus.map((s: any) => s.class))] as string[]);
-    });
-  }, []);
-
-  // Load sessions when semester + class selected
-  useEffect(() => {
-    if (!semesterId || !className) { setSessions([]); return; }
-    fetch(`/api/sessions?semesterId=${semesterId}&className=${encodeURIComponent(className)}`)
-      .then((r) => r.json())
-      .then(setSessions);
-  }, [semesterId, className]);
+  // Load sessions when semester+class change
+  function onSemIdChange(id: string) { setSemesterId(id); loadSessions(id, className); }
+  function onClsChange(cls: string) { setClassName(cls); setSessionCode(""); loadSessions(semesterId, cls); }
 
   // Step 1: parse NL input (SSE streaming)
   async function handleParse() {
@@ -66,37 +58,20 @@ export default function FeedbackWizardPage() {
       });
       if (!res.ok) throw new Error((await res.json()).error);
 
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const msg = JSON.parse(line.slice(6));
-          switch (msg.type) {
-            case "status":
-              setParseStatus(msg.message);
-              break;
-            case "chunk":
-              setStreamContent((prev) => prev + msg.content);
-              break;
-            case "result":
-              setDraftId(msg.draftId);
-              setParsedResult(msg.parsedResult);
-              setReviewResult(msg.reviewResult);
-              setCorrections(msg.corrections || []);
-              setStep(2);
-              break;
-            case "error":
-              throw new Error(msg.message);
-          }
+      await readSSEStream(res.body!.getReader(), (msg) => {
+        switch (msg.type) {
+          case "status": setParseStatus(msg.message); break;
+          case "chunk": setStreamContent((prev) => prev + msg.content); break;
+          case "result":
+            setDraftId(msg.draftId);
+            setParsedResult(msg.parsedResult);
+            setReviewResult(msg.reviewResult);
+            setCorrections(msg.corrections || []);
+            setStep(2);
+            break;
+          case "error": throw new Error(msg.message);
         }
-      }
+      });
     } catch (e: any) { setError(e.message); }
     finally { setParsing(false); }
   }
@@ -133,30 +108,17 @@ export default function FeedbackWizardPage() {
       });
       if (!res.ok) throw new Error((await res.json()).error);
 
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const msg = JSON.parse(line);
-          if (msg.type === "init") {
-            setFeedbackTotal(msg.total);
-            setFeedbackCards(msg.students.map((s: any) => ({ name: s.name, feedback: "" })));
-          } else if (msg.type === "progress") {
-            setFeedbackDone((prev) => prev + 1);
-            setFeedbackCards((prev) =>
-              prev.map((c) => c.name === msg.name ? { name: msg.name, feedback: msg.feedback } : c)
-            );
-          }
+      await readSSEStream(res.body!.getReader(), (msg) => {
+        if (msg.type === "init") {
+          setFeedbackTotal(msg.total);
+          setFeedbackCards(msg.students.map((s: any) => ({ name: s.name, feedback: "" })));
+        } else if (msg.type === "progress") {
+          setFeedbackDone((prev) => prev + 1);
+          setFeedbackCards((prev) =>
+            prev.map((c) => c.name === msg.name ? { name: msg.name, feedback: msg.feedback } : c)
+          );
         }
-      }
+      });
     } catch (e: any) { setError(e.message); }
     finally { setGenerating(false); setStep(4); }
   }
@@ -206,26 +168,15 @@ export default function FeedbackWizardPage() {
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h3 className="font-semibold text-gray-800 mb-4">✏️ 输入文本并选择课次</h3>
 
-          <div className="flex items-center gap-3 mb-4 flex-wrap">
-            <select value={semesterId} onChange={(e) => { setSemesterId(e.target.value); setSessionCode(""); }}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
-              <option value="">选择学期</option>
-              {semesters.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-            <select value={className} onChange={(e) => { setClassName(e.target.value); setSessionCode(""); }}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none">
-              <option value="">选择班级</option>
-              {classes.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-            {sessions.length > 0 && (
-              <select value={sessionCode} onChange={(e) => setSessionCode(e.target.value)}
-                className="border border-blue-300 rounded-lg px-3 py-2 text-sm font-mono outline-none bg-blue-50">
-                <option value="">选择课次</option>
-                {sessions.map((s) => (
-                  <option key={s.code} value={s.code}>{s.code} — 第{s.semesterNumber}次课</option>
-                ))}
-              </select>
-            )}
+          <div className="mb-4">
+            <SemesterPicker
+              semesterId={semesterId}
+              onSemesterChange={onSemIdChange}
+              className={className}
+              onClassChange={onClsChange}
+              sessionCode={sessionCode}
+              onSessionChange={setSessionCode}
+            />
           </div>
 
           <textarea

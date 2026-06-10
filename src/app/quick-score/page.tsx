@@ -1,51 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import SemesterPicker from "@/components/SemesterPicker";
+import type { SessionInfo, CardScore } from "@/lib/types";
+import { DIM_CONFIG, SCORE_COLORS } from "@/lib/constants";
 
-interface Student {
-  id: string;
-  name: string;
-  class: string;
-  gender: string;
-}
-
-interface Semester {
-  id: string;
-  name: string;
-  startDate: string;
-  endDate: string;
-  sessionCount: number;
-}
-
-interface SessionInfo {
-  id: string;
-  code: string;
-  semesterNumber: number;
-  date: string;
-  class: string | null;
-  attendanceCount: number;
-}
-
-interface CardScore {
-  studentId: string;
-  studentName: string;
-  scoreA: number;
-  scoreB: number;
-  scoreC: number;
-  present: boolean;
-  note: string;
-}
-
-const DIM_CONFIG = [
-  { key: "A" as const, label: "学习", color: "bg-blue-500" },
-  { key: "B" as const, label: "纪律", color: "bg-green-500" },
-  { key: "C" as const, label: "作业", color: "bg-amber-500" },
-];
-
-const SCORE_COLORS = [
-  "bg-red-400", "bg-red-300", "bg-orange-300",
-  "bg-yellow-300", "bg-lime-400", "bg-green-400",
-];
+interface Student { id: string; name: string; class: string; gender: string; }
+interface Semester { id: string; name: string; startDate: string; endDate: string; sessionCount: number; }
 
 export default function QuickScorePage() {
   const [classes, setClasses] = useState<string[]>([]);
