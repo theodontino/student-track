@@ -136,7 +136,6 @@ export default function FeedbackWizardPage() {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      const cards: { name: string; feedback: string }[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -150,40 +149,27 @@ export default function FeedbackWizardPage() {
           if (msg.type === "init") {
             setFeedbackTotal(msg.total);
             setFeedbackCards(msg.students.map((s: any) => ({ name: s.name, feedback: "" })));
-          } else if (msg.type === "done") {
+          } else if (msg.type === "progress") {
             setFeedbackDone((prev) => prev + 1);
-            const idx = cards.findIndex((c) => c.name === msg.name);
-            if (idx >= 0) cards[idx] = msg;
-            else cards.push(msg);
-            setFeedbackCards((prev) => prev.map((c) => c.name === msg.name ? msg : c));
+            setFeedbackCards((prev) =>
+              prev.map((c) => c.name === msg.name ? { name: msg.name, feedback: msg.feedback } : c)
+            );
           }
         }
       }
-    } catch (e: any) {
-      if (!e.toString().includes("done")) setError(e.message);
-    } finally {
-      setGenerating(false);
-      setStep(4);
-    }
+    } catch (e: any) { setError(e.message); }
+    finally { setGenerating(false); setStep(4); }
   }
 
-  // Step 4: export Excel
-  async function handleExport() {
+  // Step 4: download cached feedback Excel
+  function handleExport() {
     if (!sessionCode) return;
-    try {
-      const ses = sessions.find((s) => s.code === sessionCode);
-      const res = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startDate: ses?.date ?? "2026-01-01", endDate: ses?.date ?? "2030-01-01" }),
-      });
-      if (!res.ok) throw new Error("导出失败");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `Chem-Track_${sessionCode}.xlsx`; a.click();
-      URL.revokeObjectURL(url);
-    } catch (e: any) { setError(e.message); }
+    const a = document.createElement("a");
+    a.href = `/api/report/feedback-batch?sessionCode=${sessionCode}`;
+    a.download = `feedback_${sessionCode}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   const dimLabel: Record<string, string> = { A: "学习", B: "纪律", C: "作业" };
