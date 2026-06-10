@@ -29,6 +29,7 @@ export default function FeedbackWizardPage() {
   const [draftId, setDraftId] = useState("");
   const [parsedResult, setParsedResult] = useState<any>(null);
   const [reviewResult, setReviewResult] = useState<any>(null);
+  const [corrections, setCorrections] = useState<any[]>([]);
 
   // Step 3 state
   const [feedbackCards, setFeedbackCards] = useState<{ name: string; feedback: string }[]>([]);
@@ -88,6 +89,7 @@ export default function FeedbackWizardPage() {
               setDraftId(msg.draftId);
               setParsedResult(msg.parsedResult);
               setReviewResult(msg.reviewResult);
+              setCorrections(msg.corrections || []);
               setStep(2);
               break;
             case "error":
@@ -268,12 +270,54 @@ export default function FeedbackWizardPage() {
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h3 className="font-semibold text-gray-800 mb-4">✅ 确认 LLM 解析结果</h3>
 
+          {/* Name corrections highlight */}
+          {corrections.length > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm">
+              <span className="font-semibold text-blue-700">📝 已自动修正姓名：</span>
+              <div className="space-y-1 mt-1.5">
+                {corrections.map((c, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs">
+                    <span className="text-gray-400 line-through">{c.original}</span>
+                    <span className="text-gray-300">→</span>
+                    <span className="font-medium text-blue-700">{c.corrected}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      c.confidence === "high" ? "bg-green-100 text-green-700" :
+                      c.confidence === "medium" ? "bg-yellow-100 text-yellow-700" :
+                      "bg-red-100 text-red-700"
+                    }`}>
+                      {c.confidence === "high" ? "确信" : c.confidence === "medium" ? "较可能" : "存疑"}
+                    </span>
+                    <span className="text-gray-400">{c.reason}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {reviewResult && !reviewResult.is_valid && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-sm">
               <span className="font-semibold text-amber-700">⚠ 自审发现 {reviewResult.issues.length} 个问题：</span>
               <ul className="list-disc list-inside text-amber-600 mt-1 text-xs">
                 {reviewResult.issues.map((i: string, idx: number) => <li key={idx}>{i}</li>)}
               </ul>
+              {reviewResult.name_issues?.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-amber-200">
+                  <span className="text-xs font-semibold text-amber-700">👤 人名/事件对应问题：</span>
+                  {reviewResult.name_issues.map((ni: any, idx: number) => (
+                    <div key={idx} className="flex items-center gap-2 mt-1 text-xs">
+                      <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
+                        ni.severity === "high" ? "bg-red-100 text-red-700" :
+                        ni.severity === "medium" ? "bg-yellow-100 text-yellow-700" :
+                        "bg-gray-100 text-gray-600"
+                      }`}>
+                        {ni.severity === "high" ? "🔴" : ni.severity === "medium" ? "🟡" : "⚪"}
+                      </span>
+                      <span className="text-amber-800">{ni.student}：</span>
+                      <span className="text-amber-600">{ni.issue}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

@@ -86,22 +86,43 @@ export async function llmCallStream(
   throw lastErr || new Error("LLM failed after retries");
 }
 
+export interface NameCorrection {
+  original: string;
+  corrected: string;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface NameFixResult {
+  correctedText: string;
+  corrections: NameCorrection[];
+}
+
 /** v0.13: pre-correct student names in raw text via LLM */
 export async function correctNamesWithLLM(
   rawText: string,
   studentNames: string[]
-): Promise<string> {
+): Promise<NameFixResult> {
   const userPrompt = `学生名单：${studentNames.join("、")}
 
 原始文本：
-${rawText}
+${rawText}`;
 
-修正后文本：`;
-
-  return await llmCall([
+  const content = await llmCall([
     { role: "system", content: NAME_FIX_SYSTEM_PROMPT },
     { role: "user", content: userPrompt },
   ], 0.1, 1);
+
+  try {
+    const parsed = JSON.parse(content);
+    return {
+      correctedText: parsed.correctedText || rawText,
+      corrections: Array.isArray(parsed.corrections) ? parsed.corrections : [],
+    };
+  } catch {
+    // Fallback: if LLM didn't return valid JSON, treat whole text as corrected
+    return { correctedText: content, corrections: [] };
+  }
 }
 
 /**

@@ -28,7 +28,9 @@ export async function POST(request: NextRequest) {
           try {
             // Step 0: Name correction via LLM
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", message: "正在修正姓名…" })}\n\n`));
-            const fixedText = await correctNamesWithLLM(rawText, studentNames);
+            const nameFix = await correctNamesWithLLM(rawText, studentNames);
+            const fixedText = nameFix.correctedText;
+            const corrections = nameFix.corrections;
 
             const userPrompt = `已知学生名单：${studentNames.join("、")}
 
@@ -66,7 +68,7 @@ ${fixedText}
             // Save draft
             const draft = await prisma.draftRecord.create({
               data: {
-                rawText,
+                rawText: fixedText,
                 parsedResult: JSON.stringify(parsedResult),
                 reviewResult: reviewResult ? JSON.stringify(reviewResult) : null,
                 status: "pending",
@@ -76,7 +78,7 @@ ${fixedText}
             });
 
             controller.enqueue(encoder.encode(
-              `data: ${JSON.stringify({ type: "result", draftId: draft.id, parsedResult, reviewResult })}\n\n`
+              `data: ${JSON.stringify({ type: "result", draftId: draft.id, parsedResult, reviewResult, corrections })}\n\n`
             ));
             controller.close();
           } catch (e: any) {
@@ -93,12 +95,12 @@ ${fixedText}
     }
 
     // v0.13: Step 0 — correct names via LLM before parsing
-    const fixedText = await correctNamesWithLLM(rawText, studentNames);
+    const nameFix = await correctNamesWithLLM(rawText, studentNames);
+    const fixedText = nameFix.correctedText;
+    const corrections = nameFix.corrections;
 
     // Step 1: LLM parse
     let parsedResult = await parseInput(fixedText, studentNames);
-
-    // Save with original rawText in draft, but parse from corrected text
 
     // v0.5: fuzzy-correct student names to exact DB names
     parsedResult = correctNames(parsedResult, studentNames);
@@ -138,6 +140,7 @@ ${fixedText}
       status: draft.status,
       sessionCode: draft.sessionCode,
       createdAt: draft.createdAt,
+      corrections,
     });
   } catch (error) {
     console.error("[/api/input/parse] error:", error);
