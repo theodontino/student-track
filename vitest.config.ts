@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     globals: true,
     env: { DATABASE_URL: "file:./dev.db" },
+    fileParallelism: false,
   },
   resolve: {
     alias: {
