@@ -9,8 +9,9 @@
 ```bash
 cd chem-track-ai
 npm install
+npx prisma db push    # 首次运行建表（项目使用 db push，非 migrate deploy）
 npm run db:seed
-npm run dev        # → http://localhost:3000
+npm run dev           # → http://localhost:3000
 npm test           # 48 test cases
 npx tsc --noEmit   # 0 errors
 ```

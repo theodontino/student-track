@@ -146,7 +146,10 @@ export async function POST(request: NextRequest) {
     let sessionId: string | null = null;
     if (sessionCode) {
       const session = await prisma.classSession.findUnique({ where: { code: sessionCode } });
-      sessionId = session?.id ?? null;
+      if (!session) {
+        return NextResponse.json({ error: "课次不存在" }, { status: 404 });
+      }
+      sessionId = session.id;
     }
 
     for (const entry of scores) {
@@ -233,13 +236,17 @@ export async function POST(request: NextRequest) {
             },
           });
           const scoreD = Math.round((5 * presentCount) / totalSessions);
-            const latestMetric = await prisma.sessionMetric.findFirst({
-              where: { studentId: s.id },
-              orderBy: { createdAt: "desc" },
-            });
-            if (latestMetric) {
-              await archiveMetricBeforeUpdate(latestMetric.id);
-              await prisma.sessionMetric.update({ where: { id: latestMetric.id }, data: { scoreD } });
+            // Update D on the current session's metric, fallback to latest
+            const targetMetric = sessionId
+              ? await prisma.sessionMetric.findUnique({
+                  where: { studentId_sessionId: { studentId: s.id, sessionId } },
+                })
+              : await prisma.sessionMetric.findFirst({
+                  where: { studentId: s.id }, orderBy: { createdAt: "desc" },
+                });
+            if (targetMetric) {
+              await archiveMetricBeforeUpdate(targetMetric.id);
+              await prisma.sessionMetric.update({ where: { id: targetMetric.id }, data: { scoreD } });
             } else {
               await prisma.sessionMetric.create({
                 data: { studentId: s.id, date, sessionId: null, scoreA: 3, scoreB: 3, scoreC: 3, scoreD, operator: "system" },

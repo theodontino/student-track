@@ -8,6 +8,10 @@ export interface SSEEvent {
 /**
  * 读取 NDJSON stream（每行一个 JSON），对每条 event 调用 onEvent。
  * 支持 SS E 的 data: 前缀格式和裸 NDJSON 格式。
+ *
+ * 异常策略：
+ * - JSON parse 失败 → 跳过该行（忽略噪声）
+ * - onEvent 内部抛错 → 传播出去，调用方 catch
  */
 export async function readSSEStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -28,20 +32,18 @@ export async function readSSEStream(
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        // Strip SSE data: prefix if present
         const json = trimmed.startsWith("data: ") ? trimmed.slice(6) : trimmed;
-        try {
-          const parsed = JSON.parse(json);
-          onEvent(parsed);
-        } catch { /* skip malformed lines */ }
+        let parsed: SSEEvent;
+        try { parsed = JSON.parse(json); }
+        catch { continue; /* skip malformed lines */ }
+        onEvent(parsed);
       }
     }
     // Flush residual
     if (buffer.trim()) {
-      try {
-        const json = buffer.trim().startsWith("data: ") ? buffer.trim().slice(6) : buffer.trim();
-        onEvent(JSON.parse(json));
-      } catch { /* skip */ }
+      const json = buffer.trim().startsWith("data: ") ? buffer.trim().slice(6) : buffer.trim();
+      try { onEvent(JSON.parse(json)); }
+      catch { /* skip malformed */ }
     }
   } finally {
     reader.releaseLock();

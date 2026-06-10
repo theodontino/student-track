@@ -120,7 +120,7 @@ export default function FeedbackWizardPage() {
         }
       });
     } catch (e: any) { setError(e.message); }
-    finally { setGenerating(false); setStep(4); }
+    finally { setGenerating(false); }
   }
 
   // Step 4: download cached feedback Excel

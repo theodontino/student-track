@@ -32,8 +32,6 @@ export default function StudentDetailPage() {
   const [commHasMore, setCommHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState<"events" | "comms" | null>(null);
 
-  useEffect(() => { fetchStudent(); }, [id]);
-
   async function fetchStudent() {
     try {
       const res = await fetch(`/api/students/${id}?eventLimit=${PAGE_SIZE}&eventOffset=0&commLimit=${PAGE_SIZE}&commOffset=0`);
@@ -50,6 +48,8 @@ export default function StudentDetailPage() {
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   }
+
+  useEffect(() => { fetchStudent(); }, [id]);
 
   async function loadMoreEvents() {
     const nextOffset = eventOffset + PAGE_SIZE;

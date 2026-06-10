@@ -11,13 +11,14 @@ interface Props {
   sessionCode: string;
   onSessionChange: (code: string) => void;
   showDefaultOption?: boolean;
+  hideSession?: boolean;
 }
 
 export default function SemesterPicker({
   semesterId, onSemesterChange,
   className, onClassChange,
   sessionCode, onSessionChange,
-  showDefaultOption = true,
+  showDefaultOption = true, hideSession = false,
 }: Props) {
   const semesters = useSemesters();
   const classes = useClasses();
@@ -48,7 +49,7 @@ export default function SemesterPicker({
           {classes.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       )}
-      {className && sessions.length > 0 && (
+      {!hideSession && className && sessions.length > 0 && (
         <select value={sessionCode} onChange={(e) => onSessionChange(e.target.value)}
           className="border border-blue-300 rounded-lg px-3 py-2 text-sm font-mono outline-none bg-blue-50">
           <option value="">{showDefaultOption ? "选择课次" : ""}</option>

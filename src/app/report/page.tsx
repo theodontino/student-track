@@ -178,6 +178,7 @@ export default function ReportPage() {
           onClassChange={setSelectedClass}
           sessionCode=""
           onSessionChange={() => {}}
+          hideSession
         />
       </div>
 
