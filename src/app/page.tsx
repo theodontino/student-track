@@ -44,6 +44,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [studentAlertsExpanded, setStudentAlertsExpanded] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -84,7 +85,7 @@ export default function DashboardPage() {
       <h2 className="text-2xl font-bold text-gray-800 mb-6">仪表盘</h2>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="text-3xl font-bold text-blue-600">
             {data.totalStudents}
@@ -108,6 +109,33 @@ export default function DashboardPage() {
             {data.yellowCount}
           </div>
           <div className="text-sm text-gray-500 mt-1">🟡 关注预警</div>
+        </div>
+      </div>
+
+      {/* v0.13: 快捷反馈流程 */}
+      <div className="mb-6">
+        <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
+          <span>🚀 快捷反馈流程</span>
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { href: "/input", icon: "✏️", label: "输入", desc: "NL 自然语言录入", color: "bg-blue-500" },
+            { href: "/review", icon: "✅", label: "确认", desc: "复核 LLM 解析结果", color: "bg-green-500" },
+            { href: "/report", icon: "📋", label: "反馈", desc: "生成家长反馈报告", color: "bg-amber-500" },
+            { href: "/export", icon: "📥", label: "导出", desc: "导出 Excel 归档", color: "bg-purple-500" },
+          ].map((item) => (
+            <div
+              key={item.href}
+              onClick={() => router.push(item.href)}
+              className="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer hover:shadow-md transition-shadow"
+            >
+              <div className={`w-10 h-10 rounded-lg ${item.color} flex items-center justify-center text-white text-lg mb-3`}>
+                {item.icon}
+              </div>
+              <h4 className="font-semibold text-gray-800 text-sm">{item.label}</h4>
+              <p className="text-xs text-gray-400 mt-0.5">{item.desc}</p>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -145,16 +173,22 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Student Alerts */}
+      {/* Student Alerts — collapsible */}
       {data.studentAlerts.length > 0 && (
-        <div className="mb-8">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
+        <div className="mb-6">
+          <h3
+            className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2 cursor-pointer select-none"
+            onClick={() => setStudentAlertsExpanded(!studentAlertsExpanded)}
+          >
             <span>👤 学生预警</span>
             <span className="text-xs font-normal text-gray-400 bg-gray-100 px-2 py-0.5 rounded">
               {data.studentAlerts.length} 条
             </span>
+            <span className="text-xs text-gray-400 ml-auto">
+              {studentAlertsExpanded ? "收起 ▲" : "展开 ▼"}
+            </span>
           </h3>
-          <div className="space-y-2">
+          <div className={`space-y-2 ${!studentAlertsExpanded ? "max-h-[300px] overflow-hidden" : ""}`}>
             {data.studentAlerts.map((sa) => (
               <div
                 key={sa.studentId + sa.dimension}
@@ -186,38 +220,11 @@ export default function DashboardPage() {
 
       {/* No alerts */}
       {data.classAlerts.length === 0 && data.studentAlerts.length === 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-gray-400 mb-8">
+        <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-gray-400 mb-6">
           <p className="text-3xl mb-2">✅</p>
           <p>当前无预警</p>
         </div>
       )}
-
-      {/* v0.13: 一键反馈工作流入口 */}
-      <div className="mb-8">
-        <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
-          <span>🚀 快捷反馈流程</span>
-        </h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { href: "/input", icon: "✏️", label: "输入", desc: "NL 自然语言录入", color: "bg-blue-500" },
-            { href: "/review", icon: "✅", label: "确认", desc: "复核 LLM 解析结果", color: "bg-green-500" },
-            { href: "/report", icon: "📋", label: "反馈", desc: "生成家长反馈报告", color: "bg-amber-500" },
-            { href: "/export", icon: "📥", label: "导出", desc: "导出 Excel 归档", color: "bg-purple-500" },
-          ].map((item) => (
-            <div
-              key={item.href}
-              onClick={() => router.push(item.href)}
-              className="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer hover:shadow-md transition-shadow"
-            >
-              <div className={`w-10 h-10 rounded-lg ${item.color} flex items-center justify-center text-white text-lg mb-3`}>
-                {item.icon}
-              </div>
-              <h4 className="font-semibold text-gray-800 text-sm">{item.label}</h4>
-              <p className="text-xs text-gray-400 mt-0.5">{item.desc}</p>
-            </div>
-          ))}
-        </div>
-      </div>
 
       {/* Class Overview */}
       <div>
