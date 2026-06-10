@@ -117,25 +117,31 @@ export default function DashboardPage() {
         <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
           <span>🚀 快捷反馈流程</span>
         </h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { href: "/input", icon: "✏️", label: "输入", desc: "NL 自然语言录入", color: "bg-blue-500" },
-            { href: "/review", icon: "✅", label: "确认", desc: "复核 LLM 解析结果", color: "bg-green-500" },
-            { href: "/report", icon: "📋", label: "反馈", desc: "生成家长反馈报告", color: "bg-amber-500" },
-            { href: "/export", icon: "📥", label: "导出", desc: "导出 Excel 归档", color: "bg-purple-500" },
-          ].map((item) => (
-            <div
-              key={item.href}
-              onClick={() => router.push(item.href)}
-              className="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer hover:shadow-md transition-shadow"
-            >
-              <div className={`w-10 h-10 rounded-lg ${item.color} flex items-center justify-center text-white text-lg mb-3`}>
-                {item.icon}
-              </div>
-              <h4 className="font-semibold text-gray-800 text-sm">{item.label}</h4>
-              <p className="text-xs text-gray-400 mt-0.5">{item.desc}</p>
+        <div
+          onClick={() => router.push("/feedback")}
+          className="bg-white rounded-xl border-2 border-blue-200 p-6 cursor-pointer hover:shadow-md hover:border-blue-400 transition-all"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-2xl shadow-lg">
+              🚀
             </div>
-          ))}
+            <div className="flex-1">
+              <div className="flex items-center gap-2 text-xs text-gray-400 mb-1">
+                <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">1</span>
+                <span className="w-5 h-5 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-[10px] font-bold">2</span>
+                <span className="w-5 h-5 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-[10px] font-bold">3</span>
+                <span className="text-gray-300">→</span>
+                <span className="text-gray-400">输入 → 确认 → 反馈 → 导出</span>
+              </div>
+              <h4 className="font-bold text-gray-800 text-lg leading-tight">
+                一键教学反馈
+              </h4>
+              <p className="text-sm text-gray-500 mt-0.5">
+                三步完成 NL 解析、批量反馈生成与 Excel 导出
+              </p>
+            </div>
+            <span className="text-blue-400 text-2xl">→</span>
+          </div>
         </div>
       </div>
 

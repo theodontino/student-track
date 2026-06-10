@@ -78,6 +78,19 @@ export default function Sidebar() {
           仪表盘
         </Link>
 
+        {/* Quick feedback entry */}
+        <Link
+          href="/feedback"
+          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+            pathname === "/feedback"
+              ? "bg-gradient-to-r from-blue-50 to-purple-50 text-blue-700 border border-blue-200"
+              : "text-blue-600 hover:bg-blue-50/50"
+          }`}
+        >
+          <span className="text-lg">🚀</span>
+          <span>一键反馈</span>
+        </Link>
+
         {/* Groups */}
         {GROUPS.map((group) => {
           const active = isGroupActive(group);
