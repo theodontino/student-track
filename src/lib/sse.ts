@@ -42,8 +42,10 @@ export async function readSSEStream(
     // Flush residual
     if (buffer.trim()) {
       const json = buffer.trim().startsWith("data: ") ? buffer.trim().slice(6) : buffer.trim();
-      try { onEvent(JSON.parse(json)); }
-      catch { /* skip malformed */ }
+      let parsed: SSEEvent;
+      try { parsed = JSON.parse(json); }
+      catch { return; /* skip malformed residual */ }
+      onEvent(parsed);
     }
   } finally {
     reader.releaseLock();

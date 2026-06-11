@@ -3,7 +3,6 @@
 import { useState } from "react";
 import SemesterPicker from "@/components/SemesterPicker";
 import { readSSEStream } from "@/lib/sse";
-import { DIM_SHORT } from "@/lib/constants";
 
 const STEPS = [
   { num: 1, label: "输入" }, { num: 2, label: "确认" },
@@ -22,15 +21,6 @@ export default function FeedbackWizardPage() {
   const [confirming, setConfirming] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
-  const [sessions, setSessions] = useState<{ code: string; date: string; semesterNumber: number }[]>([]);
-
-  // Load sessions when semester + class selected
-  function loadSessions(sId: string, cls: string) {
-    if (!sId || !cls) { setSessions([]); return; }
-    fetch(`/api/sessions?semesterId=${sId}&className=${encodeURIComponent(cls)}`)
-      .then((r) => r.json()).then(setSessions);
-  }
-
   // Step 2 state
   const [draftId, setDraftId] = useState("");
   const [parsedResult, setParsedResult] = useState<any>(null);
@@ -42,9 +32,8 @@ export default function FeedbackWizardPage() {
   const [feedbackTotal, setFeedbackTotal] = useState(0);
   const [feedbackDone, setFeedbackDone] = useState(0);
 
-  // Load sessions when semester+class change
-  function onSemIdChange(id: string) { setSemesterId(id); loadSessions(id, className); }
-  function onClsChange(cls: string) { setClassName(cls); setSessionCode(""); loadSessions(semesterId, cls); }
+  function onSemIdChange(id: string) { setSemesterId(id); setClassName(""); setSessionCode(""); }
+  function onClsChange(cls: string) { setClassName(cls); setSessionCode(""); }
 
   // Step 1: parse NL input (SSE streaming)
   async function handleParse() {

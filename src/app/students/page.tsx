@@ -48,7 +48,11 @@ export default function StudentsPage() {
   function toggleClass(cls: string) {
     setCollapsedClasses((prev) => {
       const next = new Set(prev);
-      next.has(cls) ? next.delete(cls) : next.add(cls);
+      if (next.has(cls)) {
+        next.delete(cls);
+      } else {
+        next.add(cls);
+      }
       return next;
     });
   }

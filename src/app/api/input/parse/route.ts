@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseInput, reviewParsed, correctNames, llmCallStream, correctNamesWithLLM } from "@/lib/parser";
-import { SYSTEM_PROMPT, NAME_FIX_SYSTEM_PROMPT } from "@/lib/prompts";
+import { SYSTEM_PROMPT } from "@/lib/prompts";
 
 export async function POST(request: NextRequest) {
   try {

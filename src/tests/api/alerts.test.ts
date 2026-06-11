@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { GET } from "@/app/api/alerts/route";
-import { NextRequest } from "next/server";
 
 describe("/api/alerts", () => {
   it("GET returns 200 with alert structure", async () => {

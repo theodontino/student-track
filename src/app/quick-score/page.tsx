@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import SemesterPicker from "@/components/SemesterPicker";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { SessionInfo, CardScore } from "@/lib/types";
 import { DIM_CONFIG, SCORE_COLORS } from "@/lib/constants";
 
@@ -50,48 +49,7 @@ export default function QuickScorePage() {
     } catch (err) { console.error(err); }
   }
 
-  // --- When semester+class change → load sessions ---
-  useEffect(() => {
-    if (!selectedSemesterId || !selectedClass) {
-      setSessions([]);
-      setSelectedSessionCode("");
-      setCards([]);
-      return;
-    }
-    fetchSessions();
-  }, [selectedSemesterId, selectedClass]);
-
-  async function fetchSessions() {
-    try {
-      const url = `/api/sessions?semesterId=${selectedSemesterId}&className=${encodeURIComponent(selectedClass)}`;
-      const res = await fetch(url);
-      const data: SessionInfo[] = await res.json();
-      setSessions(data);
-
-      const today = new Date().toISOString().split("T")[0];
-      const todaySession = data.find((s) => s.date === today);
-      const target = todaySession || (data.length > 0 ? data[0] : null);
-
-      if (target) {
-        setSelectedSessionCode(target.code);
-        await loadSessionCards(target);
-      } else {
-        setSelectedSessionCode("");
-        initBlankCards();
-      }
-    } catch (err) { console.error(err); }
-  }
-
-  // --- Session change handler (dropdown onChange) ---
-  async function handleSessionChange(code: string) {
-    setSelectedSessionCode(code);
-    if (!code) { setCards([]); return; }
-    const session = sessions.find((s) => s.code === code);
-    if (session) await loadSessionCards(session);
-  }
-
-  // --- Core: load score cards for a session (uses refs, not closures)
-  async function loadSessionCards(session: SessionInfo) {
+  const loadSessionCards = useCallback(async (session: SessionInfo) => {
     const cls = selectedClassRef.current;
     const students = allStudentsRef.current.filter((s) => s.class === cls);
 
@@ -114,7 +72,6 @@ export default function QuickScorePage() {
         scoresData.map(s => [s.studentId, { scoreA: s.scoreA, scoreB: s.scoreB, scoreC: s.scoreC, present: s.present }] as const)
       );
 
-      // v0.6: warn if existing scores differ from defaults
       const existingCount = scoresData.filter(
         (s: ScoreItem) => s.scoreA !== 3 || s.scoreB !== 3 || s.scoreC !== 3
       ).length;
@@ -129,15 +86,55 @@ export default function QuickScorePage() {
         };
       }));
     } catch (err) { console.error("loadSessionCards error:", err); }
-  }
+  }, []);
 
-  function initBlankCards() {
-    const students = allStudents.filter((s) => s.class === selectedClass);
+  const initBlankCards = useCallback(() => {
+    const students = allStudentsRef.current.filter((s) => s.class === selectedClassRef.current);
     setCards(students.map((s) => ({
       studentId: s.id, studentName: s.name,
       scoreA: 3, scoreB: 3, scoreC: 3,
       present: true, note: "",
     })));
+  }, []);
+
+  const fetchSessions = useCallback(async () => {
+    try {
+      const url = `/api/sessions?semesterId=${selectedSemesterId}&className=${encodeURIComponent(selectedClass)}`;
+      const res = await fetch(url);
+      const data: SessionInfo[] = await res.json();
+      setSessions(data);
+
+      const today = new Date().toISOString().split("T")[0];
+      const todaySession = data.find((s) => s.date === today);
+      const target = todaySession || (data.length > 0 ? data[0] : null);
+
+      if (target) {
+        setSelectedSessionCode(target.code);
+        await loadSessionCards(target);
+      } else {
+        setSelectedSessionCode("");
+        initBlankCards();
+      }
+    } catch (err) { console.error(err); }
+  }, [initBlankCards, loadSessionCards, selectedClass, selectedSemesterId]);
+
+  // --- When semester+class change → load sessions ---
+  useEffect(() => {
+    if (!selectedSemesterId || !selectedClass) {
+      setSessions([]);
+      setSelectedSessionCode("");
+      setCards([]);
+      return;
+    }
+    void fetchSessions();
+  }, [fetchSessions, selectedSemesterId, selectedClass]);
+
+  // --- Session change handler (dropdown onChange) ---
+  async function handleSessionChange(code: string) {
+    setSelectedSessionCode(code);
+    if (!code) { setCards([]); return; }
+    const session = sessions.find((s) => s.code === code);
+    if (session) await loadSessionCards(session);
   }
 
   // --- Actions ---

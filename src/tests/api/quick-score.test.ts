@@ -5,6 +5,7 @@ import { NextRequest } from "next/server";
 let semesterId: string;
 let className: string;
 let sessionCode: string;
+let studentId: string;
 
 beforeAll(async () => {
   const sem = await prisma.semester.findFirst({ select: { id: true } });
@@ -16,6 +17,8 @@ beforeAll(async () => {
     select: { code: true },
   });
   sessionCode = ses!.code;
+  const stu = await prisma.student.findFirst({ select: { id: true } });
+  studentId = stu!.id;
 });
 
 describe("/api/quick-score", () => {
@@ -47,5 +50,19 @@ describe("/api/quick-score", () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(400);
+  });
+
+  it("POST with nonexistent sessionCode returns 404", async () => {
+    const { POST } = await import("@/app/api/quick-score/route");
+    const req = new NextRequest("http://localhost:3000/api/quick-score", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "NO_SUCH_SESSION",
+        scores: [{ studentId, scoreA: 4, scoreB: 4, scoreC: 4 }],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(404);
   });
 });

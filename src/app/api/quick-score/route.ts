@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
+import { recalculateScoreDForStudents } from "@/lib/scoreD";
 
 // GET /api/quick-score?class=&date=&sessionCode= — get existing scores for a class/session
 export async function GET(request: NextRequest) {
@@ -141,22 +142,43 @@ export async function POST(request: NextRequest) {
     }
 
     let count = 0;
-    const date = scores[0]?.date;
 
+    let session: { id: string; semesterId: string; classId: string | null; date: string } | null = null;
     let sessionId: string | null = null;
     if (sessionCode) {
-      const session = await prisma.classSession.findUnique({ where: { code: sessionCode } });
+      session = await prisma.classSession.findUnique({
+        where: { code: sessionCode },
+        select: { id: true, semesterId: true, classId: true, date: true },
+      });
       if (!session) {
         return NextResponse.json({ error: "课次不存在" }, { status: 404 });
       }
       sessionId = session.id;
     }
 
+    const submittedStudentIds = Array.from(new Set([
+      ...scores.map((score) => score.studentId).filter(Boolean),
+      ...(attendances ?? []).map((attendance) => attendance.studentId).filter(Boolean),
+    ]));
+    if (submittedStudentIds.length > 0) {
+      const validStudentCount = await prisma.student.count({
+        where: {
+          id: { in: submittedStudentIds },
+          ...(session?.classId ? { classId: session.classId } : {}),
+        },
+      });
+      if (validStudentCount !== submittedStudentIds.length) {
+        return NextResponse.json({ error: "学生不存在或不属于当前课次班级" }, { status: 400 });
+      }
+    }
+
     for (const entry of scores) {
-      if (!entry.studentId || !entry.date) continue;
+      if (!entry.studentId || (!session && !entry.date)) continue;
       const a = Math.max(0, Math.min(5, entry.scoreA ?? 3));
       const b = Math.max(0, Math.min(5, entry.scoreB ?? 3));
       const c = Math.max(0, Math.min(5, entry.scoreC ?? 3));
+
+      const metricDate = session?.date ?? entry.date;
 
       if (sessionId) {
         const existing = await prisma.sessionMetric.findUnique({
@@ -165,7 +187,7 @@ export async function POST(request: NextRequest) {
         if (existing) await archiveMetricBeforeUpdate(existing.id);
         await prisma.sessionMetric.upsert({
           where: { studentId_sessionId: { studentId: entry.studentId, sessionId } },
-          create: { studentId: entry.studentId, date: entry.date, sessionId, scoreA: a, scoreB: b, scoreC: c, operator: "quickScore" },
+          create: { studentId: entry.studentId, date: metricDate, sessionId, scoreA: a, scoreB: b, scoreC: c, operator: "quickScore" },
           update: { scoreA: a, scoreB: b, scoreC: c },
         });
       } else {
@@ -200,59 +222,24 @@ export async function POST(request: NextRequest) {
 
     // Attendance + D recalc
     let attUpdated = 0;
-    if (sessionId && date) {
-      const session = await prisma.classSession.findUnique({ where: { id: sessionId } });
-      if (session && attendances && Array.isArray(attendances)) {
+    if (session) {
+      if (attendances && Array.isArray(attendances)) {
         for (const a of attendances) {
-          await prisma.attendance.updateMany({
+          const result = await prisma.attendance.updateMany({
             where: { sessionId: session.id, studentId: a.studentId },
             data: { present: a.present },
           });
-          attUpdated++;
+          attUpdated += result.count;
         }
-        // v0.11.4: 按学生班级过滤分母（含全校课次 classId=null），修复多班 D 分失真
-        const students = await prisma.student.findMany({ select: { id: true, classId: true } });
-        for (const s of students) {
-          const totalSessions = await prisma.classSession.count({
-            where: {
-              semesterId: session.semesterId,
-              OR: [
-                { classId: s.classId },
-                { classId: null },
-              ],
-            },
-          });
-          if (totalSessions === 0) continue;
-          const presentCount = await prisma.attendance.count({
-            where: {
-              studentId: s.id, present: true,
-              session: {
-                semesterId: session.semesterId,
-                OR: [
-                  { classId: s.classId },
-                  { classId: null },
-                ],
-              },
-            },
-          });
-          const scoreD = Math.round((5 * presentCount) / totalSessions);
-            // Update D on the current session's metric, fallback to latest
-            const targetMetric = sessionId
-              ? await prisma.sessionMetric.findUnique({
-                  where: { studentId_sessionId: { studentId: s.id, sessionId } },
-                })
-              : await prisma.sessionMetric.findFirst({
-                  where: { studentId: s.id }, orderBy: { createdAt: "desc" },
-                });
-            if (targetMetric) {
-              await archiveMetricBeforeUpdate(targetMetric.id);
-              await prisma.sessionMetric.update({ where: { id: targetMetric.id }, data: { scoreD } });
-            } else {
-              await prisma.sessionMetric.create({
-                data: { studentId: s.id, date, sessionId: null, scoreA: 3, scoreB: 3, scoreC: 3, scoreD, operator: "system" },
-              });
-            }
-          }
+
+        await recalculateScoreDForStudents({
+          semesterId: session.semesterId,
+          studentIds: attendances.map((attendance) => attendance.studentId),
+          classId: session.classId,
+          targetSessionId: session.id,
+          targetDate: session.date,
+          createMissingForTargetSession: true,
+        });
       }
     }
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
+import { recalculateScoreDForStudents } from "@/lib/scoreD";
 
 // POST /api/semesters/[id]/session - create today's class session
 export async function POST(
@@ -75,7 +75,7 @@ export async function POST(
       });
     }
 
-    await recalculateScoreD(semesterId, today);
+    await recalculateScoreD(semesterId, session.classId, today, session.id);
 
     // v0.11: log session creation
     void logAction({
@@ -115,8 +115,6 @@ export async function DELETE(
       return NextResponse.json({ error: "课次不存在或不属于该学期" }, { status: 404 });
     }
 
-    const today = new Date().toISOString().split("T")[0];
-
     // v0.11: log session deletion
     void logAction({
       action: "session.deleted",
@@ -128,7 +126,7 @@ export async function DELETE(
 
     await prisma.classSession.delete({ where: { code } });
     await reorderSemesterNumbers(semesterId);
-    await recalculateScoreD(semesterId, today);
+    await recalculateScoreD(semesterId, session.classId);
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -162,50 +160,17 @@ async function reorderSemesterNumbers(semesterId: string) {
 
 // Helper: recalculate scoreD = ROUND(5 * present_count / total_sessions)
 // v0.11.4: 按学生班级过滤分母（含全校课次 classId=null），修复多班 D 分失真
-async function recalculateScoreD(semesterId: string, date: string) {
-  const students = await prisma.student.findMany({
-    select: { id: true, classId: true },
+async function recalculateScoreD(
+  semesterId: string,
+  classId: string | null,
+  targetDate?: string,
+  targetSessionId?: string
+) {
+  await recalculateScoreDForStudents({
+    semesterId,
+    classId,
+    targetSessionId,
+    targetDate,
+    updateLatestInSemester: true,
   });
-
-  for (const student of students) {
-    const totalSessions = await prisma.classSession.count({
-      where: {
-        semesterId,
-        OR: [
-          { classId: student.classId },
-          { classId: null },
-        ],
-      },
-    });
-    if (totalSessions === 0) continue;
-
-    const presentCount = await prisma.attendance.count({
-      where: {
-        studentId: student.id,
-        present: true,
-        session: {
-          semesterId,
-          OR: [
-            { classId: student.classId },
-            { classId: null },
-          ],
-        },
-      },
-    });
-
-    const scoreD = Math.round((5 * presentCount) / totalSessions);
-
-    const latestMetric = await prisma.sessionMetric.findFirst({
-      where: { studentId: student.id },
-      orderBy: { createdAt: "desc" },
-    });
-    if (latestMetric) {
-      await archiveMetricBeforeUpdate(latestMetric.id);
-      await prisma.sessionMetric.update({ where: { id: latestMetric.id }, data: { scoreD } });
-    } else {
-      await prisma.sessionMetric.create({
-        data: { studentId: student.id, date, sessionId: null, scoreA: 3, scoreB: 3, scoreC: 3, scoreD, operator: "system" },
-      });
-    }
-  }
 }

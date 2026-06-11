@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
@@ -32,7 +32,7 @@ export default function StudentDetailPage() {
   const [commHasMore, setCommHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState<"events" | "comms" | null>(null);
 
-  async function fetchStudent() {
+  const fetchStudent = useCallback(async () => {
     try {
       const res = await fetch(`/api/students/${id}?eventLimit=${PAGE_SIZE}&eventOffset=0&commLimit=${PAGE_SIZE}&commOffset=0`);
       if (!res.ok) throw new Error("学生不存在");
@@ -47,9 +47,9 @@ export default function StudentDetailPage() {
       setStudent({ ...data, attendances: attData });
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-  }
+  }, [id]);
 
-  useEffect(() => { fetchStudent(); }, [id]);
+  useEffect(() => { void fetchStudent(); }, [fetchStudent]);
 
   async function loadMoreEvents() {
     const nextOffset = eventOffset + PAGE_SIZE;

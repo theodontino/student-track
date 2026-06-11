@@ -3,16 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { NextRequest } from "next/server";
 
 let semesterId: string;
-let sessionCode: string;
 
 beforeAll(async () => {
   const sem = await prisma.semester.findFirst({ select: { id: true } });
   semesterId = sem!.id;
-  const ses = await prisma.classSession.findFirst({
-    where: { semesterId: sem!.id },
-    select: { code: true },
-  });
-  sessionCode = ses!.code;
 });
 
 describe("/api/semesters/[id]/session", () => {

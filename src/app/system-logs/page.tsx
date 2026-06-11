@@ -38,12 +38,31 @@ export default function SystemLogsPage() {
   const [offset, setOffset] = useState(0);
   const LIMIT = 50;
 
-  useEffect(() => { fetchLogs(); }, [filterAction, filterTargetName]);
+  useEffect(() => {
+    async function fetchInitialLogs() {
+      setLoading(true);
+      const params = new URLSearchParams({ limit: String(LIMIT), offset: "0" });
+      if (filterAction) params.set("action", filterAction);
+      if (filterTargetName) params.set("targetName", filterTargetName);
 
-  async function fetchLogs(reset = true) {
+      const res = await fetch(`/api/system/logs?${params}`);
+      const data = await res.json();
+      if (!res.ok || !data.logs) {
+        setLoading(false);
+        return;
+      }
+      setLogs(data.logs);
+      setOffset(LIMIT);
+      setTotal(data.total ?? 0);
+      setLoading(false);
+    }
+
+    void fetchInitialLogs();
+  }, [filterAction, filterTargetName]);
+
+  async function loadMoreLogs() {
     setLoading(true);
-    const o = reset ? 0 : offset;
-    const params = new URLSearchParams({ limit: String(LIMIT), offset: String(o) });
+    const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
     if (filterAction) params.set("action", filterAction);
     if (filterTargetName) params.set("targetName", filterTargetName);
 
@@ -53,13 +72,8 @@ export default function SystemLogsPage() {
       setLoading(false);
       return;
     }
-    if (reset) {
-      setLogs(data.logs);
-      setOffset(LIMIT);
-    } else {
-      setLogs([...logs, ...data.logs]);
-      setOffset(o + LIMIT);
-    }
+    setLogs((prev) => [...prev, ...data.logs]);
+    setOffset(offset + LIMIT);
     setTotal(data.total ?? 0);
     setLoading(false);
   }
@@ -145,7 +159,7 @@ export default function SystemLogsPage() {
             </table>
           </div>
           {total > logs.length && (
-            <button onClick={() => fetchLogs(false)}
+            <button onClick={loadMoreLogs}
               className="mt-4 w-full text-center text-sm text-blue-600 hover:text-blue-800 py-2 rounded hover:bg-blue-50">
               加载更多（{logs.length}/{total}）
             </button>
