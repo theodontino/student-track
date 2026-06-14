@@ -1,3 +1,4 @@
+import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
 import type { ParseResult, ParsedStudent } from "@/lib/parser";
@@ -19,9 +20,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeOptionalScore(value: unknown): number | null {
   if (value === null || value === undefined) return null;
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) throw new ServiceError("评分必须是有效数字", 400);
-  return Math.round(Math.max(0, Math.min(5, numeric)));
+  const score = normalizeDimensionScore(value);
+  if (score === null) throw new ServiceError("评分必须是有效数字", 400);
+  return score;
 }
 
 function normalizeStudent(value: unknown): ParsedStudent {
@@ -157,9 +158,9 @@ export async function processDraftReview(input: ProcessDraftInput) {
       const hasScores = Object.values(parsedStudent.scores).some((score) => score !== null);
 
       if (hasScores) {
-        const scoreA = parsedStudent.scores.A ?? 3;
-        const scoreB = parsedStudent.scores.B ?? 3;
-        const scoreC = parsedStudent.scores.C ?? 3;
+        const scoreA = parsedStudent.scores.A ?? SCORE_RULES.default;
+        const scoreB = parsedStudent.scores.B ?? SCORE_RULES.default;
+        const scoreC = parsedStudent.scores.C ?? SCORE_RULES.default;
         if (session) {
           const existing = await tx.sessionMetric.findUnique({
             where: { studentId_sessionId: { studentId: student.id, sessionId: session.id } },

@@ -1,4 +1,5 @@
 import type { Prisma } from "@/generated/prisma/client";
+import { calculateAttendanceScore, SCORE_RULES } from "@/config/rules";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { prisma } from "@/lib/prisma";
 
@@ -56,7 +57,7 @@ export async function recalculateScoreDForStudents({
         sessionId: { in: scopedSessionIds },
       },
     });
-    const scoreD = Math.round((5 * presentCount) / scopedSessionIds.length);
+    const scoreD = calculateAttendanceScore(presentCount, scopedSessionIds.length);
 
     const currentMetric = targetSessionId
       ? await db.sessionMetric.findUnique({
@@ -88,9 +89,9 @@ export async function recalculateScoreDForStudents({
           studentId: student.id,
           date: targetDate,
           sessionId: targetSessionId,
-          scoreA: 3,
-          scoreB: 3,
-          scoreC: 3,
+          scoreA: SCORE_RULES.default,
+          scoreB: SCORE_RULES.default,
+          scoreC: SCORE_RULES.default,
           scoreD,
           operator: "system",
         },

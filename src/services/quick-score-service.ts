@@ -1,3 +1,4 @@
+import { normalizeDimensionScore } from "@/config/rules";
 import { prisma } from "@/lib/prisma";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
@@ -25,9 +26,9 @@ export interface SubmitQuickScoresInput {
 }
 
 function normalizeScore(value: unknown) {
-  const numeric = Number(value ?? 3);
-  if (!Number.isFinite(numeric)) throw new ServiceError("评分必须是有效数字", 400);
-  return Math.round(Math.max(0, Math.min(5, numeric)));
+  const score = normalizeDimensionScore(value);
+  if (score === null) throw new ServiceError("评分必须是有效数字", 400);
+  return score;
 }
 
 /**

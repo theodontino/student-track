@@ -9,6 +9,7 @@ export const DIM_LABEL: Record<string, string> = {
   A: "学习&测验",
   B: "精神&纪律",
   C: "课后任务",
+  D: "考勤",
 };
 
 export const DIM_SHORT: Record<string, string> = {
