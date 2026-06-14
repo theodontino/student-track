@@ -17,6 +17,12 @@ function uniqueIds(ids?: string[]) {
   return Array.from(new Set((ids ?? []).filter(Boolean)));
 }
 
+/**
+ * Recalculates D using sessions applicable to each student's class, including
+ * whole-school sessions. Existing metrics are archived only when D changes.
+ * A transaction client may be supplied so callers can include this work in a
+ * larger atomic operation.
+ */
 export async function recalculateScoreDForStudents({
   semesterId,
   studentIds,

@@ -7,7 +7,7 @@ export interface SSEEvent {
 
 /**
  * 读取 NDJSON stream（每行一个 JSON），对每条 event 调用 onEvent。
- * 支持 SS E 的 data: 前缀格式和裸 NDJSON 格式。
+ * 支持 SSE 的 data: 前缀格式和裸 NDJSON 格式。
  *
  * 异常策略：
  * - JSON parse 失败 → 跳过该行（忽略噪声）

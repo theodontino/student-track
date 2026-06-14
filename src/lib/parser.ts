@@ -182,6 +182,7 @@ export function fuzzyMatchName(llmName: string, candidates: string[]): string | 
   return bestMatch;
 }
 
+/** Applies deterministic fuzzy matching after LLM parsing without mutating the input. */
 export function correctNames(result: ParseResult, studentNames: string[]): ParseResult {
   const corrected = result.students.map((stu) => {
     const match = fuzzyMatchName(stu.name, studentNames);

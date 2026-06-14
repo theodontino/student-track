@@ -5,6 +5,11 @@ export interface ClassStudent {
   name: string;
 }
 
+/**
+ * Expands an NL parse result to the selected class roster. Mentioned students
+ * are marked present; every roster student not mentioned is added as absent
+ * with no inferred scores, events, or communication.
+ */
 export function completeClassAttendance(
   parsed: ParseResult,
   roster: ClassStudent[]

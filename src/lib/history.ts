@@ -9,6 +9,10 @@ export interface WorkHistory<T = unknown> {
   createdAt: string;
 }
 
+/**
+ * Saves a recoverable page-state snapshot. The snapshot is auxiliary data and
+ * callers should decide whether a history failure may fail the main workflow.
+ */
 export async function saveWorkHistory<T>(
   module: HistoryModule,
   title: string,
