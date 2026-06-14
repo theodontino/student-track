@@ -11,9 +11,9 @@ cd chem-track-ai
 npm install
 npx prisma migrate deploy # 首次运行及升级执行迁移
 npm run db:seed
-npm run dev           # → http://localhost:3000
-npm test           # 57 test cases
-npx tsc --noEmit   # 0 errors
+npm run dev              # → http://localhost:3000
+npm test
+npx tsc --noEmit
 ```
 
 ## 工程文档
@@ -32,7 +32,7 @@ npx tsc --noEmit   # 0 errors
 - **框架**: Next.js 16 (App Router)
 - **ORM**: Prisma 7 + libsql (SQLite)
 - **LLM**: DeepSeek V4 Flash (OpenAI SDK)
-- **测试**: vitest (57 例), supertest/API 集成测试
+- **测试**: Vitest，包含纯函数、API 与数据库集成测试
 - **样式**: Tailwind CSS 4
 
 ## 功能
