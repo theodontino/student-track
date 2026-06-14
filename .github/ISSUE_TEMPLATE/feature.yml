@@ -1,0 +1,30 @@
+name: Feature
+description: 记录具有明确用户价值的新功能
+title: "[Feature] "
+labels: ["feature"]
+body:
+  - type: textarea
+    id: value
+    attributes:
+      label: 用户价值
+      description: 谁遇到了什么问题，解决后有什么收益？
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 功能范围
+      description: 需要做什么，不需要做什么？
+    validations:
+      required: true
+  - type: textarea
+    id: domain
+    attributes:
+      label: 领域模型影响
+      description: 是否影响 Student、Semester、ClassSession、SessionMetric 等核心概念？
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+    validations:
+      required: true

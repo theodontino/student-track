@@ -16,6 +16,17 @@ npm test           # 57 test cases
 npx tsc --noEmit   # 0 errors
 ```
 
+## 工程文档
+
+- [领域模型](docs/DOMAIN.md)：系统中的核心概念与统一术语
+- [架构设计](docs/ARCHITECTURE.md)：分层、数据流和稳定业务约束
+- [运维手册](docs/OPERATIONS.md)：迁移、备份、恢复和发布
+- [设计决策](docs/DECISIONS.md)：少量需要长期保留的技术选择
+- [参与开发](CONTRIBUTING.md)：Issue 与开发流程
+- [AI 规则](AGENTS.md)：AI 修改代码时必须遵守的边界
+
+任务进度、Bug、Feature 和技术债使用 GitHub Issues 跟踪，不写入长期工程文档。
+
 ## 技术栈
 
 - **框架**: Next.js 16 (App Router)

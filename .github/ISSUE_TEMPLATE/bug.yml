@@ -1,0 +1,32 @@
+name: Bug
+description: 记录可复现的现有行为问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题
+      description: 实际发生了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 用最短步骤稳定复现。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 修复后怎样确认问题已经解决？
+    validations:
+      required: true

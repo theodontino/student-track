@@ -1,0 +1,32 @@
+name: Refactor or Tech Debt
+description: 记录结构调整或已确认的工程风险
+title: "[Refactor] "
+labels: ["refactor"]
+body:
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 已发生的问题
+      description: 当前代码带来了什么真实维护成本或风险？
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: 目标状态
+      description: 完成后代码应具备什么性质？
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 行为兼容性
+      description: 哪些现有行为必须保持不变？
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+    validations:
+      required: true
