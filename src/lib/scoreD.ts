@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { prisma } from "@/lib/prisma";
 
@@ -23,14 +24,14 @@ export async function recalculateScoreDForStudents({
   targetDate,
   createMissingForTargetSession = false,
   updateLatestInSemester = false,
-}: RecalculateScoreDOptions) {
+}: RecalculateScoreDOptions, db: Prisma.TransactionClient = prisma) {
   const ids = uniqueIds(studentIds);
   const studentWhere = {
     ...(ids.length > 0 ? { id: { in: ids } } : {}),
     ...(classId ? { classId } : {}),
   };
 
-  const students = await prisma.student.findMany({
+  const students = await db.student.findMany({
     where: studentWhere,
     select: { id: true, classId: true },
   });
@@ -38,7 +39,7 @@ export async function recalculateScoreDForStudents({
   let changed = 0;
 
   for (const student of students) {
-    const scopedSessions = await prisma.classSession.findMany({
+    const scopedSessions = await db.classSession.findMany({
       where: {
         semesterId,
         OR: [{ classId: student.classId }, { classId: null }],
@@ -48,7 +49,7 @@ export async function recalculateScoreDForStudents({
     const scopedSessionIds = scopedSessions.map((session) => session.id);
     if (scopedSessionIds.length === 0) continue;
 
-    const presentCount = await prisma.attendance.count({
+    const presentCount = await db.attendance.count({
       where: {
         studentId: student.id,
         present: true,
@@ -58,21 +59,22 @@ export async function recalculateScoreDForStudents({
     const scoreD = Math.round((5 * presentCount) / scopedSessionIds.length);
 
     const currentMetric = targetSessionId
-      ? await prisma.sessionMetric.findUnique({
+      ? await db.sessionMetric.findUnique({
           where: { studentId_sessionId: { studentId: student.id, sessionId: targetSessionId } },
         })
       : null;
 
     const targetMetric = currentMetric ?? (updateLatestInSemester
-      ? await prisma.sessionMetric.findFirst({
+      ? await db.sessionMetric.findFirst({
           where: { studentId: student.id, sessionId: { in: scopedSessionIds } },
           orderBy: { createdAt: "desc" },
         })
       : null);
 
     if (targetMetric) {
-      await archiveMetricBeforeUpdate(targetMetric.id);
-      await prisma.sessionMetric.update({
+      if (targetMetric.scoreD === scoreD) continue;
+      await archiveMetricBeforeUpdate(targetMetric.id, "update", db);
+      await db.sessionMetric.update({
         where: { id: targetMetric.id },
         data: { scoreD },
       });
@@ -81,7 +83,7 @@ export async function recalculateScoreDForStudents({
     }
 
     if (targetSessionId && targetDate && createMissingForTargetSession) {
-      await prisma.sessionMetric.create({
+      await db.sessionMetric.create({
         data: {
           studentId: student.id,
           date: targetDate,

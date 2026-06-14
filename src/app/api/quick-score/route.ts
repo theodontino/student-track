@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { archiveMetricBeforeUpdate } from "@/lib/archive";
-import { logAction } from "@/lib/logger";
-import { recalculateScoreDForStudents } from "@/lib/scoreD";
+import {
+  submitQuickScores,
+  type QuickAttendanceEntry,
+  type QuickScoreEntry,
+} from "@/services/quick-score-service";
+import { ServiceError } from "@/services/service-error";
 
 // GET /api/quick-score?class=&date=&sessionCode= — get existing scores for a class/session
 export async function GET(request: NextRequest) {
@@ -119,133 +122,20 @@ export async function GET(request: NextRequest) {
   }
 }
 
-interface ScoreEntry {
-  studentId: string;
-  date: string;
-  scoreA: number;
-  scoreB: number;
-  scoreC: number;
-  note?: string;
-}
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { scores, sessionCode, attendances } = body as {
-      scores: ScoreEntry[];
+      scores: QuickScoreEntry[];
       sessionCode?: string;
-      attendances?: { studentId: string; present: boolean }[];
+      attendances?: QuickAttendanceEntry[];
     };
-
-    if (!scores || !Array.isArray(scores) || scores.length === 0) {
-      return NextResponse.json({ error: "请提交至少一条评分" }, { status: 400 });
-    }
-
-    let count = 0;
-
-    let session: { id: string; semesterId: string; classId: string | null; date: string } | null = null;
-    let sessionId: string | null = null;
-    if (sessionCode) {
-      session = await prisma.classSession.findUnique({
-        where: { code: sessionCode },
-        select: { id: true, semesterId: true, classId: true, date: true },
-      });
-      if (!session) {
-        return NextResponse.json({ error: "课次不存在" }, { status: 404 });
-      }
-      sessionId = session.id;
-    }
-
-    const submittedStudentIds = Array.from(new Set([
-      ...scores.map((score) => score.studentId).filter(Boolean),
-      ...(attendances ?? []).map((attendance) => attendance.studentId).filter(Boolean),
-    ]));
-    if (submittedStudentIds.length > 0) {
-      const validStudentCount = await prisma.student.count({
-        where: {
-          id: { in: submittedStudentIds },
-          ...(session?.classId ? { classId: session.classId } : {}),
-        },
-      });
-      if (validStudentCount !== submittedStudentIds.length) {
-        return NextResponse.json({ error: "学生不存在或不属于当前课次班级" }, { status: 400 });
-      }
-    }
-
-    for (const entry of scores) {
-      if (!entry.studentId || (!session && !entry.date)) continue;
-      const a = Math.max(0, Math.min(5, entry.scoreA ?? 3));
-      const b = Math.max(0, Math.min(5, entry.scoreB ?? 3));
-      const c = Math.max(0, Math.min(5, entry.scoreC ?? 3));
-
-      const metricDate = session?.date ?? entry.date;
-
-      if (sessionId) {
-        const existing = await prisma.sessionMetric.findUnique({
-          where: { studentId_sessionId: { studentId: entry.studentId, sessionId } },
-        });
-        if (existing) await archiveMetricBeforeUpdate(existing.id);
-        await prisma.sessionMetric.upsert({
-          where: { studentId_sessionId: { studentId: entry.studentId, sessionId } },
-          create: { studentId: entry.studentId, date: metricDate, sessionId, scoreA: a, scoreB: b, scoreC: c, operator: "quickScore" },
-          update: { scoreA: a, scoreB: b, scoreC: c },
-        });
-      } else {
-        const existing = await prisma.sessionMetric.findFirst({
-          where: { studentId: entry.studentId, date: entry.date, sessionId: null },
-        });
-        if (existing) {
-          await archiveMetricBeforeUpdate(existing.id);
-          await prisma.sessionMetric.update({ where: { id: existing.id }, data: { scoreA: a, scoreB: b, scoreC: c } });
-        } else {
-          await prisma.sessionMetric.create({
-            data: { studentId: entry.studentId, date: entry.date, sessionId: null, scoreA: a, scoreB: b, scoreC: c, operator: "quickScore" },
-          });
-        }
-      }
-
-      if (entry.note && entry.note.trim() && sessionId) {
-        await prisma.event.create({
-          data: { studentId: entry.studentId, sessionId,
-            type: "课堂表现", description: entry.note.trim(), rawText: entry.note.trim() },
-        });
-      }
-      count++;
-      // v0.11: log score update
-      void logAction({
-        action: "score.updated",
-        targetType: "Student",
-        targetId: entry.studentId,
-        detail: { scoreA: a, scoreB: b, scoreC: c, operator: "quickScore", sessionCode },
-      });
-    }
-
-    // Attendance + D recalc
-    let attUpdated = 0;
-    if (session) {
-      if (attendances && Array.isArray(attendances)) {
-        for (const a of attendances) {
-          const result = await prisma.attendance.updateMany({
-            where: { sessionId: session.id, studentId: a.studentId },
-            data: { present: a.present },
-          });
-          attUpdated += result.count;
-        }
-
-        await recalculateScoreDForStudents({
-          semesterId: session.semesterId,
-          studentIds: attendances.map((attendance) => attendance.studentId),
-          classId: session.classId,
-          targetSessionId: session.id,
-          targetDate: session.date,
-          createMissingForTargetSession: true,
-        });
-      }
-    }
-
-    return NextResponse.json({ success: true, count, attUpdated });
+    return NextResponse.json(await submitQuickScores({ scores, sessionCode, attendances }));
   } catch (error) {
     console.error("[/api/quick-score] error:", error);
+    if (error instanceof ServiceError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json({ error: "提交失败" }, { status: 500 });
   }
 }
