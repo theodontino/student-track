@@ -5,6 +5,16 @@ import { useRouter } from "next/navigation";
 import SemesterPicker from "@/components/SemesterPicker";
 import { DIM_LABEL } from "@/lib/constants";
 import type { DraftParseResult } from "@/lib/types";
+import WorkHistoryButton from "@/components/WorkHistoryButton";
+import { saveWorkHistory } from "@/lib/history";
+
+interface InputHistoryState {
+  rawText: string;
+  semesterId: string;
+  className: string;
+  sessionCode: string;
+  result: DraftParseResult;
+}
 
 export default function InputPage() {
   const router = useRouter();
@@ -34,6 +44,14 @@ export default function InputPage() {
       if (!res.ok) throw new Error(data.error || "解析失败");
 
       setResult(data);
+      try {
+        await saveWorkHistory(
+          "input",
+          `${selectedClass} ${selectedSessionCode} NL录入`,
+          { rawText, semesterId: selectedSemesterId, className: selectedClass, sessionCode: selectedSessionCode, result: data },
+          selectedSessionCode
+        );
+      } catch (historyError) { console.error("save input history failed:", historyError); }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -41,9 +59,21 @@ export default function InputPage() {
     }
   }
 
+  function restoreHistory(state: InputHistoryState) {
+    setRawText(state.rawText);
+    setSelectedSemesterId(state.semesterId);
+    setSelectedClass(state.className);
+    setSelectedSessionCode(state.sessionCode);
+    setResult(state.result);
+    setError("");
+  }
+
   return (
     <div className="max-w-3xl mx-auto">
-      <h2 className="text-2xl font-bold text-gray-800 mb-2">自然语言录入</h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-2xl font-bold text-gray-800">自然语言录入</h2>
+        <WorkHistoryButton<InputHistoryState> module="input" onRestore={restoreHistory} />
+      </div>
       <p className="text-sm text-gray-500 mb-4">
         用自然语言描述学生表现，LLM 将自动解析并生成结构化草案。
       </p>
@@ -75,7 +105,7 @@ export default function InputPage() {
           <span className="text-xs text-gray-400">{rawText.length} 字符</span>
           <button
             onClick={handleSubmit}
-            disabled={loading || !rawText.trim()}
+            disabled={loading || !rawText.trim() || !selectedSessionCode}
             className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {loading ? (
@@ -169,6 +199,9 @@ export default function InputPage() {
             >
               <h4 className="text-base font-semibold text-gray-800 mb-3">
                 👤 {stu.name}
+                <span className={`ml-2 text-xs px-2 py-0.5 rounded ${stu.present ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                  {stu.present ? "出勤" : "缺勤"}
+                </span>
               </h4>
 
               {/* Scores */}

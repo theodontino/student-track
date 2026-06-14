@@ -12,6 +12,7 @@ interface Draft {
       scores: { A: number | null; B: number | null; C: number | null };
       events: string[];
       communication: { type: string; summary: string } | null;
+      present?: boolean;
     }[];
     alert_suggestion: string;
   };
@@ -88,6 +89,15 @@ export default function ReviewPage() {
           },
         };
       }
+      return { ...prev, [draftId]: { ...draftEdits, students } };
+    });
+  }
+
+  function updateAttendance(draftId: string, studentIdx: number, present: boolean) {
+    setEdits((prev) => {
+      const draftEdits = prev[draftId] || { students: [] };
+      const students = [...draftEdits.students];
+      if (students[studentIdx]) students[studentIdx] = { ...students[studentIdx], present };
       return { ...prev, [draftId]: { ...draftEdits, students } };
     });
   }
@@ -317,6 +327,12 @@ export default function ReviewPage() {
                       <div className="flex items-center gap-2 mb-3">
                         <h5 className="font-semibold text-gray-800">👤 {stu.name}</h5>
                         {hasIssue && <span className="text-xs bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded font-medium">⚠ 需关注</span>}
+                        {typeof stu.present === "boolean" && (
+                          <div className="ml-auto flex border border-gray-300 rounded-lg overflow-hidden">
+                            <button type="button" onClick={() => updateAttendance(draft.id, si, true)} className={`px-2.5 py-1 text-xs ${stu.present ? "bg-green-600 text-white" : "bg-white text-gray-500"}`}>出勤</button>
+                            <button type="button" onClick={() => updateAttendance(draft.id, si, false)} className={`px-2.5 py-1 text-xs ${!stu.present ? "bg-red-600 text-white" : "bg-white text-gray-500"}`}>缺勤</button>
+                          </div>
+                        )}
                       </div>
 
                       {/* Review suggestions for this specific student */}

@@ -3,38 +3,89 @@ import { prisma } from "@/lib/prisma";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
 import * as XLSX from "xlsx";
 
-// In-memory cache: sessionCode → { buffer, timestamp, total }
-const cache = new Map<string, { buffer: Uint8Array; timestamp: number; total: number }>();
-const CACHE_TTL = 30 * 60 * 1000; // 30 min
+type HistoryModule = "feedback" | "report";
+interface FeedbackCard { id: string; name: string; labels: string[]; feedback: string; }
+interface FeedbackState {
+  kind: "batch";
+  semesterId: string;
+  sessionCode: string;
+  className: string;
+  students: FeedbackCard[];
+  total: number;
+}
 
-// GET /api/report/feedback-batch?sessionCode=xxx — 下载缓存的 Excel
+const cache = new Map<string, { buffer: Uint8Array; timestamp: number; state: FeedbackState }>();
+const CACHE_TTL = 30 * 60 * 1000;
+
+function moduleFrom(value: unknown): HistoryModule | null {
+  if (value === undefined || value === null || value === "report") return "report";
+  if (value === "feedback") return "feedback";
+  return null;
+}
+
+function cacheKey(module: HistoryModule, sessionCode: string) {
+  return `${module}:${sessionCode}`;
+}
+
+function buildWorkbook(students: FeedbackCard[]) {
+  const rows = students.map((student) => ({ 姓名: student.name, 家校反馈: student.feedback }));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "家校反馈");
+  return new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
+}
+
+function parseHistoryState(value: string): FeedbackState | null {
+  try {
+    const state = JSON.parse(value);
+    return Array.isArray(state?.students) ? state : null;
+  } catch { return null; }
+}
+
+// GET /api/report/feedback-batch?sessionCode=xxx&module=feedback
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const code = searchParams.get("sessionCode");
-  if (!code) return NextResponse.json({ error: "缺少参数" }, { status: 400 });
+  const sessionCode = searchParams.get("sessionCode");
+  const historyModule = moduleFrom(searchParams.get("module"));
+  if (!sessionCode) return NextResponse.json({ error: "缺少参数" }, { status: 400 });
+  if (!historyModule) return NextResponse.json({ error: "无效的历史模块" }, { status: 400 });
 
-  const cached = cache.get(code);
-  if (!cached) return NextResponse.json({ error: "无缓存，请先生成" }, { status: 404 });
-  if (Date.now() - cached.timestamp > CACHE_TTL) { cache.delete(code); return NextResponse.json({ error: "缓存已过期" }, { status: 410 }); }
+  const key = cacheKey(historyModule, sessionCode);
+  let buffer: Uint8Array | null = null;
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    buffer = cached.buffer;
+  } else {
+    if (cached) cache.delete(key);
+    const history = await prisma.workHistory.findFirst({
+      where: { module: historyModule, key: sessionCode },
+      orderBy: { createdAt: "desc" },
+    });
+    const state = history ? parseHistoryState(history.state) : null;
+    if (state) buffer = buildWorkbook(state.students);
+  }
 
-  return new Response(cached.buffer as BodyInit, {
+  if (!buffer) return NextResponse.json({ error: "尚未生成反馈" }, { status: 404 });
+  return new Response(buffer as BodyInit, {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="feedback_${code}.xlsx"`,
+      "Content-Disposition": `attachment; filename="feedback_${sessionCode}.xlsx"`,
     },
   });
 }
 
-// POST /api/report/feedback-batch — 批量生成（NDJSON 流式 + 后端缓存）
+// POST /api/report/feedback-batch — NDJSON streaming with persistent result history.
 export async function POST(request: NextRequest) {
   try {
-    const { sessionCode } = await request.json();
+    const body = await request.json();
+    const sessionCode = body.sessionCode as string | undefined;
+    const historyModule = moduleFrom(body.historyModule);
     if (!sessionCode) return NextResponse.json({ error: "缺少课次编码" }, { status: 400 });
+    if (!historyModule) return NextResponse.json({ error: "无效的历史模块" }, { status: 400 });
 
-    // Check cache — if valid, return JSON (no need to re-stream)
-    const cached = cache.get(sessionCode);
+    const key = cacheKey(historyModule, sessionCode);
+    const cached = cache.get(key);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      return NextResponse.json({ cached: true, total: cached.total, sessionCode });
+      return NextResponse.json({ cached: true, ...cached.state });
     }
 
     const session = await prisma.classSession.findUnique({
@@ -43,90 +94,104 @@ export async function POST(request: NextRequest) {
     });
     if (!session) return NextResponse.json({ error: "课次不存在" }, { status: 404 });
     const className = session.class?.name ?? session.class?.code;
-    if (!className) return NextResponse.json({ error: "该课次未关联班级" }, { status: 400 });
+    if (!className || !session.classId) return NextResponse.json({ error: "该课次未关联班级" }, { status: 400 });
 
     const students = await prisma.student.findMany({
-      where: { classId: session.classId! },
+      where: { classId: session.classId },
       select: { id: true, name: true, studentLabels: { include: { label: { select: { name: true } } } } },
+      orderBy: { studentId: "asc" },
     });
     if (students.length === 0) return NextResponse.json({ error: "该班级无学生" }, { status: 404 });
 
-    const [metrics, attendances] = await Promise.all([
-      prisma.sessionMetric.findMany({ where: { sessionId: session.id, studentId: { in: students.map(s => s.id) } } }),
-      prisma.attendance.findMany({ where: { sessionId: session.id, studentId: { in: students.map(s => s.id) } } }),
+    const studentIds = students.map((student) => student.id);
+    const [metrics, attendances, events] = await Promise.all([
+      prisma.sessionMetric.findMany({ where: { sessionId: session.id, studentId: { in: studentIds } } }),
+      prisma.attendance.findMany({ where: { sessionId: session.id, studentId: { in: studentIds } } }),
+      prisma.event.findMany({ where: { sessionId: session.id, studentId: { in: studentIds } } }),
     ]);
-    // Events: date-based (no sessionId on Event model). On same-day multi-session,
-    // events from other sessions may appear. Prompt below constrains cross-referencing.
-    const events = await prisma.event.findMany({ where: { sessionId: session.id, studentId: { in: students.map(s => s.id) } } });
-
-    const metricMap = new Map(metrics.map(m => [m.studentId, m]));
-    const attMap = new Map(attendances.map(a => [a.studentId, a.present]));
+    const metricMap = new Map(metrics.map((metric) => [metric.studentId, metric]));
+    const attendanceMap = new Map(attendances.map((attendance) => [attendance.studentId, attendance.present]));
+    const eventsByStudent = new Map<string, string[]>();
+    for (const event of events) {
+      const list = eventsByStudent.get(event.studentId) ?? [];
+      list.push(event.description);
+      eventsByStudent.set(event.studentId, list);
+    }
 
     const client = createLLMClient();
     const model = getLLMModel();
     const total = students.length;
-
-    const encoder = new TextEncoder();
-
-    // Build init payload: all students with labels
-    const studentCards = students.map(s => ({
-      id: s.id,
-      name: s.name,
-      labels: (s.studentLabels || []).map((sl) => sl.label.name),
+    const cards: FeedbackCard[] = students.map((student) => ({
+      id: student.id,
+      name: student.name,
+      labels: student.studentLabels.map((item) => item.label.name),
+      feedback: "",
     }));
+    const encoder = new TextEncoder();
 
     const stream = new ReadableStream({
       async start(controller) {
-        // Send init with all student info (NDJSON: one JSON per line)
-        controller.enqueue(encoder.encode(JSON.stringify({ type: "init", students: studentCards, total }) + "\n"));
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify({ type: "init", students: cards, total }) + "\n"));
 
-        const results: { name: string; feedback: string }[] = [];
+          for (const card of cards) {
+            const metric = metricMap.get(card.id);
+            const present = attendanceMap.get(card.id);
+            const eventText = (eventsByStudent.get(card.id) ?? []).join("；") || "无";
+            const context =
+              `A:${metric?.scoreA ?? "—"} B:${metric?.scoreB ?? "—"} C:${metric?.scoreC ?? "—"} D:${metric?.scoreD ?? "—"} ` +
+              `出勤:${present === undefined ? "无" : present ? "到" : "缺"} ` +
+              (eventText !== "无" ? `事件:${eventText}` : "");
+            const prompt = `${card.name}，${session.date}第${session.semesterNumber}次课。${context}\n\n请为${card.name}生成50-80字家校反馈，只反馈该生本人表现，不比较、不提其他学生姓名。温和客观，直接返回。`;
 
-        for (const s of students) {
-          const m = metricMap.get(s.id);
-          const present = attMap.get(s.id);
-          const evts = events.filter(e => e.studentId === s.id);
-          const eventText = evts.map(e => e.description).join("；") || "无";
+            try {
+              const response = await client.chat.completions.create({
+                model,
+                messages: [{ role: "user", content: prompt }],
+                temperature: 0.5,
+                max_tokens: 256,
+              });
+              card.feedback = response.choices[0]?.message?.content?.trim() || "[未生成内容]";
+            } catch (error) {
+              console.error(`[feedback-batch] ${card.name} failed:`, error);
+              card.feedback = "[生成失败，请重试]";
+            }
 
-          const ctx =
-            `A:${m?.scoreA ?? "—"} B:${m?.scoreB ?? "—"} C:${m?.scoreC ?? "—"} D:${m?.scoreD ?? "—"} ` +
-            `出勤:${present === undefined ? "无" : present ? "到" : "缺"} ` +
-            (eventText !== "无" ? `事件:${eventText}` : "");
+            controller.enqueue(encoder.encode(JSON.stringify({
+              type: "progress",
+              studentId: card.id,
+              name: card.name,
+              feedback: card.feedback,
+            }) + "\n"));
+          }
 
-          const prompt = `${s.name}，${session.date}第${session.semesterNumber}次课。${ctx}\n\n请为${s.name}生成50-80字家校反馈，只反馈该生本人表现，不比较、不提其他学生姓名。温和客观，直接返回。`;
+          const state: FeedbackState = { kind: "batch", semesterId: session.semesterId, sessionCode, className, students: cards, total };
+          const buffer = buildWorkbook(cards);
+          cache.set(key, { buffer, timestamp: Date.now(), state });
+          await prisma.workHistory.create({
+            data: {
+              module: historyModule,
+              key: sessionCode,
+              title: `${className} ${sessionCode} 批量反馈`,
+              state: JSON.stringify(state),
+            },
+          });
 
-          let feedback: string;
-          try {
-            const resp = await client.chat.completions.create({
-              model, messages: [{ role: "user", content: prompt }],
-              temperature: 0.5, max_tokens: 256,
-            });
-            feedback = resp.choices[0]?.message?.content?.trim() || "";
-          } catch { feedback = "[失败]"; }
-
-          results.push({ name: s.name, feedback });
-
-          // Stream progress (NDJSON: one JSON per line)
-          controller.enqueue(encoder.encode(JSON.stringify({ type: "progress", studentId: s.id, feedback }) + "\n"));
+          controller.enqueue(encoder.encode(JSON.stringify({ type: "done", ...state }) + "\n"));
+          controller.close();
+        } catch (error) {
+          console.error("[/api/report/feedback-batch] stream error:", error);
+          controller.enqueue(encoder.encode(JSON.stringify({ type: "error", message: "批量生成失败" }) + "\n"));
+          controller.close();
         }
-
-        // Build Excel and cache
-        const rows = results.map(r => ({ 姓名: r.name, 家校反馈: r.feedback }));
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "家校反馈");
-        const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
-        cache.set(sessionCode, { buffer: new Uint8Array(buf), timestamp: Date.now(), total });
-
-        // Send done (NDJSON)
-        controller.enqueue(encoder.encode(JSON.stringify({ type: "done", sessionCode, total, className }) + "\n"));
-        controller.close();
-      }
+      },
     });
 
     return new Response(stream, {
       headers: {
-        "Content-Type": "application/x-ndjson",
-        "Cache-Control": "no-cache",
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
       },
     });
   } catch (error) {

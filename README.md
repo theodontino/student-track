@@ -9,10 +9,10 @@
 ```bash
 cd chem-track-ai
 npm install
-npx prisma db push    # 首次运行建表（项目使用 db push，非 migrate deploy）
+npx prisma migrate deploy # 首次运行及升级执行迁移
 npm run db:seed
 npm run dev           # → http://localhost:3000
-npm test           # 48 test cases
+npm test           # 57 test cases
 npx tsc --noEmit   # 0 errors
 ```
 
@@ -21,7 +21,7 @@ npx tsc --noEmit   # 0 errors
 - **框架**: Next.js 16 (App Router)
 - **ORM**: Prisma 7 + libsql (SQLite)
 - **LLM**: DeepSeek V4 Flash (OpenAI SDK)
-- **测试**: vitest (48 例), supertest (15 路由冒烟)
+- **测试**: vitest (57 例), supertest/API 集成测试
 - **样式**: Tailwind CSS 4
 
 ## 功能
@@ -30,11 +30,11 @@ npx tsc --noEmit   # 0 errors
 |------|------|
 | 仪表盘 | 班级/学生概览、四维均分进度条、预警系统（红/黄分级） |
 | 学生管理 | 按班级分组/折叠、搜索、标签、评分预览、Excel 导入 |
-| 快速评分 | 卡片评分、考勤勾选、批量设置 |
-| NL 录入 | 自然语言 → LLM 解析 → 草案（SSE 流式），含姓名纠错 |
+| 快速评分 | 卡片评分、考勤勾选、批量设置、长期历史恢复 |
+| NL 录入 | 自然语言 → LLM 解析 → 草案（SSE 流式），未提及学生自动缺勤 |
 | 复核中心 | 草案审核、分数修改、按班级筛选、确认/放弃 |
-| 一键反馈 | 4 步向导：输入→确认→反馈→导出（串联简化流程） |
-| 报告生成 | 班级日报、单人家校反馈、批量 SSE 流式反馈 |
-| 数据导出 | 5 Sheet Excel：档案/指标/事件/沟通/考勤 |
+| 一键反馈 | 4 步向导：输入→确认→流式反馈→长期导出 |
+| 报告生成 | 班级日报、单人家校反馈、批量流式反馈、历史恢复 |
+| 数据导出 | 5 Sheet Excel：档案/指标/事件/沟通/考勤，日期范围可恢复 |
 | 学期管理 | 学期列表/详情、课次创建/删除/排序 |
 | 操作日志 | SystemLog 面板，保留 90 天 |

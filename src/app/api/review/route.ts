@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
+import { recalculateScoreDForStudents } from "@/lib/scoreD";
 
 // GET /api/review - list all drafts
 export async function GET(request: NextRequest) {
@@ -74,10 +75,16 @@ export async function POST(request: NextRequest) {
 
     // v0.7: resolve sessionCode to sessionId
     let sessionId: string | null = null;
+    let sessionDate = today;
+    let semesterId: string | null = null;
+    let classId: string | null = null;
     let sessionMissing = false;
     if (draft.sessionCode) {
       const session = await prisma.classSession.findUnique({ where: { code: draft.sessionCode } });
       sessionId = session?.id ?? null;
+      sessionDate = session?.date ?? today;
+      semesterId = session?.semesterId ?? null;
+      classId = session?.classId ?? null;
       sessionMissing = !sessionId;
     }
 
@@ -105,7 +112,7 @@ export async function POST(request: NextRequest) {
           if (existing) await archiveMetricBeforeUpdate(existing.id);
           await prisma.sessionMetric.upsert({
             where: { studentId_sessionId: { studentId: student.id, sessionId } },
-            create: { studentId: student.id, date: today, sessionId, scoreA: stu.scores.A ?? 3, scoreB: stu.scores.B ?? 3, scoreC: stu.scores.C ?? 3, operator: "nlReview" },
+            create: { studentId: student.id, date: sessionDate, sessionId, scoreA: stu.scores.A ?? 3, scoreB: stu.scores.B ?? 3, scoreC: stu.scores.C ?? 3, operator: "nlReview" },
             update: { scoreA: stu.scores.A ?? 3, scoreB: stu.scores.B ?? 3, scoreC: stu.scores.C ?? 3 },
           });
         } else {
@@ -124,6 +131,14 @@ export async function POST(request: NextRequest) {
             });
           }
         }
+      }
+
+      if (sessionId && typeof stu.present === "boolean") {
+        await prisma.attendance.upsert({
+          where: { sessionId_studentId: { sessionId, studentId: student.id } },
+          create: { sessionId, studentId: student.id, present: stu.present },
+          update: { present: stu.present },
+        });
       }
 
       // Create Events (only if sessionId available — binding to session required)
@@ -170,6 +185,16 @@ export async function POST(request: NextRequest) {
           detail: { ...stu.scores, operator: "nlReview", sessionCode: draft.sessionCode },
         });
       }
+    }
+
+    if (sessionId && semesterId) {
+      await recalculateScoreDForStudents({
+        semesterId,
+        classId,
+        targetSessionId: sessionId,
+        targetDate: sessionDate,
+        createMissingForTargetSession: false,
+      });
     }
 
     await prisma.draftRecord.update({

@@ -194,3 +194,16 @@ model Attendance {
 
   @@unique([sessionId, studentId])
 }
+
+// 10. 工作状态历史（长期保存，由用户主动清理）
+model WorkHistory {
+  id        String   @id @default(cuid())
+  module    String   // "quick-score" | "input" | "report" | "export" | "feedback"
+  key       String?  // 可选业务键，如课次编码
+  title     String
+  state     String   // JSON，保存页面可恢复状态
+  createdAt DateTime @default(now())
+
+  @@index([module, createdAt])
+  @@index([module, key, createdAt])
+}

@@ -3,8 +3,14 @@
 import { useState, useEffect } from "react";
 import SemesterPicker from "@/components/SemesterPicker";
 import { readSSEStream } from "@/lib/sse";
+import WorkHistoryButton from "@/components/WorkHistoryButton";
+import { saveWorkHistory } from "@/lib/history";
 
 interface StudentCard { id: string; name: string; labels: string[]; feedback?: string; }
+type ReportHistoryState =
+  | { kind: "daily"; semesterId: string; className: string; sessionCode: string; report: string }
+  | { kind: "batch"; semesterId: string; sessionCode: string; className: string; students: StudentCard[]; total: number }
+  | { kind: "single"; semesterId: string; className: string; studentId: string; sessionCode: string; days: number; feedback: string };
 
 export default function ReportPage() {
   const [selectedSemesterId, setSelectedSemesterId] = useState("");
@@ -53,6 +59,12 @@ export default function ReportPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setDailyReport(data.report);
+      try {
+        await saveWorkHistory("report", `${selectedClass} ${selectedSessionCode} 班级日报`, {
+          kind: "daily", semesterId: selectedSemesterId, className: selectedClass,
+          sessionCode: selectedSessionCode, report: data.report,
+        }, selectedSessionCode);
+      } catch (historyError) { console.error("save daily report history failed:", historyError); }
     } catch (e: any) { alert(e.message); }
     finally { setDailyLoading(false); }
   }
@@ -76,7 +88,7 @@ export default function ReportPage() {
     try {
       const res = await fetch("/api/report/feedback-batch", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionCode: selectedSessionCode }),
+        body: JSON.stringify({ sessionCode: selectedSessionCode, historyModule: "report" }),
       });
 
       if (!res.ok) {
@@ -90,6 +102,8 @@ export default function ReportPage() {
         const data = await res.json();
         setBatchCached(true);
         setBatchTotal(data.total);
+        setBatchCards(data.students || []);
+        setBatchDoneCount(data.total);
         setBatchLoading(false);
         return;
       }
@@ -120,14 +134,18 @@ export default function ReportPage() {
       case "done":
         setBatchCached(true);
         setBatchTotal(data.total);
+        setBatchCards(data.students || []);
+        setBatchDoneCount(data.total);
         break;
+      case "error":
+        throw new Error(data.message || "批量生成失败");
     }
   }
 
   function downloadBatchExcel() {
     if (!selectedSessionCode) return;
     const a = document.createElement("a");
-    a.href = `/api/report/feedback-batch?sessionCode=${selectedSessionCode}`;
+    a.href = `/api/report/feedback-batch?sessionCode=${selectedSessionCode}&module=report`;
     a.download = `反馈_${selectedClass}_${selectedSessionCode}.xlsx`;
     document.body.appendChild(a);
     a.click();
@@ -151,6 +169,13 @@ export default function ReportPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setFeedbackText(data.feedback);
+      try {
+        await saveWorkHistory("report", `学生反馈 ${feedbackSessionCode || `近${feedbackDays}天`}`, {
+          kind: "single", semesterId: selectedSemesterId, className: selectedClass,
+          studentId: selectedStudentId, sessionCode: feedbackSessionCode,
+          days: feedbackDays, feedback: data.feedback,
+        }, feedbackSessionCode || selectedStudentId);
+      } catch (historyError) { console.error("save student feedback history failed:", historyError); }
     } catch (e: any) { alert(e.message); }
     finally { setFeedbackLoading(false); }
   }
@@ -165,9 +190,36 @@ export default function ReportPage() {
     "bg-red-100 text-red-700",
   ];
 
+  function restoreHistory(state: ReportHistoryState) {
+    if (state.kind === "daily") {
+      setSelectedSemesterId(state.semesterId);
+      setSelectedClass(state.className);
+      setSelectedSessionCode(state.sessionCode);
+      setDailyReport(state.report);
+    } else if (state.kind === "batch") {
+      setSelectedSemesterId(state.semesterId);
+      setSelectedClass(state.className);
+      setSelectedSessionCode(state.sessionCode);
+      setBatchCards(state.students);
+      setBatchTotal(state.total);
+      setBatchDoneCount(state.total);
+      setBatchCached(true);
+    } else {
+      setSelectedSemesterId(state.semesterId);
+      setSelectedClass(state.className);
+      setSelectedStudentId(state.studentId);
+      setFeedbackSessionCode(state.sessionCode);
+      setFeedbackDays(state.days);
+      setFeedbackText(state.feedback);
+    }
+  }
+
   return (
     <div className="max-w-5xl mx-auto">
-      <h2 className="text-2xl font-bold text-gray-800 mb-2">报告生成</h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-2xl font-bold text-gray-800">报告生成</h2>
+        <WorkHistoryButton<ReportHistoryState> module="report" onRestore={restoreHistory} />
+      </div>
       <p className="text-sm text-gray-500 mb-6">AI 生成班级日报和家校反馈文本。</p>
 
       <div className="mb-8">
@@ -207,7 +259,7 @@ export default function ReportPage() {
             {batchCached && (
               <button onClick={downloadBatchExcel}
                 className="bg-green-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-green-700">
-                📥 下载 Excel（{batchTotal}人，30分钟内有效）
+                📥 下载 Excel（{batchTotal}人）
               </button>
             )}
           </div>

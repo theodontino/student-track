@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import WorkHistoryButton from "@/components/WorkHistoryButton";
+import { saveWorkHistory } from "@/lib/history";
+
+interface ExportHistoryState { startDate: string; endDate: string; }
 
 export default function ExportPage() {
   const today = new Date().toISOString().split("T")[0];
@@ -38,6 +42,9 @@ export default function ExportPage() {
       a.click();
       window.URL.revokeObjectURL(url);
       a.remove();
+      try {
+        await saveWorkHistory("export", `${startDate} 至 ${endDate} 数据导出`, { startDate, endDate }, `${startDate}:${endDate}`);
+      } catch (historyError) { console.error("save export history failed:", historyError); }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -47,7 +54,10 @@ export default function ExportPage() {
 
   return (
     <div className="max-w-lg mx-auto">
-      <h2 className="text-2xl font-bold text-gray-800 mb-2">数据导出</h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-2xl font-bold text-gray-800">数据导出</h2>
+        <WorkHistoryButton<ExportHistoryState> module="export" onRestore={(state) => { setStartDate(state.startDate); setEndDate(state.endDate); setError(""); }} />
+      </div>
       <p className="text-sm text-gray-500 mb-6">
         选择时间范围，导出学生数据的 Excel 文件 (.xlsx)。
       </p>
@@ -79,13 +89,14 @@ export default function ExportPage() {
 
           <div className="bg-gray-50 rounded-lg p-4">
             <h4 className="text-sm font-semibold text-gray-700 mb-2">
-              导出内容包含 4 个 Sheet：
+              导出内容包含 5 个 Sheet：
             </h4>
             <ul className="text-xs text-gray-500 space-y-1">
               <li>📋 Sheet 1: 学生档案（姓名、班级、学号、标签、当前状态）</li>
               <li>📊 Sheet 2: 每日指标历史（日期、维度A/B/C、操作人）</li>
               <li>📝 Sheet 3: 关键事件日志（日期、事件类型、描述、原始文本）</li>
               <li>📞 Sheet 4: 家校沟通记录（日期、沟通对象、内容摘要）</li>
+              <li>✅ Sheet 5: 考勤记录（日期、课次、出勤状态）</li>
             </ul>
           </div>
 

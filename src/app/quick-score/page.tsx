@@ -3,9 +3,18 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { SessionInfo, CardScore } from "@/lib/types";
 import { DIM_CONFIG, SCORE_COLORS } from "@/lib/constants";
+import WorkHistoryButton from "@/components/WorkHistoryButton";
+import { saveWorkHistory } from "@/lib/history";
 
 interface Student { id: string; name: string; class: string; gender: string; }
 interface Semester { id: string; name: string; startDate: string; endDate: string; sessionCount: number; }
+interface QuickScoreHistoryState {
+  semesterId: string;
+  className: string;
+  sessionCode: string;
+  date: string;
+  cards: CardScore[];
+}
 
 export default function QuickScorePage() {
   const [classes, setClasses] = useState<string[]>([]);
@@ -29,6 +38,7 @@ export default function QuickScorePage() {
   const selectedClassRef = useRef(selectedClass);
   const allStudentsRef = useRef(allStudents);
   const originalScoresRef = useRef<Map<string, { scoreA: number; scoreB: number; scoreC: number; present: boolean }>>(new Map());
+  const pendingRestoreRef = useRef<QuickScoreHistoryState | null>(null);
   selectedClassRef.current = selectedClass;
   allStudentsRef.current = allStudents;
 
@@ -77,14 +87,22 @@ export default function QuickScorePage() {
       ).length;
       setHasExistingScores(existingCount > 0);
 
-      setCards(students.map((s) => {
+      const loadedCards = students.map((s) => {
         const existing = scoreMap.get(s.id);
         return {
           studentId: s.id, studentName: s.name,
           scoreA: existing?.scoreA ?? 3, scoreB: existing?.scoreB ?? 3, scoreC: existing?.scoreC ?? 3,
           present: existing?.present ?? true, note: "",
         };
-      }));
+      });
+      const pending = pendingRestoreRef.current;
+      if (pending && pending.className === cls && pending.sessionCode === session.code) {
+        setDate(pending.date);
+        setCards(pending.cards);
+        pendingRestoreRef.current = null;
+      } else {
+        setCards(loadedCards);
+      }
     } catch (err) { console.error("loadSessionCards error:", err); }
   }, []);
 
@@ -105,8 +123,10 @@ export default function QuickScorePage() {
       setSessions(data);
 
       const today = new Date().toISOString().split("T")[0];
+      const restoredCode = pendingRestoreRef.current?.sessionCode;
+      const restoredSession = restoredCode ? data.find((s) => s.code === restoredCode) : null;
       const todaySession = data.find((s) => s.date === today);
-      const target = todaySession || (data.length > 0 ? data[0] : null);
+      const target = restoredSession || todaySession || (data.length > 0 ? data[0] : null);
 
       if (target) {
         setSelectedSessionCode(target.code);
@@ -219,6 +239,14 @@ export default function QuickScorePage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setResult(data);
+      try {
+        await saveWorkHistory(
+          "quick-score",
+          `${selectedClass} ${selectedSessionCode || date} 快速评分`,
+          { semesterId: selectedSemesterId, className: selectedClass, sessionCode: selectedSessionCode, date, cards },
+          selectedSessionCode || date
+        );
+      } catch (historyError) { console.error("save quick-score history failed:", historyError); }
       // Refresh cards after submit
       if (selectedSessionCode) {
         const ses = sessions.find((s) => s.code === selectedSessionCode);
@@ -254,6 +282,35 @@ export default function QuickScorePage() {
   const absentCount = cards.filter(c => !c.present).length;
   const sem = semesters.find(s => s.id === selectedSemesterId);
 
+  function restoreHistory(state: QuickScoreHistoryState) {
+    pendingRestoreRef.current = state;
+    if (state.semesterId === selectedSemesterId && state.className === selectedClass) {
+      setSelectedSessionCode(state.sessionCode);
+      if (!state.sessionCode) {
+        setDate(state.date);
+        setCards(state.cards);
+        setResult(null);
+        pendingRestoreRef.current = null;
+        return;
+      }
+      const session = sessions.find((item) => item.code === state.sessionCode);
+      if (session) {
+        setResult(null);
+        void loadSessionCards(session);
+        return;
+      }
+    }
+    setSelectedSemesterId(state.semesterId);
+    setSelectedClass(state.className);
+    setSelectedSessionCode(state.sessionCode);
+    setDate(state.date);
+    setResult(null);
+    if (!state.sessionCode) {
+      setCards(state.cards);
+      pendingRestoreRef.current = null;
+    }
+  }
+
   return (
     <div className="max-w-7xl mx-auto">
       {/* Header */}
@@ -265,6 +322,7 @@ export default function QuickScorePage() {
             {sem && <span className="text-gray-400 ml-2">| {sem.name} · 已上课 {sem.sessionCount} 次</span>}
           </p>
         </div>
+        <WorkHistoryButton<QuickScoreHistoryState> module="quick-score" onRestore={restoreHistory} />
       </div>
 
       {/* Control Bar — Row 1: 学期 + 班级 + 课次 */}

@@ -11,9 +11,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "请上传文件" }, { status: 400 });
     }
 
-    // Read file buffer
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    if (extension !== "xlsx" && extension !== "csv") {
+      return NextResponse.json({ error: "仅支持 .xlsx 或 .csv 文件" }, { status: 400 });
+    }
+
     const buffer = await file.arrayBuffer();
-    const workbook = XLSX.read(buffer, { type: "array" });
+    const workbook = extension === "csv"
+      ? XLSX.read(new TextDecoder("utf-8").decode(buffer).replace(/^\uFEFF/, ""), { type: "string" })
+      : XLSX.read(buffer, { type: "array" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
     // Convert to JSON array
@@ -28,11 +34,12 @@ export async function POST(request: NextRequest) {
     // Detect columns (support both Chinese and English headers)
     const firstRow = rows[0];
     const headers = Object.keys(firstRow);
+    const findHeader = (candidates: string[]) => headers.find((header) => candidates.includes(header.trim())) || "";
 
-    const nameKey = headers.find((h) => ["姓名", "name", "Name"].includes(h)) || "";
-    const classKey = headers.find((h) => ["班级", "班级编号", "class", "Class", "classCode"].includes(h)) || "";
-    const studentIdKey = headers.find((h) => ["学号", "studentId", "student_id", "学籍号"].includes(h)) || "";
-    const genderKey = headers.find((h) => ["性别", "gender", "Gender"].includes(h)) || "";
+    const nameKey = findHeader(["姓名", "name", "Name"]);
+    const classKey = findHeader(["班级", "班级编号", "class", "Class", "classCode"]);
+    const studentIdKey = findHeader(["学号", "studentId", "student_id", "学籍号"]);
+    const genderKey = findHeader(["性别", "gender", "Gender"]);
 
     if (!nameKey || !classKey || !studentIdKey) {
       return NextResponse.json(

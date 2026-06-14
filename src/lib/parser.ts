@@ -1,14 +1,15 @@
 import { createLLMClient, getLLMModel } from "./llm";
 import { SYSTEM_PROMPT, REVIEW_PROMPT, NAME_FIX_SYSTEM_PROMPT } from "./prompts";
 
-interface ParsedStudent {
+export interface ParsedStudent {
   name: string;
   scores: { A: number | null; B: number | null; C: number | null };
   events: string[];
   communication: { type: string; summary: string } | null;
+  present?: boolean;
 }
 
-interface ParseResult {
+export interface ParseResult {
   students: ParsedStudent[];
   alert_suggestion: string;
 }

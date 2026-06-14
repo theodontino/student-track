@@ -3,6 +3,17 @@
 import { useState } from "react";
 import SemesterPicker from "@/components/SemesterPicker";
 import { readSSEStream } from "@/lib/sse";
+import WorkHistoryButton from "@/components/WorkHistoryButton";
+
+interface FeedbackCard { id: string; name: string; labels: string[]; feedback: string; }
+interface FeedbackHistoryState {
+  kind: "batch";
+  semesterId: string;
+  sessionCode: string;
+  className: string;
+  students: FeedbackCard[];
+  total: number;
+}
 
 const STEPS = [
   { num: 1, label: "输入" }, { num: 2, label: "确认" },
@@ -28,16 +39,26 @@ export default function FeedbackWizardPage() {
   const [corrections, setCorrections] = useState<any[]>([]);
 
   // Step 3 state
-  const [feedbackCards, setFeedbackCards] = useState<{ name: string; feedback: string }[]>([]);
+  const [feedbackCards, setFeedbackCards] = useState<FeedbackCard[]>([]);
   const [feedbackTotal, setFeedbackTotal] = useState(0);
   const [feedbackDone, setFeedbackDone] = useState(0);
 
   function onSemIdChange(id: string) { setSemesterId(id); setClassName(""); setSessionCode(""); }
   function onClsChange(cls: string) { setClassName(cls); setSessionCode(""); }
 
+  function setParsedAttendance(index: number, present: boolean) {
+    setParsedResult((current: any) => current ? {
+      ...current,
+      students: current.students.map((student: any, studentIndex: number) =>
+        studentIndex === index ? { ...student, present } : student
+      ),
+    } : current);
+  }
+
   // Step 1: parse NL input (SSE streaming)
   async function handleParse() {
     if (!rawText.trim()) { setError("请输入文本"); return; }
+    if (!sessionCode) { setError("请选择课次，未提及学生将按缺勤处理"); return; }
     setParsing(true); setError("");
     try {
       const res = await fetch("/api/input/parse?stream=true", {
@@ -73,7 +94,7 @@ export default function FeedbackWizardPage() {
       const res = await fetch("/api/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draftId, action: "confirm" }),
+        body: JSON.stringify({ draftId, action: "confirm", edits: parsedResult }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -93,19 +114,34 @@ export default function FeedbackWizardPage() {
       const res = await fetch("/api/report/feedback-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionCode }),
+        body: JSON.stringify({ sessionCode, historyModule: "feedback" }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
+
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        setFeedbackCards(data.students || []);
+        setFeedbackTotal(data.total);
+        setFeedbackDone(data.total);
+        return;
+      }
 
       await readSSEStream(res.body!.getReader(), (msg) => {
         if (msg.type === "init") {
           setFeedbackTotal(msg.total);
-          setFeedbackCards(msg.students.map((s: any) => ({ name: s.name, feedback: "" })));
+          setFeedbackCards(msg.students);
         } else if (msg.type === "progress") {
           setFeedbackDone((prev) => prev + 1);
           setFeedbackCards((prev) =>
-            prev.map((c) => c.name === msg.name ? { name: msg.name, feedback: msg.feedback } : c)
+            prev.map((card) => card.id === msg.studentId ? { ...card, feedback: msg.feedback } : card)
           );
+        } else if (msg.type === "done") {
+          setFeedbackCards(msg.students || []);
+          setFeedbackTotal(msg.total);
+          setFeedbackDone(msg.total);
+        } else if (msg.type === "error") {
+          throw new Error(msg.message || "批量生成失败");
         }
       });
     } catch (e: any) { setError(e.message); }
@@ -116,7 +152,7 @@ export default function FeedbackWizardPage() {
   function handleExport() {
     if (!sessionCode) return;
     const a = document.createElement("a");
-    a.href = `/api/report/feedback-batch?sessionCode=${sessionCode}`;
+    a.href = `/api/report/feedback-batch?sessionCode=${sessionCode}&module=feedback`;
     a.download = `feedback_${sessionCode}.xlsx`;
     document.body.appendChild(a);
     a.click();
@@ -125,9 +161,23 @@ export default function FeedbackWizardPage() {
 
   const dimLabel: Record<string, string> = { A: "学习", B: "纪律", C: "作业" };
 
+  function restoreHistory(state: FeedbackHistoryState) {
+    setSemesterId(state.semesterId);
+    setClassName(state.className);
+    setSessionCode(state.sessionCode);
+    setFeedbackCards(state.students);
+    setFeedbackTotal(state.total);
+    setFeedbackDone(state.total);
+    setStep(4);
+    setError("");
+  }
+
   return (
     <div className="max-w-3xl mx-auto">
-      <h2 className="text-2xl font-bold text-gray-800 mb-6">🚀 一键反馈流程</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-gray-800">🚀 一键反馈流程</h2>
+        <WorkHistoryButton<FeedbackHistoryState> module="feedback" onRestore={restoreHistory} />
+      </div>
 
       {/* Step Indicator */}
       <div className="flex items-center gap-2 mb-8">
@@ -177,7 +227,7 @@ export default function FeedbackWizardPage() {
 
           <div className="flex items-center justify-between mt-4">
             <span className="text-xs text-gray-400">{rawText.length} 字</span>
-            <button onClick={handleParse} disabled={parsing || !rawText.trim()}
+            <button onClick={handleParse} disabled={parsing || !rawText.trim() || !sessionCode}
               className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
               {parsing ? (parseStatus || "解析中…") : "① 解析 →"}
             </button>
@@ -252,6 +302,12 @@ export default function FeedbackWizardPage() {
               <div key={i} className="border border-gray-100 rounded-lg p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="font-semibold text-gray-800">👤 {stu.name}</span>
+                  {typeof stu.present === "boolean" && (
+                    <div className="ml-auto flex border border-gray-300 rounded-lg overflow-hidden">
+                      <button type="button" onClick={() => setParsedAttendance(i, true)} className={`px-2.5 py-1 text-xs ${stu.present ? "bg-green-600 text-white" : "bg-white text-gray-500"}`}>出勤</button>
+                      <button type="button" onClick={() => setParsedAttendance(i, false)} className={`px-2.5 py-1 text-xs ${!stu.present ? "bg-red-600 text-white" : "bg-white text-gray-500"}`}>缺勤</button>
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-4 text-sm">
                   {(["A","B","C"] as const).map((dim) => (

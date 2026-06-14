@@ -49,6 +49,7 @@ export interface DraftParseResult {
       scores: { A: number | null; B: number | null; C: number | null };
       events: string[];
       communication: { type: string; summary: string } | null;
+      present: boolean;
     }[];
     alert_suggestion: string;
   };

@@ -16,6 +16,15 @@ interface Student {
   updatedAt: string;
 }
 
+interface ImportResult {
+  success?: boolean;
+  total?: number;
+  successCount?: number;
+  errorCount?: number;
+  errors?: string[];
+  error?: string;
+}
+
 const PRESET_TAGS = [
   "#逻辑强", "#基础弱", "#主动", "#被动", "#调皮",
   "#敏感", "#内向", "#外向", "#注意力差", "#爱发言",
@@ -33,6 +42,10 @@ export default function StudentsPage() {
   const [labelInput, setLabelInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [showImport, setShowImport] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
 
   useEffect(() => { fetchStudents(); }, []);
 
@@ -113,6 +126,44 @@ export default function StudentsPage() {
     fetchStudents();
   }
 
+  function openImport() {
+    setImportFile(null);
+    setImportResult(null);
+    setShowImport(true);
+  }
+
+  function closeImport() {
+    if (importing) return;
+    setShowImport(false);
+    setImportFile(null);
+    setImportResult(null);
+  }
+
+  async function handleImport() {
+    if (!importFile) return;
+    setImporting(true);
+    setImportResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", importFile);
+      const res = await fetch("/api/students/import", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json() as ImportResult;
+      if (!res.ok) throw new Error(data.error || "导入失败");
+
+      setImportResult(data);
+      setImportFile(null);
+      await fetchStudents();
+    } catch (err) {
+      setImportResult({ error: err instanceof Error ? err.message : "导入失败" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
   // -- Score mini bar --
   function ScoreBar({ score, color }: { score: number; color: string }) {
     return <div className="flex items-center gap-1"><div className="w-8 h-1.5 rounded-full bg-gray-100"><div className={`h-full rounded-full ${color}`} style={{ width: `${(score / 5) * 100}%` }} /></div><span className="text-[10px] font-mono text-gray-500 w-3 text-right">{score}</span></div>;
@@ -124,7 +175,13 @@ export default function StudentsPage() {
     <div className="max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold text-gray-800">学生管理</h2>
-        <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">+ 添加学生</button>
+        <div className="flex items-center gap-2">
+          <button onClick={openImport}
+            className="border border-gray-300 text-gray-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50">
+            📥 导入花名册
+          </button>
+          <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">+ 添加学生</button>
+        </div>
       </div>
 
       {/* Search */}
@@ -226,6 +283,60 @@ export default function StudentsPage() {
                 <button type="submit" disabled={submitting} className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">{submitting ? "保存中..." : "保存"}</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showImport && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center px-4">
+          <div className="bg-white rounded-xl w-full max-w-md p-6 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">导入花名册</h3>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-700">
+              <p className="font-medium mb-1">支持 .xlsx / .csv 文件，表头需包含：</p>
+              <code className="text-blue-600">姓名, 班级, 学号, 性别(选填)</code>
+            </div>
+
+            <input
+              key={importFile ? "selected" : "empty"}
+              type="file"
+              accept=".xlsx,.csv"
+              disabled={importing}
+              onChange={(e) => {
+                setImportFile(e.target.files?.[0] || null);
+                setImportResult(null);
+              }}
+              className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
+            />
+
+            {importResult?.success && (
+              <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-3 text-xs text-green-700">
+                成功导入 {importResult.successCount} / {importResult.total} 名学生
+                {(importResult.errorCount ?? 0) > 0 && (
+                  <div className="mt-2 text-red-600">
+                    <p>{importResult.errorCount} 条失败：</p>
+                    {importResult.errors?.map((message, index) => <div key={index}>{message}</div>)}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {importResult?.error && (
+              <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-600">
+                {importResult.error}
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-5">
+              <button type="button" onClick={closeImport} disabled={importing}
+                className="flex-1 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50">
+                {importResult?.success ? "完成" : "取消"}
+              </button>
+              <button type="button" onClick={handleImport} disabled={!importFile || importing}
+                className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {importing ? "导入中..." : "开始导入"}
+              </button>
+            </div>
           </div>
         </div>
       )}
