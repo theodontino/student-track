@@ -12,30 +12,45 @@ interface NavGroup {
 
 const GROUPS: NavGroup[] = [
   {
-    label: "课后评价",
-    icon: "📝",
+    label: "工作台",
+    icon: "🚀",
     children: [
+      { href: "/feedback", label: "课后反馈", icon: "🚀" },
       { href: "/quick-score", label: "快速评分", icon: "⚡" },
-      { href: "/diarize", label: "录音转写", icon: "🎙️" },
-      { href: "/input", label: "NL 录入", icon: "✏️" },
-      { href: "/review", label: "复核", icon: "✅" },
     ],
   },
   {
-    label: "报告和导出",
+    label: "学生与课程",
+    icon: "👥",
+    children: [
+      { href: "/students", label: "学生档案", icon: "👤" },
+      { href: "/semesters", label: "学期 / 课次", icon: "📅" },
+    ],
+  },
+  {
+    label: "资料与归档",
     icon: "📦",
     children: [
-      { href: "/report", label: "报告", icon: "📋" },
-      { href: "/export", label: "导出", icon: "📥" },
+      { href: "/report", label: "报告与导出", icon: "📋" },
+      { href: "/history", label: "历史记录", icon: "🕘" },
+      { href: "/export", label: "全量数据导出", icon: "📥" },
     ],
   },
   {
-    label: "管理",
+    label: "高级工具",
+    icon: "🧰",
+    children: [
+      { href: "/diarize", label: "录音转写", icon: "🎙️" },
+      { href: "/input", label: "NL 录入", icon: "✏️" },
+      { href: "/review", label: "复核中心", icon: "✅" },
+    ],
+  },
+  {
+    label: "系统",
     icon: "⚙️",
     children: [
-      { href: "/students", label: "学生管理", icon: "👤" },
-      { href: "/semesters", label: "学期", icon: "📅" },
-      { href: "/settings", label: "系统设置", icon: "⚙️" },
+      { href: "/settings", label: "LLM / 企微设置", icon: "⚙️" },
+      { href: "/system-logs", label: "备份与日志", icon: "🧾" },
     ],
   },
 ];
@@ -78,19 +93,6 @@ export default function Sidebar() {
         >
           <span className="text-lg">📊</span>
           仪表盘
-        </Link>
-
-        {/* Quick feedback entry */}
-        <Link
-          href="/feedback"
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-            pathname === "/feedback"
-              ? "bg-gradient-to-r from-blue-50 to-purple-50 text-blue-700 border border-blue-200"
-              : "text-blue-600 hover:bg-blue-50/50"
-          }`}
-        >
-          <span className="text-lg">🚀</span>
-          <span>课后反馈</span>
         </Link>
 
         {/* Groups */}

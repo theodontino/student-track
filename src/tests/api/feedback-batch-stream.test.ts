@@ -154,5 +154,38 @@ describe("feedback batch NDJSON stream", () => {
       expect.objectContaining({ id: "student-2", feedback: "乙新反馈" }),
     ]);
     expect(mocks.completionCreate).toHaveBeenCalledTimes(4);
+
+    const saved = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        saveState: true,
+        students: [
+          { id: "student-1", feedback: "甲手动编辑反馈" },
+          { id: "student-2", feedback: "乙手动编辑反馈" },
+          { id: "unknown-student", feedback: "不应保存" },
+        ],
+      }),
+    }));
+    await expect(saved.json()).resolves.toMatchObject({
+      saved: true,
+      total: 2,
+      students: [
+        expect.objectContaining({ id: "student-1", feedback: "甲手动编辑反馈" }),
+        expect.objectContaining({ id: "student-2", feedback: "乙手动编辑反馈" }),
+      ],
+    });
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(4);
+
+    const cachedAfterSave = await POST(request());
+    await expect(cachedAfterSave.json()).resolves.toMatchObject({
+      cached: true,
+      students: [
+        expect.objectContaining({ id: "student-1", feedback: "甲手动编辑反馈" }),
+        expect.objectContaining({ id: "student-2", feedback: "乙手动编辑反馈" }),
+      ],
+    });
   });
 });

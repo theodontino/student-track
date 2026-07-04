@@ -1,19 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import SemesterPicker from "@/components/SemesterPicker";
-import { readSSEStream } from "@/lib/sse";
-import WorkHistoryButton from "@/components/WorkHistoryButton";
+import { useEffect, useMemo, useState } from "react";
 import FeedbackContextPreview from "@/components/FeedbackContextPreview";
+import SemesterPicker from "@/components/SemesterPicker";
 import WeComWorkflowPanel from "@/components/wecom/WeComWorkflowPanel";
+import WorkHistoryButton from "@/components/WorkHistoryButton";
+import { readSSEStream } from "@/lib/sse";
 import type { FeedbackContextStudent } from "@/components/wecom/types";
 
-interface FeedbackCard { id: string; name: string; labels: string[]; feedback: string; }
+interface FeedbackCard {
+  id: string;
+  name: string;
+  labels: string[];
+  feedback: string;
+}
+
 interface FeedbackContextResponse {
   className: string;
   total: number;
   students: FeedbackContextStudent[];
 }
+
 interface FeedbackHistoryState {
   kind: "batch";
   semesterId: string;
@@ -23,13 +30,18 @@ interface FeedbackHistoryState {
   total: number;
 }
 
-const STEPS = [
-  { num: 1, label: "回顾" }, { num: 2, label: "确认" },
-  { num: 3, label: "反馈" }, { num: 4, label: "导出" },
-];
+type ParsedStudent = {
+  name: string;
+  scores: { A: number | null; B: number | null; C: number | null };
+  events?: string[];
+  present?: boolean;
+};
 
-export default function FeedbackWizardPage() {
-  const [step, setStep] = useState(1);
+function statusTone(active: boolean) {
+  return active ? "border-blue-200 bg-blue-50 text-blue-700" : "border-gray-200 bg-white text-gray-500";
+}
+
+export default function FeedbackWorkbenchPage() {
   const [semesterId, setSemesterId] = useState("");
   const [className, setClassName] = useState("");
   const [sessionCode, setSessionCode] = useState("");
@@ -37,16 +49,17 @@ export default function FeedbackWizardPage() {
   const [parsing, setParsing] = useState(false);
   const [parseStatus, setParseStatus] = useState("");
   const [streamContent, setStreamContent] = useState("");
-  const [confirming, setConfirming] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState("");
-  // Step 2 state
   const [draftId, setDraftId] = useState("");
   const [parsedResult, setParsedResult] = useState<any>(null);
   const [reviewResult, setReviewResult] = useState<any>(null);
   const [corrections, setCorrections] = useState<any[]>([]);
-
-  // Step 3 state
+  const [confirming, setConfirming] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [regeneratingId, setRegeneratingId] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
   const [feedbackCards, setFeedbackCards] = useState<FeedbackCard[]>([]);
   const [feedbackTotal, setFeedbackTotal] = useState(0);
   const [feedbackDone, setFeedbackDone] = useState(0);
@@ -54,6 +67,17 @@ export default function FeedbackWizardPage() {
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
   const [contextReloadKey, setContextReloadKey] = useState(0);
+  const [feedbackDirty, setFeedbackDirty] = useState(false);
+  const [forceRegenerate, setForceRegenerate] = useState(false);
+
+  const canParse = Boolean(rawText.trim() && sessionCode && !parsing);
+  const canConfirm = Boolean(draftId && parsedResult && !confirming);
+  const canGenerate = Boolean(sessionCode && !generating);
+  const dimLabel: Record<string, string> = { A: "学习", B: "纪律", C: "作业" };
+
+  const contextByStudent = useMemo(() => {
+    return new Map(contextStudents.map((student) => [student.id, student]));
+  }, [contextStudents]);
 
   useEffect(() => {
     const draft = sessionStorage.getItem("chem-track:feedback-draft");
@@ -64,9 +88,13 @@ export default function FeedbackWizardPage() {
   }, []);
 
   useEffect(() => {
-    if (step !== 3 || !sessionCode) return;
-    let cancelled = false;
+    if (!sessionCode) {
+      setContextStudents([]);
+      setContextError("");
+      return;
+    }
 
+    let cancelled = false;
     async function loadFeedbackContext() {
       setContextLoading(true);
       setContextError("");
@@ -88,30 +116,68 @@ export default function FeedbackWizardPage() {
 
     void loadFeedbackContext();
     return () => { cancelled = true; };
-  }, [step, sessionCode, contextReloadKey]);
+  }, [sessionCode, contextReloadKey]);
 
-  function onSemIdChange(id: string) { setSemesterId(id); setClassName(""); setSessionCode(""); }
-  function onClsChange(cls: string) { setClassName(cls); setSessionCode(""); }
+  function onSemIdChange(id: string) {
+    setSemesterId(id);
+    setClassName("");
+    setSessionCode("");
+    setFeedbackCards([]);
+    setFeedbackDirty(false);
+    setForceRegenerate(false);
+  }
+
+  function onClsChange(cls: string) {
+    setClassName(cls);
+    setSessionCode("");
+    setFeedbackCards([]);
+    setFeedbackDirty(false);
+    setForceRegenerate(false);
+  }
+
+  function onSessionChange(code: string) {
+    setSessionCode(code);
+    setDraftId("");
+    setParsedResult(null);
+    setReviewResult(null);
+    setCorrections([]);
+    setConfirmed(false);
+    setFeedbackCards([]);
+    setFeedbackTotal(0);
+    setFeedbackDone(0);
+    setFeedbackDirty(false);
+    setForceRegenerate(false);
+    setError("");
+    setStatus("");
+  }
 
   function setParsedAttendance(index: number, present: boolean) {
     setParsedResult((current: any) => current ? {
       ...current,
-      students: current.students.map((student: any, studentIndex: number) =>
+      students: current.students.map((student: ParsedStudent, studentIndex: number) =>
         studentIndex === index ? { ...student, present } : student
       ),
     } : current);
   }
 
-  // Step 1: parse NL input (SSE streaming)
   async function handleParse() {
-    if (!rawText.trim()) { setError("请输入文本"); return; }
+    if (!rawText.trim()) { setError("请输入课后回顾"); return; }
     if (!sessionCode) { setError("请选择课次，未提及学生将按缺勤处理"); return; }
-    setParsing(true); setError("");
+    setParsing(true);
+    setError("");
+    setStatus("");
+    setStreamContent("");
+    setDraftId("");
+    setParsedResult(null);
+    setReviewResult(null);
+    setCorrections([]);
+    setConfirmed(false);
+
     try {
       const res = await fetch("/api/input/parse?stream=true", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawText, sessionCode: sessionCode || undefined }),
+        body: JSON.stringify({ rawText, sessionCode }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
 
@@ -124,19 +190,23 @@ export default function FeedbackWizardPage() {
             setParsedResult(msg.parsedResult);
             setReviewResult(msg.reviewResult);
             setCorrections(msg.corrections || []);
-            setStep(2);
+            setStatus("解析完成，请确认结构化记录。");
             break;
           case "error": throw new Error(msg.message);
         }
       });
-    } catch (e: any) { setError(e.message); }
-    finally { setParsing(false); }
+    } catch (e: any) {
+      setError(e.message || "解析失败");
+    } finally {
+      setParsing(false);
+    }
   }
 
-  // Step 2: confirm draft write
   async function handleConfirm() {
     if (!draftId) return;
-    setConfirming(true); setError("");
+    setConfirming(true);
+    setError("");
+    setStatus("");
     try {
       const res = await fetch("/api/review", {
         method: "POST",
@@ -146,22 +216,33 @@ export default function FeedbackWizardPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       if (data.warnings?.length) alert("⚠ " + data.warnings.join("\n"));
-      setStep(3);
-    } catch (e: any) { setError(e.message); }
-    finally { setConfirming(false); }
+      setConfirmed(true);
+      setStatus("课堂记录已写入，反馈上下文已刷新。");
+      setContextReloadKey((current) => current + 1);
+      setFeedbackCards([]);
+      setFeedbackDirty(false);
+      setForceRegenerate(true);
+    } catch (e: any) {
+      setError(e.message || "确认写入失败");
+    } finally {
+      setConfirming(false);
+    }
   }
 
-  // Step 3: generate batch feedback via SSE
   async function handleGenerate() {
-    if (!sessionCode) { setError("请先在步骤1选择课次"); return; }
-    setGenerating(true); setError("");
-    setFeedbackCards([]); setFeedbackDone(0);
+    if (!sessionCode) { setError("请先选择课次"); return; }
+    setGenerating(true);
+    setError("");
+    setStatus("");
+    setFeedbackCards([]);
+    setFeedbackDone(0);
+    setFeedbackDirty(false);
 
     try {
       const res = await fetch("/api/report/feedback-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionCode, historyModule: "feedback", bypassCache: contextReloadKey > 0 }),
+        body: JSON.stringify({ sessionCode, historyModule: "feedback", bypassCache: forceRegenerate }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
 
@@ -171,6 +252,8 @@ export default function FeedbackWizardPage() {
         setFeedbackCards(data.students || []);
         setFeedbackTotal(data.total);
         setFeedbackDone(data.total);
+        setStatus(data.cached ? "已恢复最近一次生成结果。" : "反馈已生成。");
+        setForceRegenerate(false);
         return;
       }
 
@@ -187,26 +270,87 @@ export default function FeedbackWizardPage() {
           setFeedbackCards(msg.students || []);
           setFeedbackTotal(msg.total);
           setFeedbackDone(msg.total);
+          setStatus("反馈已生成，可逐条编辑后导出。");
+          setForceRegenerate(false);
         } else if (msg.type === "error") {
           throw new Error(msg.message || "批量生成失败");
         }
       });
-    } catch (e: any) { setError(e.message); }
-    finally { setGenerating(false); }
+    } catch (e: any) {
+      setError(e.message || "批量生成失败");
+    } finally {
+      setGenerating(false);
+    }
   }
 
-  // Step 4: download cached feedback Excel
-  function handleExport() {
+  async function regenerateOne(studentId: string) {
     if (!sessionCode) return;
-    const a = document.createElement("a");
-    a.href = `/api/report/feedback-batch?sessionCode=${sessionCode}&module=feedback`;
-    a.download = `feedback_${sessionCode}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    const card = feedbackCards.find((item) => item.id === studentId);
+    if (!card) return;
+    setRegeneratingId(studentId);
+    setError("");
+    try {
+      const res = await fetch("/api/report/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentId, sessionCode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "重新生成失败");
+      setFeedbackCards((current) => current.map((item) =>
+        item.id === studentId ? { ...item, feedback: data.feedback || "" } : item
+      ));
+      setFeedbackDirty(true);
+    } catch (e: any) {
+      setError(e.message || "重新生成失败");
+    } finally {
+      setRegeneratingId("");
+    }
   }
 
-  const dimLabel: Record<string, string> = { A: "学习", B: "纪律", C: "作业" };
+  function updateFeedback(studentId: string, feedback: string) {
+    setFeedbackCards((current) => current.map((card) =>
+      card.id === studentId ? { ...card, feedback } : card
+    ));
+    setFeedbackDirty(true);
+  }
+
+  async function saveFeedbackState() {
+    if (!sessionCode || feedbackCards.length === 0) return;
+    const res = await fetch("/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode,
+        historyModule: "feedback",
+        saveState: true,
+        students: feedbackCards,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "保存反馈状态失败");
+    setFeedbackDirty(false);
+  }
+
+  async function handleExport() {
+    if (!sessionCode || feedbackCards.length === 0) return;
+    setExporting(true);
+    setError("");
+    try {
+      if (feedbackDirty) await saveFeedbackState();
+      const a = document.createElement("a");
+      a.href = `/api/report/feedback-batch?sessionCode=${sessionCode}&module=feedback`;
+      a.download = `feedback_${sessionCode}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setStatus("已准备导出文件。");
+    } catch (e: any) {
+      setError(e.message || "导出失败");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   function restoreHistory(state: FeedbackHistoryState) {
     setSemesterId(state.semesterId);
@@ -215,280 +359,272 @@ export default function FeedbackWizardPage() {
     setFeedbackCards(state.students);
     setFeedbackTotal(state.total);
     setFeedbackDone(state.total);
-    setContextStudents([]);
-    setContextError("");
-    setContextReloadKey(0);
-    setStep(4);
+    setFeedbackDirty(false);
+    setForceRegenerate(false);
+    setContextReloadKey((current) => current + 1);
     setError("");
+    setStatus("已恢复历史反馈结果。");
+  }
+
+  function markContextChanged() {
+    setFeedbackCards([]);
+    setFeedbackDone(0);
+    setFeedbackTotal(0);
+    setFeedbackDirty(false);
+    setForceRegenerate(true);
+    setContextReloadKey((current) => current + 1);
+    setStatus("家校沟通已导入，反馈上下文已刷新。");
   }
 
   return (
-    <div className="max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto max-w-7xl space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-gray-800">🚀 课后反馈工作台</h2>
-          <p className="text-sm text-gray-500 mt-1">选课次，放入老师课后回顾，确认后生成今晚可发的家长反馈。</p>
+          <h2 className="text-2xl font-bold text-gray-800">课后反馈工作台</h2>
+          <p className="text-sm text-gray-500 mt-1">选课次，准备上下文，写入课堂回顾，生成并导出家长反馈。</p>
         </div>
         <WorkHistoryButton<FeedbackHistoryState> module="feedback" onRestore={restoreHistory} />
       </div>
 
-      {/* Step Indicator */}
-      <div className="flex items-center gap-2 mb-8">
-        {STEPS.map((s, i) => (
-          <div key={s.num} className="flex items-center gap-2">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-              step >= s.num ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-400"
-            }`}>
-              {s.num}
-            </div>
-            <span className={`text-sm ${step >= s.num ? "text-blue-600 font-medium" : "text-gray-400"}`}>
-              {s.label}
-            </span>
-            {i < STEPS.length - 1 && (
-              <div className={`w-8 h-px ${step > s.num ? "bg-blue-400" : "bg-gray-200"}`} />
-            )}
-          </div>
-        ))}
-      </div>
-
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg">{error}</div>
-      )}
-
-      {/* Step 1: Input */}
-      {step === 1 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <div>
-              <h3 className="font-semibold text-gray-800">✏️ 课后回顾</h3>
-              <p className="text-xs text-gray-500 mt-1">只写和学生反馈有关的事实，系统会把未提及学生按缺勤补齐。</p>
-            </div>
-            <a href="/diarize" className="text-sm text-blue-600 hover:text-blue-700 shrink-0">去转写录音</a>
-          </div>
-
-          {parseStatus && !parsing && (
-            <div className="mb-4 rounded-lg border border-green-100 bg-green-50 px-3 py-2 text-sm text-green-700">
-              {parseStatus}
-            </div>
-          )}
-
-          <div className="mb-4">
-            <SemesterPicker
-              semesterId={semesterId}
-              onSemesterChange={onSemIdChange}
-              className={className}
-              onClassChange={onClsChange}
-              sessionCode={sessionCode}
-              onSessionChange={setSessionCode}
-            />
-          </div>
-
-          <textarea
-            value={rawText}
-            onChange={(e) => setRawText(e.target.value)}
-            placeholder="粘贴或从转写页送入课后回顾，如：今天是某班第几次课。张三听课状态不错，测验还可以，但作业订正不够主动。李四前半节有点走神，后半节跟上了，建议家长提醒复习氧化还原。"
-            className="w-full border border-gray-300 rounded-lg p-4 text-sm min-h-[120px] outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-          />
-
-          <div className="flex items-center justify-between mt-4">
-            <span className="text-xs text-gray-400">{rawText.length} 字</span>
-            <button onClick={handleParse} disabled={parsing || !rawText.trim() || !sessionCode}
-              className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
-              {parsing ? (parseStatus || "解析中…") : "① 解析 →"}
-            </button>
-          </div>
-
-          {parsing && streamContent && (
-            <div className="mt-4 bg-gray-50 border border-gray-200 rounded-lg p-3 max-h-[200px] overflow-y-auto">
-              <p className="text-xs font-mono text-gray-500 whitespace-pre-wrap leading-relaxed">{streamContent}</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Step 2: Review */}
-      {step === 2 && parsedResult && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="font-semibold text-gray-800 mb-4">✅ 确认 LLM 解析结果</h3>
-
-          {/* Name corrections highlight */}
-          {corrections.length > 0 && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm">
-              <span className="font-semibold text-blue-700">📝 已自动修正姓名：</span>
-              <div className="space-y-1 mt-1.5">
-                {corrections.map((c, i) => (
-                  <div key={i} className="flex items-center gap-2 text-xs">
-                    <span className="text-gray-400 line-through">{c.original}</span>
-                    <span className="text-gray-300">→</span>
-                    <span className="font-medium text-blue-700">{c.corrected}</span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                      c.confidence === "high" ? "bg-green-100 text-green-700" :
-                      c.confidence === "medium" ? "bg-yellow-100 text-yellow-700" :
-                      "bg-red-100 text-red-700"
-                    }`}>
-                      {c.confidence === "high" ? "确信" : c.confidence === "medium" ? "较可能" : "存疑"}
-                    </span>
-                    <span className="text-gray-400">{c.reason}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {reviewResult && !reviewResult.is_valid && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-sm">
-              <span className="font-semibold text-amber-700">⚠ 自审发现 {reviewResult.issues.length} 个问题：</span>
-              <ul className="list-disc list-inside text-amber-600 mt-1 text-xs">
-                {reviewResult.issues.map((i: string, idx: number) => <li key={idx}>{i}</li>)}
-              </ul>
-              {reviewResult.name_issues?.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-amber-200">
-                  <span className="text-xs font-semibold text-amber-700">👤 人名/事件对应问题：</span>
-                  {reviewResult.name_issues.map((ni: any, idx: number) => (
-                    <div key={idx} className="flex items-center gap-2 mt-1 text-xs">
-                      <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
-                        ni.severity === "high" ? "bg-red-100 text-red-700" :
-                        ni.severity === "medium" ? "bg-yellow-100 text-yellow-700" :
-                        "bg-gray-100 text-gray-600"
-                      }`}>
-                        {ni.severity === "high" ? "🔴" : ni.severity === "medium" ? "🟡" : "⚪"}
-                      </span>
-                      <span className="text-amber-800">{ni.student}：</span>
-                      <span className="text-amber-600">{ni.issue}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="space-y-3 mb-6">
-            {parsedResult.students.map((stu: any, i: number) => (
-              <div key={i} className="border border-gray-100 rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="font-semibold text-gray-800">👤 {stu.name}</span>
-                  {typeof stu.present === "boolean" && (
-                    <div className="ml-auto flex border border-gray-300 rounded-lg overflow-hidden">
-                      <button type="button" onClick={() => setParsedAttendance(i, true)} className={`px-2.5 py-1 text-xs ${stu.present ? "bg-green-600 text-white" : "bg-white text-gray-500"}`}>出勤</button>
-                      <button type="button" onClick={() => setParsedAttendance(i, false)} className={`px-2.5 py-1 text-xs ${!stu.present ? "bg-red-600 text-white" : "bg-white text-gray-500"}`}>缺勤</button>
-                    </div>
-                  )}
-                </div>
-                <div className="flex gap-4 text-sm">
-                  {(["A","B","C"] as const).map((dim) => (
-                    <span key={dim}>
-                      <span className="text-gray-400">{dimLabel[dim]}：</span>
-                      <span className="font-mono font-medium">
-                        {stu.scores[dim] != null ? `${stu.scores[dim]} 分` : "—"}
-                      </span>
-                    </span>
-                  ))}
-                </div>
-                {stu.events?.length > 0 && (
-                  <div className="text-xs text-gray-500 mt-1">📝 {stu.events.join("、")}</div>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div className="flex gap-3">
-            <button onClick={() => setStep(1)}
-              className="flex-1 py-2.5 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50">
-              ← 返回修改
-            </button>
-            <button onClick={handleConfirm} disabled={confirming}
-              className="flex-1 py-2.5 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
-              {confirming ? "写入中..." : "② 确认写入 →"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Step 3: Generate Feedback */}
-      {step === 3 && (
-        <div className="space-y-5">
+      <section className="rounded-lg border border-gray-200 bg-white p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="font-semibold text-gray-800">📋 生成家长反馈</h3>
-            <p className="text-sm text-gray-500 mt-1">先整理家校沟通上下文，再确认系统会参考什么，最后生成今晚可发的反馈。</p>
+            <h3 className="font-semibold text-gray-800">当前课次</h3>
+            <p className="text-xs text-gray-500 mt-1">所有录入、上下文和反馈都围绕这里选中的课次。</p>
           </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className={`rounded border px-2 py-1 ${statusTone(Boolean(sessionCode))}`}>课次</span>
+            <span className={`rounded border px-2 py-1 ${statusTone(Boolean(parsedResult))}`}>解析</span>
+            <span className={`rounded border px-2 py-1 ${statusTone(confirmed)}`}>写入</span>
+            <span className={`rounded border px-2 py-1 ${statusTone(feedbackCards.length > 0)}`}>反馈</span>
+          </div>
+        </div>
+        <SemesterPicker
+          semesterId={semesterId}
+          onSemesterChange={onSemIdChange}
+          className={className}
+          onClassChange={onClsChange}
+          sessionCode={sessionCode}
+          onSessionChange={onSessionChange}
+        />
+      </section>
 
+      {error && <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div>}
+      {status && <div className="rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{status}</div>}
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(280px,0.92fr)_minmax(360px,1.08fr)_minmax(360px,1.1fr)]">
+        <div className="space-y-5">
           <WeComWorkflowPanel
-            title="课前家校沟通准备"
-            description="在工作台内同步、提取、预览并导入会影响本次反馈的家校沟通。"
-            onApplied={() => {
-              setFeedbackCards([]);
-              setFeedbackDone(0);
-              setFeedbackTotal(0);
-              setContextReloadKey((current) => current + 1);
-            }}
+            title="家校沟通准备"
+            description="同步、提取、预览并导入会影响本次反馈的家校沟通。"
+            onApplied={markContextChanged}
           />
-
           <FeedbackContextPreview
             students={contextStudents}
             loading={contextLoading}
             error={contextError}
           />
+        </div>
 
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            {feedbackCards.length === 0 ? (
-              <div className="text-center py-10">
-                <p className="text-gray-400 mb-4">将为 {className} 通过 {sessionCode} 生成反馈</p>
-                <button onClick={handleGenerate} disabled={generating}
-                  className="bg-amber-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50">
-                  {generating ? `生成中 ${feedbackDone}/${feedbackTotal}...` : "③ 生成 →"}
-                </button>
+        <div className="space-y-5">
+          <section className="rounded-lg border border-gray-200 bg-white p-5">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-semibold text-gray-800">课堂回顾</h3>
+                <p className="text-sm text-gray-500 mt-1">可直接粘贴文本，也可以从录音转写页送入。</p>
               </div>
-            ) : (
-              <>
-                {generating && (
-                  <div className="text-sm text-amber-600 mb-4">
-                    生成中 {feedbackDone}/{feedbackTotal}...
-                  </div>
-                )}
-                <div className="space-y-2 mb-6 max-h-[400px] overflow-y-auto">
-                  {feedbackCards.map((c, i) => (
-                    <div key={i} className="border border-gray-100 rounded-lg p-3 text-sm">
-                      <div className="font-medium text-gray-800 mb-1">{c.name}</div>
-                      <div className="text-gray-600 whitespace-pre-wrap">{c.feedback || "待生成..."}</div>
+              <a href="/diarize" className="text-sm text-blue-600 hover:text-blue-700">录音转写</a>
+            </div>
+
+            {parseStatus && !parsing && (
+              <div className="mb-3 rounded-md border border-green-100 bg-green-50 px-3 py-2 text-sm text-green-700">
+                {parseStatus}
+              </div>
+            )}
+
+            <textarea
+              value={rawText}
+              onChange={(e) => setRawText(e.target.value)}
+              placeholder="写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。"
+              className="min-h-[180px] w-full resize-y rounded-lg border border-gray-300 p-4 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <span className="text-xs text-gray-400">{rawText.length} 字</span>
+              <button
+                onClick={handleParse}
+                disabled={!canParse}
+                className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {parsing ? (parseStatus || "解析中...") : "解析课堂回顾"}
+              </button>
+            </div>
+
+            {parsing && streamContent && (
+              <div className="mt-4 max-h-[180px] overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <p className="whitespace-pre-wrap text-xs leading-relaxed text-gray-500">{streamContent}</p>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-lg border border-gray-200 bg-white p-5">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-semibold text-gray-800">结构化记录确认</h3>
+                <p className="text-sm text-gray-500 mt-1">确认后才会写入评价、考勤、事件和沟通。</p>
+              </div>
+              <button
+                onClick={handleConfirm}
+                disabled={!canConfirm}
+                className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                {confirming ? "写入中..." : confirmed ? "已写入" : "确认写入"}
+              </button>
+            </div>
+
+            {corrections.length > 0 && (
+              <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
+                <span className="font-semibold text-blue-700">已自动修正姓名：</span>
+                <div className="mt-1.5 space-y-1">
+                  {corrections.map((item, index) => (
+                    <div key={index} className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="text-gray-400 line-through">{item.original}</span>
+                      <span className="text-gray-300">→</span>
+                      <span className="font-medium text-blue-700">{item.corrected}</span>
+                      <span className="rounded bg-white px-1.5 py-0.5 text-[10px] text-gray-500">{item.confidence}</span>
                     </div>
                   ))}
                 </div>
-                <div className="flex gap-3">
-                  <button onClick={() => setStep(2)}
-                    className="flex-1 py-2.5 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50">
-                    ← 返回
-                  </button>
-                  <button onClick={() => setStep(4)}
-                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700">
-                    ④ 下一步：导出 →
-                  </button>
-                </div>
-              </>
+              </div>
             )}
-          </div>
-        </div>
-      )}
 
-      {/* Step 4: Export */}
-      {step === 4 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 text-center">
-          <h3 className="font-semibold text-gray-800 mb-2">📥 导出 Excel</h3>
-          <p className="text-sm text-gray-500 mb-6">
-            反馈已生成，点击下载 Excel 文件归档。
-          </p>
-          <div className="flex gap-3 justify-center">
-            <button onClick={() => setStep(3)}
-              className="py-2.5 px-6 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50">
-              ← 返回
-            </button>
-            <button onClick={handleExport}
-              className="bg-purple-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-purple-700">
-              📥 下载 Excel
-            </button>
-          </div>
-        </div>
-      )}
+            {reviewResult && !reviewResult.is_valid && (
+              <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                自审发现 {reviewResult.issues.length} 个问题：{reviewResult.issues.join("；")}
+              </div>
+            )}
 
+            {!parsedResult ? (
+              <div className="rounded-lg border border-dashed border-gray-200 p-8 text-center text-sm text-gray-400">
+                解析课堂回顾后，学生记录会显示在这里。
+              </div>
+            ) : (
+              <div className="max-h-[520px] space-y-3 overflow-y-auto pr-1">
+                {parsedResult.students.map((student: ParsedStudent, index: number) => (
+                  <div key={`${student.name}-${index}`} className="rounded-lg border border-gray-100 p-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="font-semibold text-gray-800">{student.name}</span>
+                      {typeof student.present === "boolean" && (
+                        <div className="ml-auto flex overflow-hidden rounded-lg border border-gray-300">
+                          <button
+                            type="button"
+                            onClick={() => setParsedAttendance(index, true)}
+                            className={`px-2.5 py-1 text-xs ${student.present ? "bg-green-600 text-white" : "bg-white text-gray-500"}`}
+                          >
+                            出勤
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setParsedAttendance(index, false)}
+                            className={`px-2.5 py-1 text-xs ${!student.present ? "bg-red-600 text-white" : "bg-white text-gray-500"}`}
+                          >
+                            缺勤
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-sm">
+                      {(["A", "B", "C"] as const).map((dim) => (
+                        <span key={dim}>
+                          <span className="text-gray-400">{dimLabel[dim]}：</span>
+                          <span className="font-mono font-medium">{student.scores[dim] != null ? `${student.scores[dim]} 分` : "—"}</span>
+                        </span>
+                      ))}
+                    </div>
+                    {student.events && student.events.length > 0 && (
+                      <div className="mt-1 text-xs text-gray-500">{student.events.join("、")}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <section className="rounded-lg border border-gray-200 bg-white p-5">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-gray-800">反馈生成与导出</h3>
+              <p className="text-sm text-gray-500 mt-1">生成后可逐条修改，导出会使用最终文本。</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleGenerate}
+                disabled={!canGenerate}
+                className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {generating ? `生成中 ${feedbackDone}/${feedbackTotal}` : "批量生成"}
+              </button>
+              <button
+                onClick={handleExport}
+                disabled={exporting || feedbackCards.length === 0}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+              >
+                {exporting ? "导出中..." : "导出 Excel"}
+              </button>
+            </div>
+          </div>
+
+          {feedbackCards.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-gray-200 p-10 text-center text-sm text-gray-400">
+              选择课次并生成后，每个学生的反馈卡片会显示在这里。
+            </div>
+          ) : (
+            <div className="max-h-[760px] space-y-3 overflow-y-auto pr-1">
+              {feedbackCards.map((card) => {
+                const context = contextByStudent.get(card.id);
+                return (
+                  <div key={card.id} className="rounded-lg border border-gray-200 p-4">
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-gray-800">{card.name}</span>
+                      {(context?.labels.length ? context.labels : card.labels).map((label) => (
+                        <span key={label} className="rounded border border-blue-100 bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700">{label}</span>
+                      ))}
+                    </div>
+                    {context && (
+                      <div className="mb-3 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
+                        {context.preview.today.slice(0, 2).join("；")}
+                        {context.preview.communications.length > 0 ? `；${context.preview.communications[0]}` : ""}
+                      </div>
+                    )}
+                    <textarea
+                      value={card.feedback}
+                      onChange={(e) => updateFeedback(card.id, e.target.value)}
+                      className="min-h-[110px] w-full resize-y rounded-md border border-gray-300 px-3 py-2 text-sm leading-6 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <div className="mt-3 flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void navigator.clipboard?.writeText(card.feedback)}
+                        className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+                      >
+                        复制
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void regenerateOne(card.id)}
+                        disabled={regeneratingId === card.id}
+                        className="rounded-md border border-amber-200 px-3 py-1.5 text-sm font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                      >
+                        {regeneratingId === card.id ? "生成中..." : "单独重写"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

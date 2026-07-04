@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
-import { buildFeedbackContext, type FeedbackContextPreview } from "@/services/feedback-context-service";
+import {
+  buildFeedbackContext,
+  type FeedbackContextPreview,
+  type FeedbackContextStudent,
+} from "@/services/feedback-context-service";
 import * as XLSX from "xlsx";
 
 type HistoryModule = "feedback" | "report";
@@ -48,6 +52,36 @@ function parseHistoryState(value: string): FeedbackState | null {
   } catch { return null; }
 }
 
+function submittedCardsFrom(
+  value: unknown,
+  contextByStudent: Map<string, FeedbackContextStudent>
+): FeedbackCard[] | null {
+  if (!Array.isArray(value)) return null;
+
+  const cards: FeedbackCard[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const id = "id" in item ? item.id : undefined;
+    if (typeof id !== "string") continue;
+
+    const student = contextByStudent.get(id);
+    if (!student) continue;
+
+    const feedback = "feedback" in item && typeof item.feedback === "string"
+      ? item.feedback.trim()
+      : "";
+    cards.push({
+      id: student.id,
+      name: student.name,
+      labels: student.labels,
+      feedback,
+      contextPreview: student.preview,
+    });
+  }
+
+  return cards;
+}
+
 // GET /api/report/feedback-batch?sessionCode=xxx&module=feedback
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -87,17 +121,46 @@ export async function POST(request: NextRequest) {
     const sessionCode = body.sessionCode as string | undefined;
     const historyModule = moduleFrom(body.historyModule);
     const bypassCache = body.bypassCache === true;
+    const saveState = body.saveState === true;
     if (!sessionCode) return NextResponse.json({ error: "缺少课次编码" }, { status: 400 });
     if (!historyModule) return NextResponse.json({ error: "无效的历史模块" }, { status: 400 });
 
     const key = cacheKey(historyModule, sessionCode);
     const cached = cache.get(key);
-    if (!bypassCache && cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    if (!saveState && !bypassCache && cached && Date.now() - cached.timestamp < CACHE_TTL) {
       return NextResponse.json({ cached: true, ...cached.state });
     }
 
     const feedbackContext = await buildFeedbackContext(prisma, sessionCode);
     const contextByStudent = new Map(feedbackContext.students.map((student) => [student.id, student]));
+
+    if (saveState) {
+      const cards = submittedCardsFrom(body.students, contextByStudent);
+      if (!cards || cards.length === 0) {
+        return NextResponse.json({ error: "没有可保存的反馈内容" }, { status: 400 });
+      }
+
+      const state: FeedbackState = {
+        kind: "batch",
+        semesterId: feedbackContext.session.semesterId,
+        sessionCode,
+        className: feedbackContext.className,
+        students: cards,
+        total: cards.length,
+      };
+      const buffer = buildWorkbook(cards);
+      cache.set(key, { buffer, timestamp: Date.now(), state });
+      await prisma.workHistory.create({
+        data: {
+          module: historyModule,
+          key: sessionCode,
+          title: `${feedbackContext.className} ${sessionCode} 保存反馈`,
+          state: JSON.stringify(state),
+        },
+      });
+
+      return NextResponse.json({ saved: true, ...state });
+    }
 
     const client = createLLMClient();
     const model = getLLMModel();
