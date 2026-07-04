@@ -86,12 +86,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const sessionCode = body.sessionCode as string | undefined;
     const historyModule = moduleFrom(body.historyModule);
+    const bypassCache = body.bypassCache === true;
     if (!sessionCode) return NextResponse.json({ error: "缺少课次编码" }, { status: 400 });
     if (!historyModule) return NextResponse.json({ error: "无效的历史模块" }, { status: 400 });
 
     const key = cacheKey(historyModule, sessionCode);
     const cached = cache.get(key);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    if (!bypassCache && cached && Date.now() - cached.timestamp < CACHE_TTL) {
       return NextResponse.json({ cached: true, ...cached.state });
     }
 

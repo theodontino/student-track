@@ -138,5 +138,21 @@ describe("feedback batch NDJSON stream", () => {
         expect.objectContaining({ id: "student-2", feedback: "乙反馈" }),
       ],
     });
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(2);
+
+    mocks.completionCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: "甲新反馈" } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: "乙新反馈" } }] });
+    const refreshed = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionCode: "VITEST-STREAM", historyModule: "feedback", bypassCache: true }),
+    }));
+    const refreshedEvents = (await refreshed.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(refreshedEvents[3].students).toEqual([
+      expect.objectContaining({ id: "student-1", feedback: "甲新反馈" }),
+      expect.objectContaining({ id: "student-2", feedback: "乙新反馈" }),
+    ]);
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(4);
   });
 });

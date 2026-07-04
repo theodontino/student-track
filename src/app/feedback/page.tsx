@@ -4,21 +4,11 @@ import { useEffect, useState } from "react";
 import SemesterPicker from "@/components/SemesterPicker";
 import { readSSEStream } from "@/lib/sse";
 import WorkHistoryButton from "@/components/WorkHistoryButton";
+import FeedbackContextPreview from "@/components/FeedbackContextPreview";
+import WeComWorkflowPanel from "@/components/wecom/WeComWorkflowPanel";
+import type { FeedbackContextStudent } from "@/components/wecom/types";
 
 interface FeedbackCard { id: string; name: string; labels: string[]; feedback: string; }
-interface FeedbackContextPreview {
-  today: string[];
-  trend: string;
-  communications: string[];
-  labels: string[];
-}
-interface FeedbackContextStudent {
-  id: string;
-  name: string;
-  studentId: string;
-  labels: string[];
-  preview: FeedbackContextPreview;
-}
 interface FeedbackContextResponse {
   className: string;
   total: number;
@@ -63,6 +53,7 @@ export default function FeedbackWizardPage() {
   const [contextStudents, setContextStudents] = useState<FeedbackContextStudent[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
+  const [contextReloadKey, setContextReloadKey] = useState(0);
 
   useEffect(() => {
     const draft = sessionStorage.getItem("chem-track:feedback-draft");
@@ -97,7 +88,7 @@ export default function FeedbackWizardPage() {
 
     void loadFeedbackContext();
     return () => { cancelled = true; };
-  }, [step, sessionCode]);
+  }, [step, sessionCode, contextReloadKey]);
 
   function onSemIdChange(id: string) { setSemesterId(id); setClassName(""); setSessionCode(""); }
   function onClsChange(cls: string) { setClassName(cls); setSessionCode(""); }
@@ -170,7 +161,7 @@ export default function FeedbackWizardPage() {
       const res = await fetch("/api/report/feedback-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionCode, historyModule: "feedback" }),
+        body: JSON.stringify({ sessionCode, historyModule: "feedback", bypassCache: contextReloadKey > 0 }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
 
@@ -226,12 +217,13 @@ export default function FeedbackWizardPage() {
     setFeedbackDone(state.total);
     setContextStudents([]);
     setContextError("");
+    setContextReloadKey(0);
     setStep(4);
     setError("");
   }
 
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-5xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold text-gray-800">🚀 课后反馈工作台</h2>
@@ -414,95 +406,66 @@ export default function FeedbackWizardPage() {
 
       {/* Step 3: Generate Feedback */}
       {step === 3 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="font-semibold text-gray-800 mb-4">📋 生成家长反馈</h3>
-
-          <div className="mb-5 rounded-lg border border-blue-100 bg-blue-50/60 p-4">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div>
-                <h4 className="text-sm font-semibold text-blue-900">生成前上下文预览</h4>
-                <p className="text-xs text-blue-700 mt-1">这里展示本次反馈会参考的今日表现、近期趋势、家校沟通和标签。</p>
-              </div>
-              {contextLoading && <span className="text-xs text-blue-600">读取中...</span>}
-            </div>
-
-            {contextError ? (
-              <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{contextError}</div>
-            ) : contextStudents.length === 0 ? (
-              <div className="text-sm text-blue-700">{contextLoading ? "正在整理上下文..." : "暂无可预览上下文"}</div>
-            ) : (
-              <div className="space-y-2 max-h-80 overflow-y-auto">
-                {contextStudents.map((student) => (
-                  <div key={student.id} className="rounded-md border border-blue-100 bg-white p-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <span className="font-semibold text-gray-800">{student.name}</span>
-                      {student.preview.labels.length > 0 ? student.preview.labels.map((label) => (
-                        <span key={label} className="rounded border border-blue-100 bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700">{label}</span>
-                      )) : <span className="text-xs text-gray-400">暂无标签</span>}
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-2">
-                      <div>
-                        <div className="text-xs font-medium text-gray-400 mb-1">今日表现</div>
-                        <ul className="space-y-0.5 text-gray-700">
-                          {student.preview.today.map((line) => <li key={line}>{line}</li>)}
-                        </ul>
-                      </div>
-                      <div>
-                        <div className="text-xs font-medium text-gray-400 mb-1">近期趋势</div>
-                        <p className="text-gray-700 leading-6">{student.preview.trend}</p>
-                      </div>
-                    </div>
-                    <div className="mt-2">
-                      <div className="text-xs font-medium text-gray-400 mb-1">家校沟通</div>
-                      {student.preview.communications.length > 0 ? (
-                        <ul className="space-y-1 text-gray-700">
-                          {student.preview.communications.map((line) => <li key={line}>{line}</li>)}
-                        </ul>
-                      ) : (
-                        <p className="text-gray-400">暂无近期家校沟通</p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+        <div className="space-y-5">
+          <div>
+            <h3 className="font-semibold text-gray-800">📋 生成家长反馈</h3>
+            <p className="text-sm text-gray-500 mt-1">先整理家校沟通上下文，再确认系统会参考什么，最后生成今晚可发的反馈。</p>
           </div>
 
-          {feedbackCards.length === 0 ? (
-            <div className="text-center py-10">
-              <p className="text-gray-400 mb-4">将为 {className} 通过 {sessionCode} 生成反馈</p>
-              <button onClick={handleGenerate} disabled={generating}
-                className="bg-amber-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50">
-                {generating ? `生成中 ${feedbackDone}/${feedbackTotal}...` : "③ 生成 →"}
-              </button>
-            </div>
-          ) : (
-            <>
-              {generating && (
-                <div className="text-sm text-amber-600 mb-4">
-                  生成中 {feedbackDone}/{feedbackTotal}...
-                </div>
-              )}
-              <div className="space-y-2 mb-6 max-h-[400px] overflow-y-auto">
-                {feedbackCards.map((c, i) => (
-                  <div key={i} className="border border-gray-100 rounded-lg p-3 text-sm">
-                    <div className="font-medium text-gray-800 mb-1">{c.name}</div>
-                    <div className="text-gray-600 whitespace-pre-wrap">{c.feedback || "待生成..."}</div>
+          <WeComWorkflowPanel
+            title="课前家校沟通准备"
+            description="在工作台内同步、提取、预览并导入会影响本次反馈的家校沟通。"
+            onApplied={() => {
+              setFeedbackCards([]);
+              setFeedbackDone(0);
+              setFeedbackTotal(0);
+              setContextReloadKey((current) => current + 1);
+            }}
+          />
+
+          <FeedbackContextPreview
+            students={contextStudents}
+            loading={contextLoading}
+            error={contextError}
+          />
+
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            {feedbackCards.length === 0 ? (
+              <div className="text-center py-10">
+                <p className="text-gray-400 mb-4">将为 {className} 通过 {sessionCode} 生成反馈</p>
+                <button onClick={handleGenerate} disabled={generating}
+                  className="bg-amber-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50">
+                  {generating ? `生成中 ${feedbackDone}/${feedbackTotal}...` : "③ 生成 →"}
+                </button>
+              </div>
+            ) : (
+              <>
+                {generating && (
+                  <div className="text-sm text-amber-600 mb-4">
+                    生成中 {feedbackDone}/{feedbackTotal}...
                   </div>
-                ))}
-              </div>
-              <div className="flex gap-3">
-                <button onClick={() => setStep(2)}
-                  className="flex-1 py-2.5 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50">
-                  ← 返回
-                </button>
-                <button onClick={() => setStep(4)}
-                  className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700">
-                  ④ 下一步：导出 →
-                </button>
-              </div>
-            </>
-          )}
+                )}
+                <div className="space-y-2 mb-6 max-h-[400px] overflow-y-auto">
+                  {feedbackCards.map((c, i) => (
+                    <div key={i} className="border border-gray-100 rounded-lg p-3 text-sm">
+                      <div className="font-medium text-gray-800 mb-1">{c.name}</div>
+                      <div className="text-gray-600 whitespace-pre-wrap">{c.feedback || "待生成..."}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={() => setStep(2)}
+                    className="flex-1 py-2.5 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50">
+                    ← 返回
+                  </button>
+                  <button onClick={() => setStep(4)}
+                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700">
+                    ④ 下一步：导出 →
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
