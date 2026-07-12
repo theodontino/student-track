@@ -38,7 +38,9 @@ export default function WorkHistoryButton<T>({ module, modules, accept, onRestor
   async function clearAll() {
     if (!items.length || !confirm("清空当前模块的全部历史？此操作不可撤销。")) return;
     const targets = modules ?? (module ? [module] : []);
-    const responses = await Promise.all(targets.map((target) => fetch(`/api/history?module=${encodeURIComponent(target)}`, { method: "DELETE" })));
+    const responses = accept || targets.length > 1
+      ? await Promise.all(items.map((item) => fetch(`/api/history?id=${encodeURIComponent(item.id)}`, { method: "DELETE" })))
+      : await Promise.all(targets.map((target) => fetch(`/api/history?module=${encodeURIComponent(target)}`, { method: "DELETE" })));
     if (responses.every((response) => response.ok)) setItems([]);
   }
 
