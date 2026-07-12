@@ -96,3 +96,43 @@ $HOME/.openclaw/skills/wecomcatch-archive/scripts/wecomcatch.sh
 Web UI 只暴露状态、启动同步、同步状态和导出记录四类操作。同步不会自动运行；启动同步前应确认 Mac 已解锁，并理解企微会话切换可能改变未读状态。
 
 企微导出文本可以在系统设置中交给当前 LLM 配置生成 Chem-Track 候选 JSON。候选 JSON 必须先经过预览导入；只有用户确认写入时，才会调用导入服务写入 `Communication`，并在写入前自动备份数据库。
+
+## 发布与封档
+
+正式检查点按以下顺序执行：
+
+```bash
+git status --short
+npm run db:backup
+npm run db:verify-backup
+npx prisma migrate status
+npm run docs:generate
+npm run docs:check
+npm test
+npx tsc --noEmit
+npm run lint
+npm run build
+```
+
+确认页面和只读接口正常后，再提交版本文件并创建带说明的 Git 标签。`package.json` 与标签使用同一版本号；运行数据和数据库备份不提交 Git。
+
+```bash
+git commit -m "Archive vX.Y.Z"
+git tag -a vX.Y.Z -m "Chem-Track vX.Y.Z"
+```
+
+封档完成后至少保留：可校验的数据库备份、干净工作区、通过的迁移状态、最新生成文档、发布提交和版本标签。
+
+## 后续接手开发
+
+新任务开始前按顺序阅读 `AGENTS.md`、`docs/DOMAIN.md`、`docs/ARCHITECTURE.md` 和与任务相关的代码。随后执行：
+
+```bash
+git status --short
+git log -5 --oneline
+npm run docs:check
+npx prisma migrate status
+npm test
+```
+
+本地外部依赖需要单独确认：LLM 配置保存在本机运行配置中；音频转写依赖 `~/tools/funasr-diarize`；企微同步依赖运维手册前述固定 WeComCatch wrapper。核心学生数据以 `dev.db` 及通过验证的 `archives/` 备份为准。
