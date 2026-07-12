@@ -33,6 +33,7 @@ const GROUPS: NavGroup[] = [
     children: [
       { href: "/report", label: "报告与导出", icon: "📋" },
       { href: "/history", label: "历史记录", icon: "🕘" },
+      { href: "/past-overview", label: "往期回顾", icon: "📊" },
       { href: "/export", label: "全量数据导出", icon: "📥" },
     ],
   },

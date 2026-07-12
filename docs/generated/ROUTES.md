@@ -10,11 +10,13 @@
 | `/api/diarize/tasks/[id]` | `DELETE`, `GET` |
 | `/api/diarize/tasks` | `GET`, `POST` |
 | `/api/export` | `POST` |
+| `/api/feedback/assistant-roster` | `POST` |
 | `/api/history` | `DELETE`, `GET`, `POST` |
 | `/api/input/parse` | `POST` |
 | `/api/quick-score` | `GET`, `POST` |
 | `/api/report/daily` | `POST` |
 | `/api/report/feedback-batch` | `GET`, `POST` |
+| `/api/report/feedback-context` | `GET` |
 | `/api/report/feedback` | `POST` |
 | `/api/review` | `GET`, `POST` |
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
@@ -28,3 +30,9 @@
 | `/api/students` | `GET`, `POST` |
 | `/api/system/archive` | `POST` |
 | `/api/system/logs` | `GET` |
+| `/api/wecom/bridge` | `POST` |
+| `/api/wecom/import` | `GET`, `POST` |
+| `/api/wecomcatch/export` | `POST` |
+| `/api/wecomcatch/status` | `GET` |
+| `/api/wecomcatch/sync-start` | `POST` |
+| `/api/wecomcatch/sync-status` | `GET` |

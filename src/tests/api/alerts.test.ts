@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { NextRequest } from "next/server";
 import { GET } from "@/app/api/alerts/route";
 
 describe("/api/alerts", () => {
@@ -27,5 +28,12 @@ describe("/api/alerts", () => {
     expect(first).toHaveProperty("avgD");
     expect(first).toHaveProperty("studentCount");
     expect(first).toHaveProperty("lastActivityAt");
+  });
+
+  it("returns 404 for an unknown explicit semester", async () => {
+    const request = new NextRequest("http://localhost:3000/api/alerts?semesterId=NO-SUCH-SEMESTER");
+    const response = await GET(request);
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: "学期不存在" });
   });
 });
