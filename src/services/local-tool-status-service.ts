@@ -90,13 +90,14 @@ export function resolveWeComCatchPaths(options: LocalToolStatusOptions = {}): Re
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? os.homedir();
-  const projectRoot = path.join(cwd, "tools", "wecomcatch");
-  const cli = resolveOverride(
-    env.WECOMCATCH_CLI_PATH,
-    path.join(projectRoot, "bin", "wecomcatch"),
-    cwd,
-    homeDir,
-  );
+  const configuredCli = env.WECOMCATCH_CLI_PATH?.trim()
+    ? expandPath(env.WECOMCATCH_CLI_PATH.trim(), cwd, homeDir)
+    : null;
+  const inferredRoot = configuredCli
+    ? path.dirname(path.dirname(configuredCli))
+    : path.join(homeDir, "wecomcatch");
+  const projectRoot = resolveOverride(env.WECOMCATCH_PROJECT_ROOT, inferredRoot, cwd, homeDir);
+  const cli = configuredCli ?? path.join(projectRoot, "bin", "wecomcatch");
   const runtimeDir = resolveOverride(
     env.WECOMCATCH_RUNTIME_DIR,
     path.join(projectRoot, "runtime"),
@@ -356,6 +357,7 @@ export function inspectWeComCatch(options: LocalToolStatusOptions = {}): LocalTo
     status,
     summary: summaryFor(status),
     checks,
+    notice: "WeComCatch 是仓库外的可选本地工具；Chem-Track 不包含或分发其源码和运行数据。",
   };
 }
 

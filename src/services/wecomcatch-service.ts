@@ -1,11 +1,16 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { resolve } from "node:path";
 
-export const WECOMCATCH_SCRIPT_PATH = resolve(process.cwd(), "tools/wecomcatch/bin/wecomcatch");
-
-export function resolveWeComCatchScriptPath(env: NodeJS.ProcessEnv = process.env) {
+export function resolveWeComCatchScriptPath(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+) {
   const configuredPath = env.WECOMCATCH_CLI_PATH?.trim();
-  return configuredPath ? resolve(configuredPath) : WECOMCATCH_SCRIPT_PATH;
+  if (configuredPath) return resolve(configuredPath);
+
+  const configuredRoot = env.WECOMCATCH_PROJECT_ROOT?.trim();
+  if (configuredRoot) return resolve(configuredRoot, "bin", "wecomcatch");
+
+  throw new Error("未配置外部 WeComCatch；请设置 WECOMCATCH_CLI_PATH 或 WECOMCATCH_PROJECT_ROOT");
 }
 
 export type WeComCatchCommand = "status" | "sync-start" | "sync-status" | "export";

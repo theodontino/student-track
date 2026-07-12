@@ -101,11 +101,11 @@ Chem-Track 调用本地转写时默认使用纯转写模式，不输出说话人
 
 ## WeComCatch 手动入口
 
-Chem-Track 默认调用 `tools/wecomcatch/bin/wecomcatch`。该目录是可独立定制的源码副本，不包含运行数据、本地配置、编译产物或备份。
+WeComCatch 是仓库外的可选本地工具，Chem-Track 不包含或分发它的源码、运行数据、本地配置、编译产物或备份。使用前必须在 `.env` 中配置 `WECOMCATCH_PROJECT_ROOT` 或 `WECOMCATCH_CLI_PATH`。
 
-数据迁移前，可在 `.env` 中使用 `WECOMCATCH_RUNTIME_DIR` 和 `WECOMCATCH_CONFIG_PATH` 指向原目录。`WECOMCATCH_CLI_PATH` 可在回退时指向旧 wrapper，`WECOMCATCH_BUILD_DIR` 用于单独覆盖编译产物目录。
+`WECOMCATCH_RUNTIME_DIR` 和 `WECOMCATCH_CONFIG_PATH` 可分别指向外部运行目录和本地配置，`WECOMCATCH_BUILD_DIR` 用于单独覆盖编译产物目录。未配置外部工具时，相关状态和同步功能应保持不可用，不影响 Chem-Track 核心功能。
 
-Web UI 只暴露状态、启动同步、同步状态和导出记录四类操作。同步不会自动运行；启动同步前应确认 Mac 已解锁，并理解企微会话切换可能改变未读状态。
+Web UI 只暴露状态、启动同步、同步状态和导出记录四类操作。同步不会自动运行；实际使用前还应确认符合企业微信协议、所在组织的数据规则和适用的个人信息保护要求。
 
 企微导出文本可以在系统设置中交给当前 LLM 配置生成 Chem-Track 候选 JSON。候选 JSON 必须先经过预览导入；只有用户确认写入时，才会调用导入服务写入 `Communication`，并在写入前自动备份数据库。
 
@@ -149,4 +149,4 @@ npx prisma migrate status
 npm test
 ```
 
-本地外部依赖需要单独确认：LLM 配置保存在本机运行配置中；音频转写依赖 `~/tools/funasr-diarize`；企微同步依赖项目内 WeComCatch CLI 与显式配置的运行目录。核心学生数据以 `dev.db` 及通过验证的 `archives/` 备份为准。
+本地外部依赖需要单独确认：LLM 配置保存在本机运行配置中；音频转写依赖 `~/tools/funasr-diarize`；企微同步依赖仓库外 WeComCatch CLI 与显式配置的运行目录。核心学生数据以 `dev.db` 及通过验证的 `archives/` 备份为准。

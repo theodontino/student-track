@@ -46,6 +46,7 @@ function installWeComCatchFixture(cwd: string) {
   writeFile(path.join(root, "bin", "wecomcatch"), "#!/bin/sh\n", true);
   writeFile(path.join(root, "config.local.json"), '{"apiKey":"never-return-this"}');
   writeFile(path.join(root, "runtime", "archive.sqlite3"), "private-chat-content");
+  return root;
 }
 
 afterEach(() => {
@@ -58,12 +59,16 @@ describe("local-tool-status-service", () => {
   it("reports available fixtures without returning config or database contents", () => {
     const { cwd, homeDir } = temporaryProject();
     installFunASRFixture(cwd, homeDir);
-    installWeComCatchFixture(cwd);
+    const weComCatchRoot = installWeComCatchFixture(cwd);
     const commandDir = path.join(cwd, "commands");
     writeFile(path.join(commandDir, "ffmpeg"), "#!/bin/sh\n", true);
     writeFile(path.join(commandDir, "ffprobe"), "#!/bin/sh\n", true);
 
-    const result = getLocalToolsStatus({ cwd, homeDir, env: { PATH: commandDir } });
+    const result = getLocalToolsStatus({
+      cwd,
+      homeDir,
+      env: { PATH: commandDir, WECOMCATCH_PROJECT_ROOT: weComCatchRoot },
+    });
 
     expect(result.tools.map((tool) => [tool.id, tool.status])).toEqual([
       ["funasr", "available"],
@@ -96,8 +101,8 @@ describe("local-tool-status-service", () => {
 
     const paths = resolveWeComCatchPaths({ cwd, homeDir, env });
     expect(paths.cli).toBe(path.join(cwd, "custom", "bin", "wecomcatch"));
-    expect(paths.runtimeDir).toBe(path.join(cwd, "tools", "wecomcatch", "shared-runtime"));
-    expect(paths.config).toBe(path.join(cwd, "tools", "wecomcatch", "shared-config.json"));
+    expect(paths.runtimeDir).toBe(path.join(cwd, "custom", "shared-runtime"));
+    expect(paths.config).toBe(path.join(cwd, "custom", "shared-config.json"));
     expect(inspectWeComCatch({ cwd, homeDir, env }).status).toBe("unavailable");
     expect(preflightWeComCatchSync({ cwd, homeDir, env }).ready).toBe(false);
   });
