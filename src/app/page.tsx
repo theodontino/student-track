@@ -11,6 +11,7 @@ interface ClassOverview {
   avgC: number;
   avgD?: number;
   studentCount: number;
+  lastActivityAt: string;
 }
 
 interface ClassAlert {
@@ -32,6 +33,7 @@ interface StudentAlert {
 }
 
 interface DashboardData {
+  semester: { id: string; name: string; startDate: string; endDate: string } | null;
   classOverview: ClassOverview[];
   classAlerts: ClassAlert[];
   studentAlerts: StudentAlert[];
@@ -82,7 +84,14 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-5xl mx-auto">
-      <h2 className="text-2xl font-bold text-gray-800 mb-6">仪表盘</h2>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-2xl font-bold text-gray-800">仪表盘</h2>
+        {data.semester && (
+          <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm text-blue-700">
+            {data.semester.name} · 当前学期
+          </div>
+        )}
+      </div>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -90,13 +99,13 @@ export default function DashboardPage() {
           <div className="text-3xl font-bold text-blue-600">
             {data.totalStudents}
           </div>
-          <div className="text-sm text-gray-500 mt-1">学生总数</div>
+          <div className="text-sm text-gray-500 mt-1">本学期学生</div>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="text-3xl font-bold text-green-600">
             {data.classOverview.length}
           </div>
-          <div className="text-sm text-gray-500 mt-1">班级数</div>
+          <div className="text-sm text-gray-500 mt-1">本学期班级</div>
         </div>
         <div className={`bg-white rounded-xl border p-5 ${data.redCount > 0 ? "border-red-200" : "border-gray-200"}`}>
           <div className={`text-3xl font-bold ${data.redCount > 0 ? "text-red-600" : "text-gray-400"}`}>
@@ -225,10 +234,17 @@ export default function DashboardPage() {
       )}
 
       {/* No alerts */}
-      {data.classAlerts.length === 0 && data.studentAlerts.length === 0 && (
+      {data.totalStudents > 0 && data.classAlerts.length === 0 && data.studentAlerts.length === 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-gray-400 mb-6">
           <p className="text-3xl mb-2">✅</p>
           <p>当前无预警</p>
+        </div>
+      )}
+
+      {data.totalStudents === 0 && (
+        <div className="mb-6 rounded-lg border border-gray-200 bg-white p-10 text-center text-gray-400">
+          <p className="text-3xl mb-2">📭</p>
+          <p>{data.semester ? `${data.semester.name} 暂无学生状态记录` : "暂无可用学期"}</p>
         </div>
       )}
 

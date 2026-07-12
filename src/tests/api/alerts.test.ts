@@ -7,6 +7,7 @@ describe("/api/alerts", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveProperty("classOverview");
+    expect(body).toHaveProperty("semester");
     expect(body).toHaveProperty("classAlerts");
     expect(body).toHaveProperty("studentAlerts");
     expect(body).toHaveProperty("totalStudents");
@@ -25,5 +26,6 @@ describe("/api/alerts", () => {
     expect(first).toHaveProperty("avgC");
     expect(first).toHaveProperty("avgD");
     expect(first).toHaveProperty("studentCount");
+    expect(first).toHaveProperty("lastActivityAt");
   });
 });

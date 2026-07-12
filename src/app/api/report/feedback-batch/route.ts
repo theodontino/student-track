@@ -120,7 +120,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!state) return NextResponse.json({ error: "尚未生成反馈" }, { status: 404 });
-  const dashboard = await getAlertDashboard();
+  const dashboard = await getAlertDashboard({ semesterId: state.semesterId });
   const buffer = await buildFeedbackExportWorkbook(
     prisma,
     sessionCode,

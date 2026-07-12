@@ -1,3 +1,4 @@
+import type { PrismaClient } from "@/generated/prisma/client";
 import {
   ALERT_RULES,
   calculateStudentAlertCutoffs,
@@ -7,14 +8,23 @@ import {
 } from "@/config/rules";
 import { DIM_LABEL } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
+import { ServiceError } from "@/services/service-error";
 
-interface ClassOverview {
+export interface DashboardSemester {
+  id: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+}
+
+export interface ClassOverview {
   name: string;
   avgA: number;
   avgB: number;
   avgC: number;
   avgD: number;
   studentCount: number;
+  lastActivityAt: string;
 }
 
 export interface StudentAlert {
@@ -26,155 +36,226 @@ export interface StudentAlert {
   classAvg: number;
   deviation: number;
   severity: AlertSeverity;
+  lastActivityAt: string;
 }
 
-function currentDate() {
-  const date = new Date();
+export interface AlertDashboard {
+  semester: DashboardSemester | null;
+  classOverview: ClassOverview[];
+  classAlerts: Array<{
+    className: string;
+    dimension: string;
+    avgScore: number;
+    severity: AlertSeverity;
+  }>;
+  studentAlerts: StudentAlert[];
+  totalStudents: number;
+  redCount: number;
+  yellowCount: number;
+}
+
+interface AlertDashboardOptions {
+  semesterId?: string;
+  now?: Date;
+}
+
+function localDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
-/** Calculates dashboard summaries and alerts from current persisted data. */
-export async function getAlertDashboard() {
-  const students = await prisma.student.findMany({
-    include: { class: { select: { name: true, code: true } } },
-  });
-  if (students.length === 0) {
-    return {
-      classOverview: [],
-      classAlerts: [],
-      studentAlerts: [],
-      totalStudents: 0,
-      redCount: 0,
-      yellowCount: 0,
-    };
+function emptyDashboard(semester: DashboardSemester | null): AlertDashboard {
+  return {
+    semester,
+    classOverview: [],
+    classAlerts: [],
+    studentAlerts: [],
+    totalStudents: 0,
+    redCount: 0,
+    yellowCount: 0,
+  };
+}
+
+async function resolveSemester(
+  db: PrismaClient,
+  options: AlertDashboardOptions,
+): Promise<DashboardSemester | null> {
+  const select = { id: true, name: true, startDate: true, endDate: true } as const;
+  if (options.semesterId) {
+    const semester = await db.semester.findUnique({ where: { id: options.semesterId }, select });
+    if (!semester) throw new ServiceError("学期不存在", 404);
+    return semester;
   }
 
-  const allMetrics = await prisma.sessionMetric.findMany({
-    where: { studentId: { in: students.map((student) => student.id) } },
-    orderBy: { createdAt: "desc" },
+  const today = localDate(options.now ?? new Date());
+  const active = await db.semester.findFirst({
+    where: { startDate: { lte: today }, endDate: { gte: today } },
+    orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+    select,
   });
-  const metricsByStudent = new Map<string, typeof allMetrics>();
-  for (const metric of allMetrics) {
-    const metrics = metricsByStudent.get(metric.studentId) ?? [];
-    if (metrics.length < 3) metrics.push(metric);
-    metricsByStudent.set(metric.studentId, metrics);
-  }
+  if (active) return active;
 
-  const semester = await prisma.semester.findFirst({
-    where: { startDate: { lte: currentDate() }, endDate: { gte: currentDate() } },
-    orderBy: { startDate: "desc" },
-    include: { sessions: { select: { id: true } } },
+  const latestSession = await db.classSession.findFirst({
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    select: { semester: { select } },
   });
-  const sessionIds = semester?.sessions.map((session) => session.id) ?? [];
-  const absenceMap = new Map<string, number>();
-  if (sessionIds.length > 0) {
-    const attendances = await prisma.attendance.findMany({
-      where: { sessionId: { in: sessionIds }, present: false },
-      select: { studentId: true },
-    });
-    for (const attendance of attendances) {
-      absenceMap.set(attendance.studentId, (absenceMap.get(attendance.studentId) ?? 0) + 1);
+  if (latestSession) return latestSession.semester;
+
+  return db.semester.findFirst({
+    orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+    select,
+  });
+}
+
+function maximumDate(values: Date[]) {
+  if (values.length === 0) return new Date(0);
+  return new Date(Math.max(...values.map((value) => value.getTime())));
+}
+
+/** Calculates semester-isolated dashboard summaries and alerts. */
+export async function getAlertDashboard(
+  options: AlertDashboardOptions = {},
+  db: PrismaClient = prisma,
+): Promise<AlertDashboard> {
+  const semester = await resolveSemester(db, options);
+  if (!semester) return emptyDashboard(null);
+
+  const sessions = await db.classSession.findMany({
+    where: { semesterId: semester.id },
+    orderBy: [{ date: "desc" }, { semesterNumber: "desc" }, { createdAt: "desc" }],
+    select: {
+      id: true,
+      date: true,
+      semesterNumber: true,
+      createdAt: true,
+      classId: true,
+      class: { select: { code: true, name: true } },
+    },
+  });
+  if (sessions.length === 0) return emptyDashboard(semester);
+
+  const sessionIds = sessions.map((session) => session.id);
+  const sessionById = new Map(sessions.map((session, index) => [session.id, { ...session, rank: sessions.length - index }]));
+  const [attendances, metrics, events, communications] = await Promise.all([
+    db.attendance.findMany({ where: { sessionId: { in: sessionIds } } }),
+    db.sessionMetric.findMany({ where: { sessionId: { in: sessionIds } } }),
+    db.event.findMany({ where: { sessionId: { in: sessionIds } }, select: { studentId: true, sessionId: true, createdAt: true } }),
+    db.communication.findMany({ where: { sessionId: { in: sessionIds } }, select: { studentId: true, sessionId: true, createdAt: true } }),
+  ]);
+
+  const studentSessionIds = new Map<string, Set<string>>();
+  const activityDates = new Map<string, Date[]>();
+  const registerActivity = (studentId: string, sessionId: string, createdAt: Date) => {
+    const participated = studentSessionIds.get(studentId) ?? new Set<string>();
+    participated.add(sessionId);
+    studentSessionIds.set(studentId, participated);
+    activityDates.set(studentId, [...(activityDates.get(studentId) ?? []), createdAt]);
+  };
+  for (const item of attendances) registerActivity(item.studentId, item.sessionId, item.createdAt);
+  for (const item of metrics) {
+    if (item.sessionId) registerActivity(item.studentId, item.sessionId, item.createdAt);
+  }
+  for (const item of events) registerActivity(item.studentId, item.sessionId, item.createdAt);
+  for (const item of communications) registerActivity(item.studentId, item.sessionId, item.createdAt);
+
+  const studentIds = [...studentSessionIds.keys()];
+  if (studentIds.length === 0) return emptyDashboard(semester);
+  const students = await db.student.findMany({
+    where: { id: { in: studentIds } },
+    select: { id: true, name: true },
+  });
+  const studentById = new Map(students.map((student) => [student.id, student]));
+
+  const assignedSessionByStudent = new Map<string, typeof sessions[number]>();
+  for (const [studentId, participatedSessionIds] of studentSessionIds) {
+    let latest: (typeof sessions[number] & { rank: number }) | undefined;
+    for (const sessionId of participatedSessionIds) {
+      const candidate = sessionById.get(sessionId);
+      if (candidate && (!latest || candidate.rank > latest.rank)) latest = candidate;
     }
+    if (latest) assignedSessionByStudent.set(studentId, latest);
   }
 
-  const classStudents = new Map<string, typeof students>();
-  for (const student of students) {
-    const className = student.class.name ?? student.class.code;
-    classStudents.set(className, [...(classStudents.get(className) ?? []), student]);
+  const latestMetricByStudent = new Map<string, typeof metrics[number]>();
+  for (const metric of metrics) {
+    if (!metric.sessionId) continue;
+    const existing = latestMetricByStudent.get(metric.studentId);
+    const metricRank = sessionById.get(metric.sessionId)?.rank ?? 0;
+    const existingRank = existing?.sessionId ? sessionById.get(existing.sessionId)?.rank ?? 0 : -1;
+    if (!existing || metricRank > existingRank || (
+      metricRank === existingRank && metric.createdAt > existing.createdAt
+    )) latestMetricByStudent.set(metric.studentId, metric);
+  }
+
+  const classStudents = new Map<string, string[]>();
+  const classNames = new Map<string, string>();
+  for (const studentId of studentIds) {
+    if (!studentById.has(studentId)) continue;
+    const session = assignedSessionByStudent.get(studentId);
+    if (!session) continue;
+    const classKey = session.classId ?? "__school__";
+    const className = session.class?.name ?? session.class?.code ?? "全校";
+    classNames.set(classKey, className);
+    classStudents.set(classKey, [...(classStudents.get(classKey) ?? []), studentId]);
   }
 
   const classOverview: ClassOverview[] = [];
-  const classAlerts: Array<{
-    className: string;
-    dimension: string;
-    avgScore: number;
-    severity: AlertSeverity;
-  }> = [];
-
-  for (const [className, classRoster] of classStudents) {
-    const latestMetrics = classRoster
-      .map((student) => metricsByStudent.get(student.id)?.[0])
+  const classOverviewByKey = new Map<string, ClassOverview>();
+  const classAlerts: AlertDashboard["classAlerts"] = [];
+  for (const [classKey, classStudentIds] of classStudents) {
+    const latestMetrics = classStudentIds
+      .map((studentId) => latestMetricByStudent.get(studentId))
       .filter((metric): metric is NonNullable<typeof metric> => Boolean(metric));
-    if (latestMetrics.length === 0) {
-      classOverview.push({
-        name: className,
-        avgA: 0,
-        avgB: 0,
-        avgC: 0,
-        avgD: 0,
-        studentCount: classRoster.length,
-      });
-      continue;
-    }
-
     const average = (key: "scoreA" | "scoreB" | "scoreC" | "scoreD") => (
-      +(latestMetrics.reduce((sum, metric) => sum + metric[key], 0) / latestMetrics.length).toFixed(1)
+      latestMetrics.length === 0
+        ? 0
+        : +(latestMetrics.reduce((sum, metric) => sum + metric[key], 0) / latestMetrics.length).toFixed(1)
     );
-    const overview = {
-      name: className,
+    const overview: ClassOverview = {
+      name: classNames.get(classKey) ?? "全校",
       avgA: average("scoreA"),
       avgB: average("scoreB"),
       avgC: average("scoreC"),
       avgD: average("scoreD"),
-      studentCount: classRoster.length,
+      studentCount: classStudentIds.length,
+      lastActivityAt: maximumDate(classStudentIds.flatMap((id) => activityDates.get(id) ?? [])).toISOString(),
     };
     classOverview.push(overview);
+    classOverviewByKey.set(classKey, overview);
 
-    if (classRoster.length >= ALERT_RULES.classAverage.minimumClassSize) {
+    if (classStudentIds.length >= ALERT_RULES.classAverage.minimumClassSize && latestMetrics.length > 0) {
       for (const dimension of ["A", "B", "C"] as const) {
         const avgScore = overview[`avg${dimension}`];
         const severity = evaluateClassAverageAlert(avgScore);
-        if (severity) classAlerts.push({ className, dimension: DIM_LABEL[dimension], avgScore, severity });
+        if (severity) classAlerts.push({ className: overview.name, dimension: DIM_LABEL[dimension], avgScore, severity });
       }
     }
   }
+  classOverview.sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt));
 
   const studentAlerts: StudentAlert[] = [];
-  for (const [className, classRoster] of classStudents) {
-    const overview = classOverview.find((entry) => entry.name === className);
+  for (const [classKey, classStudentIds] of classStudents) {
+    const overview = classOverviewByKey.get(classKey);
     if (!overview) continue;
     const averages = { A: overview.avgA, B: overview.avgB, C: overview.avgC };
-    type RankedEntry = {
-      student: typeof students[number];
-      devA: number;
-      devB: number;
-      devC: number;
-      avgDev: number;
-      scoreA: number;
-      scoreB: number;
-      scoreC: number;
-    };
-    const ranked: RankedEntry[] = [];
-    for (const student of classRoster) {
-      const metric = metricsByStudent.get(student.id)?.[0];
-      if (!metric) continue;
+    const ranked = classStudentIds.flatMap((studentId) => {
+      const student = studentById.get(studentId);
+      const metric = latestMetricByStudent.get(studentId);
+      if (!student || !metric) return [];
       const devA = +(metric.scoreA - averages.A).toFixed(1);
       const devB = +(metric.scoreB - averages.B).toFixed(1);
       const devC = +(metric.scoreC - averages.C).toFixed(1);
-      ranked.push({
-        student,
-        devA,
-        devB,
-        devC,
-        avgDev: +((devA + devB + devC) / 3).toFixed(1),
-        scoreA: metric.scoreA,
-        scoreB: metric.scoreB,
-        scoreC: metric.scoreC,
-      });
-    }
+      return [{ student, metric, devA, devB, devC, avgDev: +((devA + devB + devC) / 3).toFixed(1) }];
+    });
     if (ranked.length < ALERT_RULES.studentRanking.minimumStudents) continue;
-
     ranked.sort((left, right) => left.avgDev - right.avgDev);
+
     const { red, yellow } = calculateStudentAlertCutoffs(ranked.length);
     const expandTies = (base: number) => {
       if (base >= ranked.length) return ranked.length;
-      const maximum = Math.min(
-        ranked.length,
-        Math.ceil(base * ALERT_RULES.studentRanking.tieExpansionMultiplier),
-      );
+      const maximum = Math.min(ranked.length, Math.ceil(base * ALERT_RULES.studentRanking.tieExpansionMultiplier));
       const boundary = ranked[base - 1].avgDev;
       let index = base;
       while (index < maximum && ranked[index].avgDev === boundary) index++;
@@ -182,62 +263,73 @@ export async function getAlertDashboard() {
     };
     const redEnd = expandTies(red);
     const yellowEnd = expandTies(yellow);
-
-    const addAlert = (entry: RankedEntry, severity: AlertSeverity) => {
+    const addAlert = (entry: typeof ranked[number], severity: AlertSeverity) => {
       const belowAverage = ([
-        ["A", entry.devA, entry.scoreA],
-        ["B", entry.devB, entry.scoreB],
-        ["C", entry.devC, entry.scoreC],
+        ["A", entry.devA, entry.metric.scoreA],
+        ["B", entry.devB, entry.metric.scoreB],
+        ["C", entry.devC, entry.metric.scoreC],
       ] as const).filter(([, deviation]) => deviation < 0).sort((a, b) => a[1] - b[1]);
       if (belowAverage.length === 0) return;
       const worst = belowAverage[0];
       studentAlerts.push({
         studentId: entry.student.id,
         studentName: entry.student.name,
-        class: entry.student.class.name ?? entry.student.class.code,
+        class: overview.name,
         dimension: DIM_LABEL[worst[0]],
         score: worst[2],
         classAvg: averages[worst[0]],
         deviation: worst[1],
         severity,
+        lastActivityAt: maximumDate(activityDates.get(entry.student.id) ?? []).toISOString(),
       });
     };
     for (let index = 0; index < redEnd; index++) addAlert(ranked[index], "red");
     for (let index = redEnd; index < yellowEnd; index++) addAlert(ranked[index], "yellow");
   }
 
-  if (sessionIds.length > 0) {
-    for (const student of students) {
-      const absences = absenceMap.get(student.id) ?? 0;
-      const severity = evaluateAbsenceAlert(absences);
-      if (!severity) continue;
-      studentAlerts.push({
-        studentId: student.id,
-        studentName: student.name,
-        class: student.class.name ?? student.class.code,
-        dimension: DIM_LABEL.D,
-        score: absences,
-        classAvg: sessionIds.length,
-        deviation: 0,
-        severity,
-      });
-    }
+  const absenceMap = new Map<string, number>();
+  for (const attendance of attendances) {
+    if (!attendance.present) absenceMap.set(attendance.studentId, (absenceMap.get(attendance.studentId) ?? 0) + 1);
+  }
+  for (const studentId of studentIds) {
+    const student = studentById.get(studentId);
+    const session = assignedSessionByStudent.get(studentId);
+    if (!student || !session) continue;
+    const absences = absenceMap.get(studentId) ?? 0;
+    const severity = evaluateAbsenceAlert(absences);
+    if (!severity) continue;
+    studentAlerts.push({
+      studentId,
+      studentName: student.name,
+      class: session.class?.name ?? session.class?.code ?? "全校",
+      dimension: DIM_LABEL.D,
+      score: absences,
+      classAvg: sessions.filter((item) => item.classId === session.classId).length,
+      deviation: 0,
+      severity,
+      lastActivityAt: maximumDate(activityDates.get(studentId) ?? []).toISOString(),
+    });
   }
 
   const deduplicated = new Map<string, StudentAlert>();
   for (const alert of studentAlerts) {
     const key = `${alert.studentId}|${alert.dimension}`;
     const existing = deduplicated.get(key);
-    if (!existing || (alert.severity === "red" && existing.severity === "yellow")) {
-      deduplicated.set(key, alert);
-    }
+    if (!existing || (alert.severity === "red" && existing.severity === "yellow")) deduplicated.set(key, alert);
   }
-  const finalStudentAlerts = [...deduplicated.values()];
+  const finalStudentAlerts = [...deduplicated.values()].sort((left, right) => {
+    const activityOrder = right.lastActivityAt.localeCompare(left.lastActivityAt);
+    if (activityOrder !== 0) return activityOrder;
+    if (left.severity !== right.severity) return left.severity === "red" ? -1 : 1;
+    return left.studentName.localeCompare(right.studentName, "zh-CN");
+  });
+
   return {
+    semester,
     classOverview,
     classAlerts,
     studentAlerts: finalStudentAlerts,
-    totalStudents: students.length,
+    totalStudents: studentById.size,
     redCount: finalStudentAlerts.filter((alert) => alert.severity === "red").length,
     yellowCount: finalStudentAlerts.filter((alert) => alert.severity === "yellow").length,
   };

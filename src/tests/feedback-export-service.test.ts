@@ -48,6 +48,7 @@ describe("feedback export service", () => {
         classAvg: 3,
         deviation: -1,
         severity: "yellow",
+        lastActivityAt: "2026-07-08T00:00:00.000Z",
       }],
     );
 
@@ -111,6 +112,7 @@ describe("feedback export service", () => {
         classAvg: 5,
         deviation: -2,
         severity: "yellow",
+        lastActivityAt: "2026-07-08T00:00:00.000Z",
       }],
     );
 

@@ -53,6 +53,7 @@ describe("/api/report/feedback-batch", () => {
         title: "feedback test",
         state: JSON.stringify({
           kind: "batch",
+          semesterId: semester.id,
           sessionCode,
           className: "测试班",
           total: 1,
