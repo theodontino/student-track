@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  resolveWeComCatchScriptPath,
   runWeComCatchCommand,
   WECOMCATCH_SCRIPT_PATH,
   type WeComCatchExecFile,
 } from "@/services/wecomcatch-service";
 
 describe("wecomcatch-service", () => {
-  it("calls the fixed wrapper script and parses JSON stdout", async () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("calls the project-local CLI and parses JSON stdout", async () => {
     const execFileImpl: WeComCatchExecFile = (file, args, _options, callback) => {
       expect(file).toBe(WECOMCATCH_SCRIPT_PATH);
       expect(args).toEqual(["status"]);
@@ -18,6 +24,23 @@ describe("wecomcatch-service", () => {
       command: "status",
       scriptPath: WECOMCATCH_SCRIPT_PATH,
       parsed: { complete: 444, pending: 3 },
+    });
+  });
+
+  it("honors a WECOMCATCH_CLI_PATH override", async () => {
+    vi.stubEnv("WECOMCATCH_CLI_PATH", "tools/wecomcatch-alternate/bin/wecomcatch");
+    const expectedPath = resolve(process.cwd(), "tools/wecomcatch-alternate/bin/wecomcatch");
+    expect(resolveWeComCatchScriptPath()).toBe(expectedPath);
+
+    const execFileImpl: WeComCatchExecFile = (file, args, _options, callback) => {
+      expect(file).toBe(expectedPath);
+      expect(args).toEqual(["sync-status"]);
+      callback(null, "{}", "");
+    };
+
+    await expect(runWeComCatchCommand("sync-status", { execFileImpl })).resolves.toMatchObject({
+      scriptPath: expectedPath,
+      parsed: {},
     });
   });
 

@@ -1,6 +1,12 @@
 import { execFile, type ExecFileException } from "node:child_process";
+import { resolve } from "node:path";
 
-export const WECOMCATCH_SCRIPT_PATH = "$HOME/.openclaw/skills/wecomcatch-archive/scripts/wecomcatch.sh";
+export const WECOMCATCH_SCRIPT_PATH = resolve(process.cwd(), "tools/wecomcatch/bin/wecomcatch");
+
+export function resolveWeComCatchScriptPath(env: NodeJS.ProcessEnv = process.env) {
+  const configuredPath = env.WECOMCATCH_CLI_PATH?.trim();
+  return configuredPath ? resolve(configuredPath) : WECOMCATCH_SCRIPT_PATH;
+}
 
 export type WeComCatchCommand = "status" | "sync-start" | "sync-status" | "export";
 
@@ -40,14 +46,15 @@ export async function runWeComCatchCommand(
   const execFileImpl = options.execFileImpl ?? (execFile as WeComCatchExecFile);
   const timeout = options.timeoutMs ?? 120_000;
   const maxBuffer = 20 * 1024 * 1024;
+  const scriptPath = resolveWeComCatchScriptPath();
 
   return new Promise((resolve, reject) => {
-    execFileImpl(WECOMCATCH_SCRIPT_PATH, [command], { timeout, maxBuffer }, (error, stdoutValue, stderrValue) => {
+    execFileImpl(scriptPath, [command], { timeout, maxBuffer }, (error, stdoutValue, stderrValue) => {
       const stdout = Buffer.isBuffer(stdoutValue) ? stdoutValue.toString("utf8") : stdoutValue;
       const stderr = Buffer.isBuffer(stderrValue) ? stderrValue.toString("utf8") : stderrValue;
       const result: WeComCatchResult = {
         command,
-        scriptPath: WECOMCATCH_SCRIPT_PATH,
+        scriptPath,
         stdout,
         stderr,
         parsed: parseOutput(stdout),
