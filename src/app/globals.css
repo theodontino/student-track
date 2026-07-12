@@ -44,6 +44,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .app-nav a:hover { background: #f8fafc; color: #1e293b; }
 .app-nav a.is-active { background: var(--color-brand-50); color: var(--color-brand-700); font-weight: 650; }
 .app-sidebar__footer { margin-top: auto; padding: 1rem; border-top: 1px solid #f1f5f9; color: #94a3b8; font-size: .72rem; text-align: center; }
+.app-sidebar__footer span, .app-sidebar__footer a { display: block; }
+.app-sidebar__footer a { margin-top: .35rem; color: #64748b; text-decoration: none; }
+.app-sidebar__footer a:hover { color: var(--color-brand-700); }
 .app-content { min-height: 100vh; margin-left: 15rem; padding: clamp(1rem, 2.2vw, 2rem); overflow: hidden; }
 .app-mobile-bar { display: none; }
 .app-drawer-backdrop { display: none; }

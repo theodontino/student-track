@@ -64,3 +64,9 @@ npx tsc --noEmit
 - `src/components/ui/` 提供轻量设计系统；`src/lib/api-client.ts` 统一 JSON 请求、错误和下载行为。
 - 教学上下文使用 `semesterId`、`class`、`sessionCode` 查询参数，刷新与工作台跳转后可以恢复。
 - `/input`、`/review`、`/report`、`/settings`、`/system-logs` 和 `/past-overview` 是兼容入口，至少保留到 v0.18。
+
+## 许可证
+
+Copyright © 2026 theodontino。
+
+本项目采用 [GNU Affero General Public License v3.0 only](LICENSE)，SPDX 标识为 `AGPL-3.0-only`。允许使用、修改、分发和商业使用；分发修改版或使用修改版提供网络服务时，必须按同一许可证向相应用户提供完整源代码。学生数据、运行数据库、导出文件和其他用户内容不因本软件许可证而获得公开授权。
