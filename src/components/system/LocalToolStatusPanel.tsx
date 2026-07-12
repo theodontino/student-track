@@ -59,7 +59,7 @@ export default function LocalToolStatusPanel() {
       </div>
 
       <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-        音频转写使用 auto 模式时会优先尝试通义听悟，音频可能上传到云端；失败后才会降级到本地 FunASR。
+        音频转写使用 auto 模式时会依次尝试通义听悟、本地 FunASR 和阿里云 ASR，音频可能上传到云端。
       </div>
 
       {error && (

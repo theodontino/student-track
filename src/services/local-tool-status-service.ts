@@ -22,6 +22,7 @@ interface ResolvedFunASRPaths {
   autoRunner: string;
   localRunner: string;
   tingwuRunner: string;
+  aliyunRunner: string;
   venvPython: string;
   hotwords: string;
   dataDir: string;
@@ -73,6 +74,7 @@ export function resolveFunASRPaths(options: LocalToolStatusOptions = {}): Resolv
     autoRunner: path.join(toolDir, "diarize_auto.sh"),
     localRunner: path.join(toolDir, "diarize.sh"),
     tingwuRunner: path.join(toolDir, "diarize_tingwu.sh"),
+    aliyunRunner: path.join(toolDir, "diarize_aliyun.sh"),
     venvPython: path.join(resolveOverride(env.FUNASR_VENV, defaultVenv, cwd, homeDir), "bin", "python"),
     hotwords: resolveOverride(
       env.CHEM_TRACK_BASE_HOTWORDS,
@@ -252,6 +254,13 @@ export function inspectFunASR(options: LocalToolStatusOptions = {}): LocalToolSt
       paths.tingwuRunner,
     ),
     check(
+      "aliyun-runner",
+      "阿里云 ASR 入口",
+      executableFile(paths.aliyunRunner) ? "available" : "warning",
+      executableFile(paths.aliyunRunner) ? "入口可执行" : "阿里云回退入口不存在或不可执行",
+      paths.aliyunRunner,
+    ),
+    check(
       "venv-python",
       "本地 Python 环境",
       executableFile(paths.venvPython) ? "available" : "warning",
@@ -297,7 +306,7 @@ export function inspectFunASR(options: LocalToolStatusOptions = {}): LocalToolSt
     status,
     summary: summaryFor(status),
     checks,
-    notice: "auto 模式会优先尝试通义听悟，再降级到本地 FunASR；音频可能上传到云端服务。",
+    notice: "auto 模式会依次尝试通义听悟、本地 FunASR 和阿里云 ASR；音频可能上传到云端服务。",
   };
 }
 

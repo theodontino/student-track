@@ -35,6 +35,7 @@ function installFunASRFixture(cwd: string, homeDir: string, includeVenv = true) 
   writeFile(path.join(toolDir, "diarize_auto.sh"), "#!/bin/sh\n", true);
   writeFile(path.join(toolDir, "diarize.sh"), "#!/bin/sh\n", true);
   writeFile(path.join(toolDir, "diarize_tingwu.sh"), "#!/bin/sh\n", true);
+  writeFile(path.join(toolDir, "diarize_aliyun.sh"), "#!/bin/sh\n", true);
   if (includeVenv) writeFile(path.join(toolDir, "venv", "bin", "python"), "#!/bin/sh\n", true);
   writeFile(path.join(toolDir, "hotwords_active.txt"), "chemistry\n");
   fs.mkdirSync(path.join(cwd, "data", "diarize"), { recursive: true });

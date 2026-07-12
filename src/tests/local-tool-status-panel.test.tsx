@@ -17,5 +17,6 @@ describe("LocalToolStatusPanel", () => {
     expect(html).toContain("本地工具状态");
     expect(html).toContain("音频可能上传到云端");
     expect(html).toContain("通义听悟");
+    expect(html).toContain("阿里云 ASR");
   });
 });

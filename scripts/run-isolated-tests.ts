@@ -28,7 +28,6 @@ function prepareE2EServerWorkspace(projectRoot: string, rootDir: string) {
     "next.config.ts",
     "postcss.config.mjs",
     "tsconfig.json",
-    "next-env.d.ts",
   ]) {
     fs.copyFileSync(path.join(projectRoot, file), path.join(serverRoot, file));
   }
@@ -39,11 +38,8 @@ function prepareE2EServerWorkspace(projectRoot: string, rootDir: string) {
 async function main() {
   const projectRoot = process.cwd();
   const testEnvironment = createIsolatedTestEnvironment();
-  let cleaned = false;
 
   function cleanup() {
-    if (cleaned) return;
-    cleaned = true;
     removeIsolatedTestEnvironment(testEnvironment.rootDir);
   }
 
@@ -85,7 +81,7 @@ async function main() {
   const args = mode === "vitest-run"
     ? ["run"]
     : mode === "vitest-watch"
-      ? []
+      ? ["--watch"]
       : mode === "vitest-coverage"
         ? ["run", "--coverage"]
         : ["test"];
@@ -94,11 +90,23 @@ async function main() {
     cwd: projectRoot,
     env: testEnvironment.env,
     stdio: "inherit",
+    detached: process.platform !== "win32",
   });
 
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.once(signal, () => {
-      if (!child.killed) child.kill(signal);
+      if (!child.killed && child.pid) {
+        if (process.platform === "win32") {
+          child.kill(signal);
+        } else {
+          try {
+            process.kill(-child.pid, signal);
+          } catch {
+            child.kill(signal);
+          }
+        }
+      }
+      cleanup();
     });
   }
 
