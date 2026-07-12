@@ -51,7 +51,10 @@
 
 ```bash
 npm test
+npm run test:coverage
 npm run lint
 npx tsc --noEmit
 npm run build
 ```
+
+涉及快速评分、草案复核或反馈工作台流程时，同时运行 `npm run test:e2e`。所有自动化测试必须使用隔离的临时数据库。

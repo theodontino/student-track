@@ -20,7 +20,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: `npm run dev -- --webpack --hostname 127.0.0.1 --port ${port}`,
+    command: `npm run dev -- --webpack --port ${port}`,
     cwd: serverRoot,
     url: baseURL,
     reuseExistingServer: false,

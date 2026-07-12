@@ -6,13 +6,17 @@
 
 ## 快速启动
 
+本项目使用 Node.js 24 LTS 和 npm 11，并且只支持本机 `127.0.0.1` 访问。
+
 ```bash
 cd chem-track-ai
 npm install
 npx prisma migrate deploy # 首次运行及升级执行迁移
 npm run db:seed
-npm run dev              # → http://localhost:3000
+npm run dev              # → http://127.0.0.1:3000
 npm test
+npm run test:coverage
+npm run test:e2e
 npx tsc --noEmit
 ```
 
@@ -33,7 +37,10 @@ npx tsc --noEmit
 - **ORM**: Prisma 7 + libsql (SQLite)
 - **LLM**: OpenAI 兼容接口，可保存并切换多个云端或本地 LM Studio 配置
 - **测试**: Vitest，包含纯函数、API 与数据库集成测试
+- **浏览器回归**: Playwright，使用独立临时数据库和应用副本
 - **样式**: Tailwind CSS 4
+
+测试命令会在系统临时目录中创建数据库，不会读写项目的 `dev.db`。
 
 ## 功能
 

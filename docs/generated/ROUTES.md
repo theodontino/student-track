@@ -29,6 +29,7 @@
 | `/api/students/import` | `POST` |
 | `/api/students` | `GET`, `POST` |
 | `/api/system/archive` | `POST` |
+| `/api/system/local-tools` | `GET` |
 | `/api/system/logs` | `GET` |
 | `/api/wecom/bridge` | `POST` |
 | `/api/wecom/import` | `GET`, `POST` |
