@@ -78,6 +78,15 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .ui-overlay__panel { width: min(36rem, 100%); max-height: calc(100vh - 2rem); overflow: auto; border-radius: var(--radius-lg); background: white; box-shadow: 0 24px 60px rgb(15 23 42 / .25); }
 .ui-overlay__panel--drawer { position: absolute; inset: 0 0 0 auto; width: min(28rem, 92vw); max-height: none; border-radius: 0; }
 .ui-overlay__header { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; border-bottom: 1px solid var(--color-border); background: white; }.ui-overlay__header h2 { margin: 0; font-size: 1.1rem; }
+.teaching-context-selector { display: grid; grid-template-columns: repeat(3, minmax(9rem, 1fr)); gap: .75rem; }
+.teaching-context-selector label { display: grid; gap: .3rem; color: #64748b; font-size: .72rem; font-weight: 700; }
+.teaching-context-selector.is-compact { display: flex; align-items: end; flex-wrap: wrap; }
+.teaching-context-selector.is-compact label { min-width: 9rem; }
+.dialog-form { display: grid; gap: 1rem; padding: 1.25rem; }
+.dialog-form label { display: grid; gap: .4rem; color: #475569; font-size: .82rem; font-weight: 650; }
+.dialog-form__row { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+.dialog-form__actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .25rem; }
+.dialog-form__hint { margin: 0; color: var(--color-muted); font-size: .875rem; }
 
 @media (max-width: 900px) {
   .app-sidebar { display: none; }
@@ -88,4 +97,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .app-drawer { position: absolute; inset: 0 auto 0 0; width: min(18rem, 88vw); display: flex; flex-direction: column; overflow-y: auto; background: white; box-shadow: 12px 0 40px rgb(15 23 42 / .2); }
   .app-drawer__close { position: absolute; z-index: 2; top: .8rem; right: .6rem; }
   .page-header { flex-wrap: wrap; }.page-header__context { order: 3; width: 100%; margin-left: 0; }.page-header__actions { margin-left: auto; }
+  .teaching-context-selector { grid-template-columns: 1fr; }.dialog-form__row { grid-template-columns: 1fr; }
 }
