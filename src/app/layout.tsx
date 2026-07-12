@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Sidebar from "@/components/Sidebar";
+import AppShell from "@/components/AppShell";
 
 export const metadata: Metadata = {
   title: "Chem-Track AI - 化学学生追踪系统",
@@ -14,10 +14,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" className="h-full antialiased">
-      <body className="min-h-full flex bg-gray-50">
-        <Sidebar />
-        <main className="flex-1 overflow-auto p-6">{children}</main>
-      </body>
+      <body><AppShell>{children}</AppShell></body>
     </html>
   );
 }
