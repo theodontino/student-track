@@ -17,8 +17,10 @@
     "import:wecom": "npx tsx scripts/import-wecom-communications.ts",
     "docs:generate": "node --import tsx scripts/generate-docs.ts",
     "docs:check": "node --import tsx scripts/generate-docs.ts --check",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "node --import tsx scripts/run-isolated-tests.ts vitest-run",
+    "test:watch": "node --import tsx scripts/run-isolated-tests.ts vitest-watch",
+    "test:coverage": "node --import tsx scripts/run-isolated-tests.ts vitest-coverage",
+    "test:e2e": "node --import tsx scripts/run-isolated-tests.ts playwright"
   },
   "dependencies": {
     "@libsql/client": "^0.17.3",
@@ -34,11 +36,13 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/supertest": "^7.2.0",
+    "@vitest/coverage-v8": "^4.1.8",
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
     "supertest": "^7.2.2",
