@@ -1,7 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { Button, ErrorState, LoadingState, PageHeader } from "@/components/ui";
+import { SemesterContextSelector, useTeachingContext } from "@/features/teaching-context";
+import { requestJson } from "@/lib/api-client";
+import type { StudentSemesterSummary } from "@/services/student-semester-summary-service";
 
 interface Student {
   id: string;
@@ -12,6 +16,7 @@ interface Student {
   gender: string;
   labels: { id: string; name: string }[];
   scores?: { scoreA: number; scoreB: number; scoreC: number; scoreD: number } | null;
+  semesterSummary?: StudentSemesterSummary | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,8 +37,11 @@ const PRESET_TAGS = [
 
 export default function StudentsWorkspace() {
   const router = useRouter();
+  const { context, hydrated, setSemesterId } = useTeachingContext();
+  const selectedSemesterId = context.semesterId;
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [collapsedClasses, setCollapsedClasses] = useState<Set<string>>(new Set());
   const [showModal, setShowModal] = useState(false);
@@ -47,16 +55,23 @@ export default function StudentsWorkspace() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
 
-  useEffect(() => { fetchStudents(); }, []);
-
-  async function fetchStudents() {
+  const fetchStudents = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
     try {
-      const res = await fetch("/api/students?summary=true");
-      const data = await res.json();
+      const query = new URLSearchParams({ semesterSummary: "true" });
+      if (selectedSemesterId) query.set("semesterId", selectedSemesterId);
+      const data = await requestJson<Student[]>(`/api/students?${query}`);
       setStudents(data);
-    } catch (err) { console.error(err); }
+      const resolvedSemesterId = data.find((student) => student.semesterSummary)?.semesterSummary?.semester.id;
+      if (!selectedSemesterId && resolvedSemesterId) setSemesterId(resolvedSemesterId);
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : "获取学生列表失败");
+    }
     finally { setLoading(false); }
-  }
+  }, [selectedSemesterId, setSemesterId]);
+
+  useEffect(() => { if (hydrated) void fetchStudents(); }, [fetchStudents, hydrated]);
 
   function toggleClass(cls: string) {
     setCollapsedClasses((prev) => {
@@ -164,25 +179,32 @@ export default function StudentsWorkspace() {
     }
   }
 
-  // -- Score mini bar --
-  function ScoreBar({ score, color }: { score: number; color: string }) {
-    return <div className="flex items-center gap-1"><div className="w-8 h-1.5 rounded-full bg-gray-100"><div className={`h-full rounded-full ${color}`} style={{ width: `${(score / 5) * 100}%` }} /></div><span className="text-[10px] font-mono text-gray-500 w-3 text-right">{score}</span></div>;
+  function summaryHint(summary: StudentSemesterSummary | null | undefined) {
+    if (!summary || (summary.ratedSessionCount === 0 && summary.attendanceRecordedCount === 0)) return "暂无评价与考勤";
+    if (summary.ratedSessionCount === 0) return "缺少课次评价";
+    if (summary.attendanceRecordedCount === 0) return "缺少考勤记录";
+    return `评价 ${summary.ratedSessionCount} 次 · 考勤 ${summary.attendanceRecordedCount} 次`;
   }
 
-  if (loading) return <div className="text-center py-20 text-gray-400">加载中...</div>;
+  if (!hydrated || (loading && students.length === 0)) return <LoadingState label="正在加载学生档案…" />;
+  if (loadError && students.length === 0) return <ErrorState message={loadError} action={<Button onClick={() => void fetchStudents()}>重试</Button>} />;
 
   return (
     <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold text-gray-800">学生管理</h2>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        title="学生档案"
+        description="按学期查看学生四维平均表现和综合分；基础档案与标签保持全局。"
+        context={<SemesterContextSelector value={selectedSemesterId} onChange={setSemesterId} compact />}
+        actions={<div className="flex items-center gap-2">
           <button onClick={openImport}
-            className="border border-gray-300 text-gray-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50">
+            className="whitespace-nowrap border border-gray-300 text-gray-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50">
             📥 导入花名册
           </button>
-          <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">+ 添加学生</button>
-        </div>
-      </div>
+          <button onClick={openCreate} className="whitespace-nowrap bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">+ 添加学生</button>
+        </div>}
+      />
+
+      {loadError && <div className="mb-4"><ErrorState message={loadError} action={<Button onClick={() => void fetchStudents()}>重试</Button>} /></div>}
 
       {/* Search */}
       <div className="mb-6">
@@ -211,8 +233,8 @@ export default function StudentsWorkspace() {
             {!collapsed && (
               <div className="space-y-2">
                 {stus.map((s) => (
-                  <div key={s.id} onClick={() => router.push(`/students/${s.id}`)}
-                    className="bg-white rounded-lg border border-gray-200 p-4 flex items-center gap-4 hover:shadow-sm transition-shadow cursor-pointer">
+                  <div key={s.id} onClick={() => router.push(`/students/${s.id}${selectedSemesterId ? `?semesterId=${encodeURIComponent(selectedSemesterId)}` : ""}`)}
+                    className="bg-white rounded-lg border border-gray-200 p-4 flex flex-wrap sm:flex-nowrap items-center gap-4 hover:shadow-sm transition-shadow cursor-pointer">
                     <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold ${s.gender === "男" ? "bg-blue-500" : "bg-pink-500"}`}>
                       {s.name[0]}
                     </div>
@@ -227,14 +249,14 @@ export default function StudentsWorkspace() {
                         ))}
                       </div>
                     </div>
-                    {s.scores && (
-                      <div className="hidden sm:flex items-center gap-2">
-                        <ScoreBar score={s.scores.scoreA} color="bg-blue-400" />
-                        <ScoreBar score={s.scores.scoreB} color="bg-green-400" />
-                        <ScoreBar score={s.scores.scoreC} color="bg-amber-400" />
-                        <ScoreBar score={s.scores.scoreD} color="bg-purple-400" />
+                    <div data-testid={`student-semester-score-${s.id}`} className="order-last w-full sm:order-none sm:w-auto min-w-36 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-left sm:text-right">
+                      <div className="text-[10px] font-semibold text-blue-600">本学期综合分</div>
+                      <div className="mt-0.5 font-mono text-lg font-bold text-blue-800">
+                        {s.semesterSummary?.score100 ?? "—"}
+                        {s.semesterSummary?.score100 !== null && s.semesterSummary?.score100 !== undefined && <span className="ml-0.5 text-[10px] font-normal text-blue-500">/100</span>}
                       </div>
-                    )}
+                      <div className="text-[10px] text-gray-500">{summaryHint(s.semesterSummary)}</div>
+                    </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <button onClick={(e) => { e.stopPropagation(); openEdit(s); }}
                         className="text-sm text-gray-400 hover:text-blue-600 px-2">编辑</button>

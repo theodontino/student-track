@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Dialog, Drawer } from "@/components/ui";
 import { entryReducer } from "@/features/entry/entry-reducer";
 import { ApiError, requestJson } from "@/lib/api-client";
+import { SemesterContextSelector } from "@/features/teaching-context";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -17,6 +18,13 @@ describe("frontend foundation", () => {
     expect(dialog).toContain('role="dialog"');
     expect(dialog).toContain('aria-modal="true"');
     expect(drawer).toContain("ui-overlay__panel--drawer");
+  });
+
+  it("renders the shared semester-only context selector", () => {
+    const selector = renderToStaticMarkup(<SemesterContextSelector value="" onChange={() => undefined} />);
+    expect(selector).toContain("查看学期");
+    expect(selector).toContain("当前学期");
+    expect(selector).not.toContain("选择班级");
   });
 
   it("returns typed JSON and normalizes API failures", async () => {

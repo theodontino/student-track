@@ -2,6 +2,10 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { Button, ErrorState, LoadingState } from "@/components/ui";
+import { SemesterContextSelector, useTeachingContext } from "@/features/teaching-context";
+import { requestJson } from "@/lib/api-client";
+import type { StudentSemesterSummary } from "@/services/student-semester-summary-service";
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -34,7 +38,8 @@ interface StudentDetail {
   sessionMetrics: { id: string; date: string; scoreA: number; scoreB: number; scoreC: number; scoreD: number }[];
   events: StudentEvent[];
   communications: StudentCommunication[];
-  attendances?: StudentAttendance[];
+  attendances: StudentAttendance[];
+  semesterSummary: StudentSemesterSummary | null;
   _pagination?: { eventHasMore: boolean; commHasMore: boolean };
 }
 
@@ -60,8 +65,11 @@ export default function StudentDetailWorkspace() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
+  const { context, hydrated, setSemesterId } = useTeachingContext();
+  const selectedSemesterId = context.semesterId;
   const [student, setStudent] = useState<StudentDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [trendDays, setTrendDays] = useState(30);
   const [eventOffset, setEventOffset] = useState(0);
   const [commOffset, setCommOffset] = useState(0);
@@ -71,29 +79,46 @@ export default function StudentDetailWorkspace() {
   const [activePanel, setActivePanel] = useState<DetailPanel | null>(null);
 
   const fetchStudent = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
     try {
-      const res = await fetch(`/api/students/${id}?eventLimit=${PAGE_SIZE}&eventOffset=0&commLimit=${PAGE_SIZE}&commOffset=0`);
-      if (!res.ok) throw new Error("学生不存在");
-      const data = await res.json();
+      const query = new URLSearchParams({
+        semesterSummary: "true",
+        eventLimit: String(PAGE_SIZE),
+        eventOffset: "0",
+        commLimit: String(PAGE_SIZE),
+        commOffset: "0",
+      });
+      if (selectedSemesterId) query.set("semesterId", selectedSemesterId);
+      const data = await requestJson<StudentDetail>(`/api/students/${id}?${query}`);
       setEventHasMore(data._pagination?.eventHasMore ?? false);
       setCommHasMore(data._pagination?.commHasMore ?? false);
       setEventOffset(0);
       setCommOffset(0);
 
-      const attRes = await fetch(`/api/attendance?studentId=${id}`);
-      const attData = attRes.ok ? await attRes.json() : [];
-      setStudent({ ...data, attendances: attData });
-    } catch (err) { console.error(err); }
+      setStudent(data);
+      if (!selectedSemesterId && data.semesterSummary?.semester.id) {
+        setSemesterId(data.semesterSummary.semester.id);
+      }
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : "获取学生详情失败");
+    }
     finally { setLoading(false); }
-  }, [id]);
+  }, [id, selectedSemesterId, setSemesterId]);
 
-  useEffect(() => { void fetchStudent(); }, [fetchStudent]);
+  useEffect(() => { if (hydrated) void fetchStudent(); }, [fetchStudent, hydrated]);
+
+  function detailQuery(extra: Record<string, string>) {
+    const query = new URLSearchParams({ semesterSummary: "true", ...extra });
+    if (selectedSemesterId) query.set("semesterId", selectedSemesterId);
+    return query.toString();
+  }
 
   async function loadMoreEvents() {
     const nextOffset = eventOffset + PAGE_SIZE;
     setLoadingMore("events");
     try {
-      const res = await fetch(`/api/students/${id}?eventLimit=${PAGE_SIZE}&eventOffset=${nextOffset}&commLimit=0&commOffset=0`);
+      const res = await fetch(`/api/students/${id}?${detailQuery({ eventLimit: String(PAGE_SIZE), eventOffset: String(nextOffset), commLimit: "0", commOffset: "0" })}`);
       if (!res.ok) throw new Error("加载事件失败");
       const data = await res.json();
       setStudent((current) => current ? { ...current, events: [...current.events, ...data.events] } : current);
@@ -110,7 +135,7 @@ export default function StudentDetailWorkspace() {
     const nextOffset = commOffset + PAGE_SIZE;
     setLoadingMore("comms");
     try {
-      const res = await fetch(`/api/students/${id}?eventLimit=0&eventOffset=0&commLimit=${PAGE_SIZE}&commOffset=${nextOffset}`);
+      const res = await fetch(`/api/students/${id}?${detailQuery({ eventLimit: "0", eventOffset: "0", commLimit: String(PAGE_SIZE), commOffset: String(nextOffset) })}`);
       if (!res.ok) throw new Error("加载沟通记录失败");
       const data = await res.json();
       setStudent((current) => current ? { ...current, communications: [...current.communications, ...data.communications] } : current);
@@ -123,11 +148,8 @@ export default function StudentDetailWorkspace() {
     }
   }
 
-  if (loading) return (
-    <div className="flex items-center justify-center h-64">
-      <div className="animate-spin h-8 w-8 border-2 border-blue-600 border-t-transparent rounded-full" />
-    </div>
-  );
+  if (!hydrated || (loading && !student)) return <LoadingState label="正在加载学生档案…" />;
+  if (loadError && !student) return <ErrorState message={loadError} action={<Button onClick={() => void fetchStudent()}>重试</Button>} />;
   if (!student) return (
     <div className="text-center py-20 text-gray-400">
       <p className="text-4xl mb-3">😕</p><p>学生不存在</p>
@@ -135,18 +157,20 @@ export default function StudentDetailWorkspace() {
     </div>
   );
 
-  const latestMetric = student.sessionMetrics[0];
-  const radarData = latestMetric ? [
-    { dim: "学习&测验", score: latestMetric.scoreA },
-    { dim: "精神&纪律", score: latestMetric.scoreB },
-    { dim: "课后任务", score: latestMetric.scoreC },
-    { dim: "考勤", score: latestMetric.scoreD ?? 3 },
+  const summary = student.semesterSummary;
+  const hasRadarData = Boolean(summary && (summary.ratedSessionCount > 0 || summary.attendanceScore !== null));
+  const radarData = summary ? [
+    { dim: "学习&测验", score: summary.averageA ?? undefined },
+    { dim: "精神&纪律", score: summary.averageB ?? undefined },
+    { dim: "课后任务", score: summary.averageC ?? undefined },
+    { dim: "考勤", score: summary.attendanceScore ?? undefined },
   ] : [];
 
+  const trendEnd = student.sessionMetrics[0]?.date ? new Date(student.sessionMetrics[0].date).getTime() : Date.now();
   const trendData = [...student.sessionMetrics]
     .filter((m) => {
       if (trendDays === 0) return true;
-      const daysAgo = (Date.now() - new Date(m.date).getTime()) / 86400000;
+      const daysAgo = (trendEnd - new Date(m.date).getTime()) / 86400000;
       return daysAgo <= trendDays;
     })
     .reverse()
@@ -159,18 +183,34 @@ export default function StudentDetailWorkspace() {
     }));
 
   // Attendance summary
-  const totalSessions = student.attendances?.length ?? 0;
-  const presentCount = student.attendances?.filter(a => a.present).length ?? 0;
+  const totalSessions = summary?.attendanceRecordedCount ?? student.attendances.length;
+  const presentCount = summary?.presentCount ?? student.attendances.filter(a => a.present).length;
   const absentCount = totalSessions - presentCount;
   const eventSummary = student.events.slice(0, SUMMARY_LIMIT);
   const communicationSummary = student.communications.slice(0, SUMMARY_LIMIT);
-  const attendanceSummary = (student.attendances ?? []).slice(0, SUMMARY_LIMIT);
+  const attendanceSummary = student.attendances.slice(0, SUMMARY_LIMIT);
+  const listUrl = `/students${selectedSemesterId ? `?semesterId=${encodeURIComponent(selectedSemesterId)}` : ""}`;
+
+  function scoreText(value: number | null | undefined) {
+    return value === null || value === undefined ? "—" : value.toFixed(1);
+  }
+
+  function missingSummaryReason() {
+    if (!summary) return "当前没有可用学期。";
+    if (summary.ratedSessionCount === 0 && summary.attendanceRecordedCount === 0) return "本学期暂无课次评价和考勤记录。";
+    if (summary.ratedSessionCount === 0) return "本学期缺少课次评价，暂不能生成综合分。";
+    if (summary.attendanceRecordedCount === 0) return "本学期缺少考勤记录，暂不能生成综合分。";
+    return "数据不足，暂不能生成综合分。";
+  }
 
   return (
     <div className="max-w-5xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <button onClick={() => router.push("/students")} className="text-sm text-gray-500 hover:text-gray-700">← 返回学生列表</button>
+        <button onClick={() => router.push(listUrl)} className="text-sm text-gray-500 hover:text-gray-700">← 返回学生列表</button>
+        <SemesterContextSelector value={selectedSemesterId} onChange={setSemesterId} compact />
       </div>
+
+      {loadError && <div className="mb-5"><ErrorState message={loadError} action={<Button onClick={() => void fetchStudent()}>重试</Button>} /></div>}
 
       <div className="flex items-start gap-4 mb-8">
         <div className={`w-14 h-14 rounded-full flex items-center justify-center text-white text-xl font-bold shrink-0 ${
@@ -187,33 +227,69 @@ export default function StudentDetailWorkspace() {
               ))}
             </div>
             <span className="text-xs text-gray-400">
-              出勤 {presentCount}/{totalSessions} · D={latestMetric?.scoreD ?? "—"}
+              {summary?.semester.name ?? "暂无学期"} · 出勤 {presentCount}/{totalSessions} · D={summary?.attendanceScore ?? "—"}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Charts */}
+      {/* Semester score overview */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">当前四维得分</h3>
-          {radarData.length > 0 ? (
+        <div data-testid="student-semester-radar" className="bg-white rounded-xl border border-gray-200 p-5">
+          <h3 className="text-sm font-semibold text-gray-700">本学期四维平均表现</h3>
+          <p className="mt-1 text-xs text-gray-400">A/B/C 为课次评价平均分，D 为本学期已录考勤分。</p>
+          {hasRadarData ? (
             <ResponsiveContainer width="100%" height={280}>
               <RadarChart data={radarData}>
                 <PolarGrid />
                 <PolarAngleAxis dataKey="dim" fontSize={12} />
                 <PolarRadiusAxis angle={30} domain={[0, 5]} tickCount={6} fontSize={11} />
-                <Radar name="得分" dataKey="score" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} />
+                <Radar name="学期表现" dataKey="score" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} />
               </RadarChart>
             </ResponsiveContainer>
           ) : (
-            <div className="flex items-center justify-center h-64 text-gray-400 text-sm">暂无评分数据</div>
+            <div className="flex items-center justify-center h-64 text-gray-400 text-sm">本学期暂无评价和考勤数据</div>
           )}
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div data-testid="student-semester-summary" className="rounded-xl border border-blue-100 bg-gradient-to-br from-blue-50 to-white p-6">
+          <p className="text-sm font-semibold text-blue-700">本学期综合分</p>
+          <p className="mt-1 text-xs text-gray-500">{summary?.semester.name ?? "暂无可用学期"}</p>
+          <div className="mt-6 flex items-end gap-2">
+            <strong className="font-mono text-5xl leading-none text-blue-800">{summary?.score100 ?? "—"}</strong>
+            {summary?.score100 !== null && summary?.score100 !== undefined && <span className="pb-1 text-sm text-blue-500">/100</span>}
+          </div>
+          <p className="mt-2 text-sm text-gray-500">
+            {summary?.total20 !== null && summary?.total20 !== undefined ? `${summary.total20.toFixed(1)} / 20` : missingSummaryReason()}
+          </p>
+          <div className="mt-6 grid grid-cols-4 gap-2">
+            {[
+              ["A", summary?.averageA],
+              ["B", summary?.averageB],
+              ["C", summary?.averageC],
+              ["D", summary?.attendanceScore],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="rounded-lg border border-white bg-white/80 p-2 text-center shadow-sm">
+                <div className="text-[10px] font-semibold text-gray-400">{label}</div>
+                <div className="mt-1 font-mono text-lg font-bold text-gray-700">{scoreText(value as number | null | undefined)}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-6 space-y-2 border-t border-blue-100 pt-4 text-xs text-gray-600">
+            <p className="flex justify-between"><span>课次评价</span><strong>{summary?.ratedSessionCount ?? 0} 次</strong></p>
+            <p className="flex justify-between"><span>考勤记录</span><strong>{summary?.attendanceRecordedCount ?? 0} 次</strong></p>
+            <p className="flex justify-between"><span>实际出勤</span><strong>{summary?.presentCount ?? 0} 次</strong></p>
+          </div>
+        </div>
+      </div>
+
+      {/* Semester trend */}
+      <div className="mb-8 rounded-xl border border-gray-200 bg-white p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-gray-700">趋势图</h3>
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">本学期课次趋势</h3>
+              <p className="mt-1 text-xs text-gray-400">时间范围以本学期最新一条评价为终点。</p>
+            </div>
             <select value={trendDays} onChange={(e) => setTrendDays(Number(e.target.value))}
               className="text-xs border border-gray-300 rounded px-2 py-1 outline-none">
               <option value={7}>近 7 天</option>
@@ -237,9 +313,8 @@ export default function StudentDetailWorkspace() {
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <div className="flex items-center justify-center h-64 text-gray-400 text-sm">暂无历史数据</div>
+            <div className="flex items-center justify-center h-64 text-gray-400 text-sm">本学期暂无课次评价</div>
           )}
-        </div>
       </div>
 
       {/* Student records */}
