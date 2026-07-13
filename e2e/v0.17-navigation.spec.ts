@@ -65,6 +65,20 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByText("已修改 1/", { exact: false })).toBeVisible();
   });
 
+  test("an unfinished feedback review survives page switches", async ({ page }) => {
+    await page.goto("/feedback");
+    await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
+    await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
+    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    const review = page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。");
+    await review.fill("E2E 未生成反馈的课堂回顾");
+
+    await page.getByRole("link", { name: "工作历史" }).click();
+    await page.getByRole("link", { name: "课后反馈" }).click();
+    await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未生成反馈的课堂回顾");
+    await expect(page.locator("select").nth(2)).toHaveValue(TEST_FIXTURE.sessions[0].code);
+  });
+
   test("narrow windows use the accessible navigation drawer", async ({ page }) => {
     await page.setViewportSize({ width: 720, height: 900 });
     await page.goto("/");
@@ -74,6 +88,13 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await page.getByRole("link", { name: "系统中心" }).click();
     await expect(page).toHaveURL(/\/system\/configuration/);
     await expect(page.getByRole("heading", { name: "系统中心" })).toBeVisible();
+  });
+
+  test("feedback workspace does not overflow a narrow window", async ({ page }) => {
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.goto("/feedback");
+    await expect(page.getByRole("heading", { name: "课后反馈工作台" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
   test("student navigation keeps the selected semester without unrelated class parameters", async ({ page }) => {
