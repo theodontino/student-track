@@ -69,9 +69,19 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await page.setViewportSize({ width: 720, height: 900 });
     await page.goto("/");
     await page.getByRole("button", { name: "打开导航" }).click();
+    await expect(page.getByRole("dialog", { name: "主导航抽屉" })).toBeVisible();
     await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
     await page.getByRole("link", { name: "系统中心" }).click();
     await expect(page).toHaveURL(/\/system\/configuration/);
     await expect(page.getByRole("heading", { name: "系统中心" })).toBeVisible();
+  });
+
+  test("student navigation keeps the selected semester without unrelated class parameters", async ({ page }) => {
+    await page.goto("/");
+    await page.getByLabel("查看学期").selectOption(TEST_FIXTURE.semester.id);
+    await page.getByRole("link", { name: "学生档案" }).click();
+    await expect(page).toHaveURL(new RegExp(`/students\\?semesterId=${TEST_FIXTURE.semester.id}`));
+    expect(new URL(page.url()).searchParams.has("class")).toBe(false);
+    expect(new URL(page.url()).searchParams.has("sessionCode")).toBe(false);
   });
 });
