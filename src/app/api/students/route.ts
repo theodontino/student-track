@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ServiceError } from "@/services/service-error";
+import { getStudentSemesterSummaries } from "@/services/student-semester-summary-service";
 
 // v0.13: include labels from StudentLabel + Label
 const studentInclude = {
@@ -11,6 +13,8 @@ const studentInclude = {
 export async function GET(request: NextRequest) {
   try {
     const summary = new URL(request.url).searchParams.get("summary") === "true";
+    const semesterSummary = new URL(request.url).searchParams.get("semesterSummary") === "true";
+    const semesterId = new URL(request.url).searchParams.get("semesterId") || undefined;
 
     const students = await prisma.student.findMany({
       orderBy: { createdAt: "desc" },
@@ -18,6 +22,9 @@ export async function GET(request: NextRequest) {
     });
 
     let scores: Map<string, { scoreA: number; scoreB: number; scoreC: number; scoreD: number }> | null = null;
+    const semesterResult = semesterSummary
+      ? await getStudentSemesterSummaries(students.map((student) => student.id), { semesterId })
+      : null;
 
     if (summary) {
       const latestMetrics = await prisma.sessionMetric.groupBy({
@@ -47,10 +54,16 @@ export async function GET(request: NextRequest) {
         ...(scores && {
           scores: scores.get(s.id) ?? null,
         }),
+        ...(semesterSummary && {
+          semesterSummary: semesterResult?.summaries.get(s.id) ?? null,
+        }),
       }))
     );
   } catch (error) {
     console.error("[/api/students] error:", error);
+    if (error instanceof ServiceError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json({ error: "获取学生列表失败" }, { status: 500 });
   }
 }

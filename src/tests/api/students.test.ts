@@ -21,6 +21,36 @@ describe("/api/students", () => {
     expect(body[0]).toHaveProperty("studentId");
   });
 
+  it("GET adds a semester summary only when requested", async () => {
+    const legacy = await GET(new NextRequest("http://localhost:3000/api/students"));
+    const legacyBody = await legacy.json();
+    expect(legacyBody[0]).not.toHaveProperty("semesterSummary");
+
+    const req = new NextRequest("http://localhost:3000/api/students?semesterSummary=true&semesterId=test-semester-1");
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body[0].semesterSummary).toMatchObject({
+      semester: { id: "test-semester-1" },
+      averageA: 3,
+      averageB: 3,
+      averageC: 3,
+      attendanceScore: 5,
+      total20: 14,
+      score100: 70,
+      ratedSessionCount: 1,
+      attendanceRecordedCount: 2,
+      presentCount: 2,
+    });
+  });
+
+  it("GET returns 404 for an unknown requested semester", async () => {
+    const req = new NextRequest("http://localhost:3000/api/students?semesterSummary=true&semesterId=missing-semester");
+    const res = await GET(req);
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ error: "学期不存在" });
+  });
+
   it("POST with missing fields returns 400", async () => {
     const req = new NextRequest("http://localhost:3000/api/students", {
       method: "POST",

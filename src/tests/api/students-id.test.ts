@@ -24,6 +24,32 @@ describe("/api/students/[id]", () => {
     expect(body).toHaveProperty("studentId", testStudent.studentId);
     expect(body).toHaveProperty("sessionMetrics");
     expect(body).toHaveProperty("events");
+    expect(body).not.toHaveProperty("semesterSummary");
+  });
+
+  it("GET returns semester-isolated teaching data and the derived summary", async () => {
+    const { GET } = await import("@/app/api/students/[id]/route");
+    const req = new NextRequest(`http://localhost:3000/api/students/${testStudent.id}?semesterSummary=true&semesterId=test-semester-1`);
+    const res = await GET(req, { params: Promise.resolve({ id: testStudent.id }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.semesterSummary).toMatchObject({
+      semester: { id: "test-semester-1" },
+      averageA: 3,
+      attendanceScore: 5,
+      score100: 70,
+    });
+    expect(body.sessionMetrics).toHaveLength(1);
+    expect(body.attendances).toHaveLength(2);
+    expect(body.events.every((event: { session: { code: string } }) => event.session.code.startsWith("2026"))).toBe(true);
+    expect(body.communications.every((communication: { session: { code: string } }) => communication.session.code.startsWith("2026"))).toBe(true);
+  });
+
+  it("GET returns 404 for an unknown semester in semester mode", async () => {
+    const { GET } = await import("@/app/api/students/[id]/route");
+    const req = new NextRequest(`http://localhost:3000/api/students/${testStudent.id}?semesterSummary=true&semesterId=missing-semester`);
+    const res = await GET(req, { params: Promise.resolve({ id: testStudent.id }) });
+    expect(res.status).toBe(404);
   });
 
   it("GET nonexistent id returns 404", async () => {
