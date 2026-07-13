@@ -27,6 +27,7 @@ npx tsc --noEmit
 - [运维手册](docs/OPERATIONS.md)：迁移、备份、恢复和发布
 - [设计决策](docs/DECISIONS.md)：少量需要长期保留的技术选择
 - [隐私方针](docs/PRIVACY.md)：禁止提交内容、开发约束与公开发布检查
+- [UX 规范](docs/UX.md)：页面模板、视觉、状态反馈与响应式约束
 - [参与开发](CONTRIBUTING.md)：Issue 与开发流程
 - [AI 规则](AGENTS.md)：AI 修改代码时必须遵守的边界
 
