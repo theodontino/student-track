@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Dialog, Drawer } from "@/components/ui";
+import { ConfirmDialog, Dialog, Drawer, FormField, Input, MetricCard, SaveStateIndicator, Skeleton } from "@/components/ui";
 import { entryReducer } from "@/features/entry/entry-reducer";
 import { ApiError, requestJson } from "@/lib/api-client";
 
@@ -17,6 +17,19 @@ describe("frontend foundation", () => {
     expect(dialog).toContain('role="dialog"');
     expect(dialog).toContain('aria-modal="true"');
     expect(drawer).toContain("ui-overlay__panel--drawer");
+  });
+
+  it("renders shared form, metric, loading, save, and confirmation patterns", () => {
+    const field = renderToStaticMarkup(<FormField id="student-name" label="姓名" required error="请输入姓名"><Input id="student-name" aria-invalid="true" /></FormField>);
+    const metric = renderToStaticMarkup(<MetricCard label="本学期综合分" value="82" detail="评价 4 次" tone="brand" />);
+    const states = renderToStaticMarkup(<><Skeleton /><SaveStateIndicator state="dirty" /></>);
+    const confirm = renderToStaticMarkup(<ConfirmDialog open title="删除课次" description="删除后无法恢复。" danger onConfirm={() => undefined} onClose={() => undefined} />);
+    expect(field).toContain('for="student-name"');
+    expect(field).toContain('role="alert"');
+    expect(metric).toContain("ui-metric--brand");
+    expect(states).toContain("有未保存修改");
+    expect(confirm).toContain("删除课次");
+    expect(confirm).toContain("ui-button--danger");
   });
 
   it("returns typed JSON and normalizes API failures", async () => {
