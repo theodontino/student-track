@@ -5,10 +5,10 @@ export function resolveWeComCatchScriptPath(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ) {
   const configuredPath = env.WECOMCATCH_CLI_PATH?.trim();
-  if (configuredPath) return resolve(configuredPath);
+  if (configuredPath) return resolve(/* turbopackIgnore: true */ configuredPath);
 
   const configuredRoot = env.WECOMCATCH_PROJECT_ROOT?.trim();
-  if (configuredRoot) return resolve(configuredRoot, "bin", "wecomcatch");
+  if (configuredRoot) return resolve(/* turbopackIgnore: true */ configuredRoot, "bin", "wecomcatch");
 
   throw new Error("未配置外部 WeComCatch；请设置 WECOMCATCH_CLI_PATH 或 WECOMCATCH_PROJECT_ROOT");
 }

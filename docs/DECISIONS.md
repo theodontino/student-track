@@ -50,6 +50,10 @@ Chem-Track 的课堂录音转写优先生成可复核的纯文本，而不是追
 
 长期文档不记录版本进度、文件数量、测试数量和待办。机械事实由脚本生成，变化过程使用 GitHub Issues，减少每次改代码时同步多份文档的负担。
 
+## SheetJS 使用官方发布源
+
+Excel 导入导出继续使用 SheetJS Community Edition，但依赖指向 SheetJS 官方 CDN 的固定版本 tarball。npm registry 中的 `xlsx` 长期停留在旧版本并包含已知安全告警；固定官方 tarball既保留现有 Excel API 和格式兼容，也避免为了消除告警更换整套导入导出实现。升级前必须运行花名册导入、反馈导出和五 Sheet 数据导出回归测试。
+
 ## 使用 AGPL-3.0-only
 
 Chem-Track AI 以 `AGPL-3.0-only` 发布。允许个人和组织使用、修改、分发及商业运营，但修改版被分发或用于向用户提供网络服务时，必须向相应用户提供完整对应源代码并继续使用同一许可证。选择 `only` 而不是 `or-later`，避免未来 GNU 许可证版本自动改变授权范围。

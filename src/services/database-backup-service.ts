@@ -57,7 +57,7 @@ function timestamp() {
 }
 
 async function sha256(filePath: string) {
-  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+  return createHash("sha256").update(await readFile(/* turbopackIgnore: true */ filePath)).digest("hex");
 }
 
 export function resolveDatabasePath(databaseUrl = process.env.DATABASE_URL) {
@@ -65,7 +65,7 @@ export function resolveDatabasePath(databaseUrl = process.env.DATABASE_URL) {
     throw new Error("当前备份工具仅支持本地 SQLite file: DATABASE_URL");
   }
   const value = databaseUrl.slice("file:".length);
-  return isAbsolute(value) ? value : resolve(process.cwd(), value);
+  return isAbsolute(value) ? value : resolve(/* turbopackIgnore: true */ process.cwd(), value);
 }
 
 /**
@@ -73,7 +73,7 @@ export function resolveDatabasePath(databaseUrl = process.env.DATABASE_URL) {
  * schema tables, and a small set of row counts without modifying the database.
  */
 export async function verifyDatabaseFile(databasePath: string): Promise<DatabaseVerification> {
-  const absolutePath = resolve(databasePath);
+  const absolutePath = resolve(/* turbopackIgnore: true */ databasePath);
   const client = createClient({ url: databaseUrlForPath(absolutePath) });
   try {
     const integrityResult = await client.execute("PRAGMA integrity_check");
@@ -110,12 +110,12 @@ export async function createDatabaseBackup(options: {
   archiveDir?: string;
   prefix?: string;
 } = {}): Promise<DatabaseBackupResult> {
-  const databasePath = resolve(options.databasePath ?? resolveDatabasePath());
-  const archiveDir = resolve(options.archiveDir ?? resolve(process.cwd(), "archives"));
+  const databasePath = resolve(/* turbopackIgnore: true */ options.databasePath ?? resolveDatabasePath());
+  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolve(/* turbopackIgnore: true */ process.cwd(), "archives"));
   const prefix = options.prefix ?? "chem-track";
-  await mkdir(archiveDir, { recursive: true });
+  await mkdir(/* turbopackIgnore: true */ archiveDir, { recursive: true });
 
-  const backupPath = resolve(archiveDir, `${prefix}_${timestamp()}.db`);
+  const backupPath = resolve(/* turbopackIgnore: true */ archiveDir, `${prefix}_${timestamp()}.db`);
   const manifestPath = `${backupPath}.json`;
   const client = createClient({ url: databaseUrlForPath(databasePath) });
   try {
@@ -125,7 +125,7 @@ export async function createDatabaseBackup(options: {
   }
 
   const verification = await verifyDatabaseFile(backupPath);
-  const fileStat = await stat(backupPath);
+  const fileStat = await stat(/* turbopackIgnore: true */ backupPath);
   const manifest: DatabaseBackupManifest = {
     formatVersion: 1,
     createdAt: new Date().toISOString(),
@@ -134,7 +134,7 @@ export async function createDatabaseBackup(options: {
     sha256: await sha256(backupPath),
     verification,
   };
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await writeFile(/* turbopackIgnore: true */ manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return { backupPath, manifestPath, manifest };
 }
 
@@ -143,15 +143,15 @@ export async function createDatabaseBackup(options: {
  * restore drill used in routine maintenance.
  */
 export async function verifyDatabaseBackup(backupPath: string): Promise<DatabaseBackupManifest> {
-  const absolutePath = resolve(backupPath);
+  const absolutePath = resolve(/* turbopackIgnore: true */ backupPath);
   const manifestPath = `${absolutePath}.json`;
   let manifest: DatabaseBackupManifest;
   try {
-    manifest = JSON.parse(await readFile(manifestPath, "utf8")) as DatabaseBackupManifest;
+    manifest = JSON.parse(await readFile(/* turbopackIgnore: true */ manifestPath, "utf8")) as DatabaseBackupManifest;
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
     const verification = await verifyDatabaseFile(absolutePath);
-    const fileStat = await stat(absolutePath);
+    const fileStat = await stat(/* turbopackIgnore: true */ absolutePath);
     manifest = {
       formatVersion: 1,
       createdAt: fileStat.mtime.toISOString(),
@@ -160,7 +160,7 @@ export async function verifyDatabaseBackup(backupPath: string): Promise<Database
       sha256: await sha256(absolutePath),
       verification,
     };
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    await writeFile(/* turbopackIgnore: true */ manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     return manifest;
   }
   if (manifest.formatVersion !== 1 || manifest.databaseFile !== basename(absolutePath)) {
@@ -183,9 +183,9 @@ export async function restoreDatabaseBackup(options: {
   databasePath?: string;
   archiveDir?: string;
 }) {
-  const databasePath = resolve(options.databasePath ?? resolveDatabasePath());
-  const archiveDir = resolve(options.archiveDir ?? resolve(process.cwd(), "archives"));
-  const backupPath = resolve(options.backupPath);
+  const databasePath = resolve(/* turbopackIgnore: true */ options.databasePath ?? resolveDatabasePath());
+  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolve(/* turbopackIgnore: true */ process.cwd(), "archives"));
+  const backupPath = resolve(/* turbopackIgnore: true */ options.backupPath);
   const relativeBackupPath = relative(archiveDir, backupPath);
   if (relativeBackupPath.startsWith("..") || isAbsolute(relativeBackupPath)) {
     throw new Error("只能恢复 archives 目录中的备份");
@@ -197,18 +197,18 @@ export async function restoreDatabaseBackup(options: {
     archiveDir,
     prefix: "pre-restore",
   });
-  const temporaryPath = resolve(dirname(databasePath), `.${basename(databasePath)}.restore-${Date.now()}`);
+  const temporaryPath = resolve(/* turbopackIgnore: true */ dirname(databasePath), `.${basename(databasePath)}.restore-${Date.now()}`);
 
   try {
-    await copyFile(backupPath, temporaryPath);
-    await rename(temporaryPath, databasePath);
-    await rm(`${databasePath}-wal`, { force: true });
-    await rm(`${databasePath}-shm`, { force: true });
+    await copyFile(/* turbopackIgnore: true */ backupPath, temporaryPath);
+    await rename(/* turbopackIgnore: true */ temporaryPath, databasePath);
+    await rm(/* turbopackIgnore: true */ `${databasePath}-wal`, { force: true });
+    await rm(/* turbopackIgnore: true */ `${databasePath}-shm`, { force: true });
     const verification = await verifyDatabaseFile(databasePath);
     return { restoredManifest, preRestore, verification };
   } catch (error) {
-    await rm(temporaryPath, { force: true });
-    await copyFile(preRestore.backupPath, databasePath);
+    await rm(/* turbopackIgnore: true */ temporaryPath, { force: true });
+    await copyFile(/* turbopackIgnore: true */ preRestore.backupPath, databasePath);
     await verifyDatabaseFile(databasePath);
     throw error;
   }
