@@ -40,27 +40,52 @@ export interface CardScore {
   note: string;
 }
 
+export type ScoreDimension = "A" | "B" | "C";
+
+export interface DraftStudent {
+  name: string;
+  scores: Record<ScoreDimension, number | null>;
+  events: string[];
+  communication: { type: string; summary: string } | null;
+  present?: boolean;
+}
+
+export interface DraftStructuredResult {
+  students: DraftStudent[];
+  alert_suggestion: string;
+}
+
+export interface DraftReviewResult {
+  is_valid: boolean;
+  issues: string[];
+  suggestions: string[];
+  revised_scores: Record<string, Record<string, number | null>>;
+  revised_events: Record<string, string[]>;
+}
+
+export interface NameCorrection {
+  original: string;
+  corrected: string;
+  confidence: string;
+  reason?: string;
+}
+
 export interface DraftParseResult {
   draftId: string;
   rawText: string;
-  parsedResult: {
-    students: {
-      name: string;
-      scores: { A: number | null; B: number | null; C: number | null };
-      events: string[];
-      communication: { type: string; summary: string } | null;
-      present: boolean;
-    }[];
-    alert_suggestion: string;
-  };
-  reviewResult: {
-    is_valid: boolean;
-    issues: string[];
-    suggestions: string[];
-    revised_scores: Record<string, any>;
-    revised_events: Record<string, string[]>;
-  } | null;
+  parsedResult: DraftStructuredResult;
+  reviewResult: DraftReviewResult | null;
   status: string;
   createdAt: string;
-  corrections?: { original: string; corrected: string; confidence: string; reason: string }[];
+  corrections?: NameCorrection[];
+}
+
+export interface DraftRecordView {
+  id: string;
+  rawText: string;
+  parsedResult: DraftStructuredResult;
+  reviewResult: DraftReviewResult | null;
+  status: string;
+  sessionCode?: string | null;
+  createdAt: string;
 }

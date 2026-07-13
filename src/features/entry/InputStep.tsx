@@ -1,326 +1,62 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import SemesterPicker from "@/components/SemesterPicker";
-import { DIM_LABEL } from "@/lib/constants";
-import type { DraftParseResult } from "@/lib/types";
 import WorkHistoryButton from "@/components/WorkHistoryButton";
-import { saveWorkHistory } from "@/lib/history";
-import { useSessionWorkspace } from "@/lib/use-session-workspace";
-import { teachingContextWorkspaceKey, useTeachingContext, type TeachingContext } from "@/features/teaching-context";
+import SemesterPicker from "@/components/SemesterPicker";
+import { Button, Section, StatusBanner, Textarea } from "@/components/ui";
+import { ParseResultPreview, ReviewSummary } from "./draft-components";
+import { useInputWorkspace, type InputHistoryState } from "./useInputWorkspace";
 
-interface InputHistoryState {
-  rawText: string;
-  semesterId: string;
-  className: string;
-  sessionCode: string;
-  result: DraftParseResult;
-}
-
-interface InputWorkspaceState {
-  context: TeachingContext;
-  rawText: string;
-  result: DraftParseResult | null;
-}
-
-function isInputWorkspaceState(value: unknown): value is InputWorkspaceState {
-  if (!value || typeof value !== "object") return false;
-  const state = value as Partial<InputWorkspaceState>;
-  return Boolean(state.context)
-    && typeof state.context?.semesterId === "string"
-    && typeof state.context?.className === "string"
-    && typeof state.context?.sessionCode === "string"
-    && typeof state.rawText === "string"
-    && (state.result === null || typeof state.result === "object");
-}
+const INPUT_PLACEHOLDER = "例如：今天张三测验氧化还原全对，但上课走神。李四作业没交，情绪低落。给王五的妈妈打了电话讨论近况。";
 
 export default function InputStep({ onReview }: { onReview?: () => void }) {
   const router = useRouter();
-  const [rawText, setRawText] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<DraftParseResult | null>(null);
-  const [error, setError] = useState("");
+  const workspace = useInputWorkspace();
+  const { context, rawText, setRawText, loading, result, error } = workspace;
 
-  const { context, hydrated: contextHydrated, setContext, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
-  const selectedSemesterId = context.semesterId;
-  const selectedClass = context.className;
-  const selectedSessionCode = context.sessionCode;
-  const workspaceValue = useMemo<InputWorkspaceState>(() => ({ context, rawText, result }), [context, rawText, result]);
-  const workspace = useSessionWorkspace({
-    key: teachingContextWorkspaceKey("entry-input", context),
-    value: workspaceValue,
-    validate: isInputWorkspaceState,
-    enabled: contextHydrated,
-    restore: (saved) => {
-      if (!saved) {
-        setRawText("");
-        setResult(null);
-        setError("");
-        return;
-      }
-      setRawText(saved.rawText);
-      setResult(saved.result);
-      setError("");
-    },
-  });
-
-  useEffect(() => {
-    if (!workspace.hydrated) return;
-    const draft = sessionStorage.getItem("chem-track:nl-input-draft");
-    if (!draft) return;
-    setRawText(draft);
-    sessionStorage.removeItem("chem-track:nl-input-draft");
-  }, [workspace.hydrated]);
-
-  async function handleSubmit() {
-    if (!rawText.trim()) return;
-    setLoading(true);
-    setError("");
-    setResult(null);
-
-    try {
-      const res = await fetch("/api/input/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawText, sessionCode: selectedSessionCode || undefined }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "解析失败");
-
-      setResult(data);
-      try {
-        await saveWorkHistory(
-          "input",
-          `${selectedClass} ${selectedSessionCode} NL录入`,
-          { rawText, semesterId: selectedSemesterId, className: selectedClass, sessionCode: selectedSessionCode, result: data },
-          selectedSessionCode
-        );
-      } catch (historyError) { console.error("save input history failed:", historyError); }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "解析失败");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function restoreHistory(state: InputHistoryState) {
-    setRawText(state.rawText);
-    setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
-    setResult(state.result);
-    setError("");
+  function openReview() {
+    if (onReview) onReview();
+    else router.push("/entry?step=review");
   }
 
   return (
-    <div className="max-w-3xl mx-auto">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-2xl font-bold text-gray-800">自然语言录入</h2>
-        <WorkHistoryButton<InputHistoryState> module="input" onRestore={restoreHistory} />
-      </div>
-      <p className="text-sm text-gray-500 mb-4">
-        用自然语言描述学生表现，LLM 将自动解析并生成结构化草案。
-      </p>
-
-      {/* Semester/class/session picker */}
-      <div className="mb-4">
-        <SemesterPicker
-          semesterId={selectedSemesterId}
-          onSemesterChange={setSemesterId}
-          className={selectedClass}
-          onClassChange={setClassName}
-          sessionCode={selectedSessionCode}
-          onSessionChange={setSessionCode}
-        />
-        {selectedSessionCode && (
-          <span className="text-xs text-blue-600 font-medium">✓ 将关联到此课次</span>
-        )}
+    <div className="entry-input-workspace">
+      <div className="entry-step-heading">
+        <div><h2>自然语言录入</h2><p>用自然语言描述学生表现，系统会生成待人工确认的结构化草案。</p></div>
+        <WorkHistoryButton<InputHistoryState> module="input" onRestore={workspace.restoreHistory} />
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <textarea
-          value={rawText}
-          onChange={(e) => setRawText(e.target.value)}
-          placeholder='例如：今天张三测验氧化还原全对，但上课走神。李四作业没交，情绪低落。给王五的妈妈打了电话讨论近况。'
-          rows={5}
-          className="w-full border border-gray-200 rounded-lg p-4 text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-        />
-        <div className="flex items-center justify-between mt-3">
-          <span className="text-xs text-gray-400">{rawText.length} 字符</span>
-          <button
-            onClick={handleSubmit}
-            disabled={loading || !rawText.trim() || !selectedSessionCode}
-            className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {loading ? (
-              <span className="flex items-center gap-2">
-                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                    fill="none"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                  />
-                </svg>
-                LLM 分析中...
-              </span>
-            ) : (
-              "提交分析"
-            )}
-          </button>
+      <Section title="教学上下文" description="草案会绑定到所选课次；未提及学生将按现有规则补齐考勤。">
+        <div className="entry-context-panel">
+          <SemesterPicker
+            semesterId={context.semesterId}
+            onSemesterChange={workspace.setSemesterId}
+            className={context.className}
+            onClassChange={workspace.setClassName}
+            sessionCode={context.sessionCode}
+            onSessionChange={workspace.setSessionCode}
+          />
+          {context.sessionCode && <StatusBanner tone="info">将关联到课次 {context.sessionCode}</StatusBanner>}
         </div>
-      </div>
+      </Section>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-red-700 text-sm">
-          {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="space-y-4">
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800">
-            ✅ 解析成功！草案已保存，请前往
-            <button
-              onClick={() => onReview ? onReview() : router.push("/entry?step=review")}
-              className="underline font-medium mx-1"
-            >
-              复核中心
-            </button>
-            确认后写入数据库。
+      <Section title="课堂记录" description="只写事实和观察；解析结果不会自动写入正式档案。">
+        <div className="entry-composer">
+          <Textarea value={rawText} onChange={(event) => setRawText(event.target.value)} placeholder={INPUT_PLACEHOLDER} rows={6} />
+          <div className="entry-composer__actions">
+            <span>{rawText.length} 字符</span>
+            <Button uiSize="lg" onClick={() => void workspace.submit()} disabled={loading || !rawText.trim() || !context.sessionCode}>{loading ? "LLM 分析中…" : "提交分析"}</Button>
           </div>
-
-          {/* LLM Self-Review */}
-          {result.reviewResult && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-              <h4 className="text-sm font-semibold text-amber-800 mb-2">
-                🤖 LLM 自审意见
-              </h4>
-              {result.reviewResult.issues.length > 0 && (
-                <div className="mb-2">
-                  <span className="text-xs font-medium text-amber-700">
-                    发现的问题：
-                  </span>
-                  <ul className="list-disc list-inside text-xs text-amber-700 mt-1">
-                    {result.reviewResult.issues.map((issue, i) => (
-                      <li key={i}>{issue}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {result.reviewResult.suggestions.length > 0 && (
-                <div>
-                  <span className="text-xs font-medium text-amber-700">
-                    建议：
-                  </span>
-                  <ul className="list-disc list-inside text-xs text-amber-700 mt-1">
-                    {result.reviewResult.suggestions.map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {result.reviewResult.issues.length === 0 &&
-                result.reviewResult.suggestions.length === 0 && (
-                  <p className="text-xs text-amber-700">未发现问题</p>
-                )}
-            </div>
-          )}
-
-          {/* Parsed Students */}
-          {result.parsedResult.students.map((stu, idx) => (
-            <div
-              key={idx}
-              className="bg-white border border-gray-200 rounded-lg p-5"
-            >
-              <h4 className="text-base font-semibold text-gray-800 mb-3">
-                👤 {stu.name}
-                <span className={`ml-2 text-xs px-2 py-0.5 rounded ${stu.present ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                  {stu.present ? "出勤" : "缺勤"}
-                </span>
-              </h4>
-
-              {/* Scores */}
-              <div className="grid grid-cols-3 gap-3 mb-3">
-                {(["A", "B", "C"] as const).map((dim) => (
-                  <div
-                    key={dim}
-                    className="bg-gray-50 rounded-lg p-3 text-center"
-                  >
-                    <div className="text-xs text-gray-500 mb-1">
-                      {DIM_LABEL[dim]}
-                    </div>
-                    <div
-                      className={`text-2xl font-bold ${
-                        stu.scores[dim] !== null
-                          ? stu.scores[dim]! >= 4
-                            ? "text-green-600"
-                            : stu.scores[dim]! >= 2
-                            ? "text-yellow-600"
-                            : "text-red-600"
-                          : "text-gray-300"
-                      }`}
-                    >
-                      {stu.scores[dim] !== null ? stu.scores[dim] : "—"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Events */}
-              {stu.events.length > 0 && (
-                <div className="mb-2">
-                  <span className="text-xs font-medium text-gray-500">
-                    事件：
-                  </span>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {stu.events.map((event, i) => (
-                      <span
-                        key={i}
-                        className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded"
-                      >
-                        {event}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Communication */}
-              {stu.communication && (
-                <div className="bg-purple-50 rounded p-2 mt-2">
-                  <span className="text-xs font-medium text-purple-700">
-                    📞 家校沟通 ({stu.communication.type})
-                  </span>
-                  <p className="text-xs text-purple-600 mt-0.5">
-                    {stu.communication.summary}
-                  </p>
-                </div>
-              )}
-            </div>
-          ))}
-
-          {/* Alert */}
-          {result.parsedResult.alert_suggestion && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <span className="text-sm font-semibold text-red-700">
-                🚨 关注建议
-              </span>
-              <p className="text-sm text-red-600 mt-1">
-                {result.parsedResult.alert_suggestion}
-              </p>
-            </div>
-          )}
         </div>
-      )}
+      </Section>
+
+      {error && <StatusBanner tone="danger">{error}</StatusBanner>}
+      {result && <>
+        <StatusBanner tone="success">解析成功，草案已保存。<Button variant="ghost" uiSize="sm" onClick={openReview}>前往复核中心</Button></StatusBanner>
+        {result.corrections?.length ? <Section title="姓名修正" description="请在确认写入前核对自动匹配结果。"><div className="entry-corrections">{result.corrections.map((correction, index) => <div key={`${correction.original}-${index}`}><span>{correction.original}</span><strong>→ {correction.corrected}</strong><small>{correction.confidence}</small></div>)}</div></Section> : null}
+        <ReviewSummary review={result.reviewResult} />
+        <ParseResultPreview result={result.parsedResult} />
+      </>}
     </div>
   );
 }
