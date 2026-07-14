@@ -139,4 +139,13 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await page.getByRole("button", { name: "删除当前配置" }).click();
     await expect(page.getByRole("dialog", { name: "删除当前配置" })).toBeVisible();
   });
+
+  test("system navigation and maintenance logs stay contained on narrow screens", async ({ page }) => {
+    await page.route("**/api/system/logs**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ total: 1, logs: [{ id: "log-1", action: "score.updated", targetType: "Student", targetId: "student-1", targetName: "测试学生", detail: { summary: "一段很长但只能在表格容器内部滚动的操作详情" }, createdAt: "2026-07-14T00:00:00.000Z" }] }) }));
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.goto("/system/maintenance");
+    await expect(page.getByRole("link", { name: "维护与日志" })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByText("测试学生")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
 });

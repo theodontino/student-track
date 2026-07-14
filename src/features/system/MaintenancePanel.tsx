@@ -1,174 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import ArchiveButton from "@/components/ArchiveButton";
-
-interface LogEntry {
-  id: string;
-  action: string;
-  targetType: string;
-  targetId: string | null;
-  targetName: string | null;
-  detail: Record<string, unknown>;
-  createdAt: string;
-}
-
-const ACTION_LABELS: Record<string, string> = {
-  "score.updated": "评分更新",
-  "alert.triggered": "预警触发",
-  "student.deleted": "学生删除",
-  "session.created": "课次创建",
-  "session.deleted": "课次删除",
-  "data.exported": "数据导出",
-};
-
-const TARGET_LABELS: Record<string, string> = {
-  Student: "学生",
-  Session: "课次",
-  Draft: "草案",
-  Class: "班级",
-  System: "系统",
-};
+import { Badge, Button, EmptyState, ErrorState, Input, LoadingState, PageHeader, Section, Select } from "@/components/ui";
+import { ACTION_LABELS, formatLogDetail, TARGET_LABELS } from "./maintenance-types";
+import { useMaintenanceLogs } from "./useMaintenanceLogs";
 
 export default function MaintenancePanel() {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [filterAction, setFilterAction] = useState("");
-  const [filterTargetName, setFilterTargetName] = useState("");
-  const [offset, setOffset] = useState(0);
-  const LIMIT = 50;
-
-  useEffect(() => {
-    async function fetchInitialLogs() {
-      setLoading(true);
-      const params = new URLSearchParams({ limit: String(LIMIT), offset: "0" });
-      if (filterAction) params.set("action", filterAction);
-      if (filterTargetName) params.set("targetName", filterTargetName);
-
-      const res = await fetch(`/api/system/logs?${params}`);
-      const data = await res.json();
-      if (!res.ok || !data.logs) {
-        setLoading(false);
-        return;
-      }
-      setLogs(data.logs);
-      setOffset(LIMIT);
-      setTotal(data.total ?? 0);
-      setLoading(false);
-    }
-
-    void fetchInitialLogs();
-  }, [filterAction, filterTargetName]);
-
-  async function loadMoreLogs() {
-    setLoading(true);
-    const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
-    if (filterAction) params.set("action", filterAction);
-    if (filterTargetName) params.set("targetName", filterTargetName);
-
-    const res = await fetch(`/api/system/logs?${params}`);
-    const data = await res.json();
-    if (!res.ok || !data.logs) {
-      setLoading(false);
-      return;
-    }
-    setLogs((prev) => [...prev, ...data.logs]);
-    setOffset(offset + LIMIT);
-    setTotal(data.total ?? 0);
-    setLoading(false);
-  }
-
-  function formatDetail(detail: Record<string, unknown>): string {
-    if (!detail || Object.keys(detail).length === 0) return "—";
-    return Object.entries(detail)
-      .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
-      .join(" | ");
-  }
-
+  const workspace = useMaintenanceLogs();
   return (
-    <div className="max-w-5xl mx-auto">
-      <h2 className="text-xl font-bold text-gray-800 mb-1">维护与操作日志</h2>
-      <p className="text-sm text-gray-500 mb-6">
-        记录评分变更、预警触发、数据删除等关键操作，共 {total} 条。保留 90 天。
-      </p>
-
-      <div className="mb-6 rounded-xl border border-gray-200 bg-white p-4"><h3 className="mb-2 font-semibold text-gray-800">数据库备份</h3><p className="mb-3 text-sm text-gray-500">创建一致性备份并记录校验信息，不改变业务数据。</p><ArchiveButton /></div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-6">
-        <select value={filterAction} onChange={(e) => { setFilterAction(e.target.value); setOffset(0); }}
-          className="text-sm border border-gray-300 rounded px-3 py-1.5 outline-none">
-          <option value="">全部操作类型</option>
-          {Object.entries(ACTION_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>{v}</option>
-          ))}
-        </select>
-        <input
-          type="text" placeholder="搜索学生名..."
-          value={filterTargetName}
-          onChange={(e) => { setFilterTargetName(e.target.value); setOffset(0); }}
-          className="text-sm border border-gray-300 rounded px-3 py-1.5 outline-none w-40"
-        />
-      </div>
-
-      {loading && logs.length === 0 ? (
-        <div className="flex items-center justify-center h-48">
-          <div className="animate-spin h-8 w-8 border-2 border-blue-600 border-t-transparent rounded-full" />
-        </div>
-      ) : logs.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          <p className="text-3xl mb-2">📋</p>
-          <p>暂无操作日志</p>
-          <p className="text-xs mt-1">评分、删除等操作发生后会自动记录</p>
-        </div>
-      ) : (
-        <>
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th className="text-left px-4 py-2.5 text-gray-600 font-medium">时间</th>
-                  <th className="text-left px-4 py-2.5 text-gray-600 font-medium">操作</th>
-                  <th className="text-left px-4 py-2.5 text-gray-600 font-medium">对象</th>
-                  <th className="text-left px-4 py-2.5 text-gray-600 font-medium">详情</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logs.map((log) => (
-                  <tr key={log.id} className="border-b border-gray-100 hover:bg-gray-50/50">
-                    <td className="px-4 py-2.5 text-gray-500 text-xs whitespace-nowrap">
-                      {new Date(log.createdAt).toLocaleString("zh-CN")}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
-                        {ACTION_LABELS[log.action] || log.action}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className="text-xs text-gray-500 mr-1.5">
-                        {TARGET_LABELS[log.targetType] || log.targetType}
-                      </span>
-                      {log.targetName && (
-                        <span className="text-gray-800 font-medium">{log.targetName}</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-gray-500 max-w-xs truncate">
-                      {formatDetail(log.detail)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {total > logs.length && (
-            <button onClick={loadMoreLogs}
-              className="mt-4 w-full text-center text-sm text-blue-600 hover:text-blue-800 py-2 rounded hover:bg-blue-50">
-              加载更多（{logs.length}/{total}）
-            </button>
-          )}
-        </>
-      )}
-    </div>
+    <main className="system-maintenance-workspace">
+      <PageHeader title="维护与操作日志" description={`记录评分变更、预警触发和数据删除等关键操作，共 ${workspace.total} 条；保留 90 天。`} />
+      <Section title="数据库备份" description="创建一致性备份并记录校验信息，不改变业务数据。"><div className="system-backup-action"><ArchiveButton /></div></Section>
+      <div className="system-log-filters"><Select aria-label="操作类型" value={workspace.filterAction} onChange={(event) => workspace.setFilterAction(event.target.value)}><option value="">全部操作类型</option>{Object.entries(ACTION_LABELS).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</Select><Input aria-label="搜索对象名称" type="search" placeholder="搜索学生名…" value={workspace.filterTargetName} onChange={(event) => workspace.setFilterTargetName(event.target.value)} /></div>
+      {workspace.error && workspace.logs.length === 0 ? <ErrorState message={workspace.error} action={<Button onClick={() => void workspace.loadInitial()}>重试</Button>} /> : workspace.loading && workspace.logs.length === 0 ? <LoadingState label="正在读取操作日志…" /> : workspace.logs.length === 0 ? <EmptyState title="暂无操作日志" description="评分、删除等操作发生后会自动记录。" /> : <>
+        {workspace.error && <div className="ui-banner ui-banner--danger" role="alert">{workspace.error}</div>}
+        <div className="system-log-table-wrap"><table className="system-log-table"><thead><tr><th>时间</th><th>操作</th><th>对象</th><th>详情</th></tr></thead><tbody>{workspace.logs.map((log) => <tr key={log.id}><td><time>{new Date(log.createdAt).toLocaleString("zh-CN")}</time></td><td><Badge tone="info">{ACTION_LABELS[log.action] || log.action}</Badge></td><td><span>{TARGET_LABELS[log.targetType] || log.targetType}</span>{log.targetName && <strong>{log.targetName}</strong>}</td><td title={formatLogDetail(log.detail)}>{formatLogDetail(log.detail)}</td></tr>)}</tbody></table></div>
+        {workspace.total > workspace.logs.length && <Button variant="secondary" onClick={() => void workspace.loadMore()} disabled={workspace.loading}>{workspace.loading ? "加载中…" : `加载更多（${workspace.logs.length}/${workspace.total}）`}</Button>}
+      </>}
+    </main>
   );
 }
