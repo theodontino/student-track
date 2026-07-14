@@ -157,4 +157,18 @@ test.describe.serial("v0.17.0 information architecture", () => {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     }
   });
+
+  test("all remaining core workspaces avoid page-level narrow overflow", async ({ page }) => {
+    await page.setViewportSize({ width: 720, height: 900 });
+    const paths = [
+      "/", "/quick-score", "/entry?step=input", "/daily-report", "/diarize",
+      `/students/${TEST_FIXTURE.students[0].id}?semesterId=${TEST_FIXTURE.semester.id}`,
+      `/semesters/${TEST_FIXTURE.semester.id}`, "/system/integrations",
+    ];
+    for (const path of paths) {
+      await page.goto(path);
+      await expect(page.locator("main, .dashboard-overview, .system-center").first()).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${path} should not overflow`).toBe(true);
+    }
+  });
 });
