@@ -1,6 +1,6 @@
 "use client";
 
-import { EmptyState } from "@/components/ui";
+import { ConfirmDialog, EmptyState, StatusBanner } from "@/components/ui";
 import BulkScoreToolbar from "./BulkScoreToolbar";
 import { QuickScoreContextPanel } from "./QuickScoreContextPanel";
 import SaveBar from "./SaveBar";
@@ -12,6 +12,7 @@ export default function QuickScoreWorkspace() {
   return (
     <main className="quick-score-workspace">
       <QuickScoreContextPanel workspace={workspace} />
+      {workspace.notice && <StatusBanner tone={workspace.notice.tone}>{workspace.notice.message}</StatusBanner>}
 
       {workspace.selectedClass && workspace.cards.length > 0 && (
         <>
@@ -44,6 +45,16 @@ export default function QuickScoreWorkspace() {
       {!workspace.selectedClass && (
         <EmptyState title="请选择学期和班级" description="选择后会自动载入最近课次与学生名单。" />
       )}
+      <ConfirmDialog
+        open={workspace.deleteConfirmationOpen}
+        title="删除当前课次"
+        description={`确定删除课次 ${workspace.selectedSessionCode}？这将同时删除相关考勤记录并重算分数。`}
+        confirmLabel="删除课次"
+        danger
+        busy={workspace.deletingSession}
+        onConfirm={() => void workspace.handleDeleteSession()}
+        onClose={() => workspace.setDeleteConfirmationOpen(false)}
+      />
     </main>
   );
 }

@@ -71,7 +71,7 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
           {workspace.selectedSessionCode && (
             <button
               type="button"
-              onClick={() => void workspace.handleDeleteSession()}
+              onClick={workspace.requestDeleteSession}
               disabled={workspace.deletingSession}
               className="border border-red-200 text-red-600 px-3 py-2 rounded-lg text-sm hover:bg-red-50 disabled:opacity-50"
               title="删除当前课次"

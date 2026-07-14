@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Button, ConfirmDialog, StatusBanner } from "@/components/ui";
+import { requestJson } from "@/lib/api-client";
 import type { WeComCatchResult } from "./types";
 
 type WeComCatchAction = "status" | "sync-start" | "sync-status" | "export";
@@ -20,32 +22,35 @@ export default function WeComCatchPanel({ onExportText, showFeedbackLink = false
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<WeComCatchResult | null>(null);
   const [error, setError] = useState("");
+  const [syncConfirmationOpen, setSyncConfirmationOpen] = useState(false);
 
   async function run(action: WeComCatchAction) {
-    if (action === "sync-start") {
-      const ok = confirm("企微同步可能切换会话并改变未读状态。请确认 Mac 已解锁，并且同步期间不要调整企微窗口。");
-      if (!ok) return;
-    }
-
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/wecomcatch/${action}`, {
+      const data = await requestJson<WeComCatchResult>(`/api/wecomcatch/${action}`, {
         method: action === "status" || action === "sync-status" ? "GET" : "POST",
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "WeComCatch 操作失败");
       setResult(data);
       if (action === "export" && data.stdout) onExportText?.(data.stdout);
-    } catch (e: any) {
-      setError(e.message || "WeComCatch 操作失败");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "WeComCatch 操作失败");
     } finally {
       setLoading(false);
     }
   }
 
+  function requestRun(action: WeComCatchAction) {
+    if (action === "sync-start") {
+      setSyncConfirmationOpen(true);
+      return;
+    }
+    void run(action);
+  }
+
   return (
-    <section className="bg-white border border-gray-200 rounded-lg p-5 space-y-4">
+    <>
+      <section className="bg-white border border-gray-200 rounded-lg p-5 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold text-gray-800">WeComCatch 手动同步</h3>
@@ -59,38 +64,37 @@ export default function WeComCatchPanel({ onExportText, showFeedbackLink = false
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <button
-          onClick={() => run("status")}
+        <Button
+          variant="secondary"
+          onClick={() => requestRun("status")}
           disabled={loading}
-          className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
         >
           读取状态
-        </button>
-        <button
-          onClick={() => run("sync-start")}
+        </Button>
+        <Button
+          onClick={() => requestRun("sync-start")}
           disabled={loading}
-          className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm font-medium disabled:opacity-50"
         >
           启动同步
-        </button>
-        <button
-          onClick={() => run("sync-status")}
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => requestRun("sync-status")}
           disabled={loading}
-          className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
         >
           同步进度
-        </button>
-        <button
-          onClick={() => run("export")}
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => requestRun("export")}
           disabled={loading}
-          className="px-4 py-2 rounded-md border border-green-200 text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
         >
           导出记录
-        </button>
+        </Button>
       </div>
 
-      {error && <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
-      {result?.warning && <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">{result.warning}</div>}
+      {error && <StatusBanner tone="danger">{error}</StatusBanner>}
+      {result?.warning && <StatusBanner tone="warning">{result.warning}</StatusBanner>}
       {result && (
         <div className="rounded-lg border border-gray-200 overflow-hidden">
           <div className="bg-gray-50 px-3 py-2 text-xs text-gray-500">
@@ -101,6 +105,19 @@ export default function WeComCatchPanel({ onExportText, showFeedbackLink = false
           </pre>
         </div>
       )}
-    </section>
+      </section>
+      <ConfirmDialog
+        open={syncConfirmationOpen}
+        title="启动企微同步"
+        description="企微同步可能切换会话并改变未读状态。请确认 Mac 已解锁，并且同步期间不要调整企微窗口。"
+        confirmLabel="启动同步"
+        busy={loading}
+        onConfirm={() => {
+          setSyncConfirmationOpen(false);
+          void run("sync-start");
+        }}
+        onClose={() => setSyncConfirmationOpen(false)}
+      />
+    </>
   );
 }

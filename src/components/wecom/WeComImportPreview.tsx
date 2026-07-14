@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ConfirmDialog, StatusBanner } from "@/components/ui";
+import { requestJson } from "@/lib/api-client";
 import type { WeComCandidatePath, WeComImportResult } from "./types";
 
 interface WeComImportPreviewProps {
@@ -25,14 +27,14 @@ export default function WeComImportPreview({
   const [result, setResult] = useState<WeComImportResult | null>(null);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [applyConfirmationOpen, setApplyConfirmationOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadCandidates() {
       try {
-        const res = await fetch("/api/wecom/import");
-        const data = await res.json();
+        const data = await requestJson<{ candidates?: WeComCandidatePath[]; suggestedPath?: string }>("/api/wecom/import");
         if (cancelled) return;
         setCandidates(data.candidates || []);
         if (data.suggestedPath && !externalJsonText) setJsonPath(data.suggestedPath);
@@ -77,13 +79,11 @@ export default function WeComImportPreview({
       setError("当前预览没有可新增记录");
       return;
     }
-    if (apply && !confirm(`确认写入 ${result?.createCount ?? 0} 条家校沟通记录？写入前会自动备份数据库。`)) return;
-
     setLoading(true);
     setStatus("");
     setError("");
     try {
-      const res = await fetch("/api/wecom/import", {
+      const data = await requestJson<WeComImportResult>("/api/wecom/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -93,20 +93,27 @@ export default function WeComImportPreview({
           apply,
         }),
       });
-      const data: WeComImportResult & { error?: string } = await res.json();
-      if (!res.ok) throw new Error(data.error || "导入失败");
       setResult(data);
       setStatus(apply ? `已写入 ${data.createdCount} 条家校沟通记录。` : "预览完成，尚未写入。");
       if (apply) onApplied?.(data);
-    } catch (e: any) {
-      setError(e.message || "企微导入失败");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "企微导入失败");
     } finally {
       setLoading(false);
     }
   }
 
+  function requestApply() {
+    if (!result || result.createCount <= 0) {
+      setError("当前预览没有可新增记录");
+      return;
+    }
+    setApplyConfirmationOpen(true);
+  }
+
   return (
-    <section className="bg-white border border-gray-200 rounded-lg p-5 space-y-5">
+    <>
+      <section className="bg-white border border-gray-200 rounded-lg p-5 space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold text-gray-800">企微家校沟通导入</h3>
@@ -194,7 +201,7 @@ export default function WeComImportPreview({
           {loading ? "处理中..." : "预览导入"}
         </button>
         <button
-          onClick={() => runImport(true)}
+          onClick={requestApply}
           disabled={loading || !result || result.createCount <= 0}
           className="px-4 py-2 rounded-md border border-green-200 text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
         >
@@ -202,8 +209,8 @@ export default function WeComImportPreview({
         </button>
       </div>
 
-      {status && <div className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{status}</div>}
-      {error && <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
+      {status && <StatusBanner tone="success">{status}</StatusBanner>}
+      {error && <StatusBanner tone="danger">{error}</StatusBanner>}
 
       {result && (
         <div className="border border-gray-200 rounded-lg overflow-hidden">
@@ -256,6 +263,19 @@ export default function WeComImportPreview({
           </div>
         </div>
       )}
-    </section>
+      </section>
+      <ConfirmDialog
+        open={applyConfirmationOpen}
+        title="写入家校沟通"
+        description={`确认写入 ${result?.createCount ?? 0} 条家校沟通记录？写入前会自动备份数据库。`}
+        confirmLabel="确认写入"
+        busy={loading}
+        onConfirm={() => {
+          setApplyConfirmationOpen(false);
+          void runImport(true);
+        }}
+        onClose={() => setApplyConfirmationOpen(false)}
+      />
+    </>
   );
 }

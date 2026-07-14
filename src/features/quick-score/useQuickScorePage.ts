@@ -17,14 +17,16 @@ import type {
 } from "./types";
 import { useQuickScoreWorkspace } from "./useQuickScoreWorkspace";
 import { isQuickScoreSessionState } from "./workspace-state";
+import {
+  createQuickScoreSession,
+  deleteQuickScoreSession,
+  loadQuickScoreReferenceData,
+  loadQuickScoreSession,
+  loadQuickScoreSessions,
+  saveQuickScores,
+} from "./api";
 
-type ScoreItem = {
-  studentId: string;
-  scoreA: number;
-  scoreB: number;
-  scoreC: number;
-  present: boolean;
-};
+type QuickScoreNotice = { tone: "info" | "success" | "danger"; message: string };
 
 export function useQuickScorePage() {
   const [classes, setClasses] = useState<string[]>([]);
@@ -64,6 +66,8 @@ export function useQuickScorePage() {
   const [result, setResult] = useState<QuickScoreSaveResult | null>(null);
   const [hasExistingScores, setHasExistingScores] = useState(false);
   const [showSemesterModal, setShowSemesterModal] = useState(false);
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [notice, setNotice] = useState<QuickScoreNotice | null>(null);
 
   const selectedClassRef = useRef(selectedClass);
   const selectedSessionCodeRef = useRef(selectedSessionCode);
@@ -107,18 +111,14 @@ export function useQuickScorePage() {
   });
 
   const fetchData = useCallback(async () => {
+    setNotice(null);
     try {
-      const [studentRes, semesterRes] = await Promise.all([
-        fetch("/api/students"),
-        fetch("/api/semesters"),
-      ]);
-      const students: QuickScoreStudent[] = await studentRes.json();
-      const semesterItems: QuickScoreSemester[] = await semesterRes.json();
+      const { students, semesters: semesterItems } = await loadQuickScoreReferenceData();
       setAllStudents(students);
       setClasses([...new Set(students.map((student) => student.class))]);
       setSemesters(semesterItems);
     } catch (error) {
-      console.error(error);
+      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "加载学生和学期失败" });
     }
   }, []);
 
@@ -138,15 +138,12 @@ export function useQuickScorePage() {
 
     setDate(session.date);
     setResult(null);
+    setNotice(null);
 
     try {
-      const params = new URLSearchParams({ class: className, sessionCode: session.code });
-      const response = await fetch(`/api/quick-score?${params.toString()}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-
-      const scoresData = data.scores as ScoreItem[];
-      const scoreMap = new Map<string, ScoreItem>(scoresData.map((score) => [score.studentId, score]));
+      const data = await loadQuickScoreSession(className, session.code);
+      const scoresData = data.scores;
+      const scoreMap = new Map(scoresData.map((score) => [score.studentId, score]));
       setOriginalScores(new Map(
         scoresData.map((score) => [score.studentId, {
           scoreA: score.scoreA,
@@ -179,8 +176,10 @@ export function useQuickScorePage() {
       } else {
         setCards(loadedCards);
       }
+      return true;
     } catch (error) {
-      console.error("loadSessionCards error:", error);
+      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "加载课次评分失败" });
+      return false;
     }
   }, [setCards, setOriginalScores]);
 
@@ -200,10 +199,9 @@ export function useQuickScorePage() {
   }, [setCards]);
 
   const fetchSessions = useCallback(async () => {
+    setNotice(null);
     try {
-      const url = `/api/sessions?semesterId=${selectedSemesterId}&className=${encodeURIComponent(selectedClass)}`;
-      const response = await fetch(url);
-      const data: SessionInfo[] = await response.json();
+      const data = await loadQuickScoreSessions(selectedSemesterId, selectedClass);
       setSessions(data);
 
       const pending = pendingRestoreRef.current;
@@ -213,7 +211,7 @@ export function useQuickScorePage() {
         setOriginalScores(new Map());
         setCards(pending.cards);
         pendingRestoreRef.current = null;
-        return;
+        return true;
       }
 
       const today = new Date().toISOString().split("T")[0];
@@ -226,13 +224,15 @@ export function useQuickScorePage() {
 
       if (target) {
         setSelectedSessionCode(target.code);
-        await loadSessionCards(target);
+        return loadSessionCards(target);
       } else {
         setSelectedSessionCode("");
         initBlankCards();
       }
+      return true;
     } catch (error) {
-      console.error(error);
+      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "加载课次列表失败" });
+      return false;
     }
   }, [
     initBlankCards,
@@ -276,42 +276,35 @@ export function useQuickScorePage() {
   async function handleRecordClass() {
     if (!selectedSemesterId) return;
     setRecordingClass(true);
+    setNotice(null);
     try {
-      const response = await fetch(`/api/semesters/${selectedSemesterId}/session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ className: selectedClass || undefined }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        alert(data.error);
-        return;
+      await createQuickScoreSession(selectedSemesterId, selectedClass);
+      if (await fetchSessions()) {
+        setNotice({ tone: "success", message: "新课次已创建并载入。" });
       }
-      await fetchSessions();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "创建课次失败");
+      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "创建课次失败" });
     } finally {
       setRecordingClass(false);
     }
   }
 
+  function requestDeleteSession() {
+    if (selectedSessionCode) setDeleteConfirmationOpen(true);
+  }
+
   async function handleDeleteSession() {
     if (!selectedSessionCode) return;
-    if (!confirm(`确定删除课次 ${selectedSessionCode}？\n这将同时删除所有考勤记录并重算分数。`)) return;
+    setDeleteConfirmationOpen(false);
     setDeletingSession(true);
+    setNotice(null);
     try {
-      const response = await fetch(
-        `/api/semesters/${selectedSemesterId}/session?code=${selectedSessionCode}`,
-        { method: "DELETE" },
-      );
-      const data = await response.json();
-      if (!response.ok) {
-        alert(data.error);
-        return;
+      await deleteQuickScoreSession(selectedSemesterId, selectedSessionCode);
+      if (await fetchSessions()) {
+        setNotice({ tone: "success", message: "课次已删除，相关考勤和评分已按现有规则更新。" });
       }
-      await fetchSessions();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "删除课次失败");
+      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "删除课次失败" });
     } finally {
       setDeletingSession(false);
     }
@@ -319,7 +312,7 @@ export function useQuickScorePage() {
 
   async function handleSubmit() {
     if (changedCards.length === 0) {
-      alert("没有改动，无需提交");
+      setNotice({ tone: "info", message: "没有改动，无需提交。" });
       return;
     }
     const scores = changedCards.map((card) => ({
@@ -336,18 +329,13 @@ export function useQuickScorePage() {
     }));
 
     setSubmitting(true);
+    setNotice(null);
     try {
-      const response = await fetch("/api/quick-score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scores,
-          sessionCode: selectedSessionCode || undefined,
-          attendances,
-        }),
+      const data = await saveQuickScores({
+        scores,
+        sessionCode: selectedSessionCode || undefined,
+        attendances,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
       setResult(data);
       try {
         await saveWorkHistory(
@@ -370,7 +358,7 @@ export function useQuickScorePage() {
         if (session) await loadSessionCards(session);
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : "提交失败");
+      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "提交失败" });
     } finally {
       setSubmitting(false);
     }
@@ -422,6 +410,7 @@ export function useQuickScorePage() {
     classes,
     contextHydrated,
     date,
+    deleteConfirmationOpen,
     deletingSession,
     genders,
     handleDeleteSession,
@@ -429,7 +418,9 @@ export function useQuickScorePage() {
     handleSessionChange,
     handleSubmit,
     hasExistingScores,
+    notice,
     recordingClass,
+    requestDeleteSession,
     restoreHistory,
     result,
     selectedClass,
@@ -440,6 +431,7 @@ export function useQuickScorePage() {
     semesters,
     sessions,
     setDate,
+    setDeleteConfirmationOpen,
     setNote,
     setScore,
     setSelectedClass,

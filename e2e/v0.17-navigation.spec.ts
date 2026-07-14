@@ -65,6 +65,26 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByText("已修改 1/", { exact: false })).toBeVisible();
   });
 
+  test("quick score uses recoverable errors and an accessible delete confirmation", async ({ page }) => {
+    await page.route("**/api/students", (route) => route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "E2E 学生加载失败" }),
+    }));
+    await page.goto("/quick-score");
+    await expect(page.getByText("E2E 学生加载失败")).toBeVisible();
+
+    await page.unroute("**/api/students");
+    await page.reload();
+    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
+    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByRole("button", { name: "删除课次" }).click();
+    await expect(page.getByRole("dialog", { name: "删除当前课次" })).toBeVisible();
+    await page.getByRole("button", { name: "取消" }).click();
+    await expect(page.getByRole("dialog", { name: "删除当前课次" })).toHaveCount(0);
+    await expect(page.locator("select").nth(2)).toHaveValue(TEST_FIXTURE.sessions[0].code);
+  });
+
   test("an unfinished feedback review survives page switches", async ({ page }) => {
     await page.goto("/feedback");
     await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);

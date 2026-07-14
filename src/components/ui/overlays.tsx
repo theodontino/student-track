@@ -13,6 +13,7 @@ function Overlay({ open, title, children, onClose, kind, size = "default" }: { o
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     panelRef.current?.focus();
     const handleKey = (event: KeyboardEvent) => {
@@ -27,7 +28,7 @@ function Overlay({ open, title, children, onClose, kind, size = "default" }: { o
     };
     document.addEventListener("keydown", handleKey);
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKey);
       previous?.focus();
     };
