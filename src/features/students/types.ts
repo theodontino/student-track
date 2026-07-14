@@ -1,5 +1,36 @@
 import type { StudentSemesterSummary } from "@/services/student-semester-summary-service";
 
+export interface StudentListItem {
+  id: string;
+  name: string;
+  class: string;
+  classCode: string;
+  studentId: string;
+  gender: string;
+  labels: { id: string; name: string }[];
+  scores?: { scoreA: number; scoreB: number; scoreC: number; scoreD: number } | null;
+  semesterSummary?: StudentSemesterSummary | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StudentFormState {
+  name: string;
+  classCode: string;
+  studentId: string;
+  gender: string;
+  labelNames: string[];
+}
+
+export interface StudentImportResult {
+  success?: boolean;
+  total?: number;
+  successCount?: number;
+  errorCount?: number;
+  errors?: string[];
+  error?: string;
+}
+
 export interface StudentEvent {
   id: string;
   session: { date: string; code: string; semesterNumber: number };

@@ -105,4 +105,19 @@ test.describe.serial("v0.17.0 information architecture", () => {
     expect(new URL(page.url()).searchParams.has("class")).toBe(false);
     expect(new URL(page.url()).searchParams.has("sessionCode")).toBe(false);
   });
+
+  test("student list dialogs remain accessible in a narrow window", async ({ page }) => {
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.goto("/students");
+    await expect(page.getByRole("heading", { name: "学生档案" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.getByRole("button", { name: "添加学生" }).click();
+    await expect(page.getByRole("dialog", { name: "添加学生" })).toBeVisible();
+    await page.getByRole("button", { name: "关闭" }).click();
+
+    await page.getByRole("button", { name: "导入花名册" }).click();
+    await expect(page.getByRole("dialog", { name: "导入花名册" })).toBeVisible();
+    await page.getByRole("button", { name: "关闭" }).click();
+  });
 });
