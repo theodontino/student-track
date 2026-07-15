@@ -17,7 +17,7 @@ export default function ClassOverviewGrid({ classes, alerts }: { classes: ClassO
   const alertMap = new Map<string, ClassAlert[]>();
   for (const alert of alerts) alertMap.set(alert.className, [...(alertMap.get(alert.className) ?? []), alert]);
 
-  return <Section title="班级概览" description="四维数据取各学生最近一条本学期评价">
+  return <Section title="班级状态" description="四维数据取各学生最近一条本学期评价；班级阈值不计入学生关注或警告人数">
     {classes.length === 0 ? <EmptyState title="暂无班级状态记录" description="录入评价后会显示班级四维概况。" /> : <div className="dashboard-class-grid">{classes.map((item) => {
       const classAlerts = alertMap.get(item.name) ?? [];
       const tone = classAlerts.some((alert) => alert.severity === "red") ? "danger" : classAlerts.length > 0 ? "warning" : "neutral";
