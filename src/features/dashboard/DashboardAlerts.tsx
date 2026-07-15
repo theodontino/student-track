@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge, EmptyState, Section, StatusBanner, StatusDot } from "@/components/ui";
 import type { AttendanceReminder, StudentRisk } from "./types";
@@ -44,13 +45,14 @@ const ATTENTION_GROUPS = [
   },
 ] as const;
 
-function AttentionColumns({ risks, semesterId }: { risks: StudentRisk[]; semesterId?: string }) {
+function AttentionColumns({ risks, expanded, semesterId }: { risks: StudentRisk[]; expanded: boolean; semesterId?: string }) {
   return <div className="dashboard-attention-grid">{ATTENTION_GROUPS.map((group) => {
-    const groupedRisks = risks.filter(group.accepts);
+    const totalGroupedRisks = risks.filter(group.accepts);
+    const groupedRisks = expanded ? totalGroupedRisks : totalGroupedRisks.slice(0, 5);
     return <section key={group.id} className={`dashboard-attention-column dashboard-attention-column--${group.id}`} aria-labelledby={`attention-group-${group.id}`}>
       <header>
         <div><h3 id={`attention-group-${group.id}`}>{group.title}</h3><p>{group.description}</p></div>
-        <Badge tone={groupedRisks.length > 0 ? "info" : "neutral"}>{groupedRisks.length} 人</Badge>
+        <Badge tone={totalGroupedRisks.length > 0 ? "info" : "neutral"}>{totalGroupedRisks.length} 人</Badge>
       </header>
       {groupedRisks.length > 0
         ? <RiskRows risks={groupedRisks} semesterId={semesterId} compact />
@@ -65,8 +67,12 @@ function AttendanceRows({ reminders, semesterId }: { reminders: AttendanceRemind
 }
 
 export default function DashboardAlerts({ semesterId, totalStudents, studentRisks, attendanceReminders }: { semesterId?: string; totalStudents: number; studentRisks: StudentRisk[]; attendanceReminders: AttendanceReminder[] }) {
+  const [attentionExpanded, setAttentionExpanded] = useState(false);
   const warnings = studentRisks.filter((risk) => risk.level === "warning");
   const attention = studentRisks.filter((risk) => risk.level === "attention");
+  const collapsedAttentionCount = ATTENTION_GROUPS.reduce((count, group) => (
+    count + Math.max(0, attention.filter(group.accepts).length - 5)
+  ), 0);
 
   if (totalStudents === 0) return <Section title="学生状态"><EmptyState title="暂无学生状态记录" description="完成本学期课次录入后，这里会显示关注、警告和考勤提醒。" /></Section>;
 
@@ -76,7 +82,10 @@ export default function DashboardAlerts({ semesterId, totalStudents, studentRisk
         {warnings.length > 0 ? <RiskRows risks={warnings} semesterId={semesterId} /> : <div className="p-4"><StatusBanner tone="success">当前没有需要优先处理的警告学生。</StatusBanner></div>}
       </Section>
       <Section className="dashboard-risk-section dashboard-risk-section--attention" title="持续关注" description="按触发原因分为状态回落、表现观察和定性反馈" actions={<Badge tone={attention.length > 0 ? "info" : "neutral"}>{attention.length} 人</Badge>}>
-        {attention.length > 0 ? <AttentionColumns risks={attention} semesterId={semesterId} /> : <div className="p-4"><StatusBanner tone="success">当前没有需要持续关注的学生。</StatusBanner></div>}
+        {attention.length > 0 ? <>
+          <AttentionColumns risks={attention} expanded={attentionExpanded} semesterId={semesterId} />
+          {collapsedAttentionCount > 0 && <div className="dashboard-alert-footer"><button type="button" onClick={() => setAttentionExpanded((current) => !current)}>{attentionExpanded ? "同时收起三栏" : `同时展开三栏（其余 ${collapsedAttentionCount} 人）`}</button></div>}
+        </> : <div className="p-4"><StatusBanner tone="success">当前没有需要持续关注的学生。</StatusBanner></div>}
       </Section>
     </div>
     <Section className="dashboard-risk-section dashboard-risk-section--attendance" title="考勤提醒" description="独立于学习状态风险，不参与关注和警告叠加" actions={<Badge tone={attendanceReminders.some((item) => item.level === "warning") ? "danger" : attendanceReminders.length > 0 ? "warning" : "neutral"}>{attendanceReminders.length} 人</Badge>}>
