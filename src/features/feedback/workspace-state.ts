@@ -6,6 +6,7 @@ export function isFeedbackWorkspace(value: unknown): value is FeedbackWorkspaceS
   if (!value || typeof value !== "object") return false;
   const state = value as Partial<FeedbackWorkspaceState>;
   return isTeachingContext(state.context)
+    && (state.activeStep === undefined || ["prepare", "extract", "review", "generate", "export"].includes(state.activeStep))
     && typeof state.newSessionDate === "string"
     && typeof state.rawText === "string"
     && typeof state.parseStatus === "string"

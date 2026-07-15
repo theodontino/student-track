@@ -9,7 +9,7 @@ import { saveWorkHistory } from "@/lib/history";
 import { readSSEStream } from "@/lib/sse";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
-import type { FeedbackCard, FeedbackContextResponse, FeedbackHistoryState, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
+import type { FeedbackCard, FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
 import { isFeedbackWorkspace, todayLocalDate } from "./workspace-state";
 
 function errorMessage(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
@@ -18,6 +18,7 @@ export function useFeedbackWorkspace() {
   const { context, hydrated: contextHydrated, setContext, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
   const { semesterId, className, sessionCode } = context;
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
+  const [activeStep, setActiveStep] = useState<FeedbackStep>("prepare");
   const [newSessionDate, setNewSessionDate] = useState(todayLocalDate);
   const [creatingSession, setCreatingSession] = useState(false);
   const [rawText, setRawText] = useState("");
@@ -53,15 +54,16 @@ export function useFeedbackWorkspace() {
   const workflow = useAiWorkflow();
 
   const workspaceValue = useMemo<FeedbackWorkspaceState>(() => ({
-    context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult,
+    activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult,
     reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone,
     feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, workflow: workflow.state,
-  }), [context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, workflow.state]);
+  }), [activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, workflow.state]);
 
   const workspace = useSessionWorkspace({
     key: teachingContextWorkspaceKey("feedback", context), value: workspaceValue,
     validate: isFeedbackWorkspace, enabled: contextHydrated,
     restore: (saved) => {
+      setActiveStep(saved?.activeStep ?? (saved?.feedbackCards.length ? "export" : saved?.confirmed ? "generate" : saved?.parsedResult ? "review" : saved?.rawText ? "extract" : "prepare"));
       setNewSessionDate(saved?.newSessionDate ?? todayLocalDate());
       setRawText(saved?.rawText ?? ""); setParseStatus(saved?.parseStatus ?? ""); setStreamContent(saved?.streamContent ?? "");
       setDraftId(saved?.draftId ?? ""); setParsedResult(saved?.parsedResult ?? null); setReviewResult(saved?.reviewResult ?? null);
@@ -126,7 +128,7 @@ export function useFeedbackWorkspace() {
       await readSSEStream(response.body.getReader(), (message) => {
         if (message.type === "status") setParseStatus(message.message);
         else if (message.type === "chunk") setStreamContent((current) => current + message.content);
-        else if (message.type === "result") { setDraftId(message.draftId); setParsedResult(message.parsedResult); setReviewResult(message.reviewResult); setCorrections(message.corrections || []); setStatus("解析完成，请确认结构化记录。"); workflow.transition("reviewing", "结构化草案已生成，请人工核对后再写入。"); }
+        else if (message.type === "result") { setDraftId(message.draftId); setParsedResult(message.parsedResult); setReviewResult(message.reviewResult); setCorrections(message.corrections || []); setStatus("解析完成，请确认结构化记录。"); setActiveStep("review"); workflow.transition("reviewing", "结构化草案已生成，请人工核对后再写入。"); }
         else if (message.type === "error") throw new Error(message.message);
       });
     } catch (reason) { const message = errorMessage(reason, "解析失败"); setError(message); workflow.fail(message, "generating"); }
@@ -145,6 +147,7 @@ export function useFeedbackWorkspace() {
       const warningText = data.warnings?.length ? `；注意：${data.warnings.join("；")}` : ""; const absentText = data.absentStudents?.length ? `；缺勤：${data.absentStudents.join("、")}` : "";
       setParseStatus(`已从助教表生成课堂记录，匹配 ${data.matchedRows ?? 0} 条${absentText}${warningText}`); setStatus("助教表已解析，请确认结构化记录后写入。");
       workflow.transition("reviewing", "助教表草案已生成，请人工核对后再写入。");
+      setActiveStep("review");
     } catch (reason) { const message = errorMessage(reason, "助教表解析失败"); setError(message); workflow.fail(message, "generating"); }
     finally { setAssistantImporting(false); }
   }
@@ -157,6 +160,7 @@ export function useFeedbackWorkspace() {
       setConfirmed(true); setStatus(data.warnings?.length ? `课堂记录已写入；注意：${data.warnings.join("；")}` : "课堂记录已写入，反馈上下文已刷新。");
       setContextReloadKey((current) => current + 1); setFeedbackCards([]); setFeedbackDirty(false); setForceRegenerate(true);
       workflow.transition("completed", "结构化记录已经安全写入，反馈上下文已刷新。");
+      setActiveStep("generate");
     } catch (reason) { const message = errorMessage(reason, "确认写入失败"); setError(message); workflow.fail(message, "saving"); }
     finally { setConfirming(false); }
   }
@@ -169,14 +173,14 @@ export function useFeedbackWorkspace() {
       const response = await fetch("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", bypassCache: forceRegenerate }) });
       if (!response.ok) throw new Error((await response.json()).error);
       if ((response.headers.get("content-type") || "").includes("application/json")) {
-        const data = await response.json(); setFeedbackCards(data.students || []); setFeedbackTotal(data.total); setFeedbackDone(data.total); setStatus(data.cached ? "已恢复最近一次生成结果。" : "反馈已生成。"); setForceRegenerate(false); workflow.transition("reviewing", "反馈已就绪，请逐条检查和编辑后再导出。"); return;
+        const data = await response.json(); setFeedbackCards(data.students || []); setFeedbackTotal(data.total); setFeedbackDone(data.total); setStatus(data.cached ? "已恢复最近一次生成结果。" : "反馈已生成。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "反馈已就绪，请逐条检查和编辑后再导出。"); return;
       }
       if (!response.body) throw new Error("生成流不可用");
       let streamTotal = 0;
       await readSSEStream(response.body.getReader(), (message) => {
         if (message.type === "init") { streamTotal = message.total; setFeedbackTotal(message.total); setFeedbackCards(message.students); workflow.progress(0, `准备生成 ${message.total} 条反馈…`); }
         else if (message.type === "progress") { setFeedbackDone((current) => { const next = current + 1; workflow.progress(streamTotal ? next / streamTotal : 0, `已生成 ${next}/${streamTotal} 条反馈`); return next; }); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: message.feedback } : card)); }
-        else if (message.type === "done") { setFeedbackCards(message.students || []); setFeedbackTotal(message.total); setFeedbackDone(message.total); setStatus("反馈已生成，可逐条编辑后导出。"); setForceRegenerate(false); workflow.transition("reviewing", "反馈已就绪，请逐条检查和编辑后再导出。"); }
+        else if (message.type === "done") { setFeedbackCards(message.students || []); setFeedbackTotal(message.total); setFeedbackDone(message.total); setStatus("反馈已生成，可逐条编辑后导出。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "反馈已就绪，请逐条检查和编辑后再导出。"); }
         else if (message.type === "error") throw new Error(message.message || "批量生成失败");
       });
     } catch (reason) { const message = errorMessage(reason, "批量生成失败"); setError(message); workflow.fail(message, "generating"); }
@@ -200,7 +204,7 @@ export function useFeedbackWorkspace() {
   }
   function restoreHistory(state: FeedbackHistoryState) {
     if (state.kind === "single") { setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setSingleStudentId(state.studentId); setSingleDays(state.days); setSingleFeedback(state.feedback); setError(""); setStatus("已恢复单人反馈历史。"); return; }
-    setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setFeedbackCards(state.students); setFeedbackTotal(state.total); setFeedbackDone(state.total); setFeedbackDirty(false); setForceRegenerate(false); setContextReloadKey((current) => current + 1); setError(""); setStatus("已恢复历史反馈结果。");
+    setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setFeedbackCards(state.students); setFeedbackTotal(state.total); setFeedbackDone(state.total); setFeedbackDirty(false); setForceRegenerate(false); setActiveStep("export"); setContextReloadKey((current) => current + 1); setError(""); setStatus("已恢复历史反馈结果。");
   }
   function markContextChanged() { setFeedbackCards([]); setFeedbackDone(0); setFeedbackTotal(0); setFeedbackDirty(false); setForceRegenerate(true); setContextReloadKey((current) => current + 1); setStatus("家校沟通已导入，反馈上下文已刷新。"); }
   async function generateSingleFeedback() {
@@ -215,7 +219,7 @@ export function useFeedbackWorkspace() {
   }
 
   return {
-    context, contextHydrated, sessionRefreshKey, newSessionDate, setNewSessionDate, creatingSession, rawText, setRawText,
+    activeStep, setActiveStep, context, contextHydrated, sessionRefreshKey, newSessionDate, setNewSessionDate, creatingSession, rawText, setRawText,
     parsing, assistantImporting, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirming, confirmed,
     generating, regeneratingId, exporting, error, status, feedbackCards, feedbackTotal, feedbackDone, contextStudents, contextLoading,
     contextError, feedbackDirty, students, singleStudentId, setSingleStudentId, singleDays, setSingleDays, singleFeedback, setSingleFeedback,

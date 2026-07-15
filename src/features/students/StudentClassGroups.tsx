@@ -21,8 +21,8 @@ export function StudentClassGroups({ workspace }: { workspace: Workspace }) {
         <span>{collapsed ? "展开" : "收起"}</span>
       </button>
       {!collapsed && <div className="student-list-rows">{students.map((student) => (
-        <article key={student.id} className="student-list-row">
-          <button type="button" className="student-list-row__open" onClick={() => workspace.openStudent(student.id)} aria-label={`打开${student.name}的学生档案`}>
+        <article key={student.id} className={`student-list-row${workspace.selectedStudent?.id === student.id ? " is-selected" : ""}`}>
+          <button type="button" className="student-list-row__open" onClick={() => workspace.selectStudent(student.id)} aria-label={`预览${student.name}的学生档案`} aria-pressed={workspace.selectedStudent?.id === student.id}>
             <span className={`student-list-row__avatar ${student.gender === "男" ? "is-male" : "is-female"}`} aria-hidden="true">{student.name[0]}</span>
             <span className="student-list-row__identity">
               <span><strong>{student.name}</strong><small>{student.studentId}</small></span>
@@ -34,10 +34,6 @@ export function StudentClassGroups({ workspace }: { workspace: Workspace }) {
               <span>{studentSummaryHint(student.semesterSummary)}</span>
             </span>
           </button>
-          <div className="student-list-row__actions">
-            <Button variant="ghost" uiSize="sm" onClick={(event) => { event.stopPropagation(); workspace.openEdit(student); }}>编辑</Button>
-            <Button className="student-list-row__delete" variant="ghost" uiSize="sm" onClick={(event) => { event.stopPropagation(); workspace.setDeleteError(""); workspace.setDeleteTarget(student); }}>删除</Button>
-          </div>
         </article>
       ))}</div>}
     </section>;

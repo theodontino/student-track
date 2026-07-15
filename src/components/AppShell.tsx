@@ -111,7 +111,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div><small>Chem-Track AI</small><strong>{currentLabel}</strong></div>
       </div>
       {open && <div className="app-drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}><aside className="app-drawer" role="dialog" aria-modal="true" aria-label="主导航抽屉"><IconButton autoFocus label="关闭导航" className="app-drawer__close" onClick={() => setOpen(false)}><AppIcon name="close" /></IconButton><Navigation pathname={pathname} onNavigate={() => setOpen(false)} /></aside></div>}
-      <main id="main-content" className="app-content" tabIndex={-1}>{children}</main>
+      <main id="main-content" className="app-content" tabIndex={-1}><div key={pathname} className="app-route-frame">{children}</div></main>
     </div>
   );
 }

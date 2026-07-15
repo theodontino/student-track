@@ -31,7 +31,7 @@ export default function WeComWorkflowPanel({
   }
 
   return (
-    <section className="min-w-0 space-y-4">
+    <section className="wecom-workflow min-w-0 space-y-4">
       <div>
         <h3 className="font-semibold text-gray-800">{title}</h3>
         <p className="text-sm text-gray-500 mt-1">{description}</p>

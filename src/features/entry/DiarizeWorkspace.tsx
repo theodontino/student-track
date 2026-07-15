@@ -179,11 +179,12 @@ export default function DiarizeWorkspace() {
   }
 
   return (
-    <main className="max-w-6xl mx-auto">
+    <main className="diarize-workspace">
       <PageHeader title="录音转写" description="把课后回顾录音转成文字稿，再送入课堂录入或课后反馈。" />
-      <p className="-mt-4 mb-6 text-xs text-gray-400">转写方式和任务编号会在切换页面后恢复；浏览器不会保存未提交的音频文件，离开前会提醒。</p>
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-5">
-        <div className="min-w-0 space-y-5">
+      <p className="diarize-workspace__note">转写方式和任务编号会在切换页面后恢复；浏览器不会保存未提交的音频文件，离开前会提醒。</p>
+      <div className="diarize-workspace__layout">
+        <DiarizeTaskList tasks={tasks} busy={busy} onRefresh={() => void refreshTasks()} onOpen={(taskId) => void openTask(taskId)} onRetry={(taskId) => void retryTask(taskId)} onDelete={(taskId) => void removeTask(taskId)} />
+        <div className="diarize-workspace__detail">
           <DiarizeTaskComposer
             audioFile={audioFile}
             engine={engine}
@@ -204,7 +205,6 @@ export default function DiarizeWorkspace() {
           {activeTask && <DiarizeTaskDetail task={activeTask} onCopy={() => void copyResult()} onDownload={downloadResult} onSendToFeedback={() => sendResult("chem-track:feedback-draft", "/feedback")} onSendToInput={() => sendResult("chem-track:nl-input-draft", "/input")} />}
           <DiarizeRunLog logs={logs} />
         </div>
-        <DiarizeTaskList tasks={tasks} busy={busy} onRefresh={() => void refreshTasks()} onOpen={(taskId) => void openTask(taskId)} onRetry={(taskId) => void retryTask(taskId)} onDelete={(taskId) => void removeTask(taskId)} />
       </div>
     </main>
   );

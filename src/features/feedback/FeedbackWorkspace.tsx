@@ -1,14 +1,9 @@
 "use client";
 
-import FeedbackContextPreview from "@/components/FeedbackContextPreview";
 import WorkHistoryButton from "@/components/WorkHistoryButton";
-import WeComWorkflowPanel from "@/components/wecom/WeComWorkflowPanel";
-import { PageHeader, StatusBanner } from "@/components/ui";
-import { AiWorkflowStatus } from "@/features/ai-workflow";
-import { ClassroomReviewComposer } from "./ClassroomReviewComposer";
-import { DraftConfirmationPanel } from "./DraftConfirmationPanel";
-import { FeedbackContextSection } from "./FeedbackContextSection";
-import { FeedbackGenerationPanel } from "./FeedbackGenerationPanel";
+import { Button, Drawer, PageHeader, StatusBanner } from "@/components/ui";
+import { useState } from "react";
+import { FeedbackWorkflow } from "./FeedbackWorkflow";
 import { isLegacyFeedbackState } from "./history-adapters";
 import { SingleFeedbackPanel } from "./SingleFeedbackPanel";
 import type { FeedbackHistoryState } from "./types";
@@ -19,26 +14,14 @@ function isFeedbackHistoryState(value: unknown): value is FeedbackHistoryState {
 
 export default function FeedbackWorkspace() {
   const workspace = useFeedbackWorkspace();
+  const [singleOpen, setSingleOpen] = useState(false);
   return (
     <main className="feedback-workspace">
-      <PageHeader title="课后反馈工作台" description="选择课次、准备上下文、确认课堂记录，再生成和导出家长反馈。" actions={<WorkHistoryButton<FeedbackHistoryState> modules={FEEDBACK_HISTORY_MODULES} accept={isFeedbackHistoryState} onRestore={workspace.restoreHistory} />} />
-      <FeedbackContextSection workspace={workspace} />
+      <PageHeader title="课后反馈工作台" description="选择课次、准备上下文、确认课堂记录，再生成和导出家长反馈。" actions={<><Button variant="secondary" onClick={() => setSingleOpen(true)}>单人反馈</Button><WorkHistoryButton<FeedbackHistoryState> modules={FEEDBACK_HISTORY_MODULES} accept={isFeedbackHistoryState} onRestore={workspace.restoreHistory} /></>} />
       {workspace.error && <StatusBanner tone="danger">{workspace.error}</StatusBanner>}
       {workspace.status && <StatusBanner tone="success">{workspace.status}</StatusBanner>}
-      <AiWorkflowStatus state={workspace.workflow} />
-
-      <div className="feedback-workspace-grid">
-        <div className="feedback-preparation-column">
-          <WeComWorkflowPanel title="家校沟通准备" description="同步、提取、预览并导入会影响本次反馈的家校沟通。" onApplied={workspace.markContextChanged} />
-          <FeedbackContextPreview students={workspace.contextStudents} loading={workspace.contextLoading} error={workspace.contextError} />
-        </div>
-        <div className="feedback-draft-column">
-          <ClassroomReviewComposer workspace={workspace} />
-          <DraftConfirmationPanel workspace={workspace} />
-        </div>
-        <FeedbackGenerationPanel workspace={workspace} />
-      </div>
-      <SingleFeedbackPanel workspace={workspace} />
+      <FeedbackWorkflow workspace={workspace} />
+      <Drawer open={singleOpen} title="单人反馈" size="wide" onClose={() => setSingleOpen(false)}><div className="feedback-single-drawer"><SingleFeedbackPanel workspace={workspace} /></div></Drawer>
     </main>
   );
 }

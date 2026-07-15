@@ -43,10 +43,10 @@ export function StudentPerformanceOverview({ summary }: { summary: StudentSemest
         {hasRadarData ? (
           <ResponsiveContainer width="100%" height={280}>
             <RadarChart data={radarData}>
-              <PolarGrid stroke="#dbe3ee" />
+              <PolarGrid stroke="var(--color-border)" />
               <PolarAngleAxis dataKey="dim" fontSize={12} />
               <PolarRadiusAxis angle={30} domain={[0, 5]} tickCount={6} fontSize={11} />
-              <Radar name="学期表现" dataKey="score" stroke="#2563eb" fill="#3b82f6" fillOpacity={0.18} />
+              <Radar name="学期表现" dataKey="score" stroke="var(--chart-a)" fill="var(--chart-a)" fillOpacity={0.18} />
             </RadarChart>
           </ResponsiveContainer>
         ) : (

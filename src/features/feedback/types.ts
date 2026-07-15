@@ -38,6 +38,7 @@ export interface SingleFeedbackHistoryState {
 export type FeedbackHistoryState = BatchFeedbackHistoryState | SingleFeedbackHistoryState;
 
 export interface FeedbackWorkspaceState {
+  activeStep?: FeedbackStep;
   context: TeachingContext;
   newSessionDate: string;
   rawText: string;
@@ -61,3 +62,5 @@ export interface FeedbackWorkspaceState {
 }
 
 export interface FeedbackStudentOption { id: string; name: string; class: string }
+
+export type FeedbackStep = "prepare" | "extract" | "review" | "generate" | "export";

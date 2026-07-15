@@ -5,11 +5,11 @@ import type { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 
 type Workspace = ReturnType<typeof useFeedbackWorkspace>;
 
-export function FeedbackGenerationPanel({ workspace }: { workspace: Workspace }) {
+export function FeedbackGenerationPanel({ workspace, mode = "export" }: { workspace: Workspace; mode?: "generate" | "export" }) {
   return (
-    <Section title="反馈生成与导出" description="生成后可逐条修改，导出使用最终文本。" actions={<><Button onClick={() => void workspace.generate()} disabled={!workspace.canGenerate}>{workspace.generating ? `生成中 ${workspace.feedbackDone}/${workspace.feedbackTotal}` : "批量生成"}</Button><Button variant="secondary" onClick={() => void workspace.exportFeedback()} disabled={workspace.exporting || !workspace.feedbackCards.length}>{workspace.exporting ? "导出中…" : "导出课后反馈表"}</Button></>}>
+    <Section title={mode === "generate" ? "生成班级反馈" : "编辑与导出"} description={mode === "generate" ? "使用已确认的课堂记录与家校上下文生成反馈。" : "逐条检查和修改，导出使用最终文本。"} actions={<>{mode === "generate" && <Button onClick={() => void workspace.generate()} disabled={!workspace.canGenerate}>{workspace.generating ? `生成中 ${workspace.feedbackDone}/${workspace.feedbackTotal}` : "批量生成"}</Button>}{mode === "export" && <><Button variant="secondary" onClick={() => workspace.setActiveStep("generate")}>重新生成</Button><Button onClick={() => void workspace.exportFeedback()} disabled={workspace.exporting || !workspace.feedbackCards.length}>{workspace.exporting ? "导出中…" : "导出课后反馈表"}</Button></>}</>}>
       <div className="feedback-generation">
-        {!workspace.feedbackCards.length ? <EmptyState title="尚未生成反馈" description="选择课次并生成后，每名学生的反馈会显示在这里。" /> : workspace.feedbackCards.map((card) => {
+        {!workspace.feedbackCards.length ? <EmptyState title={workspace.generating ? "正在生成反馈" : "尚未生成反馈"} description={workspace.generating ? `${workspace.feedbackDone}/${workspace.feedbackTotal || "…"}，完成后会自动进入编辑与导出。` : "选择课次并生成后，每名学生的反馈会显示在这里。"} /> : workspace.feedbackCards.map((card) => {
           const context = workspace.contextByStudent.get(card.id);
           const labels = context?.labels.length ? context.labels : card.labels;
           return <article key={card.id} className="feedback-card">

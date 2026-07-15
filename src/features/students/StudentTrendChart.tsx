@@ -33,15 +33,15 @@ export function StudentTrendChart({ metrics }: { metrics: StudentDetail["session
       {trendData.length > 0 ? (
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={trendData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#edf1f6" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
             <XAxis dataKey="date" fontSize={11} />
             <YAxis domain={[0, 5]} tickCount={6} fontSize={11} />
             <Tooltip />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line type="monotone" dataKey="学习&测验" stroke="#2563eb" strokeWidth={2} dot={{ r: 3 }} />
-            <Line type="monotone" dataKey="精神&纪律" stroke="#0f9f8f" strokeWidth={2} dot={{ r: 3 }} />
-            <Line type="monotone" dataKey="课后任务" stroke="#d97706" strokeWidth={2} dot={{ r: 3 }} />
-            <Line type="monotone" dataKey="考勤" stroke="#7c3aed" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="5 5" />
+            <Line type="monotone" dataKey="学习&测验" stroke="var(--chart-a)" strokeWidth={2} dot={{ r: 3 }} />
+            <Line type="monotone" dataKey="精神&纪律" stroke="var(--chart-b)" strokeWidth={2} dot={{ r: 3 }} />
+            <Line type="monotone" dataKey="课后任务" stroke="var(--chart-c)" strokeWidth={2} dot={{ r: 3 }} />
+            <Line type="monotone" dataKey="考勤" stroke="var(--chart-d)" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="5 5" />
           </LineChart>
         </ResponsiveContainer>
       ) : <div className="student-chart-empty">本学期暂无课次评价</div>}

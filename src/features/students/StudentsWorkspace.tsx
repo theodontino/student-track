@@ -5,6 +5,7 @@ import { StudentClassGroups } from "./StudentClassGroups";
 import { StudentEditorDialog } from "./StudentEditorDialog";
 import { StudentImportDialog } from "./StudentImportDialog";
 import { StudentListToolbar } from "./StudentListToolbar";
+import { StudentInspector } from "./StudentInspector";
 import { useStudentsWorkspace } from "./useStudentsWorkspace";
 
 export default function StudentsWorkspace() {
@@ -21,7 +22,7 @@ export default function StudentsWorkspace() {
     <main className="student-list-workspace">
       <StudentListToolbar workspace={workspace} />
       {workspace.loadError && <StatusBanner tone="danger">{workspace.loadError} <Button uiSize="sm" variant="secondary" onClick={() => void workspace.fetchStudents()}>重试</Button></StatusBanner>}
-      <StudentClassGroups workspace={workspace} />
+      <div className="student-master-detail"><div className="student-master-list"><StudentClassGroups workspace={workspace} /></div><StudentInspector workspace={workspace} /></div>
       <StudentEditorDialog workspace={workspace} />
       <StudentImportDialog workspace={workspace} />
       <ConfirmDialog

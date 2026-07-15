@@ -1,6 +1,7 @@
 "use client";
 
 import WorkHistoryButton from "@/components/WorkHistoryButton";
+import { Button } from "@/components/ui";
 import { SemesterDialog } from "@/features/courses";
 import ContextHeader from "./ContextHeader";
 import type { QuickScoreHistoryState, QuickScoreSemester } from "./types";
@@ -77,12 +78,10 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
               title="删除当前课次"
             >{workspace.deletingSession ? "删除中…" : "删除课次"}</button>
           )}
-          <button
-            type="button"
+          <Button
             onClick={() => void workspace.handleRecordClass()}
             disabled={workspace.recordingClass || !workspace.selectedSemesterId || !workspace.selectedClass}
-            className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
-          >{workspace.recordingClass ? "记录中…" : "开始上课"}</button>
+          >{workspace.recordingClass ? "记录中…" : "开始上课"}</Button>
         </div>
 
         {workspace.selectedSession && (

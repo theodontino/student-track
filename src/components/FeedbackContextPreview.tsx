@@ -10,7 +10,7 @@ interface FeedbackContextPreviewProps {
 
 export default function FeedbackContextPreview({ students, loading, error }: FeedbackContextPreviewProps) {
   return (
-    <section className="rounded-lg border border-blue-100 bg-blue-50/60 p-4">
+    <section className="feedback-context-preview rounded-lg border border-blue-100 bg-blue-50/60 p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
           <h4 className="text-sm font-semibold text-blue-900">生成前上下文预览</h4>

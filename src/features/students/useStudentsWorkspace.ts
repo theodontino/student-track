@@ -41,6 +41,7 @@ export function useStudentsWorkspace() {
   const [deleteTarget, setDeleteTarget] = useState<StudentListItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [selectedStudentId, setSelectedStudentId] = useState("");
 
   const fetchStudents = useCallback(async () => {
     setLoading(true);
@@ -70,6 +71,10 @@ export function useStudentsWorkspace() {
   const classGroups = useMemo(
     () => groupStudentsByClass(filteredStudents),
     [filteredStudents],
+  );
+  const selectedStudent = useMemo(
+    () => students.find((student) => student.id === selectedStudentId) ?? null,
+    [selectedStudentId, students],
   );
 
   function toggleClass(className: string) {
@@ -147,6 +152,7 @@ export function useStudentsWorkspace() {
     setDeleteError("");
     try {
       await requestJson<{ success: true }>(`/api/students/${deleteTarget.id}`, { method: "DELETE" });
+      if (selectedStudentId === deleteTarget.id) setSelectedStudentId("");
       setDeleteTarget(null);
       await fetchStudents();
     } catch (reason) {
@@ -226,7 +232,9 @@ export function useStudentsWorkspace() {
     openStudent,
     removeLabel,
     search,
+    selectedStudent,
     selectedSemesterId,
+    selectStudent: setSelectedStudentId,
     setDeleteError,
     setDeleteTarget,
     setForm,

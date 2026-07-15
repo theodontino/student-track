@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const items = [
+  { href: "/system/appearance", label: "外观" },
   { href: "/system/configuration", label: "LLM 配置" },
   { href: "/system/integrations", label: "集成与工具" },
   { href: "/system/maintenance", label: "维护与日志" },
