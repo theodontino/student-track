@@ -40,6 +40,17 @@ describe("AI workflow machine", () => {
     expect(recoverAiWorkflowState(active, T1)).toMatchObject({ phase: "failed", retryPhase: "validating" });
   });
 
+  it("keeps safe task context when a running task is cancelled", () => {
+    const validating = aiWorkflowReducer(INITIAL_AI_WORKFLOW_STATE, { type: "start", operation: "生成反馈", now: T0 });
+    const generating = aiWorkflowReducer(validating, { type: "transition", phase: "generating", now: T1 });
+    expect(aiWorkflowReducer(generating, { type: "cancel", message: "教师已取消", now: T1 })).toMatchObject({
+      phase: "cancelled",
+      operation: "生成反馈",
+      message: "教师已取消",
+      cancelledAt: T1,
+    });
+  });
+
   it("accepts only serializable workflow shapes", () => {
     expect(isAiWorkflowState(INITIAL_AI_WORKFLOW_STATE)).toBe(true);
     expect(isAiWorkflowState({ phase: "generating", operation: "任务" })).toBe(false);

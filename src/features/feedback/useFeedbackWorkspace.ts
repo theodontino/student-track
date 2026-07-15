@@ -172,9 +172,10 @@ export function useFeedbackWorkspace() {
         const data = await response.json(); setFeedbackCards(data.students || []); setFeedbackTotal(data.total); setFeedbackDone(data.total); setStatus(data.cached ? "已恢复最近一次生成结果。" : "反馈已生成。"); setForceRegenerate(false); workflow.transition("reviewing", "反馈已就绪，请逐条检查和编辑后再导出。"); return;
       }
       if (!response.body) throw new Error("生成流不可用");
+      let streamTotal = 0;
       await readSSEStream(response.body.getReader(), (message) => {
-        if (message.type === "init") { setFeedbackTotal(message.total); setFeedbackCards(message.students); workflow.progress(0, `准备生成 ${message.total} 条反馈…`); }
-        else if (message.type === "progress") { setFeedbackDone((current) => { const next = current + 1; workflow.progress(message.total ? next / message.total : 0, `已生成 ${next}/${message.total} 条反馈`); return next; }); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: message.feedback } : card)); }
+        if (message.type === "init") { streamTotal = message.total; setFeedbackTotal(message.total); setFeedbackCards(message.students); workflow.progress(0, `准备生成 ${message.total} 条反馈…`); }
+        else if (message.type === "progress") { setFeedbackDone((current) => { const next = current + 1; workflow.progress(streamTotal ? next / streamTotal : 0, `已生成 ${next}/${streamTotal} 条反馈`); return next; }); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: message.feedback } : card)); }
         else if (message.type === "done") { setFeedbackCards(message.students || []); setFeedbackTotal(message.total); setFeedbackDone(message.total); setStatus("反馈已生成，可逐条编辑后导出。"); setForceRegenerate(false); workflow.transition("reviewing", "反馈已就绪，请逐条检查和编辑后再导出。"); }
         else if (message.type === "error") throw new Error(message.message || "批量生成失败");
       });
