@@ -3,8 +3,10 @@ import { NextRequest } from "next/server";
 import { GET } from "@/app/api/alerts/route";
 
 describe("/api/alerts", () => {
+  const request = () => new NextRequest("http://127.0.0.1:3000/api/alerts");
+
   it("GET returns 200 with alert structure", async () => {
-    const res = await GET();
+    const res = await GET(request());
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveProperty("classOverview");
@@ -17,7 +19,7 @@ describe("/api/alerts", () => {
   });
 
   it("classOverview has expected shape", async () => {
-    const res = await GET();
+    const res = await GET(request());
     const body = await res.json();
     expect(body.classOverview.length).toBeGreaterThan(0);
     const first = body.classOverview[0];

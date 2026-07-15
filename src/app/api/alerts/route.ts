@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAlertDashboard } from "@/services/alert-service";
 import { ServiceError } from "@/services/service-error";
 
-export async function GET(request?: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    const semesterId = request ? new URL(request.url).searchParams.get("semesterId") ?? undefined : undefined;
+    const semesterId = new URL(request.url).searchParams.get("semesterId") ?? undefined;
     return NextResponse.json(await getAlertDashboard({ semesterId }));
   } catch (error) {
     console.error("[/api/alerts] error:", error);
