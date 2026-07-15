@@ -31,6 +31,7 @@ beforeAll(async () => {
     prisma.student.create({ data: { name: `${marker} 甲`, studentId: `${marker}-S1`, gender: "男", classId: oldClass.id } }),
     prisma.student.create({ data: { name: `${marker} 乙`, studentId: `${marker}-S2`, gender: "女", classId: currentClass.id } }),
     prisma.student.create({ data: { name: `${marker} 丙`, studentId: `${marker}-S3`, gender: "男", classId: currentClass.id } }),
+    prisma.student.create({ data: { name: `${marker} 考勤学生`, studentId: `${marker}-S-ATT`, gender: "女", classId: currentClass.id } }),
   ]);
   currentStudentIds = currentStudents.map((student) => student.id);
   const futureOnlyStudent = await prisma.student.create({
@@ -45,6 +46,9 @@ beforeAll(async () => {
   const currentSession = await prisma.classSession.create({
     data: { code: "2099071001", semesterId: currentSemester.id, semesterNumber: 1, date: "2099-07-10", classId: currentClass.id },
   });
+  const earlierCurrentSession = await prisma.classSession.create({
+    data: { code: "2099070501", semesterId: currentSemester.id, semesterNumber: 2, date: "2099-07-05", classId: currentClass.id },
+  });
   const futureSession = await prisma.classSession.create({
     data: { code: "2099073001", semesterId: currentSemester.id, semesterNumber: 2, date: "2099-07-30", classId: currentClass.id },
   });
@@ -54,13 +58,14 @@ beforeAll(async () => {
     data: { sessionId: oldSession.id, studentId: oldStudent.id, date: oldSession.date, scoreA: 1, scoreB: 1, scoreC: 1, scoreD: 5, operator: "teacher" },
   });
   await prisma.attendance.createMany({
-    data: currentStudents.map((student) => ({ sessionId: currentSession.id, studentId: student.id, present: true })),
+    data: currentStudents.map((student, index) => ({ sessionId: currentSession.id, studentId: student.id, present: index !== 3 })),
   });
+  await prisma.attendance.create({ data: { sessionId: earlierCurrentSession.id, studentId: currentStudents[3].id, present: false } });
   await prisma.attendance.create({ data: { sessionId: futureSession.id, studentId: futureOnlyStudent.id, present: false } });
   await prisma.sessionMetric.create({
     data: { sessionId: futureSession.id, studentId: futureOnlyStudent.id, date: futureSession.date, scoreA: 1, scoreB: 1, scoreC: 1, scoreD: 0, operator: "teacher" },
   });
-  const scores = [[1, 1, 1], [2, 2, 2], [5, 5, 5]];
+  const scores = [[1, 1, 1], [2, 2, 2], [5, 5, 5], [1, 1, 1]];
   for (let index = 0; index < currentStudents.length; index++) {
     await prisma.sessionMetric.create({
       data: {
@@ -97,11 +102,11 @@ describe("semester-isolated alert dashboard", () => {
   it("selects the newer overlapping semester and excludes previous students", async () => {
     const dashboard = await getAlertDashboard({ now: new Date("2099-07-15T12:00:00.000Z") });
     expect(dashboard.semester?.id).toBe(currentSemesterId);
-    expect(dashboard.totalStudents).toBe(3);
+    expect(dashboard.totalStudents).toBe(4);
     expect(dashboard.studentRisks.every((risk) => !risk.studentName.includes("未来学生"))).toBe(true);
     expect(dashboard.attendanceReminders.every((reminder) => !reminder.studentName.includes("未来学生"))).toBe(true);
     expect(dashboard.classOverview).toEqual([
-      expect.objectContaining({ name: `${marker} 当前班`, studentCount: 3 }),
+      expect.objectContaining({ name: `${marker} 当前班`, studentCount: 4 }),
     ]);
     expect(dashboard.studentAlerts.every((alert) => !alert.studentName.includes("往期学生"))).toBe(true);
     expect(dashboard.studentAlerts[0]).toMatchObject({
@@ -114,6 +119,10 @@ describe("semester-isolated alert dashboard", () => {
       qualitativeReasons: ["academic-performance"],
     });
     expect(dashboard.studentRisks[0].signals).toHaveLength(2);
+    expect(dashboard.studentRisks.some((risk) => risk.studentId === currentStudentIds[3])).toBe(false);
+    expect(dashboard.attendanceReminders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ studentId: currentStudentIds[3], absenceCount: 2, level: "attention" }),
+    ]));
   });
 
   it("uses an explicit past semester without current-student leakage", async () => {

@@ -3,7 +3,7 @@ import {
   classifyStudentRisk,
   earlyRelativeStudentIds,
   persistentBelowAverageSignal,
-  sustainedDeclineSignal,
+  recentPerformanceDropSignal,
   usesEarlyRelativePerformance,
   type RiskMetricPoint,
 } from "@/services/student-risk-service";
@@ -29,10 +29,17 @@ describe("student risk rules", () => {
     expect(ids).toEqual(new Set(["a", "b", "c"]));
   });
 
-  it("requires three continuously declining points and a total half-point drop", () => {
-    expect(sustainedDeclineSignal([point(4, 4, 1), point(3.8, 4, 2), point(3.4, 4, 3)])).toMatchObject({ type: "sustained-decline" });
-    expect(sustainedDeclineSignal([point(4, 4, 1), point(3.4, 4, 2), point(3.8, 4, 3)])).toBeNull();
-    expect(sustainedDeclineSignal([point(4, 4, 1), point(3.9, 4, 2)])).toBeNull();
+  it("compares the final twenty percent with the student's semester average", () => {
+    const dropped = [4, 4, 4, 4, 4, 4, 4, 4, 2.5, 2.5].map((score, index) => point(score, 4, index));
+    const recovered = [4, 4, 4, 4, 4, 4, 4, 4, 2.5, 4.5].map((score, index) => point(score, 4, index));
+    expect(recentPerformanceDropSignal(dropped)).toMatchObject({
+      type: "sustained-decline",
+      label: "近期评分回落",
+    });
+    expect(recentPerformanceDropSignal(dropped)?.evidence).toContain("最近 2/10 次");
+    expect(recentPerformanceDropSignal(recovered)).toBeNull();
+    expect(recentPerformanceDropSignal([4, 4, 4, 4, 3.43].map((score, index) => point(score, 4, index)))).toBeNull();
+    expect(recentPerformanceDropSignal(dropped.slice(0, 4))).toBeNull();
   });
 
   it("requires coverage, repeated below-average results, and a meaningful average gap", () => {

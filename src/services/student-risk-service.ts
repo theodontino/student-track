@@ -37,13 +37,21 @@ export function usesEarlyRelativePerformance(occurredSessionCount: number) {
   return occurredSessionCount <= ALERT_RULES.studentRisk.earlySessionLimit;
 }
 
-export function sustainedDeclineSignal(points: RiskMetricPoint[]): StudentRiskSignal | null {
-  const latest = points.slice(-ALERT_RULES.studentRisk.sustainedTrendPoints);
-  if (latest.length < ALERT_RULES.studentRisk.sustainedTrendPoints) return null;
-  const continuouslyLower = latest.every((point, index) => index === 0 || point.composite < latest[index - 1].composite);
-  const decline = +(latest[0].composite - latest[latest.length - 1].composite).toFixed(1);
-  if (!continuouslyLower || decline < ALERT_RULES.studentRisk.minimumTrendDecline) return null;
-  return { type: "sustained-decline", label: "持续状态回落", evidence: `最近三次综合表现连续下降，累计下降 ${decline} 分` };
+export function recentPerformanceDropSignal(points: RiskMetricPoint[]): StudentRiskSignal | null {
+  if (points.length < ALERT_RULES.studentRisk.minimumRecentPerformancePoints) return null;
+  const recentCount = Math.max(1, Math.ceil(points.length * ALERT_RULES.studentRisk.recentPerformanceFraction));
+  const recent = points.slice(-recentCount);
+  const average = (values: RiskMetricPoint[]) => values.reduce((sum, point) => sum + point.composite, 0) / values.length;
+  const semesterAverage = average(points);
+  const recentAverage = average(recent);
+  const rawGap = semesterAverage - recentAverage;
+  if (rawGap < ALERT_RULES.studentRisk.minimumRecentPerformanceGap) return null;
+  const gap = +rawGap.toFixed(1);
+  return {
+    type: "sustained-decline",
+    label: "近期评分回落",
+    evidence: `最近 ${recentCount}/${points.length} 次平均 ${recentAverage.toFixed(1)} 分，低于本学期个人平均 ${semesterAverage.toFixed(1)} 分，相差 ${gap} 分`,
+  };
 }
 
 export function persistentBelowAverageSignal(points: RiskMetricPoint[], occurredSessionCount: number): StudentRiskSignal | null {

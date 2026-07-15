@@ -19,7 +19,7 @@ import {
   compositeScore,
   earlyRelativeStudentIds,
   persistentBelowAverageSignal,
-  sustainedDeclineSignal,
+  recentPerformanceDropSignal,
   usesEarlyRelativePerformance,
   type StudentRisk,
   type StudentRiskSignal,
@@ -237,15 +237,39 @@ export async function getAlertDashboard(
     classAverageBySession.set(sessionId, +(sessionMetrics.reduce((sum, metric) => sum + compositeScore(metric), 0) / sessionMetrics.length).toFixed(2));
   }
 
+  const absenceMap = new Map<string, number>();
+  for (const attendance of attendances) {
+    if (!attendance.present) absenceMap.set(attendance.studentId, (absenceMap.get(attendance.studentId) ?? 0) + 1);
+  }
+  const attendanceReminders: AttendanceReminder[] = [];
+  const attendanceExcludedStudentIds = new Set<string>();
+  for (const studentId of studentIds) {
+    const student = studentById.get(studentId);
+    const session = assignedSessionByStudent.get(studentId);
+    if (!student || !session) continue;
+    const absences = absenceMap.get(studentId) ?? 0;
+    const severity = evaluateAbsenceAlert(absences);
+    if (!severity) continue;
+    attendanceExcludedStudentIds.add(studentId);
+    attendanceReminders.push({
+      studentId,
+      studentName: student.name,
+      className: session.class?.name ?? session.class?.code ?? "全校",
+      absenceCount: absences,
+      level: severity === "red" ? "warning" : "attention",
+    });
+  }
+
   const currentSemester = options.semesterId ? await resolveSemester(db, { now: options.now }) : semester;
   const includeQualitativeFeedback = currentSemester?.id === semester.id;
   const studentRisks: StudentRisk[] = [];
   for (const [classKey, classStudentIds] of classStudents) {
     const overview = classOverviewByKey.get(classKey);
     if (!overview) continue;
+    const rankedStudentIds = classStudentIds.filter((studentId) => !attendanceExcludedStudentIds.has(studentId));
     const occurredClassSessionCount = sessions.filter((session) => (session.classId ?? "__school__") === classKey).length;
     const earlyIds = usesEarlyRelativePerformance(occurredClassSessionCount)
-      ? earlyRelativeStudentIds(classStudentIds.flatMap((studentId) => {
+      ? earlyRelativeStudentIds(rankedStudentIds.flatMap((studentId) => {
           const metric = latestMetricByStudent.get(studentId);
           if (!metric) return [];
           const averageDeviation = +((
@@ -257,7 +281,7 @@ export async function getAlertDashboard(
         }))
       : new Set<string>();
 
-    for (const studentId of classStudentIds) {
+    for (const studentId of rankedStudentIds) {
       const student = studentById.get(studentId);
       if (!student) continue;
       const signals: StudentRiskSignal[] = [];
@@ -277,7 +301,7 @@ export async function getAlertDashboard(
           evidence: "前四次课数据仍较少，当前综合表现处于班级相对靠后区间",
         });
       } else {
-        const decline = sustainedDeclineSignal(points);
+        const decline = recentPerformanceDropSignal(points);
         const participatedCount = studentSessionIds.get(studentId)?.size ?? occurredClassSessionCount;
         const belowAverage = persistentBelowAverageSignal(points, participatedCount);
         if (decline) signals.push(decline);
@@ -302,27 +326,6 @@ export async function getAlertDashboard(
       });
       if (risk) studentRisks.push(risk);
     }
-  }
-
-  const absenceMap = new Map<string, number>();
-  for (const attendance of attendances) {
-    if (!attendance.present) absenceMap.set(attendance.studentId, (absenceMap.get(attendance.studentId) ?? 0) + 1);
-  }
-  const attendanceReminders: AttendanceReminder[] = [];
-  for (const studentId of studentIds) {
-    const student = studentById.get(studentId);
-    const session = assignedSessionByStudent.get(studentId);
-    if (!student || !session) continue;
-    const absences = absenceMap.get(studentId) ?? 0;
-    const severity = evaluateAbsenceAlert(absences);
-    if (!severity) continue;
-    attendanceReminders.push({
-      studentId,
-      studentName: student.name,
-      className: session.class?.name ?? session.class?.code ?? "全校",
-      absenceCount: absences,
-      level: severity === "red" ? "warning" : "attention",
-    });
   }
 
   studentRisks.sort((left, right) => {

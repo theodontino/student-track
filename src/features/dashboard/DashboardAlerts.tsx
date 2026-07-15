@@ -28,7 +28,7 @@ const ATTENTION_GROUPS = [
   {
     id: "trend",
     title: "状态回落",
-    description: "近三次有效表现持续下降",
+    description: "最后 20% 有效课次低于个人平均",
     accepts: (risk: StudentRisk) => risk.signals[0]?.type === "sustained-decline",
   },
   {

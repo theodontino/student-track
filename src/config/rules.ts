@@ -24,8 +24,9 @@ export const ALERT_RULES = {
   },
   studentRisk: {
     earlySessionLimit: 4,
-    sustainedTrendPoints: 3,
-    minimumTrendDecline: 0.5,
+    minimumRecentPerformancePoints: 5,
+    recentPerformanceFraction: 0.2,
+    minimumRecentPerformanceGap: 0.5,
     minimumCoverageFraction: 0.5,
     minimumBelowAverageFraction: 2 / 3,
     minimumAverageGap: 0.5,
