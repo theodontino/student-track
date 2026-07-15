@@ -1,5 +1,6 @@
 import type { FeedbackContextStudent } from "@/components/wecom/types";
 import type { TeachingContext } from "@/features/teaching-context";
+import type { AiWorkflowState } from "@/features/ai-workflow";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 
 export interface FeedbackCard {
@@ -56,6 +57,7 @@ export interface FeedbackWorkspaceState {
   singleStudentId: string;
   singleDays: number;
   singleFeedback: string;
+  workflow?: AiWorkflowState;
 }
 
 export interface FeedbackStudentOption { id: string; name: string; class: string }

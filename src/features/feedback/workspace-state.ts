@@ -1,4 +1,5 @@
 import { isTeachingContext } from "@/features/teaching-context/url-context";
+import { isAiWorkflowState } from "@/features/ai-workflow";
 import type { FeedbackWorkspaceState } from "./types";
 
 export function isFeedbackWorkspace(value: unknown): value is FeedbackWorkspaceState {
@@ -22,7 +23,8 @@ export function isFeedbackWorkspace(value: unknown): value is FeedbackWorkspaceS
     && typeof state.forceRegenerate === "boolean"
     && typeof state.singleStudentId === "string"
     && typeof state.singleDays === "number"
-    && typeof state.singleFeedback === "string";
+    && typeof state.singleFeedback === "string"
+    && (state.workflow === undefined || isAiWorkflowState(state.workflow));
 }
 
 export function todayLocalDate(now = new Date()) {

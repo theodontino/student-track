@@ -4,6 +4,7 @@ import FeedbackContextPreview from "@/components/FeedbackContextPreview";
 import WorkHistoryButton from "@/components/WorkHistoryButton";
 import WeComWorkflowPanel from "@/components/wecom/WeComWorkflowPanel";
 import { PageHeader, StatusBanner } from "@/components/ui";
+import { AiWorkflowStatus } from "@/features/ai-workflow";
 import { ClassroomReviewComposer } from "./ClassroomReviewComposer";
 import { DraftConfirmationPanel } from "./DraftConfirmationPanel";
 import { FeedbackContextSection } from "./FeedbackContextSection";
@@ -24,6 +25,7 @@ export default function FeedbackWorkspace() {
       <FeedbackContextSection workspace={workspace} />
       {workspace.error && <StatusBanner tone="danger">{workspace.error}</StatusBanner>}
       {workspace.status && <StatusBanner tone="success">{workspace.status}</StatusBanner>}
+      <AiWorkflowStatus state={workspace.workflow} />
 
       <div className="feedback-workspace-grid">
         <div className="feedback-preparation-column">

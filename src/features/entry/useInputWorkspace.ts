@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useTeachingContext, teachingContextWorkspaceKey } from "@/features/teaching-context";
+import { useAiWorkflow } from "@/features/ai-workflow";
 import { requestJson } from "@/lib/api-client";
 import { saveWorkHistory } from "@/lib/history";
 import type { DraftParseResult } from "@/lib/types";
@@ -21,8 +22,9 @@ export function useInputWorkspace() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DraftParseResult | null>(null);
   const [error, setError] = useState("");
+  const workflow = useAiWorkflow();
   const { context, hydrated: contextHydrated, setContext, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
-  const workspaceValue = useMemo<InputWorkspaceState>(() => ({ context, rawText, result }), [context, rawText, result]);
+  const workspaceValue = useMemo<InputWorkspaceState>(() => ({ context, rawText, result, workflow: workflow.state }), [context, rawText, result, workflow.state]);
   const workspace = useSessionWorkspace({
     key: teachingContextWorkspaceKey("entry-input", context),
     value: workspaceValue,
@@ -31,6 +33,7 @@ export function useInputWorkspace() {
     restore: (saved) => {
       setRawText(saved?.rawText ?? "");
       setResult(saved?.result ?? null);
+      workflow.restore(saved?.workflow);
       setError("");
     },
   });
@@ -48,6 +51,8 @@ export function useInputWorkspace() {
     setLoading(true);
     setError("");
     setResult(null);
+    workflow.start("解析课堂记录", "正在核对课次和输入内容…");
+    workflow.transition("generating", "AI 正在把课堂记录整理成结构化草案…");
     try {
       const data = await requestJson<DraftParseResult>("/api/input/parse", {
         method: "POST",
@@ -55,6 +60,7 @@ export function useInputWorkspace() {
         body: JSON.stringify({ rawText, sessionCode: context.sessionCode }),
       });
       setResult(data);
+      workflow.transition("reviewing", "草案已生成，请人工核对后再写入学生档案。");
       try {
         await saveWorkHistory("input", `${context.className} ${context.sessionCode} NL录入`, {
           rawText,
@@ -67,7 +73,9 @@ export function useInputWorkspace() {
         console.error("save input history failed:", historyError);
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "解析失败");
+      const message = reason instanceof Error ? reason.message : "解析失败";
+      setError(message);
+      workflow.fail(message, "generating");
     } finally {
       setLoading(false);
     }
@@ -77,6 +85,7 @@ export function useInputWorkspace() {
     setRawText(state.rawText);
     setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
     setResult(state.result);
+    workflow.reset();
     setError("");
   }
 
@@ -88,6 +97,7 @@ export function useInputWorkspace() {
     loading,
     result,
     error,
+    workflow: workflow.state,
     submit,
     restoreHistory,
     setSemesterId,

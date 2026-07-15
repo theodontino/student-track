@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import WorkHistoryButton from "@/components/WorkHistoryButton";
 import SemesterPicker from "@/components/SemesterPicker";
 import { Button, Section, StatusBanner, Textarea } from "@/components/ui";
+import { AiWorkflowStatus } from "@/features/ai-workflow";
 import { ParseResultPreview, ReviewSummary } from "./draft-components";
 import { useInputWorkspace, type InputHistoryState } from "./useInputWorkspace";
 
@@ -50,6 +51,7 @@ export default function InputStep({ onReview }: { onReview?: () => void }) {
         </div>
       </Section>
 
+      <AiWorkflowStatus state={workspace.workflow} />
       {error && <StatusBanner tone="danger">{error}</StatusBanner>}
       {result && <>
         <StatusBanner tone="success">解析成功，草案已保存。<Button variant="ghost" uiSize="sm" onClick={openReview}>前往复核中心</Button></StatusBanner>

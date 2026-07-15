@@ -1,10 +1,12 @@
 import type { DraftParseResult, DraftRecordView, DraftStructuredResult } from "@/lib/types";
 import type { TeachingContext } from "@/features/teaching-context";
+import { isAiWorkflowState, type AiWorkflowState } from "@/features/ai-workflow";
 
 export interface InputWorkspaceState {
   context: TeachingContext;
   rawText: string;
   result: DraftParseResult | null;
+  workflow?: AiWorkflowState;
 }
 
 export function isInputWorkspaceState(value: unknown): value is InputWorkspaceState {
@@ -15,7 +17,8 @@ export function isInputWorkspaceState(value: unknown): value is InputWorkspaceSt
     && typeof state.context?.className === "string"
     && typeof state.context?.sessionCode === "string"
     && typeof state.rawText === "string"
-    && (state.result === null || typeof state.result === "object");
+    && (state.result === null || typeof state.result === "object")
+    && (state.workflow === undefined || isAiWorkflowState(state.workflow));
 }
 
 export type ReviewFilterStatus = "pending" | "confirmed" | "rejected";
