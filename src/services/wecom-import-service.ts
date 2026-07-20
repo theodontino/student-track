@@ -13,9 +13,11 @@ interface WeComCandidateFile {
 
 interface WeComRecord {
   kind?: string;
+  sourceKey?: string | null;
   source?: {
     conversationId?: string | null;
     conversationTitle?: string | null;
+    messageIds?: unknown;
   };
   matchedStudent?: {
     id?: string | null;
@@ -40,17 +42,23 @@ export interface WeComImportInput {
   jsonPath?: string;
   jsonText?: string;
   includeMedium?: boolean;
+  allowedStudentIds?: string[];
+  allowedMessageIds?: string[];
+  expectedConversationId?: string;
+  requireMessageIds?: boolean;
+  useOccurredAtSession?: boolean;
 }
 
 export interface WeComImportPlanItem {
   student: { id: string; name: string; studentId: string };
   session: { id: string; code: string; date: string; semesterNumber: number };
-  source: { conversationId: string; conversationTitle: string };
+  source: { conversationId: string; conversationTitle: string; messageIds: string[] };
   occurredAt: string;
   target: string;
   summary: string;
+  sourceKey: string;
   duplicate: boolean;
-  binding: "explicit_session" | "first_class_session_fallback";
+  binding: "explicit_session" | "nearest_prior_session" | "first_class_session_fallback";
   attentionSignals: AttentionSignalCandidate[];
 }
 
@@ -58,6 +66,7 @@ export interface WeComImportSkippedItem {
   title: string;
   name: string;
   reason: string;
+  messageIds: string[];
 }
 
 export interface WeComImportResult {
@@ -150,7 +159,12 @@ async function findMatchedStudent(prisma: PrismaClient, record: WeComRecord) {
   return { student: null, reason: "student_not_found" };
 }
 
-async function resolveSession(prisma: PrismaClient, record: WeComRecord, student: { classId: string }) {
+async function resolveSession(
+  prisma: PrismaClient,
+  record: WeComRecord,
+  student: { classId: string },
+  useOccurredAtSession: boolean,
+) {
   const sessionCode = clean(record.sessionCode);
   if (sessionCode) {
     const session = await prisma.classSession.findUnique({
@@ -162,6 +176,29 @@ async function resolveSession(prisma: PrismaClient, record: WeComRecord, student
       return { session: null, binding: "explicit_session" as const, reason: "session_class_mismatch" };
     }
     return { session, binding: "explicit_session" as const, reason: "" };
+  }
+
+  if (useOccurredAtSession) {
+    const occurredAt = clean(record.occurredAt).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(occurredAt)) {
+      return { session: null, binding: "nearest_prior_session" as const, reason: "occurred_at_required_for_session" };
+    }
+    const session = await prisma.classSession.findFirst({
+      where: { classId: student.classId, date: { lte: occurredAt } },
+      select: { id: true, code: true, date: true, semesterNumber: true },
+      orderBy: [{ date: "desc" }, { semesterNumber: "desc" }, { createdAt: "desc" }],
+    });
+    if (!session) {
+      return { session: null, binding: "nearest_prior_session" as const, reason: "prior_session_not_found" };
+    }
+    const gapDays = Math.floor(
+      (Date.parse(`${occurredAt}T00:00:00Z`) - Date.parse(`${session.date}T00:00:00Z`))
+      / (24 * 60 * 60 * 1000),
+    );
+    if (!Number.isFinite(gapDays) || gapDays < 0 || gapDays > 30) {
+      return { session: null, binding: "nearest_prior_session" as const, reason: "prior_session_too_distant" };
+    }
+    return { session, binding: "nearest_prior_session" as const, reason: "" };
   }
 
   const session = await prisma.classSession.findFirst({
@@ -184,45 +221,88 @@ export async function planWeComCommunicationImport(
   const aiContextCandidateCount = records.filter((record) => record.kind === "aiContext").length;
   const attentionCandidateCount = communicationRecords.reduce((sum, record) => sum + normalizeAttentionSignalCandidates(record.attentionSignals).length, 0);
   const includeMedium = input.includeMedium === true;
+  const allowedStudentIds = input.allowedStudentIds ? new Set(input.allowedStudentIds) : null;
+  const allowedMessageIds = input.allowedMessageIds ? new Set(input.allowedMessageIds) : null;
+  const seenSourceKeys = new Set<string>();
+  const seenCommunicationKeys = new Set<string>();
   const skipped: WeComImportSkippedItem[] = [];
   const plans: WeComImportPlanItem[] = [];
 
   for (const record of communicationRecords) {
     const title = clean(record.source?.conversationTitle);
     const name = clean(record.matchedStudent?.name);
+    const messageIds = Array.isArray(record.source?.messageIds)
+      ? [...new Set(record.source.messageIds.map(clean).filter(Boolean))]
+      : [];
+    const skip = (reason: string, resolvedName = name) => {
+      skipped.push({ title, name: resolvedName, reason, messageIds });
+    };
     if (!isAllowedConfidence(record.matchedStudent?.confidence, includeMedium)) {
-      skipped.push({ title, name, reason: "matched_student_confidence_not_allowed" });
+      skip("matched_student_confidence_not_allowed");
       continue;
     }
 
     const { student, reason: studentReason } = await findMatchedStudent(prisma, record);
     if (!student) {
-      skipped.push({ title, name, reason: studentReason });
+      skip(studentReason);
+      continue;
+    }
+    if (allowedStudentIds && !allowedStudentIds.has(student.id)) {
+      skip("student_outside_conversation_candidates", student.name);
       continue;
     }
 
-    const { session, binding, reason: sessionReason } = await resolveSession(prisma, record, student);
+    const conversationId = clean(record.source?.conversationId);
+    if (input.expectedConversationId && conversationId !== input.expectedConversationId) {
+      skip("source_conversation_mismatch", student.name);
+      continue;
+    }
+    if (allowedMessageIds && messageIds.some((messageId) => !allowedMessageIds.has(messageId))) {
+      skip("source_message_outside_batch", student.name);
+      continue;
+    }
+    if (input.requireMessageIds && messageIds.length === 0) {
+      skip("missing_source_message_ids", student.name);
+      continue;
+    }
+
+    const { session, binding, reason: sessionReason } = await resolveSession(
+      prisma,
+      record,
+      student,
+      input.useOccurredAtSession === true,
+    );
     if (!session) {
-      skipped.push({ title, name: student.name, reason: sessionReason });
+      skip(sessionReason, student.name);
       continue;
     }
 
     const target = clean(record.target) || "家长";
     const summary = buildSummary(record);
-    const duplicate = Boolean(await prisma.communication.findFirst({
-      where: { studentId: student.id, sessionId: session.id, summary },
+    const sourceKey = clean(record.sourceKey);
+    const communicationKey = JSON.stringify([student.id, session.id, target, summary]);
+    const duplicate = seenCommunicationKeys.has(communicationKey)
+      || Boolean(sourceKey && seenSourceKeys.has(sourceKey))
+      || Boolean(await prisma.communication.findFirst({
+      where: sourceKey
+        ? { OR: [{ sourceKey }, { studentId: student.id, sessionId: session.id, summary }] }
+        : { studentId: student.id, sessionId: session.id, summary },
       select: { id: true },
-    }));
+      }));
+    seenCommunicationKeys.add(communicationKey);
+    if (sourceKey) seenSourceKeys.add(sourceKey);
     plans.push({
       student: { id: student.id, name: student.name, studentId: student.studentId },
       session,
       source: {
-        conversationId: clean(record.source?.conversationId),
+        conversationId,
         conversationTitle: title,
+        messageIds,
       },
       occurredAt: clean(record.occurredAt),
       target,
       summary,
+      sourceKey,
       duplicate,
       binding,
       attentionSignals: record.matchedStudent?.confidence === "high"
@@ -269,6 +349,7 @@ export async function applyWeComCommunicationImport(
           sessionId: plan.session.id,
           target: plan.target,
           summary: plan.summary,
+          sourceKey: plan.sourceKey || null,
         },
       });
       createdLabelCount += await addHighConfidenceAttentionLabels(tx, plan.student.id, plan.attentionSignals);

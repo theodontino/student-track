@@ -78,7 +78,9 @@ export async function POST(request: NextRequest) {
       : await planWeComCommunicationImport(prisma, input);
     return NextResponse.json(result);
   } catch (error: unknown) {
-    console.error("[/api/wecom/import] error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "企微导入失败" }, { status: 400 });
+    const message = error instanceof Error && error.message.startsWith("缺少")
+      ? error.message
+      : "企微候选校验或导入失败，数据库未完成写入";
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }

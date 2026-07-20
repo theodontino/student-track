@@ -6,12 +6,17 @@ import { createLLMClient, getLLMModel } from "@/lib/llm";
 export interface GenerateWeComBridgeInput {
   sourceText?: string;
   exportPath?: string;
+  candidateStudentIds?: string[];
 }
 
 export interface GenerateWeComBridgeResult {
   sourceLabel: string;
   bridgeJson: unknown;
   rawOutput: string;
+}
+
+interface GenerateWeComBridgeOptions {
+  onRetry?: () => void;
 }
 
 function clean(value: unknown) {
@@ -34,6 +39,44 @@ function parseJsonObject(text: string) {
   }
 }
 
+function isJsonModeUnsupported(error: unknown) {
+  const candidate = error as { status?: number; message?: string };
+  return [400, 404, 422].includes(candidate?.status ?? 0)
+    && /response[_ -]?format|json[_ -]?object|json mode/i.test(candidate?.message || "");
+}
+
+async function createJsonCompletion(
+  client: ReturnType<typeof createLLMClient>,
+  model: string,
+  prompt: string,
+  temperature: number,
+) {
+  const request = {
+    model,
+    messages: [{ role: "user" as const, content: prompt }],
+    temperature,
+    max_tokens: 8192,
+  };
+  try {
+    return await client.chat.completions.create({
+      ...request,
+      response_format: { type: "json_object" },
+    });
+  } catch (error) {
+    if (!isJsonModeUnsupported(error)) throw error;
+    return client.chat.completions.create(request);
+  }
+}
+
+function extractBridgeJson(rawOutput: string) {
+  if (!rawOutput) throw new Error("LLM 未返回企微候选 JSON");
+  const bridgeJson = parseJsonObject(rawOutput);
+  if (!Array.isArray((bridgeJson as { records?: unknown }).records)) {
+    throw new Error("LLM 返回 JSON 缺少 records 数组");
+  }
+  return bridgeJson;
+}
+
 async function loadSource(input: GenerateWeComBridgeInput) {
   const sourceText = clean(input.sourceText);
   if (sourceText) return { text: sourceText, sourceLabel: "粘贴的企微文本" };
@@ -46,24 +89,66 @@ async function loadSource(input: GenerateWeComBridgeInput) {
 
 export async function generateWeComBridgeJson(
   prisma: PrismaClient,
-  input: GenerateWeComBridgeInput
+  input: GenerateWeComBridgeInput,
+  options: GenerateWeComBridgeOptions = {},
 ): Promise<GenerateWeComBridgeResult> {
   const { text, sourceLabel } = await loadSource(input);
-  const students = await prisma.student.findMany({
-    select: {
-      id: true,
-      name: true,
-      studentId: true,
-      class: { select: { name: true, code: true } },
-    },
-    orderBy: { studentId: "asc" },
-  });
-  const roster = students.map((student) => ({
-    id: student.id,
-    name: student.name,
-    studentId: student.studentId,
-    className: student.class?.name ?? student.class?.code ?? "",
-  }));
+  const candidateStudentIds = Array.isArray(input.candidateStudentIds)
+    ? [...new Set(input.candidateStudentIds.filter((id) => typeof id === "string" && id.trim()))]
+    : [];
+  let roster: Array<{
+    id: string;
+    name: string;
+    studentId: string;
+    className: string;
+    recentCommunications: string[];
+  }>;
+  if (candidateStudentIds.length > 0) {
+    const students = await prisma.student.findMany({
+      where: { id: { in: candidateStudentIds } },
+      select: {
+        id: true,
+        name: true,
+        studentId: true,
+        class: { select: { name: true, code: true } },
+        communications: {
+          select: { summary: true },
+          orderBy: { createdAt: "desc" },
+          take: 5,
+        },
+      },
+      orderBy: { studentId: "asc" },
+    });
+    roster = students.map((student) => ({
+      id: student.id,
+      name: student.name,
+      studentId: student.studentId,
+      className: student.class?.name ?? student.class?.code ?? "",
+      recentCommunications: student.communications.map((item) => item.summary),
+    }));
+  } else {
+    const students = await prisma.student.findMany({
+      select: {
+        id: true,
+        name: true,
+        studentId: true,
+        class: { select: { name: true, code: true } },
+      },
+      orderBy: { studentId: "asc" },
+    });
+    roster = students
+      .filter((student) => student.name.trim() && text.includes(student.name.trim()))
+      .map((student) => ({
+        id: student.id,
+        name: student.name,
+        studentId: student.studentId,
+        className: student.class?.name ?? student.class?.code ?? "",
+        recentCommunications: [],
+      }));
+  }
+  if (roster.length === 0) {
+    throw new Error("未能从聊天内容中确定候选学生，请先补充学生姓名");
+  }
 
   const clippedText = text.length > 24_000 ? text.slice(-24_000) : text;
   const prompt = `你是 Chem-Track 的企微家校沟通提取器。请从企微聊天导出中提取对“课后反馈”有长期价值、且能明确绑定到某个学生的家校沟通信息。
@@ -90,11 +175,13 @@ ${JSON.stringify(roster, null, 2)}
    - parent-concern：家长明确表达担心、焦虑；
    - withdrawal-intent：学生或家长表达退班意向。
    每项必须包含 reason、confidence=high|medium|low、evidenceSummary。不要根据数字或模糊语气猜测；没有时输出 []。
+9. 输入中如果提供了会话ID和消息ID，source.conversationId 必须照抄会话ID，source.messageIds 必须只包含支撑该记录的输入消息ID，不得编造。
+10. 对照学生名单中的 recentCommunications：只是重复已有担心、状态或建议，没有新事实、新变化或新行动时不生成 record。
 
 record 示例：
 {
   "kind": "communication",
-  "source": { "conversationId": null, "conversationTitle": "张三妈妈" },
+  "source": { "conversationId": null, "conversationTitle": "张三妈妈", "messageIds": [] },
   "matchedStudent": { "id": "学生id", "name": "张三", "studentId": "S001", "confidence": "high" },
   "occurredAt": "2026-07-04",
   "sessionCode": null,
@@ -111,19 +198,22 @@ ${clippedText}`;
 
   const client = createLLMClient();
   const model = getLLMModel();
-  const response = await client.chat.completions.create({
-    model,
-    messages: [{ role: "user", content: prompt }],
-    temperature: 0.1,
-    max_tokens: 8192,
-  });
-  const rawOutput = response.choices[0]?.message?.content?.trim() || "";
-  if (!rawOutput) throw new Error("LLM 未返回企微候选 JSON");
-
-  const bridgeJson = parseJsonObject(rawOutput);
-  if (!Array.isArray((bridgeJson as { records?: unknown }).records)) {
-    throw new Error("LLM 返回 JSON 缺少 records 数组");
+  const response = await createJsonCompletion(client, model, prompt, 0.1);
+  let rawOutput = response.choices[0]?.message?.content?.trim() || "";
+  try {
+    const bridgeJson = extractBridgeJson(rawOutput);
+    return { sourceLabel, bridgeJson, rawOutput };
+  } catch {
+    options.onRetry?.();
   }
 
-  return { sourceLabel, bridgeJson, rawOutput };
+  const retryPrompt = `${prompt}\n\n上一次输出未通过 JSON 语法校验。请重新完整提取，并严格检查逗号、引号、括号和字符串转义；只返回一个可被 JSON.parse 直接解析的完整 JSON 对象。`;
+  const retryResponse = await createJsonCompletion(client, model, retryPrompt, 0);
+  rawOutput = retryResponse.choices[0]?.message?.content?.trim() || "";
+  try {
+    const bridgeJson = extractBridgeJson(rawOutput);
+    return { sourceLabel, bridgeJson, rawOutput };
+  } catch {
+    throw new Error("LLM 连续两次未返回合法的企微候选 JSON，该批次已停止且未写入数据库");
+  }
 }

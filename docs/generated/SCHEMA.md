@@ -33,6 +33,7 @@ erDiagram
     TEXT sessionId FK
     TEXT target
     TEXT summary
+    TEXT sourceKey UK
     DATETIME createdAt
   }
   DraftRecord {
@@ -113,6 +114,67 @@ erDiagram
     TEXT detail
     DATETIME createdAt
   }
+  WeComImportChange {
+    TEXT id PK
+    TEXT operationId FK
+    TEXT entityType
+    TEXT entityId
+    TEXT studentId
+    TEXT labelId
+    DATETIME createdAt
+  }
+  WeComImportOperation {
+    TEXT id PK
+    TEXT runId FK
+    TEXT batchKey
+    TEXT conversationId
+    TEXT conversationTitle
+    TEXT status
+    INTEGER messageCount
+    TEXT candidateStudentIds
+    INTEGER communicationCount
+    INTEGER labelCount
+    TEXT candidateJson
+    DATETIME extractedAt
+    DATETIME startedAt
+    DATETIME completedAt
+    DATETIME rolledBackAt
+  }
+  WeComImportRun {
+    TEXT id PK
+    TEXT status
+    DATETIME windowStartedAt
+    DATETIME windowEndedAt
+    INTEGER conversationCount
+    INTEGER messageCount
+    INTEGER batchCount
+    INTEGER communicationCount
+    INTEGER labelCount
+    DATETIME startedAt
+    DATETIME completedAt
+    DATETIME rolledBackAt
+  }
+  WeComImportState {
+    TEXT id PK
+    DATETIME initializedAfter
+    DATETIME lastSucceededUntil
+    TEXT activeRunId
+    DATETIME activeRunStartedAt
+    DATETIME updatedAt
+  }
+  WeComMessageReceipt {
+    TEXT messageId PK
+    TEXT conversationId PK
+    DATETIME sentAt
+    TEXT contentHash
+    TEXT status
+    TEXT promptVersion
+    TEXT operationId FK
+    DATETIME processedAt
+    TEXT lastError
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
   WorkHistory {
     TEXT id PK
     TEXT module
@@ -134,6 +196,9 @@ erDiagram
   Student ||--o{ Event : "studentId"
   Student ||--o{ SessionMetric : "studentId"
   Student ||--o{ StudentLabel : "studentId"
+  WeComImportOperation o|--o{ WeComMessageReceipt : "operationId"
+  WeComImportOperation ||--o{ WeComImportChange : "operationId"
+  WeComImportRun ||--o{ WeComImportOperation : "runId"
 ```
 
 ## 模型字段
@@ -181,6 +246,7 @@ erDiagram
 | `sessionId` | `TEXT` | 是 | FK |
 | `target` | `TEXT` | 是 |  |
 | `summary` | `TEXT` | 是 |  |
+| `sourceKey` | `TEXT` | 否 | unique |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
@@ -300,6 +366,90 @@ erDiagram
 | `detail` | `TEXT` | 是 | default: '{}' |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
+
+### WeComImportChange
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `operationId` | `TEXT` | 是 | FK |
+| `entityType` | `TEXT` | 是 |  |
+| `entityId` | `TEXT` | 是 |  |
+| `studentId` | `TEXT` | 否 |  |
+| `labelId` | `TEXT` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+复合唯一约束：`operationId + entityType + entityId`。
+
+### WeComImportOperation
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `runId` | `TEXT` | 是 | FK |
+| `batchKey` | `TEXT` | 是 |  |
+| `conversationId` | `TEXT` | 是 |  |
+| `conversationTitle` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 |  |
+| `messageCount` | `INTEGER` | 是 |  |
+| `candidateStudentIds` | `TEXT` | 是 | default: '[]' |
+| `communicationCount` | `INTEGER` | 是 | default: 0 |
+| `labelCount` | `INTEGER` | 是 | default: 0 |
+| `candidateJson` | `TEXT` | 否 |  |
+| `extractedAt` | `DATETIME` | 否 |  |
+| `startedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `completedAt` | `DATETIME` | 否 |  |
+| `rolledBackAt` | `DATETIME` | 否 |  |
+
+复合唯一约束：`runId + batchKey`。
+
+### WeComImportRun
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `status` | `TEXT` | 是 |  |
+| `windowStartedAt` | `DATETIME` | 是 |  |
+| `windowEndedAt` | `DATETIME` | 是 |  |
+| `conversationCount` | `INTEGER` | 是 | default: 0 |
+| `messageCount` | `INTEGER` | 是 | default: 0 |
+| `batchCount` | `INTEGER` | 是 | default: 0 |
+| `communicationCount` | `INTEGER` | 是 | default: 0 |
+| `labelCount` | `INTEGER` | 是 | default: 0 |
+| `startedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `completedAt` | `DATETIME` | 否 |  |
+| `rolledBackAt` | `DATETIME` | 否 |  |
+
+
+### WeComImportState
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `initializedAfter` | `DATETIME` | 是 |  |
+| `lastSucceededUntil` | `DATETIME` | 否 |  |
+| `activeRunId` | `TEXT` | 否 |  |
+| `activeRunStartedAt` | `DATETIME` | 否 |  |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+
+### WeComMessageReceipt
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `messageId` | `TEXT` | 是 | PK |
+| `conversationId` | `TEXT` | 是 | PK |
+| `sentAt` | `DATETIME` | 否 |  |
+| `contentHash` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 |  |
+| `promptVersion` | `TEXT` | 是 |  |
+| `operationId` | `TEXT` | 否 | FK |
+| `processedAt` | `DATETIME` | 否 |  |
+| `lastError` | `TEXT` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`conversationId + messageId`。
 
 ### WorkHistory
 

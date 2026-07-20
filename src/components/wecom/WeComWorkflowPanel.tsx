@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import WeComBridgePanel from "./WeComBridgePanel";
+import WeComAutoImportPanel from "./WeComAutoImportPanel";
 import WeComCatchPanel from "./WeComCatchPanel";
 import WeComImportPreview from "./WeComImportPreview";
 import type { WeComImportResult } from "./types";
@@ -36,6 +37,8 @@ export default function WeComWorkflowPanel({
         <h3 className="font-semibold text-gray-800">{title}</h3>
         <p className="text-sm text-gray-500 mt-1">{description}</p>
       </div>
+
+      <WeComAutoImportPanel onApplied={onApplied} />
 
       <WeComCatchPanel
         onExportText={setBridgeText}

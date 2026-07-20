@@ -123,10 +123,103 @@ model Communication {
   sessionId String   // 关联课次（必填）
   target    String   // 沟通对象，如 "父亲"、"母亲"
   summary   String   // 内容摘要
+  sourceKey String?  @unique // 外部导入的稳定去重键；手工记录为 null
   createdAt DateTime @default(now())
 
   student Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// 4b. 企微增量处理账本（不复制原始聊天正文）
+model WeComImportState {
+  id                  String    @id
+  initializedAfter    DateTime
+  lastSucceededUntil  DateTime?
+  activeRunId         String?
+  activeRunStartedAt  DateTime?
+  updatedAt           DateTime  @updatedAt
+}
+
+model WeComImportRun {
+  id                 String   @id
+  status             String   // "running" | "complete" | "attention_required" | "failed" | "partially_rolled_back" | "rolled_back"
+  windowStartedAt    DateTime
+  windowEndedAt      DateTime
+  conversationCount  Int      @default(0)
+  messageCount       Int      @default(0)
+  batchCount         Int      @default(0)
+  communicationCount Int      @default(0)
+  labelCount         Int      @default(0)
+  startedAt          DateTime @default(now())
+  completedAt        DateTime?
+  rolledBackAt       DateTime?
+
+  operations WeComImportOperation[]
+
+  @@index([status, startedAt])
+}
+
+model WeComImportOperation {
+  id                 String   @id @default(cuid())
+  runId              String
+  batchKey           String
+  conversationId     String
+  conversationTitle  String
+  status             String   // "processing" | "complete" | "needs_review" | "failed" | "ignored" | "rolled_back"
+  messageCount       Int
+  candidateStudentIds String   @default("[]")
+  communicationCount Int      @default(0)
+  labelCount         Int      @default(0)
+  candidateJson      String?  // 仅用于失败恢复，成功入库后清空
+  extractedAt        DateTime?
+  startedAt          DateTime @default(now())
+  completedAt        DateTime?
+  rolledBackAt       DateTime?
+
+  run      WeComImportRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  receipts WeComMessageReceipt[]
+  changes  WeComImportChange[]
+
+  @@unique([runId, batchKey])
+  @@index([runId, status])
+  @@index([status, completedAt])
+  @@index([conversationId])
+}
+
+model WeComMessageReceipt {
+  messageId      String
+  conversationId String
+  sentAt         DateTime?
+  contentHash    String
+  status         String   // "pending" | "extracting" | "imported" | "no_value" | "needs_review" | "failed" | "ignored" | "rolled_back"
+  promptVersion  String
+  operationId    String?
+  processedAt    DateTime?
+  lastError      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  operation WeComImportOperation? @relation(fields: [operationId], references: [id], onDelete: SetNull)
+
+  @@id([conversationId, messageId])
+  @@index([conversationId, status])
+  @@index([status, updatedAt])
+}
+
+// 回滚日志只记录本批新增实体的 ID，不存整库快照。
+model WeComImportChange {
+  id          String   @id @default(cuid())
+  operationId String
+  entityType  String   // "communication" | "student_label"
+  entityId    String
+  studentId   String?
+  labelId     String?
+  createdAt   DateTime @default(now())
+
+  operation WeComImportOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@unique([operationId, entityType, entityId])
+  @@index([operationId])
 }
 
 // 5. 待复核草案

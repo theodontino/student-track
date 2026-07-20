@@ -6,8 +6,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as { sourceText?: string; exportPath?: string };
     return NextResponse.json(await generateWeComBridgeJson(prisma, body));
-  } catch (error: any) {
-    console.error("[/api/wecom/bridge] error:", error);
-    return NextResponse.json({ error: error.message || "生成企微候选 JSON 失败" }, { status: 400 });
+  } catch (error: unknown) {
+    const message = error instanceof Error && /^(缺少|未能从聊天内容)/.test(error.message)
+      ? error.message
+      : "生成企微候选 JSON 失败，请检查输入和 LLM 配置";
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }

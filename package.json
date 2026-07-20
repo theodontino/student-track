@@ -1,6 +1,6 @@
 {
   "name": "chem-track-ai",
-  "version": "0.20.1",
+  "version": "0.20.2",
   "license": "AGPL-3.0-only",
   "private": true,
   "engines": {
@@ -17,6 +17,7 @@
     "db:backup": "npx tsx scripts/db-backup.ts",
     "db:archive": "npm run db:backup",
     "db:verify-backup": "npx tsx scripts/db-verify-backup.ts",
+    "db:verify-upgrade": "node --import tsx scripts/verify-database-upgrade.ts",
     "db:restore": "npx tsx scripts/db-restore.ts",
     "db:maintain": "npx tsx scripts/db-maintain.ts",
     "import:wecom": "npx tsx scripts/import-wecom-communications.ts",

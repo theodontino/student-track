@@ -7,6 +7,7 @@ export interface WeComImportPlanItem {
   occurredAt: string;
   target: string;
   summary: string;
+  sourceKey: string;
   duplicate: boolean;
   binding: "explicit_session" | "first_class_session_fallback";
   attentionSignals: AttentionSignalCandidate[];

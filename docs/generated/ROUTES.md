@@ -31,6 +31,8 @@
 | `/api/system/archive` | `POST` |
 | `/api/system/local-tools` | `GET` |
 | `/api/system/logs` | `GET` |
+| `/api/system/wecom-rollbacks` | `GET`, `POST` |
+| `/api/wecom/auto-import` | `POST` |
 | `/api/wecom/bridge` | `POST` |
 | `/api/wecom/import` | `GET`, `POST` |
 | `/api/wecomcatch/export` | `POST` |

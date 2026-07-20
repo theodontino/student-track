@@ -4,6 +4,7 @@ import ArchiveButton from "@/components/ArchiveButton";
 import { Badge, Button, EmptyState, ErrorState, Input, LoadingState, PageHeader, Section, Select } from "@/components/ui";
 import { ACTION_LABELS, formatLogDetail, TARGET_LABELS } from "./maintenance-types";
 import { useMaintenanceLogs } from "./useMaintenanceLogs";
+import WeComRollbackPanel from "./WeComRollbackPanel";
 
 export default function MaintenancePanel() {
   const workspace = useMaintenanceLogs();
@@ -11,6 +12,7 @@ export default function MaintenancePanel() {
     <main className="system-maintenance-workspace">
       <PageHeader title="维护与操作日志" description={`记录评分变更、预警触发和数据删除等关键操作，共 ${workspace.total} 条；保留 90 天。`} />
       <Section title="数据库备份" description="创建一致性备份并记录校验信息，不改变业务数据。"><div className="system-backup-action"><ArchiveButton /></div></Section>
+      <WeComRollbackPanel />
       <div className="system-log-filters"><Select aria-label="操作类型" value={workspace.filterAction} onChange={(event) => workspace.setFilterAction(event.target.value)}><option value="">全部操作类型</option>{Object.entries(ACTION_LABELS).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</Select><Input aria-label="搜索对象名称" type="search" placeholder="搜索学生名…" value={workspace.filterTargetName} onChange={(event) => workspace.setFilterTargetName(event.target.value)} /></div>
       {workspace.error && workspace.logs.length === 0 ? <ErrorState message={workspace.error} action={<Button onClick={() => void workspace.loadInitial()}>重试</Button>} /> : workspace.loading && workspace.logs.length === 0 ? <LoadingState label="正在读取操作日志…" /> : workspace.logs.length === 0 ? <EmptyState title="暂无操作日志" description="评分、删除等操作发生后会自动记录。" /> : <>
         {workspace.error && <div className="ui-banner ui-banner--danger" role="alert">{workspace.error}</div>}

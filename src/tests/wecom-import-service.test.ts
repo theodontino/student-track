@@ -72,4 +72,68 @@ describe("wecom import service", () => {
     await prisma.communication.deleteMany({ where: { studentId: student!.id, summary: { contains: conversationId } } });
     await prisma.label.deleteMany({ where: { name: "AI内部关注：家长担心", students: { none: {} } } });
   });
+
+  it("rejects records outside the conversation student and message boundaries", async () => {
+    const student = await prisma.student.findFirst({
+      select: { id: true, name: true, studentId: true },
+      orderBy: { studentId: "asc" },
+    });
+    expect(student).toBeTruthy();
+    const result = await planWeComCommunicationImport(prisma, {
+      jsonText: JSON.stringify({ records: [{
+        kind: "communication",
+        source: {
+          conversationId: "conversation-allowed",
+          conversationTitle: `${student!.name}家长`,
+          messageIds: ["invented-message"],
+        },
+        matchedStudent: {
+          id: student!.id,
+          name: student!.name,
+          studentId: student!.studentId,
+          confidence: "high",
+        },
+        target: "家长",
+        summary: "不应越界写入",
+      }] }),
+      allowedStudentIds: [student!.id],
+      allowedMessageIds: ["real-message"],
+      expectedConversationId: "conversation-allowed",
+      requireMessageIds: true,
+    });
+
+    expect(result).toMatchObject({
+      importableCount: 0,
+      skippedCount: 1,
+      skipped: [{ reason: "source_message_outside_batch" }],
+    });
+  });
+
+  it("deduplicates repeated records inside one candidate batch", async () => {
+    const student = await prisma.student.findFirst({
+      select: { id: true, name: true, studentId: true },
+      orderBy: { studentId: "asc" },
+    });
+    expect(student).toBeTruthy();
+    const base = {
+      kind: "communication",
+      source: { conversationId: "batch-dedupe", conversationTitle: `${student!.name}家长` },
+      matchedStudent: {
+        id: student!.id,
+        name: student!.name,
+        studentId: student!.studentId,
+        confidence: "high",
+      },
+      target: "家长",
+      summaryForChemTrack: "同一批内的相同摘要",
+    };
+    const result = await planWeComCommunicationImport(prisma, {
+      jsonText: JSON.stringify({ records: [
+        { ...base, sourceKey: "batch-dedupe:first" },
+        { ...base, sourceKey: "batch-dedupe:second" },
+      ] }),
+    });
+
+    expect(result).toMatchObject({ importableCount: 2, createCount: 1, duplicateCount: 1 });
+  });
 });
