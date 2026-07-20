@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { INTERNAL_ATTENTION_LABELS, type AttentionSignalCandidate } from "@/lib/attention-labels";
 import { planWeComCommunicationImport, type WeComImportResult } from "@/services/wecom-import-service";
+import type { WeComExtractionDiagnostics, WeComExtractionErrorCode } from "@/services/wecom-bridge-service";
 
 const ROLLBACK_RETENTION_DAYS = 30;
 const ROLLBACK_RETENTION_OPERATIONS = 30;
@@ -12,21 +13,27 @@ export interface WeComBatchMetadata {
   conversationTitle: string;
   candidateStudentIds: string[];
   messageIds: string[];
+  promptVersion?: string;
 }
 
 export async function prepareWeComBatch(
   prisma: PrismaClient,
   metadata: WeComBatchMetadata,
 ) {
-  const previousCandidate = await prisma.weComImportOperation.findFirst({
+  const retryRequested = await prisma.weComImportOperation.findFirst({
+    where: { batchKey: metadata.batchKey, status: "retry_requested" },
+    orderBy: { startedAt: "desc" },
+    select: { id: true, status: true, candidateJson: true, extractedAt: true, attemptCount: true },
+  });
+  const previousOperation = retryRequested ?? await prisma.weComImportOperation.findFirst({
     where: {
       batchKey: metadata.batchKey,
-      status: "failed",
-      candidateJson: { not: null },
+      status: { in: ["failed", "needs_review"] },
     },
     orderBy: { startedAt: "desc" },
-    select: { id: true, candidateJson: true, extractedAt: true },
+    select: { id: true, status: true, candidateJson: true, extractedAt: true, attemptCount: true },
   });
+  const attemptCount = (previousOperation?.attemptCount ?? 0) + 1;
   const operation = await prisma.weComImportOperation.upsert({
     where: {
       runId_batchKey: {
@@ -42,14 +49,20 @@ export async function prepareWeComBatch(
       status: "processing",
       messageCount: metadata.messageIds.length,
       candidateStudentIds: JSON.stringify(metadata.candidateStudentIds),
-      candidateJson: previousCandidate?.candidateJson,
-      extractedAt: previousCandidate?.extractedAt,
+      candidateJson: previousOperation?.candidateJson,
+      extractedAt: previousOperation?.extractedAt,
+      attemptCount,
+      promptVersion: metadata.promptVersion,
     },
     update: {
       status: "processing",
       messageCount: metadata.messageIds.length,
       candidateStudentIds: JSON.stringify(metadata.candidateStudentIds),
       rolledBackAt: null,
+      attemptCount,
+      promptVersion: metadata.promptVersion,
+      failureCode: null,
+      completedAt: null,
     },
   });
   await prisma.weComMessageReceipt.updateMany({
@@ -59,13 +72,64 @@ export async function prepareWeComBatch(
     },
     data: { status: "extracting", operationId: operation.id, lastError: null },
   });
-  if (previousCandidate && previousCandidate.id !== operation.id) {
+  if (previousOperation?.candidateJson && previousOperation.id !== operation.id) {
     await prisma.weComImportOperation.update({
-      where: { id: previousCandidate.id },
+      where: { id: previousOperation.id },
       data: { candidateJson: null },
     });
   }
+  if (retryRequested && retryRequested.id !== operation.id) {
+    await prisma.weComImportOperation.update({
+      where: { id: retryRequested.id },
+      data: { status: "retry_consumed" },
+    });
+  }
   return operation;
+}
+
+export async function saveWeComBatchDiagnostics(
+  prisma: PrismaClient,
+  operationId: string,
+  diagnostics: WeComExtractionDiagnostics,
+) {
+  await prisma.weComImportOperation.update({
+    where: { id: operationId },
+    data: {
+      modelName: diagnostics.modelName,
+      finishReason: diagnostics.finishReason,
+      promptTokens: diagnostics.promptTokens,
+      reasoningTokens: diagnostics.reasoningTokens,
+      completionTokens: diagnostics.completionTokens,
+      responseCharacters: diagnostics.responseCharacters,
+    },
+  });
+}
+
+function extractionFailure(error: unknown): {
+  code: WeComExtractionErrorCode | "batch_failed";
+  message: string;
+  diagnostics?: Partial<WeComExtractionDiagnostics>;
+} {
+  const candidate = error as {
+    code?: WeComExtractionErrorCode;
+    diagnostics?: Partial<WeComExtractionDiagnostics>;
+  };
+  switch (candidate?.code) {
+    case "protocol_incompatible":
+      return { code: candidate.code, message: "提取模型不支持结构化输出，请更换模型", diagnostics: candidate.diagnostics };
+    case "output_truncated":
+      return { code: candidate.code, message: "模型输出被截断，需要缩小会话段或人工复核", diagnostics: candidate.diagnostics };
+    case "schema_invalid":
+      return { code: candidate.code, message: "模型输出未通过 Schema 校验", diagnostics: candidate.diagnostics };
+    case "network_error":
+      return { code: candidate.code, message: "模型网络请求连续失败", diagnostics: candidate.diagnostics };
+    case "provider_error":
+      return { code: candidate.code, message: "模型服务拒绝或异常结束", diagnostics: candidate.diagnostics };
+    case "oversized_message":
+      return { code: candidate.code, message: "单条消息超过 20000 字符，需要人工复核", diagnostics: candidate.diagnostics };
+    default:
+      return { code: "batch_failed", message: "批次处理失败，可安全重试" };
+  }
 }
 
 export async function saveWeComBatchCandidate(
@@ -85,17 +149,61 @@ export async function failWeComBatch(
   conversationId: string,
   messageIds: string[],
   error: unknown,
+  options: { forceReview?: boolean } = {},
 ) {
-  const message = error instanceof Error && error.message.includes("合法的企微候选 JSON")
-    ? "LLM 返回格式异常，可安全重试"
-    : "批次处理失败，可安全重试";
+  const failure = extractionFailure(error);
+  const current = await prisma.weComImportOperation.findUnique({
+    where: { id: operationId },
+    select: { attemptCount: true },
+  });
+  const needsReview = options.forceReview
+    || current?.attemptCount && current.attemptCount >= 2
+    || ["protocol_incompatible", "oversized_message"].includes(failure.code);
+  const status = needsReview ? "needs_review" : "failed";
+  const diagnostics = failure.diagnostics;
   await prisma.$transaction([
-    prisma.weComImportOperation.update({ where: { id: operationId }, data: { status: "failed" } }),
+    prisma.weComImportOperation.update({
+      where: { id: operationId },
+      data: {
+        status,
+        failureCode: failure.code,
+        modelName: diagnostics?.modelName,
+        finishReason: diagnostics?.finishReason,
+        promptTokens: diagnostics?.promptTokens,
+        reasoningTokens: diagnostics?.reasoningTokens,
+        completionTokens: diagnostics?.completionTokens,
+        responseCharacters: diagnostics?.responseCharacters,
+        completedAt: new Date(),
+      },
+    }),
     prisma.weComMessageReceipt.updateMany({
       where: { conversationId, messageId: { in: messageIds } },
-      data: { status: "failed", lastError: message },
+      data: { status, lastError: failure.message },
     }),
   ]);
+  return { status, failureCode: failure.code, message: failure.message };
+}
+
+export async function markWeComBatchSplit(
+  prisma: PrismaClient,
+  operationId: string,
+  error: unknown,
+) {
+  const failure = extractionFailure(error);
+  await prisma.weComImportOperation.update({
+    where: { id: operationId },
+    data: {
+      status: "split",
+      failureCode: failure.code,
+      modelName: failure.diagnostics?.modelName,
+      finishReason: failure.diagnostics?.finishReason,
+      promptTokens: failure.diagnostics?.promptTokens,
+      reasoningTokens: failure.diagnostics?.reasoningTokens,
+      completionTokens: failure.diagnostics?.completionTokens,
+      responseCharacters: failure.diagnostics?.responseCharacters,
+      completedAt: new Date(),
+    },
+  });
 }
 
 async function addLabelsWithJournal(
@@ -338,6 +446,43 @@ export async function retryWeComBatchCandidate(
   );
   await refreshRunSummary(prisma, operation.runId);
   return result;
+}
+
+export async function retryWeComBatchExtraction(
+  prisma: PrismaClient,
+  operationId: string,
+) {
+  const operation = await prisma.weComImportOperation.findFirst({
+    where: {
+      id: operationId,
+      status: { in: ["needs_review", "failed"] },
+      candidateJson: null,
+    },
+    select: { id: true, runId: true },
+  });
+  if (!operation) throw new Error("这个批次没有可重新提取的消息");
+  await prisma.$transaction([
+    prisma.weComMessageReceipt.updateMany({
+      where: { operationId, status: { in: ["needs_review", "failed"] } },
+      data: {
+        status: "pending",
+        operationId: null,
+        processedAt: null,
+        lastError: null,
+      },
+    }),
+    prisma.weComImportOperation.update({
+      where: { id: operationId },
+      data: {
+        status: "retry_requested",
+        attemptCount: 0,
+        failureCode: null,
+        completedAt: new Date(),
+      },
+    }),
+  ]);
+  await refreshRunSummary(prisma, operation.runId);
+  return { requeued: true };
 }
 
 export async function ignoreWeComBatchCandidate(

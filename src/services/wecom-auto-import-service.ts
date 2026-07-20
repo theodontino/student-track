@@ -3,12 +3,17 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { createLLMClient } from "@/lib/llm";
-import { generateWeComBridgeJson } from "@/services/wecom-bridge-service";
+import {
+  generateWeComBridgeJson,
+  WeComExtractionError,
+} from "@/services/wecom-bridge-service";
 import {
   applyWeComLedgerBatch,
   failWeComBatch,
+  markWeComBatchSplit,
   prepareWeComBatch,
   pruneWeComRollbackJournal,
+  saveWeComBatchDiagnostics,
   saveWeComBatchCandidate,
 } from "@/services/wecom-import-ledger-service";
 import type { WeComImportResult } from "@/services/wecom-import-service";
@@ -18,9 +23,12 @@ import { runWeComCatchCommand, type WeComCatchResult } from "@/services/wecomcat
 const FIRST_RUN_LOOKBACK_DAYS = 30;
 const CURSOR_OVERLAP_MS = 5 * 60 * 1000;
 const RUN_LEASE_MS = 7 * 60 * 60 * 1000;
-const MAX_BATCH_CHARACTERS = 20_000;
+const MAX_BATCH_CHARACTERS = 8_000;
+const MAX_BATCH_MESSAGES = 30;
+const MAX_SINGLE_MESSAGE_CHARACTERS = 20_000;
+const CONVERSATION_GAP_MS = 6 * 60 * 60 * 1000;
 const MAX_SYNC_WAIT_MS = 6 * 60 * 60 * 1000;
-const PROMPT_VERSION = "wecom-incremental-v2";
+export const WECOM_PROMPT_VERSION = "wecom-incremental-v3";
 
 interface WeComMessage {
   id?: string;
@@ -42,21 +50,21 @@ interface ClaimedRun {
   stateInitializedAfter: Date;
 }
 
-interface SourceMessage {
+export interface SourceMessage {
   id: string;
   text: string;
   sentAt: Date;
   contentHash: string;
 }
 
-interface SourceConversation {
+export interface SourceConversation {
   id: string;
   title: string;
   candidateStudentIds: string[];
   messages: SourceMessage[];
 }
 
-interface ExtractionBatch {
+export interface ExtractionBatch {
   batchKey: string;
   conversationId: string;
   conversationTitle: string;
@@ -64,6 +72,7 @@ interface ExtractionBatch {
   text: string;
   messages: SourceMessage[];
   messageIds: string[];
+  requiresManualReview: boolean;
 }
 
 export interface WeComAutoImportProgress {
@@ -80,6 +89,7 @@ export interface WeComAutoImportComplete {
   conversationCount: number;
   messageCount: number;
   batchCount: number;
+  attentionBatchCount: number;
   since: string;
 }
 
@@ -214,41 +224,87 @@ export async function collectIncrementalWeComSources(
   return { conversations, messageCount };
 }
 
-function buildBatches(conversations: SourceConversation[]): ExtractionBatch[] {
+function shanghaiDate(value: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+function createExtractionBatch(
+  conversation: Pick<SourceConversation, "id" | "title" | "candidateStudentIds">,
+  messages: SourceMessage[],
+): ExtractionBatch {
+  const orderedMessages = [...messages].sort((left, right) => (
+    left.sentAt.getTime() - right.sentAt.getTime() || left.id.localeCompare(right.id)
+  ));
+  const heading = `# 会话ID：${conversation.id}\n# 会话标题：${conversation.title}`;
+  const batchKey = hash(`${WECOM_PROMPT_VERSION}\n${conversation.id}\n${orderedMessages
+    .map((message) => `${message.sentAt.toISOString()}:${message.id}:${message.contentHash}`)
+    .join("\n")}`);
+  return {
+    batchKey,
+    conversationId: conversation.id,
+    conversationTitle: conversation.title,
+    candidateStudentIds: conversation.candidateStudentIds,
+    text: `${heading}\n${orderedMessages.map((message) => message.text).join("\n")}`,
+    messages: orderedMessages,
+    messageIds: orderedMessages.map((message) => message.id),
+    requiresManualReview: orderedMessages.some((message) => (
+      message.text.length > MAX_SINGLE_MESSAGE_CHARACTERS
+    )),
+  };
+}
+
+export function buildWeComExtractionBatches(conversations: SourceConversation[]): ExtractionBatch[] {
   const batches: ExtractionBatch[] = [];
   for (const conversation of conversations) {
-    const heading = `# 会话ID：${conversation.id}\n# 会话标题：${conversation.title}`;
-    let text = heading;
+    const ordered = [...conversation.messages].sort((left, right) => (
+      left.sentAt.getTime() - right.sentAt.getTime() || left.id.localeCompare(right.id)
+    ));
     let messages: SourceMessage[] = [];
     const pushBatch = () => {
       if (messages.length === 0) return;
-      const batchKey = hash(`${PROMPT_VERSION}\n${conversation.id}\n${messages.map((message) => `${message.id}:${message.contentHash}`).join("\n")}`);
-      batches.push({
-        batchKey,
-        conversationId: conversation.id,
-        conversationTitle: conversation.title,
-        candidateStudentIds: conversation.candidateStudentIds,
-        text,
-        messages,
-        messageIds: messages.map((message) => message.id),
-      });
+      batches.push(createExtractionBatch(conversation, messages));
+      messages = [];
     };
 
-    for (const message of conversation.messages) {
-      const line = message.text.length > MAX_BATCH_CHARACTERS - heading.length - 2
-        ? message.text.slice(-(MAX_BATCH_CHARACTERS - heading.length - 2))
-        : message.text;
-      if (messages.length > 0 && text.length + line.length + 1 > MAX_BATCH_CHARACTERS) {
+    for (const message of ordered) {
+      const previous = messages.at(-1);
+      const crossedConversationBoundary = previous && (
+        shanghaiDate(previous.sentAt) !== shanghaiDate(message.sentAt)
+        || message.sentAt.getTime() - previous.sentAt.getTime() > CONVERSATION_GAP_MS
+      );
+      const currentCharacters = messages.reduce((sum, item) => sum + item.text.length + 1, 0);
+      const crossedSizeBoundary = messages.length > 0 && (
+        messages.length >= MAX_BATCH_MESSAGES
+        || currentCharacters + message.text.length + 1 > MAX_BATCH_CHARACTERS
+      );
+      if (crossedConversationBoundary || crossedSizeBoundary) {
         pushBatch();
-        text = heading;
-        messages = [];
       }
-      text += `\n${line}`;
       messages.push(message);
+      if (message.text.length > MAX_BATCH_CHARACTERS) pushBatch();
     }
     pushBatch();
   }
   return batches;
+}
+
+export function splitWeComExtractionBatch(batch: ExtractionBatch): [ExtractionBatch, ExtractionBatch] | null {
+  if (batch.messages.length < 2) return null;
+  const middle = Math.ceil(batch.messages.length / 2);
+  const conversation = {
+    id: batch.conversationId,
+    title: batch.conversationTitle,
+    candidateStudentIds: batch.candidateStudentIds,
+  };
+  return [
+    createExtractionBatch(conversation, batch.messages.slice(0, middle)),
+    createExtractionBatch(conversation, batch.messages.slice(middle)),
+  ];
 }
 
 function decorateRecords(records: unknown[], batch: ExtractionBatch) {
@@ -462,7 +518,7 @@ export async function runWeComAutoImport(
   emit({ type: "progress", phase: "preflight", progress: 2, message: "正在检查 WeComCatch 和 LLM 配置…" });
   const preflight = preflightWeComCatchSync();
   if (!preflight.ready) throw new Error(`WeComCatch 环境不可用：${preflight.blockers.join("；")}`);
-  createLLMClient();
+  createLLMClient("wecomExtraction");
   const claimed = await claimWeComAutoImportRun(prisma, startedAt);
   try {
     await waitForWeComSync(
@@ -489,8 +545,11 @@ export async function runWeComAutoImport(
       startedAt,
       knownReceipts,
     );
-    const batches = buildBatches(conversations);
+    const batches = buildWeComExtractionBatches(conversations);
+    const queue = [...batches];
     const totalResult = emptyResult();
+    let hasAttention = false;
+    let attentionBatchCount = 0;
 
     for (const conversation of conversations) {
       for (const message of conversation.messages) {
@@ -507,47 +566,67 @@ export async function runWeComAutoImport(
             sentAt: message.sentAt,
             contentHash: message.contentHash,
             status: "pending",
-            promptVersion: PROMPT_VERSION,
+            promptVersion: WECOM_PROMPT_VERSION,
           },
           update: {
             sentAt: message.sentAt,
             contentHash: message.contentHash,
             status: "pending",
-            promptVersion: PROMPT_VERSION,
+            promptVersion: WECOM_PROMPT_VERSION,
           },
         });
       }
     }
 
-    if (batches.length === 0) {
+    await prisma.weComImportRun.update({
+      where: { id: claimed.runId },
+      data: {
+        conversationCount: conversations.length,
+        messageCount,
+        batchCount: queue.length,
+      },
+    });
+
+    if (queue.length === 0) {
       emit({ type: "progress", phase: "extracting", progress: 85, message: "没有需要提取的新聊天记录" });
     }
-    for (let index = 0; index < batches.length; index += 1) {
+    for (let index = 0; index < queue.length; index += 1) {
       await refreshWeComAutoImportRun(prisma, claimed.runId);
-      const batch = { ...batches[index], runId: claimed.runId };
+      const batch = {
+        ...queue[index],
+        runId: claimed.runId,
+        promptVersion: WECOM_PROMPT_VERSION,
+      };
       emit({
         type: "progress",
         phase: "extracting",
-        progress: 52 + Math.round((index / batches.length) * 38),
+        progress: 52 + Math.round((index / Math.max(1, queue.length)) * 38),
         message: "LLM 正在整理增量家校沟通…",
-        detail: `${index + 1}/${batches.length} 批 · ${batch.conversationTitle}`,
+        detail: `${index + 1}/${queue.length} 批 · ${batch.conversationTitle} · ${batch.messageIds.length} 条消息`,
       });
       const operation = await prepareWeComBatch(prisma, batch);
       try {
+        if (batch.requiresManualReview) {
+          throw new WeComExtractionError(
+            "oversized_message",
+            "单条消息超过 20000 字符，需要人工复核",
+          );
+        }
         let candidateJson = operation.candidateJson;
         if (!candidateJson) {
           const generated = await generateWeComBridgeJson(prisma, {
             sourceText: batch.text,
             candidateStudentIds: batch.candidateStudentIds,
           }, {
-            onRetry: () => emit({
+            onRetry: (reason) => emit({
               type: "progress",
               phase: "extracting",
-              progress: 52 + Math.round((index / batches.length) * 38),
-              message: "LLM 返回格式异常，正在自动修复…",
-              detail: `${index + 1}/${batches.length} 批（重试 1/1）`,
+              progress: 52 + Math.round((index / Math.max(1, queue.length)) * 38),
+              message: reason === "network" ? "LLM 网络异常，正在重试一次…" : "LLM 输出未通过 Schema，正在重试一次…",
+              detail: `${index + 1}/${queue.length} 批（重试 1/1）`,
             }),
           });
+          await saveWeComBatchDiagnostics(prisma, operation.id, generated.diagnostics);
           const records = objectValue(generated.bridgeJson).records;
           candidateJson = JSON.stringify({
             source: "wecomcatch",
@@ -559,23 +638,54 @@ export async function runWeComAutoImport(
         emit({
           type: "progress",
           phase: "importing",
-          progress: 90 + Math.round((index / Math.max(1, batches.length)) * 8),
+          progress: 90 + Math.round((index / Math.max(1, queue.length)) * 8),
           message: "正在写入增量记录…",
-          detail: `${index + 1}/${batches.length} 批`,
+          detail: `${index + 1}/${queue.length} 批`,
         });
-        mergeResult(
-          totalResult,
-          await applyWeComLedgerBatch(prisma, operation.id, batch, candidateJson),
-        );
+        const result = await applyWeComLedgerBatch(prisma, operation.id, batch, candidateJson);
+        mergeResult(totalResult, result);
+        if (result.skippedCount > 0) {
+          hasAttention = true;
+          attentionBatchCount += 1;
+        }
       } catch (error) {
-        await failWeComBatch(
+        if (error instanceof WeComExtractionError && error.code === "output_truncated") {
+          const split = splitWeComExtractionBatch(batch);
+          if (split) {
+            await markWeComBatchSplit(prisma, operation.id, error);
+            queue.splice(index + 1, 0, ...split);
+            await prisma.weComImportRun.update({
+              where: { id: claimed.runId },
+              data: { batchCount: queue.length },
+            });
+            emit({
+              type: "progress",
+              phase: "extracting",
+              progress: 52 + Math.round((index / Math.max(1, queue.length)) * 38),
+              message: "模型输出被截断，已将当前交流段二分…",
+              detail: `${batch.messageIds.length} 条消息拆为 ${split[0].messageIds.length} + ${split[1].messageIds.length} 条`,
+            });
+            continue;
+          }
+        }
+        const failed = await failWeComBatch(
           prisma,
           operation.id,
           batch.conversationId,
           batch.messageIds,
           error,
+          { forceReview: batch.messages.length === 1 && error instanceof WeComExtractionError && error.code === "output_truncated" },
         );
-        throw error;
+        hasAttention = true;
+        attentionBatchCount += 1;
+        emit({
+          type: "progress",
+          phase: "extracting",
+          progress: 52 + Math.round(((index + 1) / Math.max(1, queue.length)) * 38),
+          message: failed.status === "needs_review" ? "当前交流段已暂停，等待人工处理" : "当前交流段提取失败，已保留重试状态",
+          detail: `${index + 1}/${queue.length} 批 · ${failed.message}`,
+        });
+        if (error instanceof WeComExtractionError && error.code === "protocol_incompatible") throw error;
       }
     }
 
@@ -583,10 +693,10 @@ export async function runWeComAutoImport(
       prisma.weComImportRun.update({
         where: { id: claimed.runId },
         data: {
-          status: totalResult.skippedCount > 0 ? "attention_required" : "complete",
+          status: hasAttention || totalResult.skippedCount > 0 ? "attention_required" : "complete",
           conversationCount: conversations.length,
           messageCount,
-          batchCount: batches.length,
+          batchCount: queue.length,
           communicationCount: totalResult.createdCount,
           labelCount: totalResult.createdLabelCount,
           completedAt: new Date(),
@@ -607,7 +717,8 @@ export async function runWeComAutoImport(
       result: totalResult,
       conversationCount: conversations.length,
       messageCount,
-      batchCount: batches.length,
+      batchCount: queue.length,
+      attentionBatchCount,
       since: claimed.since.toISOString(),
     };
     emit({ type: "progress", phase: "complete", progress: 100, message: "企微增量记录已处理完成" });

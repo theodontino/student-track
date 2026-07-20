@@ -51,4 +51,38 @@ describe("POST /api/wecom/auto-import", () => {
     expect(body).not.toContain("/private/config");
     expect(body).not.toContain("provider response");
   });
+
+  it.each([
+    {
+      phase: "syncing",
+      error: "full sidebar scan incomplete: observed 96 of 147 rows (65.3%)",
+      expected: "会话扫描覆盖率低于安全门槛",
+    },
+    {
+      phase: "syncing",
+      error: "WeCom window size changed during full sidebar scan",
+      expected: "企微窗口或会话侧栏尺寸发生变化",
+    },
+    {
+      phase: "syncing",
+      error: "Visible conversation table not found; keep the WeCom window open",
+      expected: "打开企微主窗口并停留在消息页",
+    },
+    {
+      phase: "extracting",
+      error: "provider request failed with a private response",
+      expected: "LLM 调用或候选提取失败",
+    },
+  ])("returns an actionable safe error for $phase failures", async ({ phase, error, expected }) => {
+    runWeComAutoImport.mockImplementation(async (_prisma, options) => {
+      options.emit({ type: "progress", phase, progress: 10, message: "处理中" });
+      throw new Error(error);
+    });
+
+    const response = await POST();
+    const body = await response.text();
+
+    expect(body).toContain(expected);
+    expect(body).not.toContain(error);
+  });
 });

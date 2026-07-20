@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   rollbackOperation: vi.fn(),
   rollbackRun: vi.fn(),
   retryBatch: vi.fn(),
+  retryExtraction: vi.fn(),
   ignoreBatch: vi.fn(),
 }));
 
@@ -18,6 +19,7 @@ vi.mock("@/services/wecom-rollback-service", () => ({
 }));
 vi.mock("@/services/wecom-import-ledger-service", () => ({
   retryWeComBatchCandidate: mocks.retryBatch,
+  retryWeComBatchExtraction: mocks.retryExtraction,
   ignoreWeComBatchCandidate: mocks.ignoreBatch,
 }));
 
@@ -26,6 +28,20 @@ import { GET, POST } from "@/app/api/system/wecom-rollbacks/route";
 describe("/api/system/wecom-rollbacks", () => {
   beforeEach(() => {
     Object.values(mocks).forEach((mock) => mock.mockReset());
+  });
+
+  it("explicitly requeues a failed extraction segment", async () => {
+    mocks.retryExtraction.mockResolvedValue({ requeued: true });
+    const request = new NextRequest("http://localhost/api/system/wecom-rollbacks", {
+      method: "POST",
+      body: JSON.stringify({ action: "retry-extraction", batchId: "batch-2" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    expect(mocks.retryExtraction).toHaveBeenCalledWith(expect.anything(), "batch-2");
+    expect(await response.json()).toEqual({ requeued: true });
   });
 
   it("lists run history and retention", async () => {

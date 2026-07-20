@@ -172,6 +172,15 @@ model WeComImportOperation {
   labelCount         Int      @default(0)
   candidateJson      String?  // 仅用于失败恢复，成功入库后清空
   extractedAt        DateTime?
+  attemptCount       Int      @default(0)
+  failureCode        String?
+  modelName          String?
+  finishReason       String?
+  promptVersion      String?
+  promptTokens       Int?
+  reasoningTokens    Int?
+  completionTokens   Int?
+  responseCharacters Int?
   startedAt          DateTime @default(now())
   completedAt        DateTime?
   rolledBackAt       DateTime?

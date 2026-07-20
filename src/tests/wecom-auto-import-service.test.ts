@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import {
   claimWeComAutoImportRun,
+  buildWeComExtractionBatches,
   collectIncrementalWeComSources,
+  splitWeComExtractionBatch,
+  type SourceConversation,
 } from "@/services/wecom-auto-import-service";
 
 describe("wecom auto import service", () => {
@@ -20,6 +23,83 @@ describe("wecom auto import service", () => {
       where: { id: { startsWith: "test-auto-" } },
     });
     await prisma.weComImportState.deleteMany({ where: { id: "default" } });
+  });
+
+  function conversation(times: string[], lengths: number[] = []) {
+    return {
+      id: "conversation-segments",
+      title: "张三妈妈",
+      candidateStudentIds: ["student-zhang"],
+      messages: times.map((time, index) => ({
+        id: `message-${index}`,
+        text: "x".repeat(lengths[index] ?? 20),
+        sentAt: new Date(time),
+        contentHash: `hash-${index}`,
+      })),
+    } satisfies SourceConversation;
+  }
+
+  it("splits continuous exchanges at Shanghai date changes and gaps over six hours", () => {
+    const batches = buildWeComExtractionBatches([conversation([
+      "2026-07-18T15:59:00.000Z",
+      "2026-07-18T16:00:00.000Z",
+      "2026-07-18T22:00:01.000Z",
+    ])]);
+
+    expect(batches.map((batch) => batch.messageIds)).toEqual([
+      ["message-0"],
+      ["message-1"],
+      ["message-2"],
+    ]);
+  });
+
+  it("caps a segment at 30 messages without overlapping messages", () => {
+    const times = Array.from({ length: 31 }, (_, index) => (
+      new Date(Date.parse("2026-07-18T00:00:00.000Z") + index * 60_000).toISOString()
+    ));
+    const batches = buildWeComExtractionBatches([conversation(times)]);
+
+    expect(batches.map((batch) => batch.messageIds.length)).toEqual([30, 1]);
+    const allIds = batches.flatMap((batch) => batch.messageIds);
+    expect(new Set(allIds).size).toBe(31);
+  });
+
+  it("puts messages over 8000 characters alone and flags those over 20000", () => {
+    const batches = buildWeComExtractionBatches([conversation([
+      "2026-07-18T00:00:00.000Z",
+      "2026-07-18T00:01:00.000Z",
+      "2026-07-18T00:02:00.000Z",
+    ], [20, 8_001, 20_001])]);
+
+    expect(batches.map((batch) => batch.messageIds)).toEqual([
+      ["message-0"],
+      ["message-1"],
+      ["message-2"],
+    ]);
+    expect(batches.map((batch) => batch.requiresManualReview)).toEqual([false, false, true]);
+    expect(batches[2].text.length).toBeGreaterThan(20_000);
+  });
+
+  it("builds the same stable batch key regardless of source file order", () => {
+    const source = conversation([
+      "2026-07-18T00:00:00.000Z",
+      "2026-07-18T00:01:00.000Z",
+    ]);
+    const reversed = { ...source, messages: [...source.messages].reverse() };
+
+    expect(buildWeComExtractionBatches([source])[0].batchKey)
+      .toBe(buildWeComExtractionBatches([reversed])[0].batchKey);
+  });
+
+  it("bisects a truncated multi-message segment without overlap", () => {
+    const batch = buildWeComExtractionBatches([conversation(Array.from({ length: 5 }, (_, index) => (
+      new Date(Date.parse("2026-07-18T00:00:00.000Z") + index * 60_000).toISOString()
+    )))])[0];
+    const split = splitWeComExtractionBatch(batch);
+
+    expect(split?.map((item) => item.messageIds.length)).toEqual([3, 2]);
+    expect(new Set(split?.flatMap((item) => item.messageIds)).size).toBe(5);
+    expect(split?.[0].batchKey).not.toBe(split?.[1].batchKey);
   });
 
   it("collects only new messages from conversations whose title matches the roster", async () => {

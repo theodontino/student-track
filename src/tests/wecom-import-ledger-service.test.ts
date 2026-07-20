@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/prisma";
 import {
   applyWeComLedgerBatch,
+  failWeComBatch,
   ignoreWeComBatchCandidate,
   prepareWeComBatch,
   pruneWeComRollbackJournal,
   retryWeComBatchCandidate,
+  retryWeComBatchExtraction,
   saveWeComBatchCandidate,
 } from "@/services/wecom-import-ledger-service";
+import { WeComExtractionError } from "@/services/wecom-bridge-service";
 import {
   listWeComRollbackOperations,
   rollbackWeComDate,
@@ -323,6 +326,76 @@ describe("wecom incremental ledger and rollback", () => {
       retention: { days: 30, runs: 30, safetyBackups: 3 },
     });
     await expect(pruneWeComRollbackJournal(prisma)).resolves.toBeUndefined();
+  });
+
+  it("pauses a stable failed segment after two attempts and only requeues it explicitly", async () => {
+    const conversationId = "test-conversation-ledger-paused";
+    const pausedMessageId = "test-wecom-message-ledger-paused";
+    const pausedBatchKey = "test-wecom-batch-ledger-paused";
+    await prisma.weComMessageReceipt.create({
+      data: {
+        conversationId,
+        messageId: pausedMessageId,
+        contentHash: "paused-hash",
+        status: "pending",
+        promptVersion: "test-v3",
+      },
+    });
+    const metadataBase = {
+      batchKey: pausedBatchKey,
+      conversationId,
+      conversationTitle: "暂停重试会话",
+      candidateStudentIds: [],
+      messageIds: [pausedMessageId],
+      promptVersion: "test-v3",
+    };
+
+    let secondOperationId = "";
+    for (const attempt of [1, 2]) {
+      const currentRunId = `test-wecom-run-ledger-paused-${attempt}`;
+      await prisma.weComImportRun.create({
+        data: {
+          id: currentRunId,
+          status: "running",
+          windowStartedAt: new Date("2026-07-01T00:00:00Z"),
+          windowEndedAt: new Date("2026-07-20T00:00:00Z"),
+        },
+      });
+      const operation = await prepareWeComBatch(prisma, { ...metadataBase, runId: currentRunId });
+      secondOperationId = operation.id;
+      await failWeComBatch(
+        prisma,
+        operation.id,
+        conversationId,
+        [pausedMessageId],
+        new WeComExtractionError("schema_invalid", "synthetic schema failure", {
+          modelName: "synthetic-model",
+          finishReason: "stop",
+          reasoningTokens: 0,
+          completionTokens: 12,
+          responseCharacters: 30,
+        }),
+      );
+      await expect(prisma.weComImportOperation.findUnique({ where: { id: operation.id } }))
+        .resolves.toMatchObject({
+          attemptCount: attempt,
+          status: attempt === 1 ? "failed" : "needs_review",
+          failureCode: "schema_invalid",
+          modelName: "synthetic-model",
+        });
+    }
+
+    await expect(prisma.weComMessageReceipt.findUnique({
+      where: { conversationId_messageId: { conversationId, messageId: pausedMessageId } },
+    })).resolves.toMatchObject({ status: "needs_review" });
+
+    await expect(retryWeComBatchExtraction(prisma, secondOperationId))
+      .resolves.toEqual({ requeued: true });
+    await expect(prisma.weComMessageReceipt.findUnique({
+      where: { conversationId_messageId: { conversationId, messageId: pausedMessageId } },
+    })).resolves.toMatchObject({ status: "pending", operationId: null });
+    await expect(prisma.weComImportOperation.findUnique({ where: { id: secondOperationId } }))
+      .resolves.toMatchObject({ status: "retry_requested", attemptCount: 0 });
   });
 
   it("rejects calendar dates that JavaScript would otherwise normalize", async () => {

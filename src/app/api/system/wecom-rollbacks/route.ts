@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import {
   ignoreWeComBatchCandidate,
   retryWeComBatchCandidate,
+  retryWeComBatchExtraction,
 } from "@/services/wecom-import-ledger-service";
 import {
   listWeComRollbackOperations,
@@ -32,6 +33,8 @@ export async function POST(request: NextRequest) {
       ? await rollbackWeComRun(prisma, body.runId || "")
       : body.action === "retry-batch"
         ? await retryWeComBatchCandidate(prisma, body.batchId || "")
+        : body.action === "retry-extraction"
+          ? await retryWeComBatchExtraction(prisma, body.batchId || "")
         : body.action === "ignore-batch"
           ? await ignoreWeComBatchCandidate(prisma, body.batchId || "")
       : body.action === "rollback-operation"
@@ -42,7 +45,7 @@ export async function POST(request: NextRequest) {
     if (!result) return NextResponse.json({ error: "不支持的回滚操作" }, { status: 400 });
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error && /^(日期|缺少)/.test(error.message)
+    const message = error instanceof Error && /^(日期|缺少|这个批次|候选学生)/.test(error.message)
       ? error.message
       : "企微导入回滚失败，数据库未完成删除";
     return NextResponse.json({ error: message }, { status: 400 });
