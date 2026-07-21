@@ -153,11 +153,16 @@ export async function generateReviewedFeedback(
 }
 
 export async function generateFeedbackDraft(input: FeedbackDraftInput) {
-  const draftPrompt = `你是高中班主任助手。请严格依据以下反馈背景，为${input.studentName}生成${input.lengthRequirement}的家长反馈。语气温和、客观、鼓励为主，适合直接发送。
+  const draftPrompt = `你是 Chem-Track 的内部反馈分析模型。请严格依据以下确定性背景，为${input.studentName}生成一份仅供后续成稿模型使用的内部分析草稿，不要写成给家长直接发送的话术。
 
 ${input.promptContext}
 
-只反馈该生本人表现，不比较、不提其他学生姓名；不得补充背景中不存在的成绩、考勤、事件或家校结论。直接返回反馈文本，不要标题或说明。`;
+分析要求：
+1. 先概括本次课有记录支持的表现，再结合近期课次判断稳定、改善、波动或暂时缺少趋势依据。
+2. 将历史事件和家校沟通作为背景线索，区分“已发生事实”和“后续建议”，不得把建议写成事实。
+3. 提炼 1–2 个适合对家长表达的重点；没有足够记录时明确写“依据不足”，不要硬做趋势结论。
+4. 只分析该生本人，不比较、不提其他学生姓名，不补充背景中不存在的成绩、考勤、事件或家校结论。
+5. 控制在 120–220 字，可分点；不要使用家长称呼、寒暄或可直接发送的结尾。最终家长话术将由下一阶段生成，目标长度为${input.lengthRequirement}。`;
   return generateDraft(input.client, input.model, draftPrompt);
 }
 
@@ -166,38 +171,39 @@ export async function reviewFeedbackDraft(input: FeedbackReviewInput): Promise<R
   const forbiddenNames = [...new Set((input.forbiddenStudentNames ?? [])
     .map((name) => name.trim())
     .filter((name) => name && name !== input.studentName))];
-  const reviewPrompt = `你是 Chem-Track 的反馈审核模型。请逐项对照“确定性反馈背景”审核起草稿，不得使用背景以外的知识，也不得新增事实。
+  const reviewPrompt = `你是 Chem-Track 的反馈成稿与审核模型。请先逐项对照“确定性反馈背景”复核内部分析草稿，再把可靠内容改写成可以直接发给家长的话术。内部分析只是辅助材料，不是新的事实来源。
 
 确定性反馈背景：
 ${input.promptContext}
 
-起草稿：
+内部分析草稿（仅供参考，不得原样发送）：
 ${draftFeedback}
 
-审核规则：
-1. 检查学生身份、成绩与趋势、考勤、事件、家校沟通是否有依据且没有冲突。
-2. 检查是否比较或提到其他学生，是否把建议写成已发生事实。
-3. 检查是否满足${input.lengthRequirement}、语气温和且适合直接发送。
-4. 能在不新增事实的前提下修好时 verdict="revise" 并给出修订后的 feedback。
-5. 完全可靠时 verdict="pass"；无法可靠修正时 verdict="needs_review"。
-6. 只返回合法 JSON：{"verdict":"pass|revise|needs_review","feedback":"最终文本","issues":["简短原因"]}。`;
+成稿与审核规则：
+1. 学生身份、本次表现、近期趋势、考勤、事件和家校沟通都必须能在确定性背景中找到依据；分析草稿与背景冲突时以背景为准。
+2. 家长话术先写本次表现，再自然带出有依据的趋势或历史联系，最后给出一条可执行但不过度承诺的建议。
+3. 不使用 A/B/C/D 等系统字段代号，不比较或提到其他学生，不把建议写成已经发生的事实。
+4. 最终 feedback 应满足${input.lengthRequirement}，语气温和、具体、连贯，适合直接发送；不要标题、项目符号或内部分析措辞。
+5. 分析可靠且已成功成稿时 verdict="pass"；需要删改分析中的不可靠内容但仍能安全成稿时 verdict="revise"；无法可靠成稿时 verdict="needs_review"。
+6. 无论 pass 还是 revise 都必须返回完整最终 feedback；needs_review 可返回一份供教师修改的保守文本，并在 issues 中说明原因。
+7. 只返回合法 JSON：{"verdict":"pass|revise|needs_review","feedback":"最终文本","issues":["简短原因"]}。`;
   const reviewed = await reviewDraft(input.client, input.model, reviewPrompt);
   if (!reviewed) {
     return {
       draftFeedback,
-      feedback: draftFeedback,
+      feedback: "",
       reviewStatus: "needs_review",
-      reviewIssues: ["审核模型连续两次未返回合法结果，请人工检查"],
+      reviewIssues: ["成稿模型连续两次未返回合法结果，内部分析未作为家长话术使用"],
     };
   }
 
   let reviewStatus = normalizeVerdict(reviewed.verdict);
   const reviewIssues = normalizeIssues(reviewed.issues);
   const revisedFeedback = typeof reviewed.feedback === "string" ? reviewed.feedback.trim() : "";
-  let feedback = reviewStatus === "revised" && revisedFeedback ? revisedFeedback : draftFeedback;
-  if (reviewStatus === "revised" && !revisedFeedback) {
+  let feedback = revisedFeedback;
+  if (!revisedFeedback) {
     reviewStatus = "needs_review";
-    reviewIssues.push("审核模型要求修订但没有返回修订文本");
+    reviewIssues.push("成稿模型没有返回可发送的最终文本");
   }
   if (reviewStatus === "needs_review" && reviewIssues.length === 0) {
     reviewIssues.push("审核模型认为该反馈需要人工确认");
@@ -206,7 +212,7 @@ ${draftFeedback}
   if (mentionedOtherStudent) {
     reviewStatus = "needs_review";
     reviewIssues.push("反馈中出现了其他学生姓名");
-    feedback = draftFeedback;
+    feedback = "";
   }
 
   return {

@@ -194,24 +194,30 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     if (!sessionCode) { setError("请先选择课次"); return; }
     setGenerating(true); setError(""); setStatus(""); setFeedbackCards([]); setFeedbackDone(0); setFeedbackPhase("draft"); setFeedbackDirty(false);
     workflow.start("生成课后反馈", "正在检查课次和反馈上下文…");
-    workflow.transition("generating", "正在为学生逐条生成反馈…");
+    workflow.transition("generating", "正在先分析趋势与历史，再生成家长话术…");
     try {
       const response = await fetch("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", bypassCache: forceRegenerate }) });
       if (!response.ok) throw new Error((await response.json()).error);
       if ((response.headers.get("content-type") || "").includes("application/json")) {
-        const data = await response.json(); setFeedbackCards(data.students || []); setFeedbackTotal(data.total); setFeedbackDone(data.total); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "反馈已生成并完成 AI 审核。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "反馈已完成起草与 AI 审核，请逐条检查后再导出。"); return;
+        const data = await response.json(); setFeedbackCards(data.students || []); setFeedbackTotal(data.total); setFeedbackDone(data.total); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "趋势与历史分析已转换成家长话术，并完成 AI 审核。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请逐条检查后再导出。"); return;
       }
       if (!response.body) throw new Error("生成流不可用");
       let streamTotal = 0;
       await readSSEStream(response.body.getReader(), (message) => {
-        if (message.type === "init") { streamTotal = message.total; setFeedbackTotal(message.total); setFeedbackCards(message.students); setFeedbackPhase("draft"); workflow.progress(0, `准备起草 ${message.total} 条反馈…`); }
-        else if (message.type === "draft") { const completed = Number(message.completed || 0); setFeedbackPhase("draft"); setFeedbackDone(completed); workflow.progress(streamTotal ? completed / (streamTotal * 2) : 0, `起草 ${completed}/${streamTotal}`); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: message.feedback, draftFeedback: message.feedback } : card)); }
-        else if (message.type === "review") { const completed = Number(message.completed || 0); setFeedbackPhase("review"); setFeedbackDone(completed); workflow.progress(streamTotal ? (streamTotal + completed) / (streamTotal * 2) : 0, `审核 ${completed}/${streamTotal}`); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } : card)); }
-        else if (message.type === "done") { setFeedbackCards(message.students || []); setFeedbackTotal(message.total); setFeedbackDone(message.total); setFeedbackPhase("idle"); setStatus("反馈已完成起草与 AI 审核，可逐条编辑后导出。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "反馈已完成 AI 审核，请处理待人工确认项。"); }
+        if (message.type === "init") { streamTotal = message.total; setFeedbackTotal(message.total); setFeedbackCards(message.students); setFeedbackPhase("draft"); workflow.progress(0, `准备分析 ${message.total} 名学生的趋势与历史…`); }
+        else if (message.type === "draft") { const completed = Number(message.completed || 0); setFeedbackPhase("draft"); setFeedbackDone(completed); workflow.progress(streamTotal ? completed / (streamTotal * 2) : 0, `分析 ${completed}/${streamTotal}`); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: "", draftFeedback: message.draftFeedback } : card)); }
+        else if (message.type === "review") { const completed = Number(message.completed || 0); setFeedbackPhase("review"); setFeedbackDone(completed); workflow.progress(streamTotal ? (streamTotal + completed) / (streamTotal * 2) : 0, `成稿与审核 ${completed}/${streamTotal}`); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } : card)); }
+        else if (message.type === "done") { setFeedbackCards(message.students || []); setFeedbackTotal(message.total); setFeedbackDone(message.total); setFeedbackPhase("idle"); setStatus("趋势与历史分析已转换成家长话术，并完成 AI 审核。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请处理待人工确认项。"); }
         else if (message.type === "error") throw new Error(message.message || "批量生成失败");
       });
     } catch (reason) { const message = errorMessage(reason, "批量生成失败"); setError(message); workflow.fail(message, "generating"); }
     finally { setGenerating(false); setFeedbackPhase("idle"); }
+  }
+  function prepareRegeneration() {
+    setFeedbackCards([]); setFeedbackTotal(0); setFeedbackDone(0); setFeedbackPhase("idle");
+    setFeedbackDirty(false); setForceRegenerate(true); setError("");
+    setStatus("旧批次已从当前工作区移除；下一次生成将使用当前模型重新处理。");
+    workflow.reset(); setActiveStep("generate");
   }
   async function regenerateOne(studentId: string) {
     if (!sessionCode || !feedbackCards.some((card) => card.id === studentId)) return;
@@ -281,7 +287,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     contextError, feedbackDirty, students, singleStudentId, setSingleStudentId, singleDays, setSingleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, updateSingleFeedback,
     legacyDraftAvailable, restoreLegacyDraft,
     singleLoading, contextByStudent, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming), canGenerate: Boolean(sessionCode && !generating),
-    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate,
+    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, prepareRegeneration,
     regenerateOne, updateFeedback, exportFeedback, restoreHistory, generateSingleFeedback,
   };
 }

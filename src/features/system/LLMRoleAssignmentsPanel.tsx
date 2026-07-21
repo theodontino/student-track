@@ -10,10 +10,10 @@ export function LLMRoleAssignmentsPanel({ workspace }: { workspace: Workspace })
     <Section
       className="llm-role-assignments"
       title="模型角色分工"
-      description="反馈起草、反馈审核和企微结构化提取可分别指定模型；未指定时跟随当前启用配置。"
+      description="反馈分析、反馈成稿审核和企微结构化提取可分别指定模型；未指定时跟随当前启用配置。"
     >
       <div className="llm-role-assignments__body">
-        <FormField id="llm-feedback-draft-role" label="起草模型（副 Agent）">
+        <FormField id="llm-feedback-draft-role" label="分析模型（副 Agent）">
           <Select
             id="llm-feedback-draft-role"
             value={workspace.roleAssignments.feedbackDraftProfileId ?? ""}
@@ -23,7 +23,7 @@ export function LLMRoleAssignmentsPanel({ workspace }: { workspace: Workspace })
             {workspace.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} / {profile.model}</option>)}
           </Select>
         </FormField>
-        <FormField id="llm-feedback-review-role" label="审核模型（主 Agent）">
+        <FormField id="llm-feedback-review-role" label="成稿与审核模型（主 Agent）">
           <Select
             id="llm-feedback-review-role"
             value={workspace.roleAssignments.feedbackReviewProfileId ?? ""}

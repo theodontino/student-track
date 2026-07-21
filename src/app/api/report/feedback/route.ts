@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
             const result = await reviewedFeedback(
               studentContext.name,
               studentContext.promptContext,
-              "50-80字",
+              "90-140字",
               feedbackContext.students.filter((student) => student.id !== studentId).map((student) => student.name),
             );
             if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
       "feedback",
       "生成单人近期反馈",
       async () => {
-        const result = await reviewedFeedback(student.name, context, "100-150字");
+        const result = await reviewedFeedback(student.name, context, "120-180字");
         if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
         return result;
       },

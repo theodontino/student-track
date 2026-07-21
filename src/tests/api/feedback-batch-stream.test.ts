@@ -110,7 +110,7 @@ describe("feedback batch NDJSON stream", () => {
         communications: ["与母亲：希望多强调进步"],
       }),
     });
-    expect(events[1]).toMatchObject({ type: "draft", studentId: "student-1", name: "学生甲", feedback: "甲反馈" });
+    expect(events[1]).toMatchObject({ type: "draft", studentId: "student-1", name: "学生甲", feedback: "", draftFeedback: "甲反馈" });
     expect(events[3]).toMatchObject({ type: "review", studentId: "student-1", feedback: "甲反馈", reviewStatus: "passed" });
     expect(events[5].students).toEqual([
       expect.objectContaining({ id: "student-1", feedback: "甲反馈", reviewStatus: "passed" }),
@@ -194,7 +194,7 @@ describe("feedback batch NDJSON stream", () => {
     });
   });
 
-  it("retries empty LLM feedback before streaming a failure placeholder", async () => {
+  it("retries empty internal analysis without exposing it as parent feedback", async () => {
     mocks.completionCreate.mockReset()
       .mockResolvedValueOnce({ choices: [{ message: { content: "" } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: "甲重试反馈" } }] })
@@ -209,8 +209,8 @@ describe("feedback batch NDJSON stream", () => {
     }));
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(events[1]).toMatchObject({ studentId: "student-1", feedback: "甲重试反馈" });
-    expect(events[2]).toMatchObject({ studentId: "student-2", feedback: "[生成失败，请重试]" });
+    expect(events[1]).toMatchObject({ studentId: "student-1", feedback: "", draftFeedback: "甲重试反馈" });
+    expect(events[2]).toMatchObject({ studentId: "student-2", feedback: "" });
     expect(events[3]).toMatchObject({ studentId: "student-1", reviewStatus: "passed" });
     expect(events[4]).toMatchObject({ studentId: "student-2", reviewStatus: "needs_review" });
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({

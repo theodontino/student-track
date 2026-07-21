@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          await withLLMCacheOperation("feedback", "批量生成并审核反馈", async () => {
+          await withLLMCacheOperation("feedback", "批量分析并生成家长反馈", async () => {
             controller.enqueue(encoder.encode(JSON.stringify({ type: "init", students: cards, total }) + "\n"));
 
             for (let index = 0; index < cards.length; index += 1) {
@@ -219,23 +219,24 @@ export async function POST(request: NextRequest) {
                 card.draftFeedback = await generateFeedbackDraft({
                   studentName: card.name,
                   promptContext: studentContext?.promptContext ?? card.name,
-                  lengthRequirement: "50-80字",
+                  lengthRequirement: "90-140字",
                   client: draftClient,
                   model: draftModel,
                 });
-                card.feedback = card.draftFeedback;
+                card.feedback = "";
               } catch (error) {
                 console.error(`[feedback-batch] draft failed for student ${card.id}:`, error);
-                card.feedback = "[生成失败，请重试]";
+                card.feedback = "";
                 card.reviewStatus = "needs_review";
-                card.reviewIssues = ["起草模型生成失败，请单独重写或人工填写"];
+                card.reviewIssues = ["内部分析模型生成失败，请单独重写或人工填写"];
               }
 
               controller.enqueue(encoder.encode(JSON.stringify({
                 type: "draft",
                 studentId: card.id,
                 name: card.name,
-                feedback: card.feedback,
+                feedback: "",
+                draftFeedback: card.draftFeedback,
                 completed: index + 1,
                 total,
               }) + "\n"));
@@ -249,7 +250,7 @@ export async function POST(request: NextRequest) {
                   studentName: card.name,
                   promptContext: studentContext?.promptContext ?? card.name,
                   forbiddenStudentNames: cards.filter((item) => item.id !== card.id).map((item) => item.name),
-                  lengthRequirement: "50-80字",
+                  lengthRequirement: "90-140字",
                   draftFeedback: card.draftFeedback,
                   client: reviewClient,
                   model: reviewModel,

@@ -88,11 +88,13 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
 
   test("feedback loads context, uses a browser mock, and restores work history", async ({ page }) => {
     const externalRequests = await blockExternalRequests(page);
+    const feedbackRequests: Array<Record<string, unknown>> = [];
     await page.route("**/api/report/feedback-batch", async (route) => {
       if (route.request().method() !== "POST") {
         await route.continue();
         return;
       }
+      feedbackRequests.push(route.request().postDataJSON());
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -121,10 +123,17 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await expect(page.getByText(TEST_FIXTURE.students[0].name, { exact: true }).first()).toBeVisible();
 
     await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-    await page.getByRole("button", { name: "批量生成并审核" }).click();
-    await expect(page.getByText("反馈已生成并完成 AI 审核。", { exact: true })).toBeVisible();
-    await expect(page.getByText("反馈已完成起草与 AI 审核，请逐条检查后再导出。", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "分析并生成反馈" }).click();
+    await expect(page.getByText("趋势与历史分析已转换成家长话术，并完成 AI 审核。", { exact: true })).toBeVisible();
+    await expect(page.getByText("家长话术已完成 AI 审核，请逐条检查后再导出。", { exact: true })).toBeVisible();
     await expect(page.getByText(`模拟反馈：${TEST_FIXTURE.students[0].name}本节课表现稳定。`, { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "重新生成" }).click();
+    await expect(page.getByText("旧批次已从当前工作区移除；下一次生成将使用当前模型重新处理。", { exact: true })).toBeVisible();
+    await expect(page.getByText(`模拟反馈：${TEST_FIXTURE.students[0].name}本节课表现稳定。`, { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "分析并生成反馈" }).click();
+    await expect.poll(() => feedbackRequests.length).toBe(2);
+    expect(feedbackRequests[1]).toMatchObject({ bypassCache: true });
 
     await page.getByRole("button", { name: "历史", exact: true }).click();
     const historyRow = page.getByText(TEST_FIXTURE.feedbackHistory.title, { exact: true }).locator("..").locator("..");
