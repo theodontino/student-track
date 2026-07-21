@@ -153,6 +153,8 @@ model WeComImportRun {
   startedAt          DateTime @default(now())
   completedAt        DateTime?
   rolledBackAt       DateTime?
+  cancelRequestedAt  DateTime?
+  cancelMode         String?  // "stop" | "stop_and_rollback"
 
   operations WeComImportOperation[]
 
@@ -174,6 +176,7 @@ model WeComImportOperation {
   extractedAt        DateTime?
   attemptCount       Int      @default(0)
   failureCode        String?
+  reviewReasonCodes  String?  // JSON array of non-sensitive reason codes
   modelName          String?
   finishReason       String?
   promptVersion      String?

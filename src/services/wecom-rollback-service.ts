@@ -56,7 +56,6 @@ export async function listWeComRollbackOperations(prisma: PrismaClient) {
   await pruneWeComRollbackJournal(prisma);
   const [runs, receiptGroups, state] = await Promise.all([
     prisma.weComImportRun.findMany({
-      where: { status: { not: "running" } },
       orderBy: { startedAt: "desc" },
       take: weComRollbackRetention.operations,
       include: {
@@ -66,9 +65,12 @@ export async function listWeComRollbackOperations(prisma: PrismaClient) {
             conversationTitle: true,
             status: true,
             messageCount: true,
+            communicationCount: true,
+            labelCount: true,
             candidateJson: true,
             attemptCount: true,
             failureCode: true,
+            reviewReasonCodes: true,
             modelName: true,
             finishReason: true,
             promptVersion: true,
@@ -93,40 +95,46 @@ export async function listWeComRollbackOperations(prisma: PrismaClient) {
     }),
   ]);
   return {
-    runs: runs.map((run) => ({
-      id: run.id,
-      status: run.status,
-      messageCount: run.messageCount,
-      batchCount: run.batchCount,
-      communicationCount: run.communicationCount,
-      labelCount: run.labelCount,
-      startedAt: run.startedAt,
-      completedAt: run.completedAt,
-      rolledBackAt: run.rolledBackAt,
-      conversations: [...new Set(run.operations.map((operation) => operation.conversationTitle))],
-      needsReviewCount: run.operations.filter((operation) => operation.status === "needs_review").length,
-      failedBatchCount: run.operations.filter((operation) => operation.status === "failed").length,
-      attentionBatches: run.operations
-        .filter((operation) => (
-          operation.status === "needs_review" || operation.status === "failed"
-        ))
-        .map((operation) => ({
-          id: operation.id,
-          conversationTitle: operation.conversationTitle,
-          status: operation.status,
-          messageCount: operation.messageCount,
-          canRetry: Boolean(operation.candidateJson),
-          canReextract: !operation.candidateJson,
-          attemptCount: operation.attemptCount,
-          failureCode: operation.failureCode,
-          modelName: operation.modelName,
-          finishReason: operation.finishReason,
-          promptVersion: operation.promptVersion,
-          reasoningTokens: operation.reasoningTokens,
-          completionTokens: operation.completionTokens,
-          responseCharacters: operation.responseCharacters,
-        })),
-    })),
+    runs: runs.map((run) => {
+      const activeOperations = run.operations.filter((operation) => operation.status === "complete");
+      return {
+        id: run.id,
+        status: run.status,
+        messageCount: run.messageCount,
+        batchCount: run.batchCount,
+        communicationCount: activeOperations.reduce((sum, operation) => sum + operation.communicationCount, 0),
+        labelCount: activeOperations.reduce((sum, operation) => sum + operation.labelCount, 0),
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        rolledBackAt: run.rolledBackAt,
+        cancelRequestedAt: run.cancelRequestedAt,
+        cancelMode: run.cancelMode,
+        conversations: [...new Set(run.operations.map((operation) => operation.conversationTitle))],
+        needsReviewCount: run.operations.filter((operation) => operation.status === "needs_review").length,
+        failedBatchCount: run.operations.filter((operation) => operation.status === "failed").length,
+        attentionBatches: run.operations
+          .filter((operation) => (
+            operation.status === "needs_review" || operation.status === "failed"
+          ))
+          .map((operation) => ({
+            id: operation.id,
+            conversationTitle: operation.conversationTitle,
+            status: operation.status,
+            messageCount: operation.messageCount,
+            canRetry: Boolean(operation.candidateJson),
+            canReextract: !operation.candidateJson,
+            attemptCount: operation.attemptCount,
+            failureCode: operation.failureCode,
+            reviewReasonCodes: operation.reviewReasonCodes,
+            modelName: operation.modelName,
+            finishReason: operation.finishReason,
+            promptVersion: operation.promptVersion,
+            reasoningTokens: operation.reasoningTokens,
+            completionTokens: operation.completionTokens,
+            responseCharacters: operation.responseCharacters,
+          })),
+      };
+    }),
     receiptCounts: Object.fromEntries(receiptGroups.map((group) => [
       group.status,
       group._count._all,
@@ -145,14 +153,15 @@ async function rollbackOperationsInTransaction(
   operationIds: string[],
 ) {
   const operations = await tx.weComImportOperation.findMany({
-    where: { id: { in: operationIds }, status: "complete" },
+    where: { id: { in: operationIds } },
     include: { changes: { orderBy: { createdAt: "desc" } } },
   });
+  const completedOperations = operations.filter((operation) => operation.status === "complete");
   let communicationCount = 0;
   let labelCount = 0;
   const labelPairs = new Map<string, { studentId: string; labelId: string }>();
 
-  for (const operation of operations) {
+  for (const operation of completedOperations) {
     for (const change of operation.changes) {
       if (change.entityType === "communication") {
         communicationCount += (await tx.communication.deleteMany({
@@ -170,15 +179,25 @@ async function rollbackOperationsInTransaction(
         });
       }
     }
-    await tx.weComMessageReceipt.updateMany({
-      where: { operationId: operation.id, status: "imported" },
-      data: { status: "rolled_back", processedAt: null },
-    });
-    await tx.weComImportOperation.update({
-      where: { id: operation.id },
-      data: { status: "rolled_back", rolledBackAt: new Date() },
-    });
   }
+
+  await tx.weComMessageReceipt.updateMany({
+    where: {
+      operationId: { in: operationIds },
+      status: { in: ["pending", "extracting", "imported", "no_value", "needs_review", "failed", "rolled_back"] },
+    },
+    data: { status: "rolled_back", processedAt: null, lastError: null },
+  });
+  await tx.weComImportOperation.updateMany({
+    where: { id: { in: operationIds } },
+    data: {
+      status: "rolled_back",
+      candidateJson: null,
+      reviewReasonCodes: null,
+      rolledBackAt: new Date(),
+      completedAt: new Date(),
+    },
+  });
 
   for (const [entityId, pair] of labelPairs) {
     const createdByImport = await tx.weComImportChange.findFirst({
@@ -208,13 +227,13 @@ async function rollbackOperationsInTransaction(
     const remaining = await tx.weComImportOperation.count({
       where: {
         runId,
-        status: { in: ["complete", "needs_review", "failed", "processing"] },
+        status: { in: ["complete", "needs_review", "failed", "processing", "split", "cancelled", "interrupted"] },
       },
     });
     await tx.weComImportRun.update({
       where: { id: runId },
       data: remaining === 0
-        ? { status: "rolled_back", rolledBackAt: new Date() }
+        ? { status: "rolled_back", communicationCount: 0, labelCount: 0, rolledBackAt: new Date() }
         : { status: "partially_rolled_back", rolledBackAt: null },
     });
   }
@@ -285,7 +304,7 @@ export async function rollbackWeComRun(
 ) {
   if (!runId.trim()) throw new Error("缺少回滚操作 ID");
   const operationIds = (await prisma.weComImportOperation.findMany({
-    where: { runId, status: "complete" },
+    where: { runId },
     select: { id: true },
   })).map((operation) => operation.id);
   return performRollback(prisma, operationIds, options);
