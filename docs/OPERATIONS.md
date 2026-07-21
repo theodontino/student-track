@@ -162,14 +162,16 @@ npm run lint
 npm run build
 ```
 
-确认页面和只读接口正常后，再提交版本文件并创建带说明的 Git 标签。`package.json` 与标签使用同一版本号；运行数据和数据库备份不提交 Git。
+确认页面和只读接口正常后，再提交版本文件、创建带说明的 Git 标签并发布对应 GitHub Release。`package.json`、标签和 Release 使用同一版本号；运行数据和数据库备份不提交 Git。
 
 ```bash
 git commit -m "Archive vX.Y.Z"
 git tag -a vX.Y.Z -m "Chem-Track vX.Y.Z"
+git push origin vX.Y.Z
+gh release create vX.Y.Z --verify-tag --generate-notes --title "Chem-Track vX.Y.Z"
 ```
 
-封档完成后至少保留：可校验的数据库备份、干净工作区、通过的迁移状态、最新生成文档、发布提交和版本标签。
+封档完成后至少保留：可校验的数据库备份、干净工作区、通过的迁移状态、最新生成文档、发布提交、版本标签和可访问的 GitHub Release。
 
 ## 后续接手开发
 

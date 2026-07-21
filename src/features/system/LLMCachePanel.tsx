@@ -87,46 +87,43 @@ export default function LLMCachePanel() {
   return (
     <>
       <Section
+        className="llm-cache-section"
         title="LLM 本机缓存"
         description="按一次操作保存模型请求与响应，便于排查；页面只显示安全元数据，正文需在本机目录查看。"
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone="info">{formatBytes(data?.totalSizeBytes ?? 0)} / {formatBytes(data?.maxSizeBytes ?? 0)}</Badge>
-          <span className="text-xs text-gray-500">{data?.rootLabel ?? "data/llm-cache"}</span>
-          <Button variant="danger" uiSize="sm" disabled={!data?.operations.length || busy} onClick={() => setPendingTask("all")}>
-            清理全部非活动缓存
-          </Button>
-        </div>
-        {tasks.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {tasks.map((task) => (
-              <Button key={task} variant="secondary" uiSize="sm" disabled={busy} onClick={() => setPendingTask(task)}>
-                清理{taskLabels[task]}
-              </Button>
-            ))}
+        <div className="llm-cache-toolbar">
+          <div className="llm-cache-toolbar__summary">
+            <Badge tone="info">{formatBytes(data?.totalSizeBytes ?? 0)} / {formatBytes(data?.maxSizeBytes ?? 0)}</Badge>
+            <code>{data?.rootLabel ?? "data/llm-cache"}</code>
           </div>
-        )}
+          <div className="llm-cache-toolbar__actions">
+            {tasks.map((task) => (
+              <Button key={task} variant="secondary" uiSize="sm" disabled={busy} onClick={() => setPendingTask(task)}>清理{taskLabels[task]}</Button>
+            ))}
+            <Button variant="warning" uiSize="sm" disabled={!data?.operations.length || busy} onClick={() => setPendingTask("all")}>
+              清理全部非活动缓存
+            </Button>
+          </div>
+        </div>
         {status && <StatusBanner tone="success">{status}</StatusBanner>}
         {error && <StatusBanner tone="danger">{error}</StatusBanner>}
         {!data || data.operations.length === 0 ? (
           <EmptyState title="暂无 LLM 缓存" description="完成一次模型任务后会在这里显示操作级元数据。" />
         ) : (
-          <div className="space-y-2">
+          <div className="llm-cache-operation-grid">
             {data.operations.map((operation) => (
-              <div key={operation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 p-3">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong className="text-sm text-gray-800">{taskLabels[operation.taskType]}</strong>
-                    <Badge tone={operation.status === "succeeded" ? "success" : operation.status === "active" ? "info" : "warning"}>
-                      {statusLabels[operation.status]}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-gray-500">
-                    {new Date(operation.startedAt).toLocaleString("zh-CN")} · {operation.callCount} 次调用 · {formatBytes(operation.sizeBytes)}
-                  </p>
-                  {operation.warning && <p className="mt-1 text-xs text-amber-700">{operation.warning}</p>}
+              <article key={operation.id} className="llm-cache-operation">
+                <div className="llm-cache-operation__heading">
+                  <strong>{taskLabels[operation.taskType]}</strong>
+                  <Badge tone={operation.status === "succeeded" ? "success" : operation.status === "active" ? "info" : "warning"}>
+                    {statusLabels[operation.status]}
+                  </Badge>
                 </div>
-              </div>
+                <p>
+                  {new Date(operation.startedAt).toLocaleString("zh-CN")} · {operation.callCount} 次调用 · {formatBytes(operation.sizeBytes)}
+                </p>
+                {operation.warning && <p className="llm-cache-operation__warning">{operation.warning}</p>}
+              </article>
             ))}
           </div>
         )}
@@ -139,7 +136,7 @@ export default function LLMCachePanel() {
           ? "将删除全部非活动操作缓存；正在运行的操作会保留。该操作不会删除数据库记录或 LM Studio 自身日志。"
           : `将删除${pendingTask ? taskLabels[pendingTask] : "所选任务"}的非活动缓存，不影响其他任务类型。`}
         confirmLabel="确认清理"
-        danger
+        warning
         busy={busy}
         onConfirm={() => void clear()}
         onClose={() => { if (!busy) setPendingTask(null); }}

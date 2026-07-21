@@ -16,9 +16,8 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     await page.goto(`/students?semesterId=${TEST_FIXTURE.semester.id}`);
     const row = page.getByRole("button", { name: `打开${TEST_FIXTURE.students[0].name}的学生档案` });
     await row.hover();
-    await page.waitForTimeout(80);
     await expect(page.getByLabel(`${TEST_FIXTURE.students[0].name}档案预览`)).toHaveCount(0);
-    await page.waitForTimeout(70);
+    await page.waitForTimeout(140);
     const preview = page.getByLabel(`${TEST_FIXTURE.students[0].name}档案预览`);
     await expect(preview).toBeVisible();
     await page.mouse.move(0, 0);

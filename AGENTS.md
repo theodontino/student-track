@@ -55,6 +55,8 @@
 
 任务过程、Bug、Feature、重构和技术债进入 GitHub Issues。路由、Schema 和 ER 图等机械事实由脚本生成。
 
+修改 Markdown、Schema 或 API 路由后运行 `npm run docs:check` 和 `npm run docs:links`；CI 使用相同命令阻止过期生成物与失效本地链接进入主分支。
+
 ## 完成标准
 
 至少运行与改动匹配的测试，并在可行时运行：

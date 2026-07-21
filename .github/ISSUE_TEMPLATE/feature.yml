@@ -1,7 +1,7 @@
 name: Feature
 description: 记录具有明确用户价值的新功能
 title: "[Feature] "
-labels: ["feature"]
+labels: ["enhancement"]
 body:
   - type: textarea
     id: value

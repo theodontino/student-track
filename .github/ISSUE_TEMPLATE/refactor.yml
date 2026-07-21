@@ -1,5 +1,5 @@
-name: Refactor or Tech Debt
-description: 记录结构调整或已确认的工程风险
+name: Refactor
+description: 记录保持行为不变的结构调整
 title: "[Refactor] "
 labels: ["refactor"]
 body:

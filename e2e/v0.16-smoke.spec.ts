@@ -152,8 +152,11 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
 
     await page.goto("/system/maintenance");
     await expect(page.getByRole("heading", { name: "维护与操作日志" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "操作日志", exact: true })).toBeVisible();
     await expect(page.getByText("LLM 本机缓存", { exact: true })).toBeVisible();
     await expect(page.getByText("正文需在本机目录查看", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "清理全部非活动缓存" })).toHaveClass(/ui-button--warning/);
+    await expect(page.locator(".ui-button--danger")).toHaveCount(0);
     expect(externalRequests).toEqual([]);
   });
 });

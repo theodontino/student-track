@@ -52,5 +52,7 @@ describe("wecom workflow components", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(html).toContain("LLM 本机缓存");
     expect(html).toContain("正文需在本机目录查看");
+    expect(html).toContain("ui-button--warning");
+    expect(html).not.toContain("ui-button--danger");
   });
 });

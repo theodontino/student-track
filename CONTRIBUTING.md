@@ -15,10 +15,10 @@
 ## Issue 类型
 
 - `bug`：现有行为不符合预期
-- `feature`：新增用户价值
+- `enhancement`：新增用户价值
 - `refactor`：保持行为不变的结构调整
 - `tech-debt`：已确认但暂缓的工程风险
-- `docs`：稳定认知或操作方式变化
+- `documentation`：稳定认知或操作方式变化
 
 当前阶段不引入复杂 Project 看板。一个 Issue 只描述一个可验收目标。
 
@@ -37,7 +37,7 @@
 | 内容 | 归属 |
 |---|---|
 | 当前任务、Bug、Feature、技术债 | GitHub Issues |
-| 版本变化 | Git commits / GitHub Releases |
+| 版本变化 | Git tag + GitHub Release |
 | 领域概念与术语 | `docs/DOMAIN.md` |
 | 架构和稳定规则 | `docs/ARCHITECTURE.md` |
 | 迁移、备份、恢复 | `docs/OPERATIONS.md` |

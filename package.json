@@ -1,6 +1,6 @@
 {
   "name": "chem-track-ai",
-  "version": "0.20.4",
+  "version": "0.20.5",
   "license": "AGPL-3.0-only",
   "private": true,
   "engines": {
@@ -23,6 +23,7 @@
     "import:wecom": "npx tsx scripts/import-wecom-communications.ts",
     "docs:generate": "node --import tsx scripts/generate-docs.ts",
     "docs:check": "node --import tsx scripts/generate-docs.ts --check",
+    "docs:links": "node --import tsx scripts/check-doc-links.ts",
     "privacy:check": "node --import tsx scripts/privacy-check.ts",
     "test": "node --import tsx scripts/run-isolated-tests.ts vitest-run",
     "test:watch": "node --import tsx scripts/run-isolated-tests.ts vitest-watch",

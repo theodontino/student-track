@@ -63,6 +63,8 @@ type PendingRollback =
 
 const INITIAL_VISIBLE_BATCHES = 5;
 const VISIBLE_BATCH_STEP = 20;
+const INITIAL_VISIBLE_RUNS = 4;
+const VISIBLE_RUN_STEP = 4;
 const BULK_BATCH_LIMIT = 50;
 
 const failureLabels: Record<string, string> = {
@@ -109,6 +111,7 @@ export default function WeComRollbackPanel() {
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
+  const [visibleRunCount, setVisibleRunCount] = useState(INITIAL_VISIBLE_RUNS);
 
   const load = useCallback(async () => {
     try {
@@ -214,7 +217,7 @@ export default function WeComRollbackPanel() {
           <EmptyState title="暂无企微导入记录" description="完成一次一键导入后会出现在这里。" />
         ) : (
           <div className="wecom-rollback-runs">
-            {data.runs.map((run) => {
+            {data.runs.slice(0, visibleRunCount).map((run) => {
               const label = run.conversations.slice(0, 2).join("、") || "企微导入";
               const canRollback = run.communicationCount > 0 && !["rolled_back", "running"].includes(run.status);
               const visibleCount = visibleCounts[run.id] ?? INITIAL_VISIBLE_BATCHES;
@@ -351,6 +354,13 @@ export default function WeComRollbackPanel() {
                 </article>
               );
             })}
+            {visibleRunCount < data.runs.length && <Button
+              className="wecom-rollback-runs__more"
+              variant="secondary"
+              uiSize="sm"
+              disabled={busy}
+              onClick={() => setVisibleRunCount((current) => Math.min(current + VISIBLE_RUN_STEP, data.runs.length))}
+            >显示更多运行（已显示 {visibleRunCount}/{data.runs.length}）</Button>}
           </div>
         )}
       </Section>

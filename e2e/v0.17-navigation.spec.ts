@@ -27,6 +27,9 @@ test.describe.serial("v0.17.0 information architecture", () => {
   test("system center exposes consistent about and license pages", async ({ page }) => {
     await page.goto("/system/about");
     await expect(page.getByRole("heading", { name: "关于 Chem-Track AI" })).toBeVisible();
+    await expect(page.locator(".system-about-hero")).toBeVisible();
+    await expect(page.locator(".system-about-card")).toHaveCount(3);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const licenseTab = page.locator(".system-nav").getByRole("link", { name: "开源许可" });
     await expect(licenseTab).toBeVisible();
     await licenseTab.click();
@@ -178,7 +181,11 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await page.setViewportSize({ width: 720, height: 900 });
     await page.goto("/system/maintenance");
     await expect(page.getByRole("link", { name: "维护与日志" })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("heading", { name: "操作日志", exact: true })).toBeVisible();
+    await expect(page.getByLabel("操作类型")).toBeVisible();
+    await expect(page.getByLabel("对象名称")).toBeVisible();
     await expect(page.getByText("测试学生")).toBeVisible();
+    await expect(page.locator(".system-log-table-wrap")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 

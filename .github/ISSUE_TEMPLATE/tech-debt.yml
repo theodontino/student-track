@@ -1,0 +1,31 @@
+name: Tech Debt
+description: 记录已确认但暂缓处理的工程风险
+title: "[Tech Debt] "
+labels: ["tech-debt"]
+body:
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 已发生的维护成本或风险
+      description: 说明已经观察到的证据，不记录假设性的重构愿望。
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: 暂缓影响
+      description: 不立即处理会影响哪些工作流、数据或维护活动？
+    validations:
+      required: true
+  - type: textarea
+    id: trigger
+    attributes:
+      label: 进入实施的触发条件
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+    validations:
+      required: true
