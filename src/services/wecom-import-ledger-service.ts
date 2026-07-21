@@ -1,7 +1,7 @@
-import type { Prisma, PrismaClient } from "@/generated/prisma/client";
-import { INTERNAL_ATTENTION_LABELS, type AttentionSignalCandidate } from "@/lib/attention-labels";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { planWeComCommunicationImport, type WeComImportResult } from "@/services/wecom-import-service";
 import type { WeComExtractionDiagnostics, WeComExtractionErrorCode } from "@/services/wecom-bridge-service";
+import { WeComRunCancelledError } from "@/services/wecom-run-control";
 
 const ROLLBACK_RETENTION_DAYS = 30;
 const ROLLBACK_RETENTION_OPERATIONS = 30;
@@ -62,6 +62,7 @@ export async function prepareWeComBatch(
       attemptCount,
       promptVersion: metadata.promptVersion,
       failureCode: null,
+      reviewReasonCodes: null,
       completedAt: null,
     },
   });
@@ -127,6 +128,8 @@ function extractionFailure(error: unknown): {
       return { code: candidate.code, message: "模型服务拒绝或异常结束", diagnostics: candidate.diagnostics };
     case "oversized_message":
       return { code: candidate.code, message: "单条消息超过 20000 字符，需要人工复核", diagnostics: candidate.diagnostics };
+    case "evidence_mismatch":
+      return { code: candidate.code, message: "模型引用的原文证据无法核验", diagnostics: candidate.diagnostics };
     default:
       return { code: "batch_failed", message: "批次处理失败，可安全重试" };
   }
@@ -158,7 +161,7 @@ export async function failWeComBatch(
   });
   const needsReview = options.forceReview
     || current?.attemptCount && current.attemptCount >= 2
-    || ["protocol_incompatible", "oversized_message"].includes(failure.code);
+    || ["protocol_incompatible", "oversized_message", "evidence_mismatch"].includes(failure.code);
   const status = needsReview ? "needs_review" : "failed";
   const diagnostics = failure.diagnostics;
   await prisma.$transaction([
@@ -167,6 +170,7 @@ export async function failWeComBatch(
       data: {
         status,
         failureCode: failure.code,
+        reviewReasonCodes: JSON.stringify([failure.code]),
         modelName: diagnostics?.modelName,
         finishReason: diagnostics?.finishReason,
         promptTokens: diagnostics?.promptTokens,
@@ -206,54 +210,6 @@ export async function markWeComBatchSplit(
   });
 }
 
-async function addLabelsWithJournal(
-  tx: Prisma.TransactionClient,
-  operationId: string,
-  studentId: string,
-  candidates: AttentionSignalCandidate[],
-) {
-  const names = [...new Set(candidates
-    .filter((candidate) => candidate.confidence === "high")
-    .map((candidate) => INTERNAL_ATTENTION_LABELS[candidate.reason]))];
-  let createdCount = 0;
-  for (const name of names) {
-    const label = await tx.label.upsert({ where: { name }, create: { name }, update: {} });
-    const existing = await tx.studentLabel.findUnique({ where: { studentId_labelId: { studentId, labelId: label.id } } });
-    const entityId = `${studentId}:${label.id}`;
-    if (!existing) {
-      await tx.studentLabel.create({ data: { studentId, labelId: label.id } });
-      await tx.weComImportChange.create({
-        data: {
-          operationId,
-          entityType: "student_label_created",
-          entityId,
-          studentId,
-          labelId: label.id,
-        },
-      });
-      createdCount += 1;
-    }
-    await tx.weComImportChange.upsert({
-      where: {
-        operationId_entityType_entityId: {
-          operationId,
-          entityType: "student_label_claim",
-          entityId,
-        },
-      },
-      create: {
-        operationId,
-        entityType: "student_label_claim",
-        entityId,
-        studentId,
-        labelId: label.id,
-      },
-      update: {},
-    });
-  }
-  return createdCount;
-}
-
 export async function applyWeComLedgerBatch(
   prisma: PrismaClient,
   operationId: string,
@@ -269,7 +225,7 @@ export async function applyWeComLedgerBatch(
     useOccurredAtSession: true,
   });
   const createPlans = planned.plans.filter((plan) => !plan.duplicate);
-  let createdLabelCount = 0;
+  const createdLabelCount = 0;
 
   if (planned.skippedCount > 0) {
     const uncertainSource = planned.skipped.some((item) => item.messageIds.length === 0);
@@ -281,6 +237,16 @@ export async function applyWeComLedgerBatch(
       ])];
     const noValueIds = metadata.messageIds.filter((messageId) => !reviewIds.includes(messageId));
     await prisma.$transaction(async (tx) => {
+      const run = await tx.weComImportRun.findUnique({
+        where: { id: metadata.runId },
+        select: { cancelRequestedAt: true, cancelMode: true },
+      });
+      if (run?.cancelRequestedAt) {
+        throw new WeComRunCancelledError(
+          metadata.runId,
+          run.cancelMode === "stop_and_rollback" ? "stop_and_rollback" : "stop",
+        );
+      }
       if (reviewIds.length > 0) {
         await tx.weComMessageReceipt.updateMany({
           where: {
@@ -303,6 +269,8 @@ export async function applyWeComLedgerBatch(
         where: { id: operationId },
         data: {
           status: "needs_review",
+          failureCode: "candidate_validation_failed",
+          reviewReasonCodes: JSON.stringify([...new Set(planned.skipped.map((item) => item.reason))]),
           communicationCount: 0,
           labelCount: 0,
           completedAt: new Date(),
@@ -318,6 +286,16 @@ export async function applyWeComLedgerBatch(
   }
 
   await prisma.$transaction(async (tx) => {
+    const run = await tx.weComImportRun.findUnique({
+      where: { id: metadata.runId },
+      select: { cancelRequestedAt: true, cancelMode: true },
+    });
+    if (run?.cancelRequestedAt) {
+      throw new WeComRunCancelledError(
+        metadata.runId,
+        run.cancelMode === "stop_and_rollback" ? "stop_and_rollback" : "stop",
+      );
+    }
     for (const plan of createPlans) {
       const communication = await tx.communication.create({
         data: {
@@ -331,12 +309,6 @@ export async function applyWeComLedgerBatch(
       await tx.weComImportChange.create({
         data: { operationId, entityType: "communication", entityId: communication.id },
       });
-      createdLabelCount += await addLabelsWithJournal(
-        tx,
-        operationId,
-        plan.student.id,
-        plan.attentionSignals,
-      );
     }
 
     const importedIds = [...new Set(planned.plans.flatMap((plan) => plan.source.messageIds))];
@@ -365,6 +337,7 @@ export async function applyWeComLedgerBatch(
         status: "complete",
         communicationCount: createPlans.length,
         labelCount: createdLabelCount,
+        reviewReasonCodes: null,
         completedAt: new Date(),
         candidateJson: null,
       },

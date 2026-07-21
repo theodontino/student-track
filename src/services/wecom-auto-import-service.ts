@@ -19,16 +19,19 @@ import {
 import type { WeComImportResult } from "@/services/wecom-import-service";
 import { preflightWeComCatchSync, resolveWeComCatchPaths } from "@/services/local-tool-status-service";
 import { runWeComCatchCommand, type WeComCatchResult } from "@/services/wecomcatch-service";
+import { rollbackWeComRun } from "@/services/wecom-rollback-service";
+import { WeComRunCancelledError, type WeComCancelMode } from "@/services/wecom-run-control";
+export type { WeComCancelMode } from "@/services/wecom-run-control";
 
 const FIRST_RUN_LOOKBACK_DAYS = 30;
 const CURSOR_OVERLAP_MS = 5 * 60 * 1000;
-const RUN_LEASE_MS = 7 * 60 * 60 * 1000;
+export const WECOM_RUN_LEASE_MS = 15 * 60 * 1000;
 const MAX_BATCH_CHARACTERS = 8_000;
 const MAX_BATCH_MESSAGES = 30;
 const MAX_SINGLE_MESSAGE_CHARACTERS = 20_000;
 const CONVERSATION_GAP_MS = 6 * 60 * 60 * 1000;
 const MAX_SYNC_WAIT_MS = 6 * 60 * 60 * 1000;
-export const WECOM_PROMPT_VERSION = "wecom-incremental-v3";
+export const WECOM_PROMPT_VERSION = "wecom-grounded-v4";
 
 interface WeComMessage {
   id?: string;
@@ -53,6 +56,7 @@ interface ClaimedRun {
 export interface SourceMessage {
   id: string;
   text: string;
+  content: string;
   sentAt: Date;
   contentHash: string;
 }
@@ -93,7 +97,15 @@ export interface WeComAutoImportComplete {
   since: string;
 }
 
-export type WeComAutoImportEvent = WeComAutoImportProgress | WeComAutoImportComplete;
+export type WeComAutoImportEvent = WeComAutoImportProgress | WeComAutoImportComplete | WeComAutoImportCancelled;
+
+export interface WeComAutoImportCancelled {
+  type: "cancelled";
+  runId: string;
+  rolledBack: boolean;
+}
+
+export type WeComAutoImportOutcome = WeComAutoImportComplete | WeComAutoImportCancelled;
 
 interface AutoImportOptions {
   runCommand?: typeof runWeComCatchCommand;
@@ -215,7 +227,7 @@ export async function collectIncrementalWeComSources(
       const known = knownReceipts.get(`${entry.name}\0${id}`);
       const retryable = known && ["pending", "failed", "rolled_back"].includes(known.status);
       if (known && known.contentHash === contentHash && !retryable) continue;
-      messages.push({ id, text: formatMessage(message, id), sentAt, contentHash });
+      messages.push({ id, text: formatMessage(message, id), content, sentAt, contentHash });
     }
     if (messages.length === 0) continue;
     conversations.push({ id: entry.name, title, candidateStudentIds, messages });
@@ -307,34 +319,44 @@ export function splitWeComExtractionBatch(batch: ExtractionBatch): [ExtractionBa
   ];
 }
 
-function decorateRecords(records: unknown[], batch: ExtractionBatch) {
+export function decorateGroundedWeComRecords(records: unknown[], batch: ExtractionBatch) {
   const allowedMessageIds = new Set(batch.messageIds);
   return records.map((value) => {
     const record = objectValue(value);
-    const source = objectValue(record.source);
-    const messageIds = Array.isArray(source.messageIds)
-      ? [...new Set(source.messageIds
+    const messageIds = Array.isArray(record.messageIds)
+      ? [...new Set(record.messageIds
         .filter((messageId): messageId is string => typeof messageId === "string")
         .map((messageId) => messageId.trim())
         .filter((messageId) => allowedMessageIds.has(messageId)))]
       : [];
     const matchedStudent = objectValue(record.matchedStudent);
+    const occurredAt = batch.messages
+      .filter((message) => messageIds.includes(message.id))
+      .reduce<Date | null>((latest, message) => !latest || message.sentAt > latest ? message.sentAt : latest, null);
     const studentIdentity = String(
       matchedStudent.id || matchedStudent.studentId || matchedStudent.name || "unknown",
     );
     return {
-      ...record,
+      kind: "communication",
       sourceKey: `wecomcatch:${hash([
         batch.conversationId,
         ...[...messageIds].sort(),
         studentIdentity,
       ].join("\n"))}`,
       source: {
-        ...source,
         conversationId: batch.conversationId,
         conversationTitle: batch.conversationTitle,
         messageIds,
       },
+      matchedStudent,
+      occurredAt: occurredAt?.toISOString() ?? "",
+      sessionCode: null,
+      target: "家长",
+      summary: String(record.factualSummary || ""),
+      summaryForChemTrack: String(record.factualSummary || ""),
+      feedbackContext: { toneHint: "", nextAction: "" },
+      attentionSignals: [],
+      confidence: record.confidence,
     };
   });
 }
@@ -380,7 +402,7 @@ export async function claimWeComAutoImportRun(
     create: { id: "default", initializedAfter },
     update: {},
   });
-  const staleBefore = new Date(startedAt.getTime() - RUN_LEASE_MS);
+  const staleBefore = new Date(startedAt.getTime() - WECOM_RUN_LEASE_MS);
   const claimed = await prisma.weComImportState.updateMany({
     where: {
       id: "default",
@@ -403,15 +425,15 @@ export async function claimWeComAutoImportRun(
           status: "running",
           startedAt: { lt: staleBefore },
         },
-        data: { status: "failed", completedAt: startedAt },
+        data: { status: "interrupted", completedAt: startedAt },
       }),
       prisma.weComImportOperation.updateMany({
         where: { status: "processing", startedAt: { lt: staleBefore } },
-        data: { status: "failed", completedAt: startedAt },
+        data: { status: "interrupted", completedAt: startedAt },
       }),
       prisma.weComMessageReceipt.updateMany({
         where: { status: "extracting", updatedAt: { lt: staleBefore } },
-        data: { status: "failed", lastError: "上次运行中断，可安全重试" },
+        data: { status: "pending", operationId: null, processedAt: null, lastError: "上次运行中断，已恢复为待处理" },
       }),
     ]);
     const unresolved = await prisma.weComMessageReceipt.findFirst({
@@ -460,11 +482,131 @@ async function releaseWeComAutoImportRun(prisma: PrismaClient, runId: string) {
 }
 
 async function refreshWeComAutoImportRun(prisma: PrismaClient, runId: string) {
+  const run = await prisma.weComImportRun.findUnique({
+    where: { id: runId },
+    select: { cancelRequestedAt: true, cancelMode: true },
+  });
+  if (run?.cancelRequestedAt) {
+    throw new WeComRunCancelledError(
+      runId,
+      run.cancelMode === "stop_and_rollback" ? "stop_and_rollback" : "stop",
+    );
+  }
   const refreshed = await prisma.weComImportState.updateMany({
     where: { id: "default", activeRunId: runId },
     data: { activeRunStartedAt: new Date() },
   });
   if (refreshed.count !== 1) throw new Error("企微导入运行锁已失效，本次处理已停止");
+}
+
+async function finalizeCancelledRun(
+  prisma: PrismaClient,
+  runId: string,
+  status: "cancelled" | "interrupted",
+) {
+  const operations = await prisma.weComImportOperation.findMany({
+    where: { runId },
+    select: { id: true, status: true, communicationCount: true, labelCount: true },
+  });
+  const processingIds = operations.filter((operation) => operation.status === "processing").map((operation) => operation.id);
+  await prisma.$transaction([
+    prisma.weComMessageReceipt.updateMany({
+      where: { operationId: { in: processingIds }, status: "extracting" },
+      data: { status: "pending", operationId: null, processedAt: null, lastError: null },
+    }),
+    prisma.weComImportOperation.updateMany({
+      where: { id: { in: processingIds } },
+      data: { status, candidateJson: null, completedAt: new Date() },
+    }),
+    prisma.weComImportRun.update({
+      where: { id: runId },
+      data: {
+        status,
+        communicationCount: operations
+          .filter((operation) => operation.status === "complete")
+          .reduce((sum, operation) => sum + operation.communicationCount, 0),
+        labelCount: operations
+          .filter((operation) => operation.status === "complete")
+          .reduce((sum, operation) => sum + operation.labelCount, 0),
+        completedAt: new Date(),
+      },
+    }),
+    prisma.weComImportState.updateMany({
+      where: { id: "default", activeRunId: runId },
+      data: { activeRunId: null, activeRunStartedAt: null },
+    }),
+  ]);
+}
+
+export async function requestWeComAutoImportCancellation(
+  prisma: PrismaClient,
+  mode: WeComCancelMode,
+) {
+  const state = await prisma.weComImportState.findUnique({
+    where: { id: "default" },
+    select: { activeRunId: true, activeRunStartedAt: true },
+  });
+  if (!state?.activeRunId) throw new Error("当前没有正在运行的企微导入");
+  const runId = state.activeRunId;
+  await prisma.weComImportRun.update({
+    where: { id: runId },
+    data: { cancelRequestedAt: new Date(), cancelMode: mode },
+  });
+  const stale = !state.activeRunStartedAt
+    || state.activeRunStartedAt.getTime() < Date.now() - WECOM_RUN_LEASE_MS;
+  if (stale) {
+    await finalizeCancelledRun(prisma, runId, "interrupted");
+    if (mode === "stop_and_rollback") await rollbackWeComRun(prisma, runId);
+  }
+  return { accepted: true, runId, staleRecovered: stale, rollbackRequested: mode === "stop_and_rollback" };
+}
+
+export async function getWeComAutoImportStatus(prisma: PrismaClient) {
+  const state = await prisma.weComImportState.findUnique({
+    where: { id: "default" },
+    select: { activeRunId: true, activeRunStartedAt: true, lastSucceededUntil: true },
+  });
+  const run = state?.activeRunId
+    ? await prisma.weComImportRun.findUnique({
+      where: { id: state.activeRunId },
+      include: { operations: { include: { receipts: { select: { conversationId: true, messageId: true, status: true } } } } },
+    })
+    : await prisma.weComImportRun.findFirst({
+      orderBy: { startedAt: "desc" },
+      include: { operations: { include: { receipts: { select: { conversationId: true, messageId: true, status: true } } } } },
+    });
+  if (!run) return { active: false, run: null, lastSucceededUntil: state?.lastSucceededUntil ?? null };
+
+  const receiptStatuses = new Map<string, string>();
+  for (const operation of run.operations) {
+    for (const receipt of operation.receipts) {
+      receiptStatuses.set(`${receipt.conversationId}\0${receipt.messageId}`, receipt.status);
+    }
+  }
+  const counts: Record<string, number> = {};
+  for (const status of receiptStatuses.values()) counts[status] = (counts[status] ?? 0) + 1;
+  counts.pending = Math.max(0, run.messageCount - receiptStatuses.size) + (counts.pending ?? 0);
+  const terminal = ["imported", "no_value", "needs_review", "failed", "ignored"]
+    .reduce((sum, status) => sum + (counts[status] ?? 0), 0);
+  const completeOperations = run.operations.filter((operation) => operation.status === "complete");
+  return {
+    active: state?.activeRunId === run.id,
+    lastSucceededUntil: state?.lastSucceededUntil ?? null,
+    run: {
+      id: run.id,
+      status: run.status,
+      messageCount: run.messageCount,
+      batchCount: run.batchCount,
+      communicationCount: completeOperations.reduce((sum, operation) => sum + operation.communicationCount, 0),
+      labelCount: completeOperations.reduce((sum, operation) => sum + operation.labelCount, 0),
+      receiptCounts: counts,
+      progress: run.messageCount > 0 ? Math.min(100, Math.round((terminal / run.messageCount) * 100)) : 0,
+      cancelRequestedAt: run.cancelRequestedAt,
+      cancelMode: run.cancelMode,
+      startedAt: run.startedAt,
+      completedAt: run.completedAt,
+    },
+  };
 }
 
 async function waitForWeComSync(
@@ -501,7 +643,7 @@ async function waitForWeComSync(
 export async function runWeComAutoImport(
   prisma: PrismaClient,
   options: AutoImportOptions = {},
-): Promise<WeComAutoImportComplete> {
+): Promise<WeComAutoImportOutcome> {
   const emit = (event: WeComAutoImportEvent) => {
     try {
       options.emit?.(event);
@@ -550,6 +692,9 @@ export async function runWeComAutoImport(
     const totalResult = emptyResult();
     let hasAttention = false;
     let attentionBatchCount = 0;
+    let attemptedGroundedBatches = 0;
+    let consecutiveEvidenceFailures = 0;
+    let evidenceFailuresInFirstTwenty = 0;
 
     for (const conversation of conversations) {
       for (const message of conversation.messages) {
@@ -617,6 +762,7 @@ export async function runWeComAutoImport(
           const generated = await generateWeComBridgeJson(prisma, {
             sourceText: batch.text,
             candidateStudentIds: batch.candidateStudentIds,
+            groundedMessages: batch.messages.map((message) => ({ id: message.id, content: message.content })),
           }, {
             onRetry: (reason) => emit({
               type: "progress",
@@ -626,12 +772,13 @@ export async function runWeComAutoImport(
               detail: `${index + 1}/${queue.length} 批（重试 1/1）`,
             }),
           });
+          await refreshWeComAutoImportRun(prisma, claimed.runId);
           await saveWeComBatchDiagnostics(prisma, operation.id, generated.diagnostics);
           const records = objectValue(generated.bridgeJson).records;
           candidateJson = JSON.stringify({
             source: "wecomcatch",
             mode: "candidateOnly",
-            records: decorateRecords(Array.isArray(records) ? records : [], batch),
+            records: decorateGroundedWeComRecords(Array.isArray(records) ? records : [], batch),
           });
           await saveWeComBatchCandidate(prisma, operation.id, candidateJson);
         }
@@ -642,13 +789,17 @@ export async function runWeComAutoImport(
           message: "正在写入增量记录…",
           detail: `${index + 1}/${queue.length} 批`,
         });
+        await refreshWeComAutoImportRun(prisma, claimed.runId);
         const result = await applyWeComLedgerBatch(prisma, operation.id, batch, candidateJson);
+        attemptedGroundedBatches += 1;
+        consecutiveEvidenceFailures = 0;
         mergeResult(totalResult, result);
         if (result.skippedCount > 0) {
           hasAttention = true;
           attentionBatchCount += 1;
         }
       } catch (error) {
+        if (error instanceof WeComRunCancelledError) throw error;
         if (error instanceof WeComExtractionError && error.code === "output_truncated") {
           const split = splitWeComExtractionBatch(batch);
           if (split) {
@@ -668,6 +819,13 @@ export async function runWeComAutoImport(
             continue;
           }
         }
+        attemptedGroundedBatches += 1;
+        if (error instanceof WeComExtractionError && error.code === "evidence_mismatch") {
+          consecutiveEvidenceFailures += 1;
+          if (attemptedGroundedBatches <= 20) evidenceFailuresInFirstTwenty += 1;
+        } else {
+          consecutiveEvidenceFailures = 0;
+        }
         const failed = await failWeComBatch(
           prisma,
           operation.id,
@@ -686,6 +844,19 @@ export async function runWeComAutoImport(
           detail: `${index + 1}/${queue.length} 批 · ${failed.message}`,
         });
         if (error instanceof WeComExtractionError && error.code === "protocol_incompatible") throw error;
+        if (
+          consecutiveEvidenceFailures >= 3
+          || (attemptedGroundedBatches <= 20 && evidenceFailuresInFirstTwenty >= 5)
+        ) {
+          emit({
+            type: "progress",
+            phase: "extracting",
+            progress: 52 + Math.round(((index + 1) / Math.max(1, queue.length)) * 38),
+            message: "原文证据连续无法核验，已暂停剩余批次",
+            detail: "请检查企微提取模型后手动重新开始；未处理消息仍保持待处理状态",
+          });
+          break;
+        }
       }
     }
 
@@ -725,6 +896,14 @@ export async function runWeComAutoImport(
     emit(completed);
     return completed;
   } catch (error) {
+    if (error instanceof WeComRunCancelledError) {
+      await finalizeCancelledRun(prisma, claimed.runId, "cancelled");
+      const rolledBack = error.mode === "stop_and_rollback";
+      if (rolledBack) await rollbackWeComRun(prisma, claimed.runId);
+      const cancelled: WeComAutoImportCancelled = { type: "cancelled", runId: claimed.runId, rolledBack };
+      emit(cancelled);
+      return cancelled;
+    }
     await prisma.weComImportRun.updateMany({
       where: { id: claimed.runId, status: "running" },
       data: { status: "failed", completedAt: new Date() },

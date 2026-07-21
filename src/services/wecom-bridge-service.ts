@@ -8,6 +8,7 @@ export interface GenerateWeComBridgeInput {
   sourceText?: string;
   exportPath?: string;
   candidateStudentIds?: string[];
+  groundedMessages?: Array<{ id: string; content: string }>;
 }
 
 export interface WeComExtractionDiagnostics {
@@ -33,7 +34,8 @@ export type WeComExtractionErrorCode =
   | "schema_invalid"
   | "network_error"
   | "provider_error"
-  | "oversized_message";
+  | "oversized_message"
+  | "evidence_mismatch";
 
 export class WeComExtractionError extends Error {
   constructor(
@@ -50,7 +52,7 @@ interface GenerateWeComBridgeOptions {
   onRetry?: (reason: "network" | "schema") => void;
 }
 
-const bridgeSchema = {
+const legacyBridgeSchema = {
   type: "object",
   additionalProperties: false,
   required: ["source", "mode", "records"],
@@ -128,6 +130,53 @@ const bridgeSchema = {
   },
 } as const;
 
+const groundedBridgeSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["source", "mode", "records"],
+  properties: {
+    source: { type: "string", enum: ["wecomcatch"] },
+    mode: { type: "string", enum: ["candidateOnly"] },
+    records: {
+      type: "array",
+      maxItems: 20,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["matchedStudent", "messageIds", "factualSummary", "evidence", "confidence"],
+        properties: {
+          matchedStudent: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "confidence"],
+            properties: {
+              id: { type: "string", minLength: 1 },
+              confidence: { type: "string", enum: ["high", "medium", "low"] },
+            },
+          },
+          messageIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+          factualSummary: { type: "string", minLength: 10, maxLength: 300 },
+          evidence: {
+            type: "array",
+            minItems: 1,
+            maxItems: 3,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["messageId", "quote"],
+              properties: {
+                messageId: { type: "string", minLength: 1 },
+                quote: { type: "string", minLength: 4, maxLength: 160 },
+              },
+            },
+          },
+          confidence: { type: "string", enum: ["high", "medium", "low"] },
+        },
+      },
+    },
+  },
+} as const;
+
 function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -168,9 +217,65 @@ function parseJsonObject(text: string) {
   }
 }
 
-function validateBridgeJson(value: Record<string, unknown>) {
+function normalizeEvidenceText(value: string) {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+export function validateWeComBridgeJson(
+  value: Record<string, unknown>,
+  groundedMessages?: Array<{ id: string; content: string }>,
+  candidateStudentIds: string[] = [],
+) {
   if (value.source !== "wecomcatch" || value.mode !== "candidateOnly" || !Array.isArray(value.records)) {
     throw new WeComExtractionError("schema_invalid", "LLM 返回 JSON 不符合企微候选结构");
+  }
+  if (groundedMessages) {
+    const messages = new Map(groundedMessages.map((message) => [message.id, normalizeEvidenceText(message.content)]));
+    const allowedStudents = new Set(candidateStudentIds);
+    for (const recordValue of value.records) {
+      const record = recordValue && typeof recordValue === "object" ? recordValue as Record<string, unknown> : null;
+      const student = record?.matchedStudent && typeof record.matchedStudent === "object"
+        ? record.matchedStudent as Record<string, unknown>
+        : null;
+      const messageIds = Array.isArray(record?.messageIds)
+        ? [...new Set(record.messageIds.filter((item): item is string => (
+          typeof item === "string" && item.trim().length > 0
+        )))]
+        : [];
+      const evidence = Array.isArray(record?.evidence) ? record.evidence : [];
+      const summary = clean(record?.factualSummary);
+      if (
+        !student
+        || typeof student.id !== "string"
+        || !allowedStudents.has(student.id)
+        || student.confidence !== "high"
+        || record?.confidence !== "high"
+        || messageIds.length === 0
+        || summary.length < 10
+        || summary.length > 300
+        || evidence.length < 1
+        || evidence.length > 3
+      ) {
+        throw new WeComExtractionError("evidence_mismatch", "模型记录缺少可自动写入的高置信度事实证据");
+      }
+      for (const evidenceValue of evidence) {
+        const item = evidenceValue && typeof evidenceValue === "object"
+          ? evidenceValue as Record<string, unknown>
+          : null;
+        const messageId = clean(item?.messageId);
+        const quote = normalizeEvidenceText(clean(item?.quote));
+        if (
+          !messageIds.includes(messageId)
+          || !messages.has(messageId)
+          || quote.length < 4
+          || quote.length > 160
+          || !messages.get(messageId)?.includes(quote)
+        ) {
+          throw new WeComExtractionError("evidence_mismatch", "模型引用的原文证据与消息内容不一致");
+        }
+      }
+    }
+    return value;
   }
   for (const recordValue of value.records) {
     const record = recordValue && typeof recordValue === "object"
@@ -235,6 +340,7 @@ async function createStructuredCompletion(
   model: string,
   prompt: string,
   temperature: number,
+  schema: typeof legacyBridgeSchema | typeof groundedBridgeSchema,
   onRetry?: GenerateWeComBridgeOptions["onRetry"],
 ): Promise<{ response: CompletionResponse; protocol: "json_schema" | "json_object" }> {
   const base = {
@@ -245,7 +351,7 @@ async function createStructuredCompletion(
   };
   const schemaFormat = {
     type: "json_schema" as const,
-    json_schema: { name: "wecom_candidate", strict: true, schema: bridgeSchema },
+    json_schema: { name: "wecom_candidate", strict: true, schema },
   };
 
   try {
@@ -317,6 +423,8 @@ function extractCompletion(
   response: CompletionResponse,
   modelName: string,
   protocol: "json_schema" | "json_object",
+  groundedMessages?: Array<{ id: string; content: string }>,
+  candidateStudentIds: string[] = [],
 ) {
   const rawOutput = response.choices[0]?.message?.content?.trim() || "";
   const diagnostics = completionDiagnostics(response, modelName, protocol, rawOutput.length);
@@ -332,7 +440,11 @@ function extractCompletion(
   }
   if (!rawOutput) throw new WeComExtractionError("schema_invalid", "LLM 未返回企微候选 JSON", diagnostics);
   try {
-    return { bridgeJson: validateBridgeJson(parseJsonObject(rawOutput)), rawOutput, diagnostics };
+    return {
+      bridgeJson: validateWeComBridgeJson(parseJsonObject(rawOutput), groundedMessages, candidateStudentIds),
+      rawOutput,
+      diagnostics,
+    };
   } catch (error) {
     if (error instanceof WeComExtractionError) {
       throw new WeComExtractionError(error.code, error.message, diagnostics);
@@ -402,7 +514,18 @@ export async function generateWeComBridgeJson(
   }
   if (roster.length === 0) throw new Error("未能从聊天内容中确定候选学生，请先补充学生姓名");
 
-  const prompt = `你是 Chem-Track 的企微家校沟通提取器。请从当前连续交流段中提取对“课后反馈”有长期价值、且能明确绑定到某个学生的家校沟通信息。
+  const grounded = Array.isArray(input.groundedMessages);
+  const prompt = grounded
+    ? `你是 Chem-Track 的企微事实提取器。只提取当前连续交流段中能由原文逐字证明、且能唯一绑定学生的长期沟通事实。
+
+学生候选：
+${JSON.stringify(roster.map((student) => ({ id: student.id, name: student.name, studentId: student.studentId })), null, 2)}
+
+输出必须严格符合 JSON Schema。每条记录只能使用候选学生 ID，matchedStudent.confidence 和 confidence 都必须基于原文判断。messageIds 只引用支撑该事实的输入消息。evidence 必须提供 1 至 3 条输入消息中逐字存在的短句，不得改写标点、措辞或补充推断。factualSummary 只概括已经明确发生或明确约定的事实；不得生成建议、语气、评价、课次、沟通对象、未来计划或关注标签。没有足够逐字证据时 records 返回空数组。
+
+当前连续交流段：
+${text}`
+    : `你是 Chem-Track 的企微家校沟通提取器。请从当前连续交流段中提取对“课后反馈”有长期价值、且能明确绑定到某个学生的家校沟通信息。
 
 学生名单：
 ${JSON.stringify(roster, null, 2)}
@@ -414,18 +537,25 @@ ${text}`;
 
   const client = createLLMClient("wecomExtraction");
   const model = getLLMModel("wecomExtraction");
-  const first = await createStructuredCompletion(client, model, prompt, 0.1, options.onRetry);
+  const schema = grounded ? groundedBridgeSchema : legacyBridgeSchema;
+  const first = await createStructuredCompletion(client, model, prompt, 0.1, schema, options.onRetry);
   try {
-    return { sourceLabel, ...extractCompletion(first.response, model, first.protocol) };
+    return {
+      sourceLabel,
+      ...extractCompletion(first.response, model, first.protocol, input.groundedMessages, candidateStudentIds),
+    };
   } catch (error) {
     if (!(error instanceof WeComExtractionError) || error.code !== "schema_invalid") throw error;
     options.onRetry?.("schema");
   }
 
   const retryPrompt = `${prompt}\n\n上一次输出未通过 Schema 校验。请重新完整提取，只返回符合 Schema 的 JSON。`;
-  const retry = await createStructuredCompletion(client, model, retryPrompt, 0, options.onRetry);
+  const retry = await createStructuredCompletion(client, model, retryPrompt, 0, schema, options.onRetry);
   try {
-    return { sourceLabel, ...extractCompletion(retry.response, model, retry.protocol) };
+    return {
+      sourceLabel,
+      ...extractCompletion(retry.response, model, retry.protocol, input.groundedMessages, candidateStudentIds),
+    };
   } catch (error) {
     if (error instanceof WeComExtractionError && error.code === "schema_invalid") {
       throw new WeComExtractionError(

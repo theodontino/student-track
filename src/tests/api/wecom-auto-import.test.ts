@@ -1,20 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const runWeComAutoImport = vi.hoisted(() => vi.fn());
-
-vi.mock("@/services/wecom-auto-import-service", () => ({
-  runWeComAutoImport,
+const mocks = vi.hoisted(() => ({
+  runWeComAutoImport: vi.fn(),
+  getStatus: vi.fn(),
+  requestCancellation: vi.fn(),
 }));
 
-import { POST } from "@/app/api/wecom/auto-import/route";
+vi.mock("@/services/wecom-auto-import-service", () => ({
+  runWeComAutoImport: mocks.runWeComAutoImport,
+  getWeComAutoImportStatus: mocks.getStatus,
+  requestWeComAutoImportCancellation: mocks.requestCancellation,
+}));
+
+import { DELETE, GET, POST } from "@/app/api/wecom/auto-import/route";
 
 describe("POST /api/wecom/auto-import", () => {
   beforeEach(() => {
-    runWeComAutoImport.mockReset();
+    mocks.runWeComAutoImport.mockReset();
+    mocks.getStatus.mockReset();
+    mocks.requestCancellation.mockReset();
   });
 
   it("streams progress and completion as newline-delimited JSON", async () => {
-    runWeComAutoImport.mockImplementation(async (_prisma, options) => {
+    mocks.runWeComAutoImport.mockImplementation(async (_prisma, options) => {
       options.emit({
         type: "progress",
         phase: "extracting",
@@ -42,7 +50,7 @@ describe("POST /api/wecom/auto-import", () => {
   });
 
   it("does not expose provider or filesystem details in stream errors", async () => {
-    runWeComAutoImport.mockRejectedValue(new Error("/private/config provider response"));
+    mocks.runWeComAutoImport.mockRejectedValue(new Error("/private/config provider response"));
 
     const response = await POST();
     const body = await response.text();
@@ -74,7 +82,7 @@ describe("POST /api/wecom/auto-import", () => {
       expected: "LLM 调用或候选提取失败",
     },
   ])("returns an actionable safe error for $phase failures", async ({ phase, error, expected }) => {
-    runWeComAutoImport.mockImplementation(async (_prisma, options) => {
+    mocks.runWeComAutoImport.mockImplementation(async (_prisma, options) => {
       options.emit({ type: "progress", phase, progress: 10, message: "处理中" });
       throw new Error(error);
     });
@@ -84,5 +92,21 @@ describe("POST /api/wecom/auto-import", () => {
 
     expect(body).toContain(expected);
     expect(body).not.toContain(error);
+  });
+
+  it("returns resumable status for a refreshed page", async () => {
+    mocks.getStatus.mockResolvedValue({ active: true, run: { id: "run-1", progress: 42 } });
+    const response = await GET();
+    await expect(response.json()).resolves.toMatchObject({ active: true, run: { progress: 42 } });
+  });
+
+  it("accepts a stop-and-rollback request", async () => {
+    mocks.requestCancellation.mockResolvedValue({ accepted: true, runId: "run-1", rollbackRequested: true });
+    const response = await DELETE(new Request("http://localhost/api/wecom/auto-import", {
+      method: "DELETE",
+      body: JSON.stringify({ mode: "stop_and_rollback" }),
+    }) as never);
+    expect(response.status).toBe(202);
+    expect(mocks.requestCancellation).toHaveBeenCalledWith(expect.anything(), "stop_and_rollback");
   });
 });

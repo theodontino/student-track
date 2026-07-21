@@ -14,7 +14,6 @@ import { WeComExtractionError } from "@/services/wecom-bridge-service";
 import {
   listWeComRollbackOperations,
   rollbackWeComDate,
-  rollbackWeComOperation,
   rollbackWeComRun,
 } from "@/services/wecom-rollback-service";
 
@@ -44,6 +43,7 @@ describe("wecom incremental ledger and rollback", () => {
   });
 
   it("records only created rows and can roll one batch back", async () => {
+    const noValueMessageId = "test-wecom-message-ledger-no-value";
     const student = await prisma.student.findFirst({
       select: { id: true, name: true, studentId: true, classId: true },
       orderBy: { studentId: "asc" },
@@ -64,14 +64,20 @@ describe("wecom incremental ledger and rollback", () => {
         windowEndedAt: new Date("2026-07-20T00:00:00Z"),
       },
     });
-    await prisma.weComMessageReceipt.create({
-      data: {
+    await prisma.weComMessageReceipt.createMany({
+      data: [{
         messageId,
         conversationId: "test-conversation-ledger",
         contentHash: "test-hash",
         status: "pending",
         promptVersion: "test-v1",
-      },
+      }, {
+        messageId: noValueMessageId,
+        conversationId: "test-conversation-ledger",
+        contentHash: "test-hash-no-value",
+        status: "pending",
+        promptVersion: "test-v1",
+      }],
     });
     const metadata = {
       runId,
@@ -79,7 +85,7 @@ describe("wecom incremental ledger and rollback", () => {
       conversationId: "test-conversation-ledger",
       conversationTitle: "张三家长-example",
       candidateStudentIds: [student!.id],
-      messageIds: [messageId],
+      messageIds: [messageId, noValueMessageId],
     };
     const operation = await prepareWeComBatch(prisma, metadata);
     const jsonText = JSON.stringify({ records: [{
@@ -99,9 +105,9 @@ describe("wecom incremental ledger and rollback", () => {
     await saveWeComBatchCandidate(prisma, operation.id, jsonText);
 
     await expect(applyWeComLedgerBatch(prisma, operation.id, metadata, jsonText))
-      .resolves.toMatchObject({ createdCount: 1, createdLabelCount: 1 });
+      .resolves.toMatchObject({ createdCount: 1, createdLabelCount: 0 });
     await expect(prisma.weComImportOperation.findUnique({ where: { id: operation.id } }))
-      .resolves.toMatchObject({ status: "complete", communicationCount: 1, labelCount: 1, candidateJson: null });
+      .resolves.toMatchObject({ status: "complete", communicationCount: 1, labelCount: 0, candidateJson: null });
     await expect(prisma.weComMessageReceipt.findUnique({
       where: {
         conversationId_messageId: {
@@ -111,11 +117,19 @@ describe("wecom incremental ledger and rollback", () => {
       },
     }))
       .resolves.toMatchObject({ status: "imported" });
+    await expect(prisma.weComMessageReceipt.findUnique({
+      where: {
+        conversationId_messageId: {
+          conversationId: metadata.conversationId,
+          messageId: noValueMessageId,
+        },
+      },
+    })).resolves.toMatchObject({ status: "no_value" });
 
     const createSafetyBackup = vi.fn(async () => undefined);
     await expect(rollbackWeComRun(prisma, runId, {
       createSafetyBackup,
-    })).resolves.toMatchObject({ batchCount: 1, communicationCount: 1, labelCount: 1 });
+    })).resolves.toMatchObject({ batchCount: 1, communicationCount: 1, labelCount: 0 });
     expect(createSafetyBackup).toHaveBeenCalledOnce();
     await expect(prisma.communication.findUnique({ where: { sourceKey } })).resolves.toBeNull();
     await expect(prisma.weComMessageReceipt.findUnique({
@@ -127,9 +141,17 @@ describe("wecom incremental ledger and rollback", () => {
       },
     }))
       .resolves.toMatchObject({ status: "rolled_back" });
+    await expect(prisma.weComMessageReceipt.findUnique({
+      where: {
+        conversationId_messageId: {
+          conversationId: metadata.conversationId,
+          messageId: noValueMessageId,
+        },
+      },
+    })).resolves.toMatchObject({ status: "rolled_back" });
   });
 
-  it("keeps a shared label until every importing batch that supports it is rolled back", async () => {
+  it("does not create automatic attention labels from企微 candidates", async () => {
     const student = await prisma.student.findFirst({
       select: { id: true, name: true, studentId: true, classId: true },
       orderBy: { studentId: "asc" },
@@ -152,8 +174,7 @@ describe("wecom incremental ledger and rollback", () => {
       },
     });
 
-    const operations = [];
-    for (const index of [1, 2]) {
+    for (const index of [1]) {
       const currentMessageId = `test-wecom-message-ledger-shared-${index}`;
       const currentBatchKey = `test-wecom-batch-ledger-shared-${index}`;
       await prisma.weComMessageReceipt.create({
@@ -199,22 +220,7 @@ describe("wecom incremental ledger and rollback", () => {
       }] });
       await saveWeComBatchCandidate(prisma, operation.id, jsonText);
       await applyWeComLedgerBatch(prisma, operation.id, metadata, jsonText);
-      operations.push(operation);
     }
-
-    await rollbackWeComOperation(prisma, operations[0].id, {
-      createSafetyBackup: async () => undefined,
-    });
-    await expect(prisma.studentLabel.findFirst({
-      where: {
-        studentId: student!.id,
-        label: { name: "AI内部关注：家长担心" },
-      },
-    })).resolves.toBeTruthy();
-
-    await rollbackWeComOperation(prisma, operations[1].id, {
-      createSafetyBackup: async () => undefined,
-    });
     await expect(prisma.studentLabel.findFirst({
       where: {
         studentId: student!.id,

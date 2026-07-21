@@ -58,6 +58,7 @@ describe("wecom bridge service", () => {
       name: "张三",
       studentId: "S001",
       class: { name: "测试班", code: "T-1" },
+      communications: [],
     }]);
   });
 
@@ -155,5 +156,48 @@ describe("wecom bridge service", () => {
     )).resolves.toMatchObject({ bridgeJson: { records: [] } });
     expect(onRetry).toHaveBeenCalledWith("network");
     expect(mocks.completionCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts a grounded fact only when the quote exists in the cited message", async () => {
+    mocks.completionCreate.mockResolvedValue(completion(JSON.stringify({
+      source: "wecomcatch",
+      mode: "candidateOnly",
+      records: [{
+        matchedStudent: { id: "student-1", confidence: "high" },
+        messageIds: ["message-1"],
+        factualSummary: "家长明确表示学生近期希望获得更多鼓励。",
+        evidence: [{ messageId: "message-1", quote: "最近希望多鼓励" }],
+        confidence: "high",
+      }],
+    })));
+
+    await expect(generateWeComBridgeJson(prisma, {
+      sourceText: "[message-1] 最近希望多鼓励",
+      candidateStudentIds: ["student-1"],
+      groundedMessages: [{ id: "message-1", content: "最近希望多鼓励。" }],
+    })).resolves.toMatchObject({ bridgeJson: { records: [{ factualSummary: expect.any(String) }] } });
+    const schema = mocks.completionCreate.mock.calls[0][0].response_format.json_schema.schema;
+    expect(schema.properties.records.items.required).toContain("evidence");
+  });
+
+  it("rejects invented evidence without spending a retry", async () => {
+    mocks.completionCreate.mockResolvedValue(completion(JSON.stringify({
+      source: "wecomcatch",
+      mode: "candidateOnly",
+      records: [{
+        matchedStudent: { id: "student-1", confidence: "high" },
+        messageIds: ["message-1"],
+        factualSummary: "家长明确表示学生准备参加额外课程。",
+        evidence: [{ messageId: "message-1", quote: "准备参加额外课程" }],
+        confidence: "high",
+      }],
+    })));
+
+    await expect(generateWeComBridgeJson(prisma, {
+      sourceText: "[message-1] 最近希望多鼓励",
+      candidateStudentIds: ["student-1"],
+      groundedMessages: [{ id: "message-1", content: "最近希望多鼓励。" }],
+    })).rejects.toMatchObject({ code: "evidence_mismatch" });
+    expect(mocks.completionCreate).toHaveBeenCalledOnce();
   });
 });

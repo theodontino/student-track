@@ -105,14 +105,20 @@ describe.sequential("LLM operation cache", () => {
   });
 
   it("marks stale active manifests interrupted and clears no live operation", async () => {
-    const stale = path.join(root, "2026-07-20", "wecom", "stale-operation");
+    const shanghaiDay = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const stale = path.join(root, shanghaiDay, "wecom", "stale-operation");
     await mkdir(stale, { recursive: true });
     await writeFile(path.join(stale, "manifest.json"), JSON.stringify({
       id: "stale-operation",
       taskType: "wecom",
       title: "stale",
       status: "active",
-      startedAt: "2026-07-20T00:00:00.000Z",
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
       completedAt: null,
       callCount: 1,
       warning: null,

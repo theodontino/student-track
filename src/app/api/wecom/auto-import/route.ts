@@ -1,5 +1,12 @@
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { runWeComAutoImport, type WeComAutoImportEvent } from "@/services/wecom-auto-import-service";
+import {
+  getWeComAutoImportStatus,
+  requestWeComAutoImportCancellation,
+  runWeComAutoImport,
+  type WeComAutoImportEvent,
+  type WeComCancelMode,
+} from "@/services/wecom-auto-import-service";
 import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
@@ -71,6 +78,27 @@ function safeImportError(error: unknown, phase: ImportPhase) {
   return `${safeImportErrorReason(message, phase)}；数据库未写入失败批次，可安全重试`;
 }
 
+export async function GET() {
+  try {
+    return NextResponse.json(await getWeComAutoImportStatus(prisma));
+  } catch {
+    return NextResponse.json({ error: "读取企微导入状态失败" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const body = await request.json().catch(() => ({})) as { mode?: WeComCancelMode };
+    const mode: WeComCancelMode = body.mode === "stop_and_rollback" ? "stop_and_rollback" : "stop";
+    return NextResponse.json(await requestWeComAutoImportCancellation(prisma, mode), { status: 202 });
+  } catch (error) {
+    const message = error instanceof Error && error.message.startsWith("当前没有")
+      ? error.message
+      : "停止企微导入失败";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
 export async function POST() {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -86,7 +114,9 @@ export async function POST() {
         "企微一键同步并导入",
         async () => {
           const result = await runWeComAutoImport(prisma, { emit: send });
-          if (result?.attentionBatchCount > 0) markCurrentLLMCacheOperationIncomplete();
+          if (result && (result.type === "cancelled" || result.attentionBatchCount > 0)) {
+            markCurrentLLMCacheOperationIncomplete();
+          }
           return result;
         },
       )

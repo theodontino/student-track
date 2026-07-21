@@ -7,6 +7,9 @@ import {
   claimWeComAutoImportRun,
   buildWeComExtractionBatches,
   collectIncrementalWeComSources,
+  decorateGroundedWeComRecords,
+  getWeComAutoImportStatus,
+  requestWeComAutoImportCancellation,
   splitWeComExtractionBatch,
   type SourceConversation,
 } from "@/services/wecom-auto-import-service";
@@ -33,6 +36,7 @@ describe("wecom auto import service", () => {
       messages: times.map((time, index) => ({
         id: `message-${index}`,
         text: "x".repeat(lengths[index] ?? 20),
+        content: "x".repeat(lengths[index] ?? 20),
         sentAt: new Date(time),
         contentHash: `hash-${index}`,
       })),
@@ -100,6 +104,26 @@ describe("wecom auto import service", () => {
     expect(split?.map((item) => item.messageIds.length)).toEqual([3, 2]);
     expect(new Set(split?.flatMap((item) => item.messageIds)).size).toBe(5);
     expect(split?.[0].batchKey).not.toBe(split?.[1].batchKey);
+  });
+
+  it("derives a fixed target and occurrence time from cited source messages", () => {
+    const batch = buildWeComExtractionBatches([conversation([
+      "2026-07-18T00:00:00.000Z",
+      "2026-07-18T00:05:00.000Z",
+    ])])[0];
+    const records = decorateGroundedWeComRecords([{
+      matchedStudent: { id: "student-zhang", confidence: "high" },
+      messageIds: ["message-0", "message-1"],
+      factualSummary: "家长明确反馈学生近期需要获得更多鼓励。",
+      confidence: "high",
+    }], batch) as Array<Record<string, unknown>>;
+
+    expect(records[0]).toMatchObject({
+      target: "家长",
+      occurredAt: "2026-07-18T00:05:00.000Z",
+      sessionCode: null,
+      attentionSignals: [],
+    });
   });
 
   it("collects only new messages from conversations whose title matches the roster", async () => {
@@ -177,6 +201,18 @@ describe("wecom auto import service", () => {
       .rejects.toThrow("已有企微一键导入正在运行");
   });
 
+  it("records a stop-and-rollback request for the active worker", async () => {
+    const startedAt = new Date();
+    const claimed = await claimWeComAutoImportRun(prisma, startedAt);
+
+    await expect(requestWeComAutoImportCancellation(prisma, "stop_and_rollback"))
+      .resolves.toMatchObject({ accepted: true, runId: claimed.runId, rollbackRequested: true });
+    await expect(prisma.weComImportRun.findUnique({ where: { id: claimed.runId } }))
+      .resolves.toMatchObject({ cancelMode: "stop_and_rollback" });
+    await expect(getWeComAutoImportStatus(prisma))
+      .resolves.toMatchObject({ active: true, run: { id: claimed.runId, cancelMode: "stop_and_rollback" } });
+  });
+
   it("recovers stale extracting receipts and includes their time in the next window", async () => {
     const staleAt = new Date("2026-07-19T00:00:00Z");
     await prisma.weComImportState.create({
@@ -217,7 +253,7 @@ describe("wecom auto import service", () => {
           messageId: "stale-message",
         },
       },
-    })).resolves.toMatchObject({ status: "failed" });
+    })).resolves.toMatchObject({ status: "pending" });
     expect(claimed.since.toISOString()).toBe("2026-07-09T23:55:00.000Z");
   });
 });
