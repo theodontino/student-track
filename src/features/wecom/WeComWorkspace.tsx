@@ -7,6 +7,7 @@ import { LoadingState, PageHeader, StatusBanner, Tabs } from "@/components/ui";
 import { useWeComAccess } from "@/features/useWeComAccess";
 import WeComAccessPanel from "./WeComAccessPanel";
 import WeComRollbackPanel from "./WeComRollbackPanel";
+import WccCandidateReviewPanel from "./WccCandidateReviewPanel";
 
 type WeComView = "workflow" | "review";
 
@@ -39,7 +40,7 @@ export default function WeComWorkspace() {
       <div role="tabpanel" className="wecom-workspace__panel">
         {view === "workflow"
           ? <WeComWorkflowPanel title="同步与导入" description="同步、提取、预览并导入可用于课后反馈的家校沟通。" showFeedbackLink />
-          : <WeComRollbackPanel />}
+          : <div className="space-y-4"><WccCandidateReviewPanel /><WeComRollbackPanel /></div>}
       </div>
     </>}
   </main>;

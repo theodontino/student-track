@@ -138,6 +138,15 @@ export async function processDraftReview(input: ProcessDraftInput) {
       },
       select: { id: true, name: true },
     });
+    const boundWccStudent = draft.id.startsWith("wcc-") && draft.studentId
+      ? await tx.student.findFirst({
+        where: {
+          id: draft.studentId,
+          ...(session?.classId ? { classId: session.classId } : {}),
+        },
+        select: { id: true, name: true },
+      })
+      : null;
     const studentsByName = new Map<string, typeof matchingStudents>();
     for (const student of matchingStudents) {
       studentsByName.set(student.name, [...(studentsByName.get(student.name) ?? []), student]);
@@ -148,7 +157,9 @@ export async function processDraftReview(input: ProcessDraftInput) {
     const logs: Array<{ studentId: string; studentName: string; scores: ParsedStudent["scores"] }> = [];
 
     for (const parsedStudent of parsedData.students) {
-      const matches = studentsByName.get(parsedStudent.name) ?? [];
+      const matches = boundWccStudent?.name === parsedStudent.name
+        ? [boundWccStudent]
+        : studentsByName.get(parsedStudent.name) ?? [];
       if (matches.length === 0) {
         warnings.push(`未找到学生 ${parsedStudent.name}，相关内容未写入`);
         continue;
