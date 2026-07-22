@@ -70,4 +70,24 @@ describe("diarize task files", () => {
     expect(retry.retryOf).toBe(source.id);
     expect(retry.engine).toBe("auto");
   });
+
+  it("rebases stored task paths after the data directory moves", async () => {
+    const task = await createDiarizeTask({
+      engine: "local",
+      inputFileName: "课堂录音.wav",
+    });
+    await fs.promises.writeFile(task.inputPath, "audio-bytes");
+
+    const movedDir = `${tempDir}-moved`;
+    await fs.promises.rename(tempDir, movedDir);
+    tempDir = movedDir;
+    process.env.DIARIZE_DATA_DIR = movedDir;
+
+    const movedTask = await readDiarizeTask(task.id);
+    expect(movedTask.outputDir).toBe(path.join(movedDir, "tasks", task.id));
+    await expect(fs.promises.readFile(movedTask.inputPath, "utf8")).resolves.toBe("audio-bytes");
+
+    const retry = await createRetryDiarizeTask(movedTask);
+    await expect(fs.promises.readFile(retry.inputPath, "utf8")).resolves.toBe("audio-bytes");
+  });
 });

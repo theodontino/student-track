@@ -76,6 +76,22 @@ function taskPath(taskId: string) {
   return path.join(taskDir(taskId), "task.json");
 }
 
+function rebaseTaskPaths(task: DiarizeTask, taskId: string): DiarizeTask {
+  const dir = taskDir(taskId);
+  const inTaskDir = (storedPath: string | null, fallback: string) => storedPath
+    ? path.join(dir, path.basename(storedPath))
+    : path.join(dir, fallback);
+
+  return {
+    ...task,
+    inputPath: inTaskDir(task.inputPath, `input-${task.inputFileName}`),
+    outputDir: dir,
+    logPath: inTaskDir(task.logPath, "stdout.log"),
+    resultTextPath: task.resultTextPath ? inTaskDir(task.resultTextPath, "result.txt") : null,
+    resultJsonPath: task.resultJsonPath ? inTaskDir(task.resultJsonPath, "result.json") : null,
+  };
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -150,7 +166,7 @@ export async function updateDiarizeTask(taskId: string, patch: Partial<DiarizeTa
 
 export async function readDiarizeTask(taskId: string): Promise<DiarizeTask> {
   const raw = await fs.promises.readFile(taskPath(taskId), "utf8");
-  return JSON.parse(raw) as DiarizeTask;
+  return rebaseTaskPaths(JSON.parse(raw) as DiarizeTask, taskId);
 }
 
 export async function listDiarizeTasks(): Promise<DiarizeTask[]> {
