@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
 import {
@@ -9,6 +10,13 @@ import {
 import { buildFeedbackExportWorkbook } from "@/services/feedback-export-service";
 import { getAlertDashboard } from "@/services/alert-service";
 import {
+  isLessonFeedbackMaterial,
+  isStudentAssessmentEvidence,
+  type LessonFeedbackMaterial,
+  type StudentAssessmentEvidence,
+} from "@/lib/feedback-materials";
+import {
+  composeFeedbackPromptContext,
   generateFeedbackDraft,
   reviewFeedbackDraft,
   type FeedbackReviewStatus,
@@ -36,6 +44,9 @@ interface FeedbackState {
   className: string;
   students: FeedbackCard[];
   total: number;
+  inputRevision?: string;
+  lessonMaterial?: LessonFeedbackMaterial;
+  assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
 }
 
 const cache = new Map<string, { timestamp: number; state: FeedbackState }>();
@@ -47,7 +58,46 @@ function moduleFrom(value: unknown): HistoryModule | null {
 }
 
 function cacheKey(module: HistoryModule, sessionCode: string) {
-  return `review-v1:${module}:${sessionCode}`;
+  return `review-v2:${module}:${sessionCode}`;
+}
+
+function readFeedbackInputs(body: Record<string, unknown>, sessionCode: string) {
+  const submittedMaterial = isLessonFeedbackMaterial(body.lessonMaterial)
+    ? body.lessonMaterial
+    : undefined;
+  if (submittedMaterial?.sessionCode && submittedMaterial.sessionCode !== sessionCode) {
+    throw new Error(`课程材料绑定课次 ${submittedMaterial.sessionCode}，不能用于 ${sessionCode}`);
+  }
+  const lessonMaterial = submittedMaterial
+    ? { ...submittedMaterial, sessionCode }
+    : undefined;
+  const assessmentEvidence: Record<string, StudentAssessmentEvidence> = {};
+  if (body.assessmentEvidence && typeof body.assessmentEvidence === "object" && !Array.isArray(body.assessmentEvidence)) {
+    for (const [studentId, evidence] of Object.entries(body.assessmentEvidence)) {
+      if (!studentId || !isStudentAssessmentEvidence(evidence)) continue;
+      if (evidence.sessionCode && evidence.sessionCode !== sessionCode) {
+        throw new Error(`学生 ${studentId} 的 PDF 证据属于课次 ${evidence.sessionCode}`);
+      }
+      if (evidence.studentId && evidence.studentId !== studentId) {
+        throw new Error(`PDF 证据绑定学生与提交学生 ${studentId} 不一致`);
+      }
+      assessmentEvidence[studentId] = { ...evidence, sessionCode, studentId };
+    }
+  }
+  return { lessonMaterial, assessmentEvidence };
+}
+
+function inputRevision(
+  lessonMaterial: LessonFeedbackMaterial | undefined,
+  assessmentEvidence: Record<string, StudentAssessmentEvidence>,
+) {
+  const sortedEvidence = Object.fromEntries(
+    Object.entries(assessmentEvidence).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  return createHash("sha256")
+    .update(JSON.stringify({ lessonMaterial: lessonMaterial ?? null, assessmentEvidence: sortedEvidence }))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 function parseHistoryState(value: string): FeedbackState | null {
@@ -148,22 +198,46 @@ export async function GET(request: NextRequest) {
 // POST /api/report/feedback-batch — NDJSON streaming with persistent result history.
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const body = await request.json() as Record<string, unknown>;
     const sessionCode = body.sessionCode as string | undefined;
     const historyModule = moduleFrom(body.historyModule);
     const bypassCache = body.bypassCache === true;
     const saveState = body.saveState === true;
     if (!sessionCode) return NextResponse.json({ error: "缺少课次编码" }, { status: 400 });
     if (!historyModule) return NextResponse.json({ error: "无效的历史模块" }, { status: 400 });
+    let feedbackInputs: ReturnType<typeof readFeedbackInputs>;
+    try {
+      feedbackInputs = readFeedbackInputs(body, sessionCode);
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "反馈材料绑定无效" },
+        { status: 400 },
+      );
+    }
+    const revision = inputRevision(feedbackInputs.lessonMaterial, feedbackInputs.assessmentEvidence);
 
     const key = cacheKey(historyModule, sessionCode);
     const cached = cache.get(key);
-    if (!saveState && !bypassCache && cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    if (
+      !saveState
+      && !bypassCache
+      && cached
+      && cached.state.inputRevision === revision
+      && Date.now() - cached.timestamp < CACHE_TTL
+    ) {
       return NextResponse.json({ cached: true, ...cached.state });
     }
 
     const feedbackContext = await buildFeedbackContext(prisma, sessionCode);
     const contextByStudent = new Map(feedbackContext.students.map((student) => [student.id, student]));
+    const foreignEvidenceStudent = Object.keys(feedbackInputs.assessmentEvidence)
+      .find((studentId) => !contextByStudent.has(studentId));
+    if (foreignEvidenceStudent) {
+      return NextResponse.json(
+        { error: "PDF 证据包含不属于当前课次班级的学生" },
+        { status: 400 },
+      );
+    }
 
     if (saveState) {
       const cards = submittedCardsFrom(body.students, contextByStudent);
@@ -178,6 +252,9 @@ export async function POST(request: NextRequest) {
         className: feedbackContext.className,
         students: cards,
         total: cards.length,
+        inputRevision: revision,
+        lessonMaterial: feedbackInputs.lessonMaterial,
+        assessmentEvidence: feedbackInputs.assessmentEvidence,
       };
       cache.set(key, { timestamp: Date.now(), state });
       await prisma.workHistory.create({
@@ -216,10 +293,17 @@ export async function POST(request: NextRequest) {
               const card = cards[index];
               const studentContext = contextByStudent.get(card.id);
               try {
+                const promptContext = composeFeedbackPromptContext({
+                  studentContext: studentContext?.promptContext ?? card.name,
+                  sessionCode,
+                  studentId: card.id,
+                  lessonMaterial: feedbackInputs.lessonMaterial,
+                  assessmentEvidence: feedbackInputs.assessmentEvidence[card.id],
+                });
                 card.draftFeedback = await generateFeedbackDraft({
                   studentName: card.name,
-                  promptContext: studentContext?.promptContext ?? card.name,
-                  lengthRequirement: "90-140字",
+                  promptContext,
+                  lengthRequirement: "120-170字",
                   client: draftClient,
                   model: draftModel,
                 });
@@ -246,11 +330,18 @@ export async function POST(request: NextRequest) {
               const card = cards[index];
               const studentContext = contextByStudent.get(card.id);
               if (card.draftFeedback) {
+                const promptContext = composeFeedbackPromptContext({
+                  studentContext: studentContext?.promptContext ?? card.name,
+                  sessionCode,
+                  studentId: card.id,
+                  lessonMaterial: feedbackInputs.lessonMaterial,
+                  assessmentEvidence: feedbackInputs.assessmentEvidence[card.id],
+                });
                 const reviewed = await reviewFeedbackDraft({
                   studentName: card.name,
-                  promptContext: studentContext?.promptContext ?? card.name,
+                  promptContext,
                   forbiddenStudentNames: cards.filter((item) => item.id !== card.id).map((item) => item.name),
-                  lengthRequirement: "90-140字",
+                  lengthRequirement: "120-170字",
                   draftFeedback: card.draftFeedback,
                   client: reviewClient,
                   model: reviewModel,
@@ -281,6 +372,9 @@ export async function POST(request: NextRequest) {
               className: feedbackContext.className,
               students: cards,
               total,
+              inputRevision: revision,
+              lessonMaterial: feedbackInputs.lessonMaterial,
+              assessmentEvidence: feedbackInputs.assessmentEvidence,
             };
             cache.set(key, { timestamp: Date.now(), state });
             await prisma.workHistory.create({

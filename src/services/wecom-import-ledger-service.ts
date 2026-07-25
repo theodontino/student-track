@@ -223,6 +223,7 @@ export async function applyWeComLedgerBatch(
     expectedConversationId: metadata.conversationId,
     requireMessageIds: true,
     useOccurredAtSession: true,
+    requireFeedbackUse: true,
   });
   const createPlans = planned.plans.filter((plan) => !plan.duplicate);
   const createdLabelCount = 0;

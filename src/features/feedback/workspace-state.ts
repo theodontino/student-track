@@ -1,5 +1,9 @@
 import { isTeachingContext } from "@/features/teaching-context/url-context";
 import { isAiWorkflowState } from "@/features/ai-workflow";
+import {
+  isAssessmentImportItem,
+  isLessonFeedbackMaterial,
+} from "@/lib/feedback-materials";
 import type { FeedbackWorkspaceState } from "./types";
 
 export function isFeedbackWorkspace(value: unknown): value is FeedbackWorkspaceState {
@@ -25,7 +29,14 @@ export function isFeedbackWorkspace(value: unknown): value is FeedbackWorkspaceS
     && typeof state.singleStudentId === "string"
     && typeof state.singleDays === "number"
     && typeof state.singleFeedback === "string"
-    && (state.workflow === undefined || isAiWorkflowState(state.workflow));
+    && (state.workflow === undefined || isAiWorkflowState(state.workflow))
+    && (state.groupFeedbackRaw === undefined || typeof state.groupFeedbackRaw === "string")
+    && (state.assessmentBriefRaw === undefined || typeof state.assessmentBriefRaw === "string")
+    && (state.lessonMaterial === undefined || isLessonFeedbackMaterial(state.lessonMaterial))
+    && (state.assessmentImports === undefined || (
+      Array.isArray(state.assessmentImports)
+      && state.assessmentImports.every(isAssessmentImportItem)
+    ));
 }
 
 export function todayLocalDate(now = new Date()) {

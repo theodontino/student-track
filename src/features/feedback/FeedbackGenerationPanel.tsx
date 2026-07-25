@@ -22,7 +22,7 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
           const labels = context?.labels.length ? context.labels : card.labels;
           const review = card.reviewStatus ? reviewLabels[card.reviewStatus] : null;
           return <article key={card.id} className="feedback-card">
-            <header><strong>{card.name}</strong><div>{review && <Badge tone={review.tone}>{review.label}</Badge>}{labels.map((label) => <Badge key={label} tone="info">{label}</Badge>)}</div></header>
+            <header><strong>{card.name}</strong><div>{workspace.confirmedAssessmentEvidence[card.id] && <Badge tone="info">出门测证据</Badge>}{review && <Badge tone={review.tone}>{review.label}</Badge>}{labels.map((label) => <Badge key={label} tone="info">{label}</Badge>)}</div></header>
             {context && <p className="feedback-card__context">{context.preview.today.slice(0, 2).join("；")}{context.preview.communications.length ? `；${context.preview.communications[0]}` : ""}</p>}
             {card.reviewIssues?.length ? <ul className="feedback-card__review-issues">{card.reviewIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
             {card.draftFeedback && card.draftFeedback !== card.feedback && <details className="feedback-card__draft"><summary>查看内部分析草稿</summary><p>{card.draftFeedback}</p></details>}

@@ -14,6 +14,7 @@ import { POST as postCandidates } from "@/app/api/integrations/wecomcatch/v1/can
 function request(path: string, init: RequestInit = {}) {
   return new NextRequest(`http://127.0.0.1:3000${path}`, {
     ...init,
+    signal: init.signal ?? undefined,
     headers: { authorization: "Bearer test-token", "content-type": "application/json", ...(init.headers || {}) },
   });
 }

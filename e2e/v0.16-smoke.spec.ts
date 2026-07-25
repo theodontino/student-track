@@ -89,6 +89,32 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
   test("feedback loads context, uses a browser mock, and restores work history", async ({ page }) => {
     const externalRequests = await blockExternalRequests(page);
     const feedbackRequests: Array<Record<string, unknown>> = [];
+    await page.route("**/api/feedback/assessment-pdf", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          fileName: "04示例报告（张三）.pdf",
+          reportStudentName: TEST_FIXTURE.students[0].name,
+          reportStudentId: TEST_FIXTURE.students[0].studentId,
+          matchedStudentId: TEST_FIXTURE.students[0].id,
+          matchedStudentName: TEST_FIXTURE.students[0].name,
+          matchStatus: "matched",
+          evidence: {
+            sessionCode: TEST_FIXTURE.sessions[0].code,
+            studentId: TEST_FIXTURE.students[0].id,
+            reportTitle: "04示例基础",
+            reportDate: "2099-07-13",
+            totalQuestions: 5,
+            correctRate: 80,
+            cohortAverageRate: 72.2,
+            knowledgePoints: [],
+            wrongItems: [],
+            similarPracticeCount: 1,
+          },
+        }),
+      });
+    });
     await page.route("**/api/report/feedback-batch", async (route) => {
       if (route.request().method() !== "POST") {
         await route.continue();
@@ -121,6 +147,18 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
     await expect(page.getByRole("heading", { name: "生成前上下文预览" })).toBeVisible();
     await expect(page.getByText(TEST_FIXTURE.students[0].name, { exact: true }).first()).toBeVisible();
+    await page.getByLabel("群反馈原文").fill("高一化学群反馈《示例课程》\n【课堂内容】\n1. 示例内容\n【课堂重点】\n1. 示例重点");
+    await page.getByLabel("出门测统一说明").fill("这次出门测主要考察以下内容：\n1. 示例概念\n孩子这次存在一定错误。\n请结合视频订正。");
+    await page.getByRole("button", { name: "一键整理全部" }).click();
+    await expect(page.getByLabel("课程主题")).toHaveValue("示例课程");
+    await page.locator('label:has-text("补选 PDF") input[type="file"]').setInputFiles({
+      name: "04示例报告（张三）.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4 synthetic"),
+    });
+    await expect(page.getByText("待确认", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "批量确认匹配" }).click();
+    await expect(page.getByText("已采用 1 份报告", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
     await page.getByRole("button", { name: "分析并生成反馈" }).click();
@@ -134,6 +172,12 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await page.getByRole("button", { name: "分析并生成反馈" }).click();
     await expect.poll(() => feedbackRequests.length).toBe(2);
     expect(feedbackRequests[1]).toMatchObject({ bypassCache: true });
+    expect(feedbackRequests[1]).toMatchObject({
+      lessonMaterial: expect.objectContaining({ lessonTitle: "示例课程" }),
+      assessmentEvidence: {
+        [TEST_FIXTURE.students[0].id]: expect.objectContaining({ correctRate: 80 }),
+      },
+    });
 
     await page.getByRole("button", { name: "历史", exact: true }).click();
     const historyRow = page.getByText(TEST_FIXTURE.feedbackHistory.title, { exact: true }).locator("..").locator("..");

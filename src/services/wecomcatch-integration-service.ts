@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/generated/prisma/client";
+import {
+  formatFeedbackCommunicationSummary,
+  normalizeFeedbackUseDecision,
+} from "@/lib/feedback-communication";
 import { generateWeComBridgeJson } from "@/services/wecom-bridge-service";
 import { buildWccDirectorySnapshot } from "@/services/wecomcatch-directory-service";
 
@@ -26,7 +30,12 @@ export interface WccCandidateBatch {
   messages: WccMessage[];
   subjects: WccSubject[];
   semesterSuggestion?: string | null;
-  triage?: { classifier?: string; modelName?: string; reasonCodes?: string[] };
+  triage?: {
+    classifier?: string;
+    modelName?: string;
+    reasonCodes?: string[];
+    feedbackUse?: unknown;
+  };
 }
 
 function stableDraftId(batchId: string, studentId: string, messageIds: string[]) {
@@ -88,18 +97,33 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
     const matched = objectValue(record.matchedStudent);
     const student = current.get(String(matched.id || ""));
     if (!student) continue;
-    const summary = String(record.summaryForStudentTrack || record.summary || "").trim();
+    const summary = String(record.factualSummary || record.summaryForStudentTrack || record.summary || "").trim();
     if (!summary) continue;
-    const messageIds = Array.isArray(objectValue(record.source).messageIds)
-      ? objectValue(record.source).messageIds as string[]
-      : uniqueMessageIds;
+    const feedbackUse = normalizeFeedbackUseDecision(record.feedbackUse);
+    if (!feedbackUse?.relevant || feedbackUse.priority === "low") continue;
+    const messageIds = Array.isArray(record.messageIds)
+      ? record.messageIds.filter((value): value is string => typeof value === "string" && uniqueMessageIds.includes(value))
+      : Array.isArray(objectValue(record.source).messageIds)
+        ? (objectValue(record.source).messageIds as string[]).filter((value) => uniqueMessageIds.includes(value))
+        : uniqueMessageIds;
+    const occurredAt = batch.messages
+      .filter((message) => messageIds.includes(message.id) && message.sentAt)
+      .map((message) => String(message.sentAt))
+      .sort()
+      .at(-1) ?? "";
     const id = stableDraftId(batch.batchId, student.id, messageIds);
+    const communicationSummary = formatFeedbackCommunicationSummary(
+      summary,
+      occurredAt,
+      feedbackUse,
+    );
+    const evidence = Array.isArray(record.evidence) ? record.evidence : [];
     const parsedResult = {
       students: [{
         name: student.name,
         scores: { A: null, B: null, C: null },
         events: [],
-        communication: { type: String(record.target || "家长"), summary },
+        communication: { type: String(record.target || "家长"), summary: communicationSummary },
         attentionSignals: Array.isArray(record.attentionSignals) ? record.attentionSignals : [],
       }],
       alert_suggestion: "",
@@ -107,7 +131,8 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
         batchId: batch.batchId,
         conversation: batch.conversation,
         messageIds,
-        evidence: Array.isArray(record.evidence) ? record.evidence : [],
+        evidence,
+        feedbackUse,
         semesterSuggestion: batch.semesterSuggestion || null,
         triage: batch.triage || null,
       },
@@ -119,7 +144,9 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
         rawText: JSON.stringify({
           batchId: batch.batchId,
           conversation: batch.conversation,
-          messages: batch.messages,
+          messageIds,
+          evidence,
+          triage: batch.triage || null,
         }),
         parsedResult: JSON.stringify(parsedResult),
         status: "pending",

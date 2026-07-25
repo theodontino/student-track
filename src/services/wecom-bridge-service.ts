@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { FEEDBACK_COMMUNICATION_CATEGORIES } from "@/lib/feedback-communication";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 
@@ -66,7 +67,7 @@ const candidateBridgeSchema = {
         additionalProperties: false,
         required: [
           "kind", "source", "matchedStudent", "occurredAt", "sessionCode", "target",
-          "summary", "summaryForStudentTrack", "feedbackContext", "attentionSignals", "confidence",
+          "summary", "summaryForStudentTrack", "feedbackUse", "feedbackContext", "attentionSignals", "confidence",
         ],
         properties: {
           kind: { type: "string", enum: ["communication"] },
@@ -96,6 +97,16 @@ const candidateBridgeSchema = {
           target: { type: "string" },
           summary: { type: "string" },
           summaryForStudentTrack: { type: "string" },
+          feedbackUse: {
+            type: "object",
+            additionalProperties: false,
+            required: ["relevant", "category", "priority"],
+            properties: {
+              relevant: { type: "boolean" },
+              category: { type: "string", enum: FEEDBACK_COMMUNICATION_CATEGORIES },
+              priority: { type: "string", enum: ["high", "medium", "low"] },
+            },
+          },
           feedbackContext: {
             type: "object",
             additionalProperties: false,
@@ -143,7 +154,7 @@ const groundedBridgeSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["matchedStudent", "messageIds", "factualSummary", "evidence", "confidence"],
+        required: ["matchedStudent", "messageIds", "factualSummary", "feedbackUse", "evidence", "confidence"],
         properties: {
           matchedStudent: {
             type: "object",
@@ -156,6 +167,16 @@ const groundedBridgeSchema = {
           },
           messageIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
           factualSummary: { type: "string", minLength: 10, maxLength: 300 },
+          feedbackUse: {
+            type: "object",
+            additionalProperties: false,
+            required: ["relevant", "category", "priority"],
+            properties: {
+              relevant: { type: "boolean", enum: [true] },
+              category: { type: "string", enum: FEEDBACK_COMMUNICATION_CATEGORIES },
+              priority: { type: "string", enum: ["high", "medium"] },
+            },
+          },
           evidence: {
             type: "array",
             minItems: 1,
@@ -244,6 +265,9 @@ export function validateWeComBridgeJson(
         : [];
       const evidence = Array.isArray(record?.evidence) ? record.evidence : [];
       const summary = clean(record?.factualSummary);
+      const feedbackUse = record?.feedbackUse && typeof record.feedbackUse === "object"
+        ? record.feedbackUse as Record<string, unknown>
+        : null;
       if (
         !student
         || typeof student.id !== "string"
@@ -253,6 +277,10 @@ export function validateWeComBridgeJson(
         || messageIds.length === 0
         || summary.length < 10
         || summary.length > 300
+        || !feedbackUse
+        || feedbackUse.relevant !== true
+        || !FEEDBACK_COMMUNICATION_CATEGORIES.includes(feedbackUse.category as typeof FEEDBACK_COMMUNICATION_CATEGORIES[number])
+        || !["high", "medium"].includes(clean(feedbackUse.priority))
         || evidence.length < 1
         || evidence.length > 3
       ) {
@@ -287,6 +315,9 @@ export function validateWeComBridgeJson(
     const student = record?.matchedStudent && typeof record.matchedStudent === "object"
       ? record.matchedStudent as Record<string, unknown>
       : null;
+    const feedbackUse = record?.feedbackUse && typeof record.feedbackUse === "object"
+      ? record.feedbackUse as Record<string, unknown>
+      : null;
     if (
       record?.kind !== "communication"
       || !source
@@ -294,6 +325,10 @@ export function validateWeComBridgeJson(
       || !student
       || typeof student.id !== "string"
       || typeof record.summaryForStudentTrack !== "string"
+      || !feedbackUse
+      || typeof feedbackUse.relevant !== "boolean"
+      || !FEEDBACK_COMMUNICATION_CATEGORIES.includes(feedbackUse.category as typeof FEEDBACK_COMMUNICATION_CATEGORIES[number])
+      || !["high", "medium", "low"].includes(clean(feedbackUse.priority))
       || !Array.isArray(record.attentionSignals)
     ) {
       throw new WeComExtractionError("schema_invalid", "LLM 返回的企微记录未通过 Schema 校验");
@@ -521,7 +556,7 @@ export async function generateWeComBridgeJson(
 学生候选：
 ${JSON.stringify(roster.map((student) => ({ id: student.id, name: student.name, studentId: student.studentId })), null, 2)}
 
-输出必须严格符合 JSON Schema。每条记录只能使用候选学生 ID，matchedStudent.confidence 和 confidence 都必须基于原文判断。messageIds 只引用支撑该事实的输入消息。evidence 必须提供 1 至 3 条输入消息中逐字存在的短句，不得改写标点、措辞或补充推断。factualSummary 只概括已经明确发生或明确约定的事实；不得生成建议、语气、评价、课次、沟通对象、未来计划或关注标签。没有足够逐字证据时 records 返回空数组。
+输出必须严格符合 JSON Schema。只保留能改善后续课后反馈的中高价值信息：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。收悉、感谢、排课、报名缴费、接送、普通请假、文件发送、群通知和无新增事实的寒暄不得输出。越接近当前时间且尚未被后续消息取代的信息，priority 越高。每条记录只能使用候选学生 ID，matchedStudent.confidence 和 confidence 都必须基于原文判断；feedbackUse.relevant 必须为 true，priority 只能为 high 或 medium。messageIds 只引用支撑该事实的输入消息。evidence 必须提供 1 至 3 条输入消息中逐字存在的短句，不得改写标点、措辞或补充推断。factualSummary 只概括已经明确发生或明确约定的事实；不得生成建议、课次、沟通对象或关注标签。没有足够逐字证据或没有反馈价值时 records 返回空数组。
 
 当前连续交流段：
 ${text}`
@@ -530,7 +565,7 @@ ${text}`
 学生名单：
 ${JSON.stringify(roster, null, 2)}
 
-输出必须严格符合提供的 JSON Schema。只生成 kind=communication 的记录；没有有价值的新事实时 records 返回空数组。不能明确匹配唯一学生时 confidence 填 low，不得臆测。没有明确课次时 sessionCode 填 null。summaryForStudentTrack 保留家长关注点、学生状态、后续反馈口径或行动建议。attentionSignals 只根据明确文字事实识别 academic-performance、learning-confidence、parent-concern、withdrawal-intent，没有时返回空数组。输入提供的会话 ID 和消息 ID 必须照抄，messageIds 只包含支撑记录的输入消息 ID。只是重复 recentCommunications 且没有新事实、新变化或新行动时不生成记录。
+输出必须严格符合提供的 JSON Schema。只生成 kind=communication 的记录；只有对后续课后反馈有中高价值的信息才令 feedbackUse.relevant=true 并输出：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。收悉、感谢、排课、报名缴费、接送、普通请假、文件发送、群通知和无新增事实的寒暄不得输出。越接近当前时间且尚未被后续消息取代的信息，priority 越高。没有有价值的新事实时 records 返回空数组。不能明确匹配唯一学生时 confidence 填 low，不得臆测。没有明确课次时 sessionCode 填 null。summaryForStudentTrack 只保留家长关注点、学生状态和仍需兑现的行动。attentionSignals 只根据明确文字事实识别 academic-performance、learning-confidence、parent-concern、withdrawal-intent，没有时返回空数组。输入提供的会话 ID 和消息 ID 必须照抄，messageIds 只包含支撑记录的输入消息 ID。只是重复 recentCommunications 且没有新事实、新变化或新行动时不生成记录。
 
 当前连续交流段：
 ${text}`;

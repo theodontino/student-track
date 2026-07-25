@@ -31,7 +31,7 @@ const MAX_BATCH_MESSAGES = 30;
 const MAX_SINGLE_MESSAGE_CHARACTERS = 20_000;
 const CONVERSATION_GAP_MS = 6 * 60 * 60 * 1000;
 const MAX_SYNC_WAIT_MS = 6 * 60 * 60 * 1000;
-export const WECOM_PROMPT_VERSION = "wecom-grounded-v4";
+export const WECOM_PROMPT_VERSION = "wecom-grounded-v5-feedback-triage";
 
 interface WeComMessage {
   id?: string;
@@ -330,6 +330,7 @@ export function decorateGroundedWeComRecords(records: unknown[], batch: Extracti
         .filter((messageId) => allowedMessageIds.has(messageId)))]
       : [];
     const matchedStudent = objectValue(record.matchedStudent);
+    const feedbackUse = objectValue(record.feedbackUse);
     const occurredAt = batch.messages
       .filter((message) => messageIds.includes(message.id))
       .reduce<Date | null>((latest, message) => !latest || message.sentAt > latest ? message.sentAt : latest, null);
@@ -354,6 +355,7 @@ export function decorateGroundedWeComRecords(records: unknown[], batch: Extracti
       target: "家长",
       summary: String(record.factualSummary || ""),
       summaryForStudentTrack: String(record.factualSummary || ""),
+      feedbackUse,
       feedbackContext: { toneHint: "", nextAction: "" },
       attentionSignals: [],
       confidence: record.confidence,

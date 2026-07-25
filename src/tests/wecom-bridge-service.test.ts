@@ -166,6 +166,7 @@ describe("wecom bridge service", () => {
         matchedStudent: { id: "student-1", confidence: "high" },
         messageIds: ["message-1"],
         factualSummary: "家长明确表示学生近期希望获得更多鼓励。",
+        feedbackUse: { relevant: true, category: "learning-confidence", priority: "high" },
         evidence: [{ messageId: "message-1", quote: "最近希望多鼓励" }],
         confidence: "high",
       }],
@@ -178,6 +179,7 @@ describe("wecom bridge service", () => {
     })).resolves.toMatchObject({ bridgeJson: { records: [{ factualSummary: expect.any(String) }] } });
     const schema = mocks.completionCreate.mock.calls[0][0].response_format.json_schema.schema;
     expect(schema.properties.records.items.required).toContain("evidence");
+    expect(schema.properties.records.items.required).toContain("feedbackUse");
   });
 
   it("rejects invented evidence without spending a retry", async () => {
@@ -188,6 +190,7 @@ describe("wecom bridge service", () => {
         matchedStudent: { id: "student-1", confidence: "high" },
         messageIds: ["message-1"],
         factualSummary: "家长明确表示学生准备参加额外课程。",
+        feedbackUse: { relevant: true, category: "parent-concern", priority: "medium" },
         evidence: [{ messageId: "message-1", quote: "准备参加额外课程" }],
         confidence: "high",
       }],

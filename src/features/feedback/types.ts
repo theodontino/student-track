@@ -3,6 +3,11 @@ import type { TeachingContext } from "@/features/teaching-context";
 import type { AiWorkflowState } from "@/features/ai-workflow";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
+import type {
+  AssessmentImportItem,
+  LessonFeedbackMaterial,
+  StudentAssessmentEvidence,
+} from "@/lib/feedback-materials";
 
 export interface FeedbackCard {
   id: string;
@@ -27,6 +32,8 @@ export interface BatchFeedbackHistoryState {
   className: string;
   students: FeedbackCard[];
   total: number;
+  lessonMaterial?: LessonFeedbackMaterial;
+  assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
 }
 
 export interface SingleFeedbackHistoryState {
@@ -69,8 +76,17 @@ export interface FeedbackWorkspaceState {
   singleReviewStatus?: FeedbackReviewStatus;
   singleReviewIssues?: string[];
   workflow?: AiWorkflowState;
+  groupFeedbackRaw?: string;
+  assessmentBriefRaw?: string;
+  lessonMaterial?: LessonFeedbackMaterial;
+  assessmentImports?: AssessmentImportItem[];
 }
 
-export interface FeedbackStudentOption { id: string; name: string; class: string }
+export interface FeedbackStudentOption {
+  id: string;
+  name: string;
+  class: string;
+  studentId?: string;
+}
 
 export type FeedbackStep = "prepare" | "extract" | "review" | "generate" | "export";

@@ -82,6 +82,11 @@ describe("/api/report/feedback", () => {
         content: expect.stringContaining("近期家校沟通"),
       })],
     }));
+    expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
+      messages: [expect.objectContaining({
+        content: expect.stringContaining("【本次生成边界】课次：VITEST-SINGLE；学生ID：student-1"),
+      })],
+    }));
   });
 
   it("retries once when the LLM returns empty content", async () => {
@@ -98,5 +103,34 @@ describe("/api/report/feedback", () => {
 
     await expect(response.json()).resolves.toMatchObject({ feedback: "重试后反馈", reviewStatus: "passed" });
     expect(mocks.completionCreate).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects one-student evidence bound to another session", async () => {
+    const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        studentId: "student-1",
+        sessionCode: "VITEST-SINGLE",
+        assessmentEvidence: {
+          sessionCode: "OTHER-SESSION",
+          studentId: "student-1",
+          reportTitle: "测试报告",
+          reportDate: "2099-01-01",
+          totalQuestions: 1,
+          correctRate: 100,
+          cohortAverageRate: null,
+          knowledgePoints: [],
+          wrongItems: [],
+          similarPracticeCount: 0,
+        },
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("课次不一致"),
+    });
+    expect(mocks.buildFeedbackContext).not.toHaveBeenCalled();
   });
 });

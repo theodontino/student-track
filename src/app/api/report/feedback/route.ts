@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
+import {
+  isLessonFeedbackMaterial,
+  isStudentAssessmentEvidence,
+} from "@/lib/feedback-materials";
 import { buildFeedbackContext } from "@/services/feedback-context-service";
-import { generateReviewedFeedback } from "@/services/feedback-generation-service";
+import {
+  composeFeedbackPromptContext,
+  generateReviewedFeedback,
+} from "@/services/feedback-generation-service";
 import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
@@ -29,10 +36,34 @@ async function reviewedFeedback(
 // POST /api/report/feedback - 按课次或时间段生成家校反馈
 export async function POST(request: NextRequest) {
   try {
-    const { studentId, days, sessionCode } = await request.json();
+    const body = await request.json() as Record<string, unknown>;
+    const studentId = typeof body.studentId === "string" ? body.studentId : "";
+    const sessionCode = typeof body.sessionCode === "string" ? body.sessionCode : "";
+    const days = typeof body.days === "number" ? body.days : undefined;
+    const submittedLessonMaterial = isLessonFeedbackMaterial(body.lessonMaterial)
+      ? body.lessonMaterial
+      : undefined;
+    const submittedAssessmentEvidence = isStudentAssessmentEvidence(body.assessmentEvidence)
+      ? body.assessmentEvidence
+      : undefined;
     if (!studentId) return NextResponse.json({ error: "缺少学生ID" }, { status: 400 });
 
     if (sessionCode) {
+      if (submittedLessonMaterial?.sessionCode && submittedLessonMaterial.sessionCode !== sessionCode) {
+        return NextResponse.json({ error: "课程材料与当前课次不一致" }, { status: 400 });
+      }
+      if (submittedAssessmentEvidence?.sessionCode && submittedAssessmentEvidence.sessionCode !== sessionCode) {
+        return NextResponse.json({ error: "PDF 证据与当前课次不一致" }, { status: 400 });
+      }
+      if (submittedAssessmentEvidence?.studentId && submittedAssessmentEvidence.studentId !== studentId) {
+        return NextResponse.json({ error: "PDF 证据与当前学生不一致" }, { status: 400 });
+      }
+      const lessonMaterial = submittedLessonMaterial
+        ? { ...submittedLessonMaterial, sessionCode }
+        : undefined;
+      const assessmentEvidence = submittedAssessmentEvidence
+        ? { ...submittedAssessmentEvidence, sessionCode, studentId }
+        : undefined;
       try {
         const feedbackContext = await buildFeedbackContext(prisma, sessionCode);
         const studentContext = feedbackContext.students.find((student) => student.id === studentId);
@@ -44,8 +75,14 @@ export async function POST(request: NextRequest) {
           async () => {
             const result = await reviewedFeedback(
               studentContext.name,
-              studentContext.promptContext,
-              "90-140字",
+              composeFeedbackPromptContext({
+                studentContext: studentContext.promptContext,
+                sessionCode,
+                studentId,
+                lessonMaterial,
+                assessmentEvidence,
+              }),
+              "120-170字",
               feedbackContext.students.filter((student) => student.id !== studentId).map((student) => student.name),
             );
             if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();

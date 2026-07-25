@@ -100,6 +100,7 @@ describe("wecom incremental ledger and rollback", () => {
       sessionCode: session!.code,
       target: "家长",
       summary: "测试增量回滚沟通",
+      feedbackUse: { relevant: true, category: "parent-concern", priority: "high" },
       attentionSignals: [{ reason: "parent-concern", confidence: "high", evidenceSummary: "家长明确表示担心" }],
     }] });
     await saveWeComBatchCandidate(prisma, operation.id, jsonText);
@@ -212,6 +213,7 @@ describe("wecom incremental ledger and rollback", () => {
         sessionCode: session!.code,
         target: "家长",
         summary: `共享标签沟通 ${index}`,
+        feedbackUse: { relevant: true, category: "parent-concern", priority: "high" },
         attentionSignals: [{
           reason: "parent-concern",
           confidence: "high",
@@ -272,6 +274,7 @@ describe("wecom incremental ledger and rollback", () => {
       sessionCode: session!.code,
       target: "家长",
       summary: "重试后写入",
+      feedbackUse: { relevant: true, category: "learning-difficulty", priority: "medium" },
     }] });
     const retryOperation = await prisma.weComImportOperation.create({
       data: {

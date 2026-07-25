@@ -154,4 +154,38 @@ describe("wecom import service", () => {
     });
     expect(result.plans[0]?.summary).toBe("旧候选文件仍可导入");
   });
+
+  it("persists only WCC records explicitly triaged as useful for feedback", async () => {
+    const student = await prisma.student.findFirst({
+      select: { id: true, name: true, studentId: true },
+      orderBy: { studentId: "asc" },
+    });
+    expect(student).toBeTruthy();
+    const base = {
+      kind: "communication",
+      matchedStudent: { ...student, confidence: "high" },
+      target: "家长",
+      occurredAt: "2026-07-20T08:00:00.000Z",
+    };
+    const result = await planWeComCommunicationImport(prisma, {
+      requireFeedbackUse: true,
+      jsonText: JSON.stringify({ records: [
+        {
+          ...base,
+          summaryForStudentTrack: "家长担心孩子最近觉得课程难度增加。",
+          feedbackUse: { relevant: true, category: "parent-concern", priority: "high" },
+        },
+        {
+          ...base,
+          summaryForStudentTrack: "家长确认周日上午十点到课。",
+          feedbackUse: { relevant: false, category: "temporary-learning-context", priority: "low" },
+        },
+      ] }),
+    });
+
+    expect(result).toMatchObject({ communicationCandidateCount: 2, importableCount: 1, createCount: 1 });
+    expect(result.plans[0]?.summary).toContain("类别: parent-concern");
+    expect(result.plans[0]?.summary).toContain("实际沟通: 2026-07-20T08:00:00.000Z");
+    expect(result.plans[0]?.summary).not.toContain("周日上午十点");
+  });
 });

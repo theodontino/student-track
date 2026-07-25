@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import {
+  composeFeedbackPromptContext,
   generateReviewedFeedback,
   reviewFeedbackDraft,
 } from "@/services/feedback-generation-service";
@@ -13,6 +15,19 @@ function clientWith(...contents: string[]) {
 }
 
 describe("feedback generation review", () => {
+  it("keeps class copy separate from individual student evidence", () => {
+    const context = composeFeedbackPromptContext({
+      studentContext: "学生甲，本次个人记录：测验4分。",
+      lessonMaterial: parseLessonFeedbackMaterial(
+        "【课堂内容】\n电解质分类\n【课堂重点】\n概念判断",
+        "主要考察以下内容：\n1. 电解质概念\n孩子这次存在一定错误。",
+      ),
+    });
+    expect(context).toContain("课程公共材料");
+    expect(context).toContain("不得据此断言该生掌握或失误");
+    expect(context).not.toContain("存在一定错误");
+  });
+
   it("turns an internal analysis into a separately reviewed parent message", async () => {
     const draft = clientWith("本次主动订正错题；近期记录显示学习投入较稳定，可建议继续复盘。 ");
     const review = clientWith(JSON.stringify({ verdict: "pass", feedback: "今天孩子能够主动订正错题，近期学习投入也比较稳定。建议继续保持课后复盘的习惯，把订正过程中的思路及时整理下来。", issues: [] }));
@@ -37,6 +52,12 @@ describe("feedback generation review", () => {
     expect(review.create).toHaveBeenCalledWith(expect.objectContaining({ model: "review-model", temperature: 0 }));
     expect(draft.create.mock.calls[0][0].messages[0].content).toContain("内部分析草稿");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("内部分析只是辅助材料");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("三种真实感受");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("小成长叙事");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("只有明确的前后证据");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("不得将全学期常态对照改写");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("先不看答案重做具体题目");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("整体表现优异");
   });
 
   it("uses a supported revision and retains the original draft", async () => {
