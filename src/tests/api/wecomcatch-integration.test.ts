@@ -10,6 +10,7 @@ vi.mock("@/services/wecomcatch-integration-service", async (importOriginal) => {
 
 import { GET as getDirectory } from "@/app/api/integrations/wecomcatch/v1/directory/route";
 import { POST as postCandidates } from "@/app/api/integrations/wecomcatch/v1/candidate-batches/route";
+import { WeComExtractionError } from "@/services/wecom-bridge-service";
 
 function request(path: string, init: RequestInit = {}) {
   return new NextRequest(`http://127.0.0.1:3000${path}`, {
@@ -50,5 +51,40 @@ describe("WCC versioned integration", () => {
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toMatchObject({ status: "pending_review" });
     expect(mocks.accept).toHaveBeenCalledOnce();
+  });
+
+  it("returns a controlled item error for a real identity conflict", async () => {
+    mocks.accept.mockRejectedValue(new Error("directory_conflict"));
+    const response = await postCandidates(request("/api/integrations/wecomcatch/v1/candidate-batches", {
+      method: "POST",
+      body: JSON.stringify({ contractVersion: "wcc.student-track-candidates.v1" }),
+    }));
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "directory_conflict",
+        scope: "item",
+        retryable: false,
+        message: "学生身份需要重新对齐",
+      },
+    });
+  });
+
+  it("does not expose model output or internal errors in the response", async () => {
+    mocks.accept.mockRejectedValue(new WeComExtractionError(
+      "evidence_mismatch",
+      "private provider response and local path",
+    ));
+    const response = await postCandidates(request("/api/integrations/wecomcatch/v1/candidate-batches", {
+      method: "POST",
+      body: JSON.stringify({ contractVersion: "wcc.student-track-candidates.v1" }),
+    }));
+    const body = await response.json();
+    expect(response.status).toBe(422);
+    expect(body).toMatchObject({
+      error: { code: "evidence_mismatch", scope: "item", retryable: false },
+    });
+    expect(JSON.stringify(body)).not.toContain("private provider");
+    expect(JSON.stringify(body)).not.toContain("local path");
   });
 });

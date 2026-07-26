@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   generate: vi.fn(),
@@ -15,9 +15,14 @@ vi.mock("@/services/wecomcatch-directory-service", () => ({
 import { acceptWccCandidateBatch } from "@/services/wecomcatch-integration-service";
 
 describe("WCC candidate acceptance", () => {
+  beforeEach(() => {
+    mocks.generate.mockReset();
+    mocks.directory.mockReset();
+  });
+
   it("stores only a triaged summary and short evidence, not the full chat batch", async () => {
     const student = { id: "student-1", name: "张三", studentId: "S001", classId: "class-1" };
-    mocks.directory.mockResolvedValue({ version: "directory-v1" });
+    mocks.directory.mockResolvedValue({ version: "directory-current" });
     mocks.generate.mockResolvedValue({
       bridgeJson: {
         records: [{
@@ -44,7 +49,7 @@ describe("WCC candidate acceptance", () => {
     const result = await acceptWccCandidateBatch(prisma as never, {
       contractVersion: "wcc.student-track-candidates.v1",
       batchId: "batch-1",
-      directoryVersion: "directory-v1",
+      directoryVersion: "directory-from-wcc-sqlite",
       source: { id: "source-1" },
       conversation: { id: "conversation-1", title: "张三妈妈" },
       messages: [
@@ -66,7 +71,13 @@ describe("WCC candidate acceptance", () => {
       },
     });
 
-    expect(result).toMatchObject({ status: "pending_review", drafts: [{ studentId: student.id }] });
+    expect(result).toMatchObject({
+      status: "pending_review",
+      drafts: [{ studentId: student.id }],
+      directoryRevalidated: true,
+      receivedDirectoryVersion: "directory-from-wcc-sqlite",
+      currentDirectoryVersion: "directory-current",
+    });
     const create = upsert.mock.calls[0][0].create;
     const rawText = JSON.parse(create.rawText);
     expect(create.rawText).not.toContain("收到老师，周日见");
@@ -85,5 +96,61 @@ describe("WCC candidate acceptance", () => {
     });
     expect(create.parsedResult).toContain("家长担心孩子最近觉得课程难度增加");
     expect(create.parsedResult).toContain("类别: parent-concern");
+  });
+
+  it("rejects a stale subject only when its stable identity actually changed", async () => {
+    mocks.directory.mockResolvedValue({ version: "directory-current" });
+    const prisma = {
+      student: {
+        findMany: vi.fn(async () => [{
+          id: "student-1",
+          name: "李四",
+          studentId: "S001",
+          classId: "class-2",
+        }]),
+      },
+      draftRecord: { upsert: vi.fn() },
+    };
+    await expect(acceptWccCandidateBatch(prisma as never, {
+      contractVersion: "wcc.student-track-candidates.v1",
+      batchId: "batch-conflict",
+      directoryVersion: "directory-old",
+      source: { id: "source-1" },
+      conversation: { id: "conversation-1", title: "测试会话" },
+      messages: [{ id: "message-1", content: "固定合成消息" }],
+      subjects: [{ id: "student-1", name: "张三", studentId: "S001", classId: "class-1" }],
+    })).rejects.toThrow("directory_conflict");
+    expect(mocks.generate).not.toHaveBeenCalled();
+  });
+
+  it("allows a class transfer when id, name, and student number remain stable", async () => {
+    mocks.directory.mockResolvedValue({ version: "directory-current" });
+    mocks.generate.mockResolvedValue({
+      bridgeJson: { records: [] },
+      diagnostics: { modelName: "test-model" },
+    });
+    const prisma = {
+      student: {
+        findMany: vi.fn(async () => [{
+          id: "student-1",
+          name: "张三",
+          studentId: "S001",
+          classId: "class-new",
+        }]),
+      },
+      draftRecord: { upsert: vi.fn() },
+    };
+    await expect(acceptWccCandidateBatch(prisma as never, {
+      contractVersion: "wcc.student-track-candidates.v1",
+      batchId: "batch-transfer",
+      directoryVersion: "directory-old",
+      source: { id: "source-1" },
+      conversation: { id: "conversation-1", title: "测试会话" },
+      messages: [{ id: "message-1", content: "固定合成消息" }],
+      subjects: [{ id: "student-1", name: "张三", studentId: "S001", classId: "class-old" }],
+    })).resolves.toMatchObject({
+      status: "no_value",
+      directoryRevalidated: true,
+    });
   });
 });

@@ -35,6 +35,7 @@ export type WeComExtractionErrorCode =
   | "schema_invalid"
   | "network_error"
   | "provider_error"
+  | "model_not_found"
   | "oversized_message"
   | "evidence_mismatch";
 
@@ -242,6 +243,60 @@ function normalizeEvidenceText(value: string) {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 
+function groundedReferenceContext(
+  sourceText: string,
+  messages: Array<{ id: string; content: string }>,
+) {
+  const referenceToId = new Map<string, string>();
+  const idToReference = new Map<string, string>();
+  messages.forEach((message, index) => {
+    const reference = `M${String(index + 1).padStart(3, "0")}`;
+    referenceToId.set(reference, message.id);
+    idToReference.set(message.id, reference);
+  });
+  let modelText = sourceText;
+  for (const [messageId, reference] of idToReference) {
+    modelText = modelText
+      .replaceAll(`[消息ID:${messageId}]`, `[消息引用:${reference}]`)
+      .replaceAll(`[${messageId}]`, `[消息引用:${reference}]`);
+  }
+  return {
+    modelText,
+    modelMessages: messages.map((message) => ({
+      id: idToReference.get(message.id) as string,
+      content: message.content,
+    })),
+    referenceToId,
+  };
+}
+
+function restoreGroundedMessageIds(
+  value: unknown,
+  referenceToId: Map<string, string>,
+) {
+  const restored = structuredClone(value) as Record<string, unknown>;
+  if (!Array.isArray(restored.records)) return restored;
+  for (const recordValue of restored.records) {
+    if (!recordValue || typeof recordValue !== "object") continue;
+    const record = recordValue as Record<string, unknown>;
+    if (Array.isArray(record.messageIds)) {
+      record.messageIds = record.messageIds.map((reference) => (
+        typeof reference === "string" ? referenceToId.get(reference) ?? reference : reference
+      ));
+    }
+    if (Array.isArray(record.evidence)) {
+      for (const evidenceValue of record.evidence) {
+        if (!evidenceValue || typeof evidenceValue !== "object") continue;
+        const evidence = evidenceValue as Record<string, unknown>;
+        if (typeof evidence.messageId === "string") {
+          evidence.messageId = referenceToId.get(evidence.messageId) ?? evidence.messageId;
+        }
+      }
+    }
+  }
+  return restored;
+}
+
 export function validateWeComBridgeJson(
   value: Record<string, unknown>,
   groundedMessages?: Array<{ id: string; content: string }>,
@@ -258,10 +313,13 @@ export function validateWeComBridgeJson(
       const student = record?.matchedStudent && typeof record.matchedStudent === "object"
         ? record.matchedStudent as Record<string, unknown>
         : null;
-      const messageIds = Array.isArray(record?.messageIds)
-        ? [...new Set(record.messageIds.filter((item): item is string => (
+      const rawMessageIds = Array.isArray(record?.messageIds)
+        ? record.messageIds.filter((item): item is string => (
           typeof item === "string" && item.trim().length > 0
-        )))]
+        ))
+        : [];
+      const messageIds = Array.isArray(record?.messageIds)
+        ? [...new Set(rawMessageIds)]
         : [];
       const evidence = Array.isArray(record?.evidence) ? record.evidence : [];
       const summary = clean(record?.factualSummary);
@@ -275,6 +333,7 @@ export function validateWeComBridgeJson(
         || student.confidence !== "high"
         || record?.confidence !== "high"
         || messageIds.length === 0
+        || messageIds.length !== rawMessageIds.length
         || summary.length < 10
         || summary.length > 300
         || !feedbackUse
@@ -432,6 +491,12 @@ async function createStructuredCompletion(
 function classifyProviderError(error: unknown): WeComExtractionError {
   if (error instanceof WeComExtractionError) return error;
   if (isNetworkError(error)) return new WeComExtractionError("network_error", "LLM 网络请求失败");
+  if (
+    errorStatus(error) === 404
+    && /model|模型/i.test(errorText(error))
+  ) {
+    return new WeComExtractionError("model_not_found", "配置的 LLM 模型不存在");
+  }
   return new WeComExtractionError("provider_error", `LLM 服务拒绝请求（HTTP ${errorStatus(error) || "未知"}）`);
 }
 
@@ -550,16 +615,21 @@ export async function generateWeComBridgeJson(
   if (roster.length === 0) throw new Error("未能从聊天内容中确定候选学生，请先补充学生姓名");
 
   const grounded = Array.isArray(input.groundedMessages);
+  const referenceContext = grounded
+    ? groundedReferenceContext(text, input.groundedMessages ?? [])
+    : null;
+  const promptText = referenceContext?.modelText ?? text;
+  const validationMessages = referenceContext?.modelMessages ?? input.groundedMessages;
   const prompt = grounded
     ? `你是 Student Track 的企微事实提取器。只提取当前连续交流段中能由原文逐字证明、且能唯一绑定学生的长期沟通事实。
 
 学生候选：
 ${JSON.stringify(roster.map((student) => ({ id: student.id, name: student.name, studentId: student.studentId })), null, 2)}
 
-输出必须严格符合 JSON Schema。只保留能改善后续课后反馈的中高价值信息：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。收悉、感谢、排课、报名缴费、接送、普通请假、文件发送、群通知和无新增事实的寒暄不得输出。越接近当前时间且尚未被后续消息取代的信息，priority 越高。每条记录只能使用候选学生 ID，matchedStudent.confidence 和 confidence 都必须基于原文判断；feedbackUse.relevant 必须为 true，priority 只能为 high 或 medium。messageIds 只引用支撑该事实的输入消息。evidence 必须提供 1 至 3 条输入消息中逐字存在的短句，不得改写标点、措辞或补充推断。factualSummary 只概括已经明确发生或明确约定的事实；不得生成建议、课次、沟通对象或关注标签。没有足够逐字证据或没有反馈价值时 records 返回空数组。
+输出必须严格符合 JSON Schema。只保留能改善后续课后反馈的中高价值信息：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。收悉、感谢、排课、报名缴费、接送、普通请假、文件发送、群通知和无新增事实的寒暄不得输出。越接近当前时间且尚未被后续消息取代的信息，priority 越高。每条记录只能使用候选学生 ID，matchedStudent.confidence 和 confidence 都必须基于原文判断；feedbackUse.relevant 必须为 true，priority 只能为 high 或 medium。messageIds 只引用支撑该事实的 M001、M002 等短消息引用，不得猜测原始消息 ID。evidence.messageId 使用同一短引用。evidence 必须提供 1 至 3 条输入消息中逐字存在的短句，不得改写标点、措辞或补充推断。factualSummary 只概括已经明确发生或明确约定的事实；不得生成建议、课次、沟通对象或关注标签。没有足够逐字证据或没有反馈价值时 records 返回空数组。
 
 当前连续交流段：
-${text}`
+${promptText}`
     : `你是 Student Track 的企微家校沟通提取器。请从当前连续交流段中提取对“课后反馈”有长期价值、且能明确绑定到某个学生的家校沟通信息。
 
 学生名单：
@@ -575,27 +645,53 @@ ${text}`;
   const schema = grounded ? groundedBridgeSchema : candidateBridgeSchema;
   const first = await createStructuredCompletion(client, model, prompt, 0.1, schema, options.onRetry);
   try {
+    const extracted = extractCompletion(
+      first.response,
+      model,
+      first.protocol,
+      validationMessages,
+      candidateStudentIds,
+    );
     return {
       sourceLabel,
-      ...extractCompletion(first.response, model, first.protocol, input.groundedMessages, candidateStudentIds),
+      ...extracted,
+      bridgeJson: referenceContext
+        ? restoreGroundedMessageIds(extracted.bridgeJson, referenceContext.referenceToId)
+        : extracted.bridgeJson,
     };
   } catch (error) {
-    if (!(error instanceof WeComExtractionError) || error.code !== "schema_invalid") throw error;
+    if (
+      !(error instanceof WeComExtractionError)
+      || !["schema_invalid", "evidence_mismatch"].includes(error.code)
+    ) throw error;
     options.onRetry?.("schema");
   }
 
-  const retryPrompt = `${prompt}\n\n上一次输出未通过 Schema 校验。请重新完整提取，只返回符合 Schema 的 JSON。`;
+  const retryPrompt = `${prompt}\n\n上一次输出未通过结构或证据校验。请重新完整提取，只返回符合 Schema 的 JSON；消息引用必须逐字复制 M001、M002 等短编号，证据 quote 必须逐字存在于对应消息。`;
   const retry = await createStructuredCompletion(client, model, retryPrompt, 0, schema, options.onRetry);
   try {
+    const extracted = extractCompletion(
+      retry.response,
+      model,
+      retry.protocol,
+      validationMessages,
+      candidateStudentIds,
+    );
     return {
       sourceLabel,
-      ...extractCompletion(retry.response, model, retry.protocol, input.groundedMessages, candidateStudentIds),
+      ...extracted,
+      bridgeJson: referenceContext
+        ? restoreGroundedMessageIds(extracted.bridgeJson, referenceContext.referenceToId)
+        : extracted.bridgeJson,
     };
   } catch (error) {
-    if (error instanceof WeComExtractionError && error.code === "schema_invalid") {
+    if (
+      error instanceof WeComExtractionError
+      && ["schema_invalid", "evidence_mismatch"].includes(error.code)
+    ) {
       throw new WeComExtractionError(
-        "schema_invalid",
-        "LLM 连续两次未返回符合 Schema 的企微候选 JSON",
+        error.code,
+        "LLM 连续两次未返回可验证的企微候选 JSON",
         error.diagnostics,
       );
     }

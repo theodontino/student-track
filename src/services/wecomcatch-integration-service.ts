@@ -66,9 +66,8 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
   const uniqueMessageIds = [...new Set(batch.messages.map((message) => message.id).filter(Boolean))];
   if (uniqueMessageIds.length !== batch.messages.length) throw new Error("duplicate_message_ids");
   const directory = await buildWccDirectorySnapshot(prisma);
-  if (!batch.directoryVersion || batch.directoryVersion !== directory.version) {
-    throw new Error("directory_conflict");
-  }
+  if (!batch.directoryVersion) throw new Error("invalid_batch");
+  const directoryRevalidated = batch.directoryVersion !== directory.version;
   const requestedIds = [...new Set((batch.subjects || []).map((subject) => subject.id).filter(Boolean))];
   if (!requestedIds.length) throw new Error("missing_subjects");
   const students = await prisma.student.findMany({
@@ -162,6 +161,9 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
     status: drafts.length ? "pending_review" : "no_value",
     drafts,
     model: generated.diagnostics,
+    directoryRevalidated,
+    receivedDirectoryVersion: batch.directoryVersion,
+    currentDirectoryVersion: directory.version,
   };
 }
 

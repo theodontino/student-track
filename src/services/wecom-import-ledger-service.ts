@@ -126,6 +126,8 @@ function extractionFailure(error: unknown): {
       return { code: candidate.code, message: "模型网络请求连续失败", diagnostics: candidate.diagnostics };
     case "provider_error":
       return { code: candidate.code, message: "模型服务拒绝或异常结束", diagnostics: candidate.diagnostics };
+    case "model_not_found":
+      return { code: candidate.code, message: "配置的模型不存在或不可用", diagnostics: candidate.diagnostics };
     case "oversized_message":
       return { code: candidate.code, message: "单条消息超过 20000 字符，需要人工复核", diagnostics: candidate.diagnostics };
     case "evidence_mismatch":

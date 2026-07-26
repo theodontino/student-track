@@ -61,7 +61,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByLabel("课次")).toHaveValue(TEST_FIXTURE.sessions[0].code);
 
     await page.getByRole("link", { name: "课后工作台" }).click();
-    await expect(page.getByRole("textbox")).toHaveValue("E2E 未提交课堂回顾");
+    await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未提交课堂回顾");
   });
 
   test("an unsaved quick-score edit survives page switches", async ({ page }) => {

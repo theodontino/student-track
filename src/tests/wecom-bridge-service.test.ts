@@ -164,10 +164,10 @@ describe("wecom bridge service", () => {
       mode: "candidateOnly",
       records: [{
         matchedStudent: { id: "student-1", confidence: "high" },
-        messageIds: ["message-1"],
+        messageIds: ["M001"],
         factualSummary: "家长明确表示学生近期希望获得更多鼓励。",
         feedbackUse: { relevant: true, category: "learning-confidence", priority: "high" },
-        evidence: [{ messageId: "message-1", quote: "最近希望多鼓励" }],
+        evidence: [{ messageId: "M001", quote: "最近希望多鼓励" }],
         confidence: "high",
       }],
     })));
@@ -176,22 +176,32 @@ describe("wecom bridge service", () => {
       sourceText: "[message-1] 最近希望多鼓励",
       candidateStudentIds: ["student-1"],
       groundedMessages: [{ id: "message-1", content: "最近希望多鼓励。" }],
-    })).resolves.toMatchObject({ bridgeJson: { records: [{ factualSummary: expect.any(String) }] } });
+    })).resolves.toMatchObject({
+      bridgeJson: {
+        records: [{
+          messageIds: ["message-1"],
+          evidence: [{ messageId: "message-1" }],
+          factualSummary: expect.any(String),
+        }],
+      },
+    });
+    expect(mocks.completionCreate.mock.calls[0][0].messages[0].content).toContain("M001");
+    expect(mocks.completionCreate.mock.calls[0][0].messages[0].content).not.toContain("[message-1]");
     const schema = mocks.completionCreate.mock.calls[0][0].response_format.json_schema.schema;
     expect(schema.properties.records.items.required).toContain("evidence");
     expect(schema.properties.records.items.required).toContain("feedbackUse");
   });
 
-  it("rejects invented evidence without spending a retry", async () => {
+  it("rejects invented evidence after one corrective retry", async () => {
     mocks.completionCreate.mockResolvedValue(completion(JSON.stringify({
       source: "wecomcatch",
       mode: "candidateOnly",
       records: [{
         matchedStudent: { id: "student-1", confidence: "high" },
-        messageIds: ["message-1"],
+        messageIds: ["M001"],
         factualSummary: "家长明确表示学生准备参加额外课程。",
         feedbackUse: { relevant: true, category: "parent-concern", priority: "medium" },
-        evidence: [{ messageId: "message-1", quote: "准备参加额外课程" }],
+        evidence: [{ messageId: "M001", quote: "准备参加额外课程" }],
         confidence: "high",
       }],
     })));
@@ -201,6 +211,7 @@ describe("wecom bridge service", () => {
       candidateStudentIds: ["student-1"],
       groundedMessages: [{ id: "message-1", content: "最近希望多鼓励。" }],
     })).rejects.toMatchObject({ code: "evidence_mismatch" });
-    expect(mocks.completionCreate).toHaveBeenCalledOnce();
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(2);
+    expect(mocks.completionCreate.mock.calls[1][0].messages[0].content).toContain("上一次输出未通过结构或证据校验");
   });
 });
