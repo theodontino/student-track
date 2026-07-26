@@ -27,7 +27,7 @@ const baseGroups: Array<{ label: string; items: NavigationItem[] }> = [
     { href: "/semesters", label: "学期 / 课次", icon: "courses" },
   ] },
   { label: "报告与数据", items: [
-    { href: "/daily-report", label: "班级日报", icon: "report", context: "full" },
+    { href: "/daily-report", label: "教学总结", icon: "report", context: "full" },
     { href: "/history", label: "工作历史", icon: "history" },
     { href: "/export", label: "数据导出", icon: "export" },
   ] },

@@ -29,7 +29,7 @@ const taskLabels: Record<TaskType, string> = {
   wecom: "企微提取",
   "classroom-parse": "课堂解析",
   feedback: "反馈生成",
-  "daily-report": "班级日报",
+  "daily-report": "教学总结",
 };
 
 const statusLabels = {
