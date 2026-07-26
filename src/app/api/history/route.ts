@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
 const MODULES = new Set(["quick-score", "input", "report", "export", "feedback"]);
+const HistoryPostSchema = z.object({
+  module: z.enum(["quick-score", "input", "report", "export", "feedback"]),
+  key: z.string().trim().min(1).optional(),
+  title: z.string().trim().min(1),
+  state: z.record(z.string(), z.unknown()),
+});
 
 function validModule(module: unknown): module is string {
   return typeof module === "string" && MODULES.has(module);
@@ -31,23 +39,27 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { module: historyModule, key, title, state } = await request.json();
-    if (!validModule(historyModule) || typeof title !== "string" || !title.trim() || !state || typeof state !== "object") {
-      return NextResponse.json({ error: "历史记录参数不完整" }, { status: 400 });
+    const body: unknown = await request.json().catch(() => null);
+    const input = HistoryPostSchema.safeParse(body);
+    if (!input.success) {
+      const error = new ApiError("历史记录参数不完整", 400, "invalid_request", false);
+      return NextResponse.json(apiErrorBody(error), { status: error.status });
     }
+    const { module: historyModule, key, title, state } = input.data;
 
     const row = await prisma.workHistory.create({
       data: {
         module: historyModule,
-        key: typeof key === "string" && key ? key : null,
-        title: title.trim(),
+        key: key ?? null,
+        title,
         state: JSON.stringify(state),
       },
     });
     return NextResponse.json({ ...row, state: parseState(row.state) }, { status: 201 });
   } catch (error) {
-    console.error("[/api/history] POST error:", error);
-    return NextResponse.json({ error: "保存历史失败" }, { status: 500 });
+    const safeError = safeApiError(error, "保存历史失败");
+    console.error(`[/api/history] POST error (${safeError.diagnosticId ?? "no-diagnostic-id"}):`, error);
+    return NextResponse.json(apiErrorBody(safeError), { status: safeError.status });
   }
 }
 

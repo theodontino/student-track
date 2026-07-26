@@ -1,0 +1,502 @@
+import { createHash } from "node:crypto";
+import type { z } from "zod";
+import { prisma } from "@/lib/prisma";
+import { createLLMClient, getLLMModel } from "@/lib/llm";
+import { ApiError, apiStreamErrorBody, safeApiError } from "@/lib/api-errors";
+import { TtlLruCache } from "@/lib/ttl-lru-cache";
+import {
+  FeedbackBatchPostSchema,
+  FeedbackHistoryStateSchema,
+} from "@/lib/contracts/feedback";
+import type {
+  LessonFeedbackMaterial,
+  StudentAssessmentEvidence,
+} from "@/lib/feedback-materials";
+import {
+  buildFeedbackContext,
+  type FeedbackContextPreview,
+  type FeedbackContextStudent,
+} from "@/services/feedback-context-service";
+import { buildFeedbackExportWorkbook } from "@/services/feedback-export-service";
+import { getAlertDashboard } from "@/services/alert-service";
+import {
+  composeFeedbackPromptContext,
+  generateFeedbackDraft,
+  reviewFeedbackDraft,
+  type FeedbackReviewStatus,
+} from "@/services/feedback-generation-service";
+import {
+  markCurrentLLMCacheOperationIncomplete,
+  withLLMCacheOperation,
+} from "@/services/llm-cache-service";
+
+export type FeedbackBatchInput = z.infer<typeof FeedbackBatchPostSchema>;
+export type FeedbackHistoryModule = "feedback" | "report";
+
+interface FeedbackCard {
+  id: string;
+  name: string;
+  labels: string[];
+  feedback: string;
+  draftFeedback?: string;
+  reviewStatus?: FeedbackReviewStatus;
+  reviewIssues?: string[];
+  contextPreview?: FeedbackContextPreview;
+}
+
+interface FeedbackState {
+  kind: "batch";
+  semesterId: string;
+  sessionCode: string;
+  className: string;
+  students: FeedbackCard[];
+  total: number;
+  inputRevision?: string;
+  lessonMaterial?: LessonFeedbackMaterial;
+  assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
+}
+
+export type FeedbackBatchExecution =
+  | { kind: "json"; body: Record<string, unknown> }
+  | { kind: "stream"; stream: ReadableStream<Uint8Array> };
+
+const cache = new TtlLruCache<string, FeedbackState>({
+  ttlMs: 30 * 60 * 1000,
+  maxEntries: 100,
+});
+
+/** Shared deterministic helpers for the two-stage feedback batch runner. */
+export function feedbackBatchConcurrency(env: NodeJS.ProcessEnv = process.env) {
+  const fallback = env.NODE_ENV === "test" ? 1 : 2;
+  const configured = Number(env.FEEDBACK_LLM_CONCURRENCY || fallback);
+  return Math.min(3, Math.max(1, Number.isFinite(configured) ? configured : fallback));
+}
+
+export function feedbackBatchWindows<T>(items: T[], size: number) {
+  const safeSize = Math.max(1, Math.floor(size));
+  return Array.from({ length: Math.ceil(items.length / safeSize) }, (_, windowIndex) =>
+    items.slice(windowIndex * safeSize, windowIndex * safeSize + safeSize).map((item, offset) => ({
+      item,
+      index: windowIndex * safeSize + offset,
+    })),
+  );
+}
+
+export function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+export function parseFeedbackHistoryModule(value: unknown): FeedbackHistoryModule | null {
+  if (value === undefined || value === null || value === "report") return "report";
+  if (value === "feedback") return "feedback";
+  return null;
+}
+
+function cacheKey(module: FeedbackHistoryModule, sessionCode: string) {
+  return `review-v2:${module}:${sessionCode}`;
+}
+
+function normalizeInputs(input: FeedbackBatchInput) {
+  const { sessionCode } = input;
+  if (input.lessonMaterial?.sessionCode && input.lessonMaterial.sessionCode !== sessionCode) {
+    throw new ApiError(
+      `课程材料绑定课次 ${input.lessonMaterial.sessionCode}，不能用于 ${sessionCode}`,
+      400,
+      "invalid_request",
+      false,
+    );
+  }
+  const lessonMaterial = input.lessonMaterial
+    ? { ...input.lessonMaterial, sessionCode }
+    : undefined;
+  const assessmentEvidence: Record<string, StudentAssessmentEvidence> = {};
+  for (const [studentId, evidence] of Object.entries(input.assessmentEvidence ?? {})) {
+    if (evidence.sessionCode && evidence.sessionCode !== sessionCode) {
+      throw new ApiError(
+        `学生 ${studentId} 的 PDF 证据属于课次 ${evidence.sessionCode}`,
+        400,
+        "invalid_request",
+        false,
+      );
+    }
+    if (evidence.studentId && evidence.studentId !== studentId) {
+      throw new ApiError(
+        `PDF 证据绑定学生与提交学生 ${studentId} 不一致`,
+        400,
+        "invalid_request",
+        false,
+      );
+    }
+    assessmentEvidence[studentId] = { ...evidence, sessionCode, studentId };
+  }
+  return { lessonMaterial, assessmentEvidence };
+}
+
+function inputRevision(
+  lessonMaterial: LessonFeedbackMaterial | undefined,
+  assessmentEvidence: Record<string, StudentAssessmentEvidence>,
+) {
+  const sortedEvidence = Object.fromEntries(
+    Object.entries(assessmentEvidence).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  return createHash("sha256")
+    .update(JSON.stringify({ lessonMaterial: lessonMaterial ?? null, assessmentEvidence: sortedEvidence }))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function parseHistoryState(value: string): FeedbackState | null {
+  try {
+    const parsed = FeedbackHistoryStateSchema.safeParse(JSON.parse(value));
+    if (!parsed.success || parsed.data.kind !== "batch") return null;
+    return parsed.data as FeedbackState;
+  } catch {
+    return null;
+  }
+}
+
+function submittedCardsFrom(
+  submitted: NonNullable<FeedbackBatchInput["students"]>,
+  contextByStudent: Map<string, FeedbackContextStudent>,
+): FeedbackCard[] {
+  const unknownStudent = submitted.find((item) => !contextByStudent.has(item.id));
+  if (unknownStudent) {
+    throw new ApiError(
+      "反馈卡片包含不属于当前课次班级的学生，未保存任何内容",
+      400,
+      "invalid_request",
+      false,
+    );
+  }
+  if (submitted.length === 0) {
+    throw new ApiError("没有可保存的反馈内容", 400, "invalid_request", false);
+  }
+
+  return submitted.map((item) => {
+    const student = contextByStudent.get(item.id);
+    if (!student) {
+      throw new ApiError("反馈卡片学生校验失败", 400, "invalid_request", false);
+    }
+    return {
+      id: student.id,
+      name: student.name,
+      labels: student.labels,
+      feedback: item.feedback.trim(),
+      draftFeedback: item.draftFeedback?.trim(),
+      reviewStatus: item.reviewStatus,
+      reviewIssues: item.reviewIssues?.slice(0, 8),
+      contextPreview: student.preview,
+    };
+  });
+}
+
+async function persistState(
+  module: FeedbackHistoryModule,
+  state: FeedbackState,
+  title: string,
+  signal?: AbortSignal,
+) {
+  if (signal?.aborted) throw new DOMException("反馈生成已取消", "AbortError");
+  await prisma.workHistory.create({
+    data: {
+      module,
+      key: state.sessionCode,
+      title,
+      state: JSON.stringify(state),
+    },
+  });
+  if (signal?.aborted) throw new DOMException("反馈生成已取消", "AbortError");
+  cache.set(cacheKey(module, state.sessionCode), state);
+}
+
+export async function buildFeedbackBatchExport(
+  sessionCode: string,
+  module: FeedbackHistoryModule,
+) {
+  const key = cacheKey(module, sessionCode);
+  let state = cache.get(key) ?? null;
+  if (!state) {
+    const history = await prisma.workHistory.findFirst({
+      where: { module, key: sessionCode },
+      orderBy: { createdAt: "desc" },
+    });
+    state = history ? parseHistoryState(history.state) : null;
+  }
+  if (!state) throw new ApiError("尚未生成反馈", 404, "not_found", false);
+
+  const reviewBlockerCount = state.students.filter(
+    (card) => card.reviewStatus === "needs_review",
+  ).length;
+  if (reviewBlockerCount > 0) {
+    throw new ApiError(
+      `还有 ${reviewBlockerCount} 条反馈需要人工确认，暂不能导出`,
+      409,
+      "conflict",
+      false,
+    );
+  }
+  const dashboard = await getAlertDashboard({ semesterId: state.semesterId });
+  return buildFeedbackExportWorkbook(
+    prisma,
+    sessionCode,
+    state.students,
+    dashboard.studentRisks,
+  );
+}
+
+function createGenerationStream(input: {
+  sessionCode: string;
+  historyModule: FeedbackHistoryModule;
+  revision: string;
+  lessonMaterial?: LessonFeedbackMaterial;
+  assessmentEvidence: Record<string, StudentAssessmentEvidence>;
+  feedbackContext: Awaited<ReturnType<typeof buildFeedbackContext>>;
+  contextByStudent: Map<string, FeedbackContextStudent>;
+  signal?: AbortSignal;
+}) {
+  const {
+    sessionCode,
+    historyModule,
+    revision,
+    lessonMaterial,
+    assessmentEvidence,
+    feedbackContext,
+    contextByStudent,
+    signal,
+  } = input;
+  const draftClient = createLLMClient("feedbackDraft");
+  const draftModel = getLLMModel("feedbackDraft");
+  const reviewClient = createLLMClient("feedbackReview");
+  const reviewModel = getLLMModel("feedbackReview");
+  const total = feedbackContext.total;
+  const cards: FeedbackCard[] = feedbackContext.students.map((student) => ({
+    id: student.id,
+    name: student.name,
+    labels: student.labels,
+    feedback: "",
+    contextPreview: student.preview,
+  }));
+  const encoder = new TextEncoder();
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException("反馈生成已取消", "AbortError");
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        await withLLMCacheOperation("feedback", "批量分析并生成家长反馈", async () => {
+          throwIfAborted();
+          controller.enqueue(encoder.encode(`${JSON.stringify({ type: "init", students: cards, total })}\n`));
+
+          const concurrency = feedbackBatchConcurrency();
+          for (const window of feedbackBatchWindows(cards, concurrency)) {
+            throwIfAborted();
+            await Promise.all(window.map(async ({ item: card }) => {
+              const studentContext = contextByStudent.get(card.id);
+              try {
+                const promptContext = composeFeedbackPromptContext({
+                  studentContext: studentContext?.promptContext ?? card.name,
+                  sessionCode,
+                  studentId: card.id,
+                  lessonMaterial,
+                  assessmentEvidence: assessmentEvidence[card.id],
+                });
+                card.draftFeedback = await generateFeedbackDraft({
+                  studentName: card.name,
+                  promptContext,
+                  lengthRequirement: "120-170字",
+                  client: draftClient,
+                  model: draftModel,
+                  signal,
+                });
+                card.feedback = "";
+              } catch (error) {
+                if (signal?.aborted || isAbortError(error)) throw error;
+                console.error(
+                  "[feedback-batch] draft failed:",
+                  error instanceof Error ? error.message : "unknown",
+                );
+                card.feedback = "";
+                card.reviewStatus = "needs_review";
+                card.reviewIssues = ["内部分析模型生成失败，请单独重写或人工填写"];
+              }
+            }));
+            throwIfAborted();
+            for (const { item: card, index } of window) {
+              controller.enqueue(encoder.encode(`${JSON.stringify({
+                type: "draft",
+                studentId: card.id,
+                name: card.name,
+                feedback: "",
+                draftFeedback: card.draftFeedback,
+                completed: index + 1,
+                total,
+              })}\n`));
+            }
+          }
+
+          for (const window of feedbackBatchWindows(cards, concurrency)) {
+            throwIfAborted();
+            await Promise.all(window.map(async ({ item: card }) => {
+              if (!card.draftFeedback) return;
+              const studentContext = contextByStudent.get(card.id);
+              const promptContext = composeFeedbackPromptContext({
+                studentContext: studentContext?.promptContext ?? card.name,
+                sessionCode,
+                studentId: card.id,
+                lessonMaterial,
+                assessmentEvidence: assessmentEvidence[card.id],
+              });
+              try {
+                const reviewed = await reviewFeedbackDraft({
+                  studentName: card.name,
+                  promptContext,
+                  forbiddenStudentNames: cards
+                    .filter((item) => item.id !== card.id)
+                    .map((item) => item.name),
+                  lengthRequirement: "120-170字",
+                  draftFeedback: card.draftFeedback,
+                  client: reviewClient,
+                  model: reviewModel,
+                  signal,
+                });
+                Object.assign(card, reviewed);
+              } catch (error) {
+                if (signal?.aborted || isAbortError(error)) throw error;
+                card.feedback = "";
+                card.reviewStatus = "needs_review";
+                card.reviewIssues = ["成稿审核失败，请人工确认或重试"];
+              }
+            }));
+            throwIfAborted();
+            for (const { item: card, index } of window) {
+              controller.enqueue(encoder.encode(`${JSON.stringify({
+                type: "review",
+                studentId: card.id,
+                name: card.name,
+                feedback: card.feedback,
+                draftFeedback: card.draftFeedback,
+                reviewStatus: card.reviewStatus,
+                reviewIssues: card.reviewIssues,
+                completed: index + 1,
+                total,
+              })}\n`));
+            }
+          }
+
+          if (cards.some((card) => card.reviewStatus === "needs_review")) {
+            markCurrentLLMCacheOperationIncomplete();
+          }
+          throwIfAborted();
+          const state: FeedbackState = {
+            kind: "batch",
+            semesterId: feedbackContext.session.semesterId,
+            sessionCode,
+            className: feedbackContext.className,
+            students: cards,
+            total,
+            inputRevision: revision,
+            lessonMaterial,
+            assessmentEvidence,
+          };
+          await persistState(
+            historyModule,
+            state,
+            `${feedbackContext.className} ${sessionCode} 批量反馈`,
+            signal,
+          );
+          throwIfAborted();
+          controller.enqueue(encoder.encode(`${JSON.stringify({ type: "done", ...state })}\n`));
+        });
+        controller.close();
+      } catch (error) {
+        if (signal?.aborted || isAbortError(error)) {
+          controller.close();
+          return;
+        }
+        const failure = safeApiError(error, "批量生成失败");
+        console.error("[feedback-batch] stream error:", error instanceof Error ? error.message : "unknown");
+        controller.enqueue(encoder.encode(`${JSON.stringify({
+          type: "error",
+          ...apiStreamErrorBody(failure),
+        })}\n`));
+        controller.close();
+      }
+    },
+  });
+}
+
+export async function executeFeedbackBatch(
+  input: FeedbackBatchInput,
+  signal?: AbortSignal,
+): Promise<FeedbackBatchExecution> {
+  const historyModule = parseFeedbackHistoryModule(input.historyModule);
+  if (!historyModule) {
+    throw new ApiError("无效的历史模块", 400, "invalid_request", false);
+  }
+  if (signal?.aborted) throw new ApiError("反馈生成已取消", 499, "cancelled", false);
+
+  const normalized = normalizeInputs(input);
+  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence);
+  const key = cacheKey(historyModule, input.sessionCode);
+  const cached = cache.get(key);
+  if (
+    input.saveState !== true
+    && input.bypassCache !== true
+    && cached
+    && cached.inputRevision === revision
+  ) {
+    return { kind: "json", body: { cached: true, ...cached } };
+  }
+
+  const feedbackContext = await buildFeedbackContext(prisma, input.sessionCode);
+  const contextByStudent = new Map(
+    feedbackContext.students.map((student) => [student.id, student]),
+  );
+  const foreignEvidenceStudent = Object.keys(normalized.assessmentEvidence)
+    .find((studentId) => !contextByStudent.has(studentId));
+  if (foreignEvidenceStudent) {
+    throw new ApiError(
+      "PDF 证据包含不属于当前课次班级的学生",
+      400,
+      "invalid_request",
+      false,
+    );
+  }
+
+  if (input.saveState === true) {
+    const cards = submittedCardsFrom(input.students ?? [], contextByStudent);
+    const state: FeedbackState = {
+      kind: "batch",
+      semesterId: feedbackContext.session.semesterId,
+      sessionCode: input.sessionCode,
+      className: feedbackContext.className,
+      students: cards,
+      total: cards.length,
+      inputRevision: revision,
+      lessonMaterial: normalized.lessonMaterial,
+      assessmentEvidence: normalized.assessmentEvidence,
+    };
+    await persistState(
+      historyModule,
+      state,
+      `${feedbackContext.className} ${input.sessionCode} 保存反馈`,
+      signal,
+    );
+    return { kind: "json", body: { saved: true, ...state } };
+  }
+
+  return {
+    kind: "stream",
+    stream: createGenerationStream({
+      sessionCode: input.sessionCode,
+      historyModule,
+      revision,
+      lessonMaterial: normalized.lessonMaterial,
+      assessmentEvidence: normalized.assessmentEvidence,
+      feedbackContext,
+      contextByStudent,
+      signal,
+    }),
+  };
+}

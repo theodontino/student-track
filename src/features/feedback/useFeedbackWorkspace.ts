@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { FeedbackContextStudent } from "@/components/wecom/types";
 import type { InputHistoryState } from "@/features/entry";
 import { teachingContextWorkspaceKey, useTeachingContext } from "@/features/teaching-context";
 import { useAiWorkflow } from "@/features/ai-workflow";
-import { requestJson } from "@/lib/api-client";
+import { requestJson, requestJsonValidated } from "@/lib/api-client";
 import {
   createEmptyLessonFeedbackMaterial,
   parseLessonFeedbackMaterial,
@@ -13,13 +13,24 @@ import {
 } from "@/lib/feedback-materials";
 import { saveWorkHistory } from "@/lib/history";
 import { readSSEStream } from "@/lib/sse";
+import { ParseStreamEventSchema } from "@/lib/contracts/classroom-parse";
+import {
+  FeedbackBatchJsonResponseSchema,
+  FeedbackBatchStreamEventSchema,
+  FeedbackSingleResponseSchema,
+} from "@/lib/contracts/feedback";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
-import type { FeedbackCard, FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
+import type { FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
 import { isInputHistoryState } from "./history-adapters";
 import { useAssessmentPdfImports } from "./useAssessmentPdfImports";
 import { isFeedbackWorkspace, todayLocalDate } from "./workspace-state";
+import {
+  createFeedbackWorkspaceCoreState,
+  feedbackCardsReducer,
+  feedbackWorkspaceCoreReducer,
+} from "./feedback-workspace-reducer";
 
 function errorMessage(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
 
@@ -28,48 +39,78 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   const { semesterId, className, sessionCode } = context;
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
   const requestedStep = useRef<FeedbackStep | undefined>(initialStep);
-  const [activeStep, setActiveStep] = useState<FeedbackStep>(initialStep ?? "prepare");
-  const [newSessionDate, setNewSessionDate] = useState(todayLocalDate);
   const [creatingSession, setCreatingSession] = useState(false);
-  const [rawText, setRawText] = useState("");
   const [parsing, setParsing] = useState(false);
   const [assistantImporting, setAssistantImporting] = useState(false);
-  const [parseStatus, setParseStatus] = useState("");
-  const [streamContent, setStreamContent] = useState("");
-  const [draftId, setDraftId] = useState("");
-  const [parsedResult, setParsedResult] = useState<DraftStructuredResult | null>(null);
-  const [reviewResult, setReviewResult] = useState<DraftReviewResult | null>(null);
-  const [corrections, setCorrections] = useState<NameCorrection[]>([]);
   const [confirming, setConfirming] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const generationAbortRef = useRef<AbortController | null>(null);
   const [regeneratingId, setRegeneratingId] = useState("");
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
-  const [status, setStatus] = useState("");
-  const [feedbackCards, setFeedbackCards] = useState<FeedbackCard[]>([]);
-  const [feedbackTotal, setFeedbackTotal] = useState(0);
-  const [feedbackDone, setFeedbackDone] = useState(0);
+  const [coreState, dispatchCore] = useReducer(
+    feedbackWorkspaceCoreReducer,
+    initialStep,
+    (step) => ({
+      ...createFeedbackWorkspaceCoreState(step ?? "prepare"),
+      newSessionDate: todayLocalDate(),
+    }),
+  );
+  const {
+    activeStep,
+    newSessionDate,
+    rawText,
+    parseStatus,
+    streamContent,
+    draftId,
+    parsedResult,
+    reviewResult,
+    corrections,
+    confirmed,
+    status,
+    singleStudentId,
+    singleDays,
+    singleFeedback,
+    singleDraftFeedback,
+    singleReviewStatus,
+    singleReviewIssues,
+    groupFeedbackRaw,
+    assessmentBriefRaw,
+    lessonMaterial,
+  } = coreState;
+  const patchCore = (patch: Partial<typeof coreState>) => dispatchCore({ type: "patch", patch });
+  const setActiveStep = (value: FeedbackStep) => patchCore({ activeStep: value });
+  const setNewSessionDate = (value: string) => patchCore({ newSessionDate: value });
+  const setRawText = (value: string) => patchCore({ rawText: value });
+  const setParseStatus = (value: string) => patchCore({ parseStatus: value });
+  const setStreamContent = (value: string) => patchCore({ streamContent: value });
+  const setDraftId = (value: string) => patchCore({ draftId: value });
+  const setParsedResult = (value: DraftStructuredResult | null) => patchCore({ parsedResult: value });
+  const setReviewResult = (value: DraftReviewResult | null) => patchCore({ reviewResult: value });
+  const setCorrections = (value: NameCorrection[]) => patchCore({ corrections: value });
+  const setConfirmed = (value: boolean) => patchCore({ confirmed: value });
+  const setStatus = (value: string) => patchCore({ status: value });
+  const setSingleStudentId = (value: string) => patchCore({ singleStudentId: value });
+  const setSingleDays = (value: number) => patchCore({ singleDays: value });
+  const setSingleFeedback = (value: string) => patchCore({ singleFeedback: value });
+  const setSingleDraftFeedback = (value: string) => patchCore({ singleDraftFeedback: value });
+  const setSingleReviewStatus = (value: FeedbackReviewStatus | undefined) => patchCore({ singleReviewStatus: value });
+  const setSingleReviewIssues = (value: string[]) => patchCore({ singleReviewIssues: value });
+  const setGroupFeedbackRaw = (value: string) => patchCore({ groupFeedbackRaw: value });
+  const setAssessmentBriefRaw = (value: string) => patchCore({ assessmentBriefRaw: value });
+  const setLessonMaterial = (value: LessonFeedbackMaterial) => patchCore({ lessonMaterial: value });
+  const [feedbackState, dispatchFeedback] = useReducer(feedbackCardsReducer, { cards: [], total: 0, done: 0, dirty: false, forceRegenerate: false });
+  const { cards: feedbackCards, total: feedbackTotal, done: feedbackDone, dirty: feedbackDirty, forceRegenerate } = feedbackState;
   const [feedbackPhase, setFeedbackPhase] = useState<"idle" | "draft" | "review">("idle");
   const [contextStudents, setContextStudents] = useState<FeedbackContextStudent[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
   const [contextReloadKey, setContextReloadKey] = useState(0);
-  const [feedbackDirty, setFeedbackDirty] = useState(false);
-  const [forceRegenerate, setForceRegenerate] = useState(false);
   const [students, setStudents] = useState<FeedbackStudentOption[]>([]);
-  const [singleStudentId, setSingleStudentId] = useState("");
-  const [singleDays, setSingleDays] = useState(14);
-  const [singleFeedback, setSingleFeedback] = useState("");
-  const [singleDraftFeedback, setSingleDraftFeedback] = useState("");
-  const [singleReviewStatus, setSingleReviewStatus] = useState<FeedbackReviewStatus | undefined>();
-  const [singleReviewIssues, setSingleReviewIssues] = useState<string[]>([]);
   const [singleLoading, setSingleLoading] = useState(false);
   const [legacyDraftAvailable, setLegacyDraftAvailable] = useState(false);
-  const [groupFeedbackRaw, setGroupFeedbackRaw] = useState("");
-  const [assessmentBriefRaw, setAssessmentBriefRaw] = useState("");
-  const [lessonMaterial, setLessonMaterial] = useState<LessonFeedbackMaterial>(createEmptyLessonFeedbackMaterial);
   const workflow = useAiWorkflow();
+  useEffect(() => () => generationAbortRef.current?.abort(), []);
   const assessmentStudents = useMemo<FeedbackStudentOption[]>(() => contextStudents.map((student) => ({
     id: student.id,
     name: student.name,
@@ -105,8 +146,8 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       setRawText(saved?.rawText ?? ""); setParseStatus(saved?.parseStatus ?? ""); setStreamContent(saved?.streamContent ?? "");
       setDraftId(saved?.draftId ?? ""); setParsedResult(saved?.parsedResult ?? null); setReviewResult(saved?.reviewResult ?? null);
       setCorrections(saved?.corrections ?? []); setConfirmed(saved?.confirmed ?? false);
-      setFeedbackCards(saved?.feedbackCards ?? []); setFeedbackTotal(saved?.feedbackTotal ?? 0); setFeedbackDone(saved?.feedbackDone ?? 0);
-      setFeedbackDirty(saved?.feedbackDirty ?? false); setForceRegenerate(saved?.forceRegenerate ?? false);
+      dispatchFeedback({ type: "init", cards: saved?.feedbackCards ?? [], total: saved?.feedbackTotal ?? 0, done: saved?.feedbackDone ?? 0 });
+      dispatchFeedback({ type: "dirty", value: saved?.feedbackDirty ?? false }); dispatchFeedback({ type: "force", value: saved?.forceRegenerate ?? false });
       setSingleStudentId(saved?.singleStudentId ?? ""); setSingleDays(saved?.singleDays ?? 14); setSingleFeedback(saved?.singleFeedback ?? "");
       setSingleDraftFeedback(saved?.singleDraftFeedback ?? ""); setSingleReviewStatus(saved?.singleReviewStatus); setSingleReviewIssues(saved?.singleReviewIssues ?? []);
       setGroupFeedbackRaw(saved?.groupFeedbackRaw ?? "");
@@ -130,11 +171,10 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     const legacyDraft = sessionStorage.getItem("student-track:nl-input-draft")
       ?? sessionStorage.getItem("chem-track:nl-input-draft");
     if (draft) {
-      setRawText(draft); setParseStatus("已从录音转写载入课后回顾。"); sessionStorage.removeItem("student-track:feedback-draft"); sessionStorage.removeItem("chem-track:feedback-draft");
+      dispatchCore({ type: "patch", patch: { rawText: draft, parseStatus: "已从录音转写载入课后回顾。" } }); sessionStorage.removeItem("student-track:feedback-draft"); sessionStorage.removeItem("chem-track:feedback-draft");
       setLegacyDraftAvailable(Boolean(legacyDraft));
     } else if (legacyDraft) {
-      setRawText(legacyDraft); setParseStatus("已载入旧课堂录入草稿。"); sessionStorage.removeItem("student-track:nl-input-draft"); sessionStorage.removeItem("chem-track:nl-input-draft");
-      setActiveStep("extract");
+      dispatchCore({ type: "patch", patch: { rawText: legacyDraft, parseStatus: "已载入旧课堂录入草稿。", activeStep: "extract" } }); sessionStorage.removeItem("student-track:nl-input-draft"); sessionStorage.removeItem("chem-track:nl-input-draft");
     }
   }, [workspace.hydrated]);
   useEffect(() => {
@@ -155,10 +195,10 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     return () => { cancelled = true; };
   }, [sessionCode, contextReloadKey]);
 
-  function resetFeedback() { setFeedbackCards([]); setFeedbackTotal(0); setFeedbackDone(0); setFeedbackPhase("idle"); setFeedbackDirty(false); setForceRegenerate(false); }
+  function resetFeedback() { dispatchFeedback({ type: "reset" }); setFeedbackPhase("idle"); }
   function markFeedbackInputsChanged(message = "") {
-    setForceRegenerate(true);
-    if (feedbackCards.length > 0) setFeedbackDirty(true);
+    dispatchFeedback({ type: "force", value: true });
+    if (feedbackCards.length > 0) dispatchFeedback({ type: "dirty", value: true });
     if (message) setStatus(message);
   }
   function effectiveLessonMaterial() {
@@ -191,13 +231,13 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     key: "lessonTitle" | "classroomContent" | "classroomFocus" | "classroomExplanation" | "homework" | "assessmentFocus" | "correctionAdvice" | "otherNotes",
     value: string,
   ) {
-    setLessonMaterial((current) => ({
-      ...current,
+    setLessonMaterial({
+      ...lessonMaterial,
       sessionCode,
       [key]: key === "lessonTitle"
         ? value
         : value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
-    }));
+    });
     markFeedbackInputsChanged(feedbackCards.length ? "整理后的课程材料已修改，请重新生成反馈。" : "");
   }
   function resetFeedbackInputs(nextSessionCode = sessionCode) {
@@ -222,7 +262,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     finally { setCreatingSession(false); }
   }
   function setParsedAttendance(index: number, present: boolean) {
-    setParsedResult((current) => current ? { ...current, students: current.students.map((student, studentIndex) => studentIndex === index ? { ...student, present } : student) } : current);
+    dispatchCore({ type: "parsed/attendance", index, present });
   }
   function resetDraftResult() { setStreamContent(""); setDraftId(""); setParsedResult(null); setReviewResult(null); setCorrections([]); setConfirmed(false); }
   async function parse() {
@@ -235,11 +275,14 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       const response = await fetch("/api/input/parse?stream=true", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rawText, sessionCode }) });
       if (!response.ok) throw new Error((await response.json()).error);
       if (!response.body) throw new Error("解析流不可用");
-      await readSSEStream(response.body.getReader(), (message) => {
+      await readSSEStream(response.body.getReader(), {
+        parse: (value) => ParseStreamEventSchema.parse(value),
+        onEvent: (message) => {
         if (message.type === "status") setParseStatus(message.message);
-        else if (message.type === "chunk") setStreamContent((current) => current + message.content);
-        else if (message.type === "result") { setDraftId(message.draftId); setParsedResult(message.parsedResult); setReviewResult(message.reviewResult); setCorrections(message.corrections || []); setStatus("解析完成，请确认结构化记录。"); setActiveStep("review"); workflow.transition("reviewing", "结构化草案已生成，请人工核对后再写入。"); }
+        else if (message.type === "chunk") dispatchCore({ type: "stream/append", content: message.content });
+        else if (message.type === "result") { const warningText = message.warnings?.length ? `；注意：${message.warnings.join("；")}` : ""; setDraftId(message.draftId); setParsedResult(message.parsedResult); setReviewResult(message.reviewResult); setCorrections(message.corrections || []); setParseStatus(warningText ? `解析完成${warningText}` : "解析完成"); setStatus(`解析完成，请确认结构化记录${warningText}。`); setActiveStep("review"); workflow.transition("reviewing", "结构化草案已生成，请人工核对后再写入。"); }
         else if (message.type === "error") throw new Error(message.message);
+        },
       });
     } catch (reason) { const message = errorMessage(reason, "解析失败"); setError(message); workflow.fail(message, "generating"); }
     finally { setParsing(false); }
@@ -268,7 +311,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     try {
       const data = await requestJson<{ warnings?: string[] }>("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draftId, action: "confirm", edits: parsedResult }) });
       setConfirmed(true); setStatus(data.warnings?.length ? `课堂记录已写入；注意：${data.warnings.join("；")}` : "课堂记录已写入，反馈上下文已刷新。");
-      setContextReloadKey((current) => current + 1); setFeedbackCards([]); setFeedbackDirty(false); setForceRegenerate(true);
+      setContextReloadKey((current) => current + 1); dispatchFeedback({ type: "reset", forceRegenerate: true });
       workflow.transition("completed", "结构化记录已经安全写入，反馈上下文已刷新。");
       setActiveStep("generate");
     } catch (reason) { const message = errorMessage(reason, "确认写入失败"); setError(message); workflow.fail(message, "saving"); }
@@ -276,13 +319,17 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   }
   async function generate() {
     if (!sessionCode) { setError("请先选择课次"); return; }
-    setGenerating(true); setError(""); setStatus(""); setFeedbackCards([]); setFeedbackDone(0); setFeedbackPhase("draft"); setFeedbackDirty(false);
+    generationAbortRef.current?.abort();
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
+    setGenerating(true); setError(""); setStatus(""); dispatchFeedback({ type: "reset" }); setFeedbackPhase("draft");
     workflow.start("生成课后反馈", "正在检查课次和反馈上下文…");
     workflow.transition("generating", "正在先分析趋势与历史，再生成家长话术…");
     try {
       const response = await fetch("/api/report/feedback-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           sessionCode,
           historyModule: "feedback",
@@ -293,35 +340,56 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       });
       if (!response.ok) throw new Error((await response.json()).error);
       if ((response.headers.get("content-type") || "").includes("application/json")) {
-        const data = await response.json(); setFeedbackCards(data.students || []); setFeedbackTotal(data.total); setFeedbackDone(data.total); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "趋势与历史分析已转换成家长话术，并完成 AI 审核。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请逐条检查后再导出。"); return;
+        const data = FeedbackBatchJsonResponseSchema.parse(await response.json()); dispatchFeedback({ type: "init", cards: data.students || [], total: data.total, done: data.total }); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "趋势与历史分析已转换成家长话术，并完成 AI 审核。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请逐条检查后再导出。"); return;
       }
       if (!response.body) throw new Error("生成流不可用");
       let streamTotal = 0;
-      await readSSEStream(response.body.getReader(), (message) => {
-        if (message.type === "init") { streamTotal = message.total; setFeedbackTotal(message.total); setFeedbackCards(message.students); setFeedbackPhase("draft"); workflow.progress(0, `准备分析 ${message.total} 名学生的趋势与历史…`); }
-        else if (message.type === "draft") { const completed = Number(message.completed || 0); setFeedbackPhase("draft"); setFeedbackDone(completed); workflow.progress(streamTotal ? completed / (streamTotal * 2) : 0, `分析 ${completed}/${streamTotal}`); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: "", draftFeedback: message.draftFeedback } : card)); }
-        else if (message.type === "review") { const completed = Number(message.completed || 0); setFeedbackPhase("review"); setFeedbackDone(completed); workflow.progress(streamTotal ? (streamTotal + completed) / (streamTotal * 2) : 0, `成稿与审核 ${completed}/${streamTotal}`); setFeedbackCards((current) => current.map((card) => card.id === message.studentId ? { ...card, feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } : card)); }
-        else if (message.type === "done") { setFeedbackCards(message.students || []); setFeedbackTotal(message.total); setFeedbackDone(message.total); setFeedbackPhase("idle"); setStatus("趋势与历史分析已转换成家长话术，并完成 AI 审核。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请处理待人工确认项。"); }
+      await readSSEStream(response.body.getReader(), {
+        signal: controller.signal,
+        parse: (value) => FeedbackBatchStreamEventSchema.parse(value),
+        onEvent: (message) => {
+        if (message.type === "init") { streamTotal = message.total; dispatchFeedback({ type: "init", cards: message.students, total: message.total }); setFeedbackPhase("draft"); workflow.progress(0, `准备分析 ${message.total} 名学生的趋势与历史…`); }
+        else if (message.type === "draft") { const completed = Number(message.completed || 0); setFeedbackPhase("draft"); dispatchFeedback({ type: "progress", done: completed }); workflow.progress(streamTotal ? completed / (streamTotal * 2) : 0, `分析 ${completed}/${streamTotal}`); dispatchFeedback({ type: "patch", studentId: message.studentId, patch: { feedback: "", draftFeedback: message.draftFeedback } }); }
+        else if (message.type === "review") { const completed = Number(message.completed || 0); setFeedbackPhase("review"); dispatchFeedback({ type: "progress", done: completed }); workflow.progress(streamTotal ? (streamTotal + completed) / (streamTotal * 2) : 0, `成稿与审核 ${completed}/${streamTotal}`); dispatchFeedback({ type: "patch", studentId: message.studentId, patch: { feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } }); }
+        else if (message.type === "done") { dispatchFeedback({ type: "init", cards: message.students || [], total: message.total, done: message.total }); setFeedbackPhase("idle"); setStatus("趋势与历史分析已转换成家长话术，并完成 AI 审核。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请处理待人工确认项。"); }
         else if (message.type === "error") throw new Error(message.message || "批量生成失败");
+        },
       });
-    } catch (reason) { const message = errorMessage(reason, "批量生成失败"); setError(message); workflow.fail(message, "generating"); }
-    finally { setGenerating(false); setFeedbackPhase("idle"); }
+    } catch (reason) {
+      if (controller.signal.aborted) {
+        setError("");
+        setStatus("已取消本次反馈生成；未完成的结果不会保存。");
+        workflow.cancel("本次反馈生成已由教师取消。");
+      } else {
+        const message = errorMessage(reason, "批量生成失败");
+        setError(message);
+        workflow.fail(message, "generating");
+      }
+    } finally {
+      if (generationAbortRef.current === controller) generationAbortRef.current = null;
+      setGenerating(false);
+      setFeedbackPhase("idle");
+    }
+  }
+  function cancelGeneration() {
+    if (!generationAbortRef.current) return;
+    setStatus("正在取消本次反馈生成…");
+    generationAbortRef.current.abort();
   }
   function prepareRegeneration() {
-    setFeedbackCards([]); setFeedbackTotal(0); setFeedbackDone(0); setFeedbackPhase("idle");
-    setFeedbackDirty(false); setForceRegenerate(true); setError("");
+    dispatchFeedback({ type: "reset", forceRegenerate: true }); setFeedbackPhase("idle"); setError("");
     setStatus("旧批次已从当前工作区移除；下一次生成将使用当前模型重新处理。");
     workflow.reset(); setActiveStep("generate");
   }
   async function regenerateOne(studentId: string) {
     if (!sessionCode || !feedbackCards.some((card) => card.id === studentId)) return;
     setRegeneratingId(studentId); setError("");
-    try { const data = await requestJson<{ feedback?: string; draftFeedback?: string; reviewStatus?: FeedbackReviewStatus; reviewIssues?: string[] }>("/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId] }) }); setFeedbackCards((current) => current.map((card) => card.id === studentId ? { ...card, feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } : card)); setFeedbackDirty(true); }
+    try { const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId] }) }); dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } }); dispatchFeedback({ type: "dirty", value: true }); }
     catch (reason) { setError(errorMessage(reason, "重新生成失败")); }
     finally { setRegeneratingId(""); }
   }
-  function updateFeedback(studentId: string, feedback: string) { setFeedbackCards((current) => current.map((card) => card.id === studentId ? { ...card, feedback, reviewStatus: "edited", reviewIssues: ["教师已人工修改，导出以当前文本为准"] } : card)); setFeedbackDirty(true); }
-  async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", saveState: true, students: feedbackCards, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence }) }); setFeedbackDirty(false); }
+  function updateFeedback(studentId: string, feedback: string) { dispatchFeedback({ type: "patch", studentId, patch: { feedback, reviewStatus: "edited", reviewIssues: ["教师已人工修改，导出以当前文本为准"] } }); dispatchFeedback({ type: "dirty", value: true }); }
+  async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", saveState: true, students: feedbackCards, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence }) }); dispatchFeedback({ type: "dirty", value: false }); }
   async function exportFeedback() {
     if (!sessionCode || !feedbackCards.length) return;
     const blockerCount = feedbackCards.filter((card) => card.reviewStatus === "needs_review").length;
@@ -347,7 +415,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     }
     if (state.kind === "single") { setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setSingleStudentId(state.studentId); setSingleDays(state.days); setSingleFeedback(state.feedback); setSingleDraftFeedback(state.draftFeedback ?? ""); setSingleReviewStatus(state.reviewStatus); setSingleReviewIssues(state.reviewIssues ?? []); setError(""); setStatus("已恢复单人反馈历史。"); return; }
     setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
-    setFeedbackCards(state.students); setFeedbackTotal(state.total); setFeedbackDone(state.total); setFeedbackDirty(false); setForceRegenerate(false);
+    dispatchFeedback({ type: "init", cards: state.students, total: state.total, done: state.total }); dispatchFeedback({ type: "force", value: false });
     if (state.lessonMaterial) {
       setLessonMaterial({ ...state.lessonMaterial, sessionCode: state.sessionCode });
       setGroupFeedbackRaw(state.lessonMaterial.groupFeedbackRaw);
@@ -391,7 +459,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       const body = sessionCode
         ? { studentId: singleStudentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[singleStudentId] }
         : { studentId: singleStudentId, days: singleDays };
-      const data = await requestJson<{ feedback?: string; draftFeedback?: string; reviewStatus?: FeedbackReviewStatus; reviewIssues?: string[] }>("/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const feedback = data.feedback ?? ""; setSingleFeedback(feedback); setSingleDraftFeedback(data.draftFeedback ?? ""); setSingleReviewStatus(data.reviewStatus); setSingleReviewIssues(data.reviewIssues ?? []);
       await saveWorkHistory("feedback", `学生反馈 ${sessionCode || `近${singleDays}天`}`, { kind: "single", semesterId, className, studentId: singleStudentId, sessionCode, days: singleDays, feedback, draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues } satisfies SingleFeedbackHistoryState, sessionCode || singleStudentId);
     } catch (reason) { setError(errorMessage(reason, "生成单人反馈失败")); }
@@ -434,7 +502,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     clearAssessmentImports: assessmentPdfs.clear,
     legacyDraftAvailable, restoreLegacyDraft,
     singleLoading, contextByStudent, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming), canGenerate: Boolean(sessionCode && !generating),
-    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, prepareRegeneration,
+    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, cancelGeneration, prepareRegeneration,
     regenerateOne, updateFeedback, exportFeedback, restoreHistory, generateSingleFeedback,
   };
 }

@@ -31,6 +31,12 @@ export default defineConfig({
         "src/components/ui/**/*.tsx",
         "scripts/test-*.ts",
       ],
+      thresholds: {
+        statements: 49,
+        branches: 48,
+        functions: 54,
+        lines: 53,
+      },
     },
   },
   resolve: {

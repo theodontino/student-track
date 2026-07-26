@@ -18,13 +18,18 @@ async function blockExternalRequests(page: Page) {
 }
 
 async function selectQuickScoreClass(page: Page) {
-  const classSelect = page.locator("select").nth(1);
+  const semesterSelect = page.getByLabel("学期", { exact: true });
+  await expect(semesterSelect).toBeEnabled();
+  if (await semesterSelect.inputValue() !== TEST_FIXTURE.semester.id) {
+    await semesterSelect.selectOption(TEST_FIXTURE.semester.id);
+  }
+  const classSelect = page.getByLabel("班级", { exact: true });
   await expect(classSelect).toBeEnabled();
   if (await classSelect.inputValue() !== TEST_FIXTURE.class.name) {
     await classSelect.selectOption({ label: TEST_FIXTURE.class.name });
   }
   await expect(page.getByText(TEST_FIXTURE.students[0].name, { exact: true })).toBeVisible();
-  await expect(page.locator("select")).toHaveCount(3);
+  await expect(page.getByLabel("课次", { exact: true })).toBeVisible();
 }
 
 test.describe.serial("v0.16.0 core browser smoke tests", () => {
@@ -33,19 +38,19 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await page.goto("/quick-score");
     await expect(page.getByRole("heading", { name: "手动评分" })).toBeVisible();
     await selectQuickScoreClass(page);
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByLabel("课次", { exact: true }).selectOption(TEST_FIXTURE.sessions[0].code);
 
     const studentCard = page.getByText(TEST_FIXTURE.students[0].name, { exact: true }).locator("..").locator("..");
-    await studentCard.getByTitle("点击标记缺勤").click();
+    await studentCard.getByRole("button", { name: "✓ 到" }).click();
     await studentCard.getByText("学习", { exact: true }).locator("..").getByRole("button", { name: "5", exact: true }).click();
     await page.getByRole("button", { name: "全部提交" }).click();
     await expect(page.getByText("已提交 1 条评分", { exact: false })).toBeVisible();
 
     await page.reload();
     await selectQuickScoreClass(page);
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByLabel("课次", { exact: true }).selectOption(TEST_FIXTURE.sessions[0].code);
     const reloadedCard = page.getByText(TEST_FIXTURE.students[0].name, { exact: true }).locator("..").locator("..");
-    await expect(reloadedCard.getByTitle("点击标记出勤")).toBeVisible();
+    await expect(reloadedCard.getByRole("button", { name: "✕ 缺" })).toBeVisible();
     await expect(
       reloadedCard.getByText("学习", { exact: true }).locator("..").getByRole("button", { name: "5", exact: true }),
     ).toHaveClass(/scale-110/);
@@ -125,6 +130,10 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
+          kind: "batch",
+          semesterId: TEST_FIXTURE.semester.id,
+          sessionCode: TEST_FIXTURE.sessions[0].code,
+          className: TEST_FIXTURE.class.name,
           total: TEST_FIXTURE.students.length,
           cached: false,
           students: TEST_FIXTURE.students.map((student) => ({
@@ -187,6 +196,51 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     expect(externalRequests).toEqual([]);
   });
 
+  test("feedback generation can be cancelled without showing a failure state", async ({ page }) => {
+    let releaseRequest: () => void = () => undefined;
+    const heldRequest = new Promise<void>((resolve) => {
+      releaseRequest = resolve;
+    });
+    await page.route("**/api/report/feedback-batch", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      await heldRequest;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          kind: "batch",
+          semesterId: TEST_FIXTURE.semester.id,
+          sessionCode: TEST_FIXTURE.sessions[0].code,
+          className: TEST_FIXTURE.class.name,
+          total: TEST_FIXTURE.students.length,
+          cached: false,
+          students: TEST_FIXTURE.students.map((student) => ({
+            id: student.id,
+            name: student.name,
+            labels: [],
+            feedback: "",
+          })),
+        }),
+      }).catch(() => undefined);
+    });
+
+    await page.goto("/feedback");
+    await page.locator("select").nth(0).selectOption(TEST_FIXTURE.semester.id);
+    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
+    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
+    await page.getByRole("button", { name: "分析并生成反馈" }).click();
+    const stopButton = page.getByRole("button", { name: "停止生成" });
+    await expect(stopButton).toHaveClass(/ui-button--warning/);
+    await stopButton.click();
+    await expect(page.getByText("已取消本次反馈生成；未完成的结果不会保存。", { exact: true })).toBeVisible();
+    await expect(page.getByText("批量生成失败", { exact: true })).toHaveCount(0);
+    releaseRequest();
+  });
+
   test("system UI exposes the WeCom extraction role and safe LLM cache maintenance", async ({ page }) => {
     const externalRequests = await blockExternalRequests(page);
     await page.goto("/system/configuration");
@@ -194,7 +248,8 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await expect(page.getByText("模型角色分工", { exact: true })).toBeVisible();
     await expect(page.getByLabel("企微提取模型")).toBeVisible();
 
-    await page.goto("/system/maintenance");
+    await page.getByRole("link", { name: "维护与日志" }).click();
+    await expect(page).toHaveURL(/\/system\/maintenance$/);
     await expect(page.getByRole("heading", { name: "维护与操作日志" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "操作日志", exact: true })).toBeVisible();
     await expect(page.getByText("LLM 本机缓存", { exact: true })).toBeVisible();
