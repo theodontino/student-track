@@ -21,6 +21,7 @@ jobs:
       - run: npx prisma generate
       - run: npm run verify:quality
         env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-build.db
           VERIFY_ARTIFACT_NAME: verification-quality-${{ github.run_id }}
       - name: Upload quality verification logs
         if: always()
