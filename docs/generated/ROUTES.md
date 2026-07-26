@@ -42,6 +42,8 @@
 | `/api/teacher-observations` | `GET` |
 | `/api/wecom/auto-import` | `DELETE`, `GET`, `POST` |
 | `/api/wecom/bridge` | `POST` |
+| `/api/wecom/handoff/[id]` | `PATCH` |
+| `/api/wecom/handoff` | `GET`, `POST` |
 | `/api/wecom/import` | `GET`, `POST` |
 | `/api/wecom/review-drafts` | `GET`, `PATCH`, `POST` |
 | `/api/wecomcatch/export` | `POST` |
