@@ -119,6 +119,13 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 
 WeComCatch 是仓库外的可选本地工具，Student Track 不包含或分发它的源码、运行数据、本地配置、编译产物或备份。使用前必须在 `.env` 中配置 `WECOMCATCH_PROJECT_ROOT` 或 `WECOMCATCH_CLI_PATH`。
 
+推荐的跨应用交接使用本地文件协议。两端默认共享
+`~/Library/Application Support/WCC Student Track Exchange`；如需改目录，
+在 Student Track `.env` 设置 `STUDENT_TRACK_WCC_EXCHANGE_ROOT`，并在 WCC
+设置相同位置的 `WECOMCATCH_ST_EXCHANGE_ROOT`。WCC 发布完成后可以退出，
+Student Track 会独立校验 SHA-256、执行学生匹配与业务提取，并把不含正文和姓名的
+回执写回共享目录。详细规则见 `docs/WECOM_FILE_HANDOFF.md`。
+
 `WECOMCATCH_RUNTIME_DIR` 和 `WECOMCATCH_CONFIG_PATH` 可分别指向外部运行目录和本地配置，`WECOMCATCH_BUILD_DIR` 用于单独覆盖编译产物目录。未配置外部工具时，相关状态和同步功能应保持不可用，不影响 Student Track 核心功能。
 
 首次使用时，在“系统中心 → 集成与工具 → 企微家校工作区”阅读第三方工具使用须知并确认，左侧才显示“企微家校”入口。该确认只保存在当前浏览器本机，须知版本变化时需要重新确认；它不代表已经取得聊天参与者、学生或监护人的授权。隐藏入口不会删除数据库账本、缓存或回滚记录。

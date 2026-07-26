@@ -5,7 +5,9 @@ const safeIdentifier = z.string().min(1).max(160).regex(/^[A-Za-z0-9._:-]+$/);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 const sha256Fingerprint = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const timestamp = z.string().refine((value) => (
-  value.length <= 40 && !Number.isNaN(Date.parse(value))
+  value.length <= 40
+  && /(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+  && !Number.isNaN(Date.parse(value))
 ), "必须是带时区的 ISO 8601 时间");
 
 const WccMessageSchema = z.object({
