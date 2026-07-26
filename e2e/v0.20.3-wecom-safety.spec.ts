@@ -5,7 +5,18 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
     version: "wecom-third-party-notice-v1",
     acceptedAt: new Date().toISOString(),
   })));
-  const item = {
+  const item: {
+    id: string;
+    packageId: string;
+    sourceId: string;
+    status: string;
+    outcome: string;
+    code: null;
+    messageCount: number;
+    selectedStudent: null | { id: string; name: string; studentId: string };
+    producedAt: string;
+    updatedAt: string;
+  } = {
     id: "handoff-test-1",
     packageId: "pkg-test-1",
     sourceId: "source-test",
