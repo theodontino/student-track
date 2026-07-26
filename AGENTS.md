@@ -70,7 +70,7 @@ npm run verify:quick
 ### Agent 验证策略
 
 - 文案、样式、小型组件或低风险重构：运行改动直接相关的测试（如有），然后运行 `npm run verify:quick`。完整覆盖率、构建和双浏览器回归交给 CI。
-- API、Service、状态管理、LLM、导入、回滚或数据写入：先运行相关测试，再运行 `npm run verify:quick`；必要时运行对应的 `npm run test:e2e:chromium` 或 `npm run test:e2e:webkit`。
+- API、Service、状态管理、LLM、导入、回滚或数据写入：先运行相关测试，再运行 `npm run verify:quick`；涉及页面、导航或用户流程时再运行 `npm run test:e2e`（WebKit / Safari 基线）。
 - Schema、migration、发布候选或跨模块高风险变更：运行 `npm run verify:release`，或者推送当前提交并等待同一提交的 CI `quality` 与 `browser` 全部通过。已通过同一提交的 CI 时，不重复本地全量验证。
 - CI 的 `quality` 运行 `npm run verify:quality`；`browser` 运行 `npm run verify:browser`。两个浏览器使用各自的隔离临时数据库。
 - 成功时只读取命令退出状态和精简摘要，不打开 `.verification-logs/` 或 CI artifact。

@@ -29,7 +29,7 @@
     "test": "node --import tsx scripts/run-isolated-tests.ts vitest-run",
     "test:watch": "node --import tsx scripts/run-isolated-tests.ts vitest-watch",
     "test:coverage": "node --import tsx scripts/run-isolated-tests.ts vitest-coverage",
-    "test:e2e": "npm run test:e2e:chromium && npm run test:e2e:webkit",
+    "test:e2e": "node --import tsx scripts/run-isolated-tests.ts playwright --project=webkit",
     "test:e2e:chromium": "node --import tsx scripts/run-isolated-tests.ts playwright --project=chromium",
     "test:e2e:webkit": "node --import tsx scripts/run-isolated-tests.ts playwright --project=webkit",
     "verify:quick": "node --import tsx scripts/verify-agent.ts quick",
