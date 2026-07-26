@@ -8,8 +8,9 @@ import { useWeComAccess } from "@/features/useWeComAccess";
 import WeComAccessPanel from "./WeComAccessPanel";
 import WeComRollbackPanel from "./WeComRollbackPanel";
 import WccCandidateReviewPanel from "./WccCandidateReviewPanel";
+import WccHandoffPanel from "./WccHandoffPanel";
 
-type WeComView = "workflow" | "review";
+type WeComView = "workflow" | "handoff" | "review";
 
 export default function WeComWorkspace() {
   const access = useWeComAccess();
@@ -34,13 +35,16 @@ export default function WeComWorkspace() {
         onChange={(value) => setView(value as WeComView)}
         items={[
           { value: "workflow", label: "同步与导入" },
+          { value: "handoff", label: "中转仓库" },
           { value: "review", label: "复核与回滚" },
         ]}
       />
       <div role="tabpanel" className="wecom-workspace__panel">
         {view === "workflow"
-          ? <WeComWorkflowPanel title="同步与导入" description="同步、提取、预览并导入可用于课后反馈的家校沟通。" showFeedbackLink />
-          : <div className="space-y-4"><WccCandidateReviewPanel /><WeComRollbackPanel /></div>}
+          ? <WeComWorkflowPanel title="同步与导入" description="保留旧 API 工作流作为本机兼容回退。" showFeedbackLink />
+          : view === "handoff"
+            ? <WccHandoffPanel />
+            : <div className="space-y-4"><WccCandidateReviewPanel /><WeComRollbackPanel /></div>}
       </div>
     </>}
   </main>;

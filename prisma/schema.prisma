@@ -61,6 +61,7 @@ model Student {
   communications  Communication[]
   attendances     Attendance[]
   teacherObservations TeacherObservation[]
+  weComHandoffPackages WeComHandoffPackage[]
 }
 
 // 2. 课次四维评分（每课次独立评分，sessionId 可空用于无课次场景）
@@ -371,4 +372,31 @@ model TeacherObservationSource {
   @@id([observationId, communicationId])
   @@index([communicationId])
   @@index([relatedSessionId])
+}
+
+// 13. WCC 本地转交包账本；只存包标识、哈希和处理状态，不复制聊天正文。
+model WeComHandoffPackage {
+  id                String   @id @default(cuid())
+  sourceId          String
+  packageId         String
+  packageSha256     String
+  status            String
+  outcome           String?
+  code              String?
+  messageCount      Int
+  selectedStudentId String?
+  receiptId         String?
+  producedAt        DateTime
+  firstSeenAt       DateTime @default(now())
+  lastAttemptAt     DateTime?
+  processedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  selectedStudent Student? @relation(fields: [selectedStudentId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceId, packageId, packageSha256])
+  @@index([sourceId, packageId])
+  @@index([status, updatedAt])
+  @@index([selectedStudentId])
 }
