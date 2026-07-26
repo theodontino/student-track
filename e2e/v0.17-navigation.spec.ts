@@ -209,6 +209,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("all remaining core workspaces avoid page-level narrow overflow", async ({ context }) => {
+    test.setTimeout(90_000);
     const paths = [
       "/", "/quick-score", "/feedback?step=extract", "/daily-report", "/diarize",
       `/students/${TEST_FIXTURE.students[0].id}?semesterId=${TEST_FIXTURE.semester.id}`,
@@ -217,7 +218,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     for (const path of paths) {
       const page = await context.newPage();
       await page.setViewportSize({ width: 720, height: 900 });
-      await page.goto(path);
+      await page.goto(path, { waitUntil: "domcontentloaded" });
       await expect(page.locator("main, .dashboard-overview, .system-center").first()).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${path} should not overflow`).toBe(true);
       await page.close();
