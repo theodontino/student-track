@@ -35,7 +35,7 @@ test.describe("v0.19.1 dashboard risk separation", () => {
 
     await page.goto("/");
     const warning = page.locator(".dashboard-risk-section--warning");
-    const attention = page.locator(".dashboard-risk-section--attention");
+    const attention = page.locator(".dashboard-alerts .dashboard-risk-section--attention");
     const attendance = page.locator(".dashboard-risk-section--attendance");
     await expect(warning).toContainText("警告——需要优先处理");
     await expect(warning).toContainText("警告学生");
