@@ -1,0 +1,68 @@
+name: WebKit UI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/app/**"
+      - "src/components/**"
+      - "src/features/**"
+      - "public/**"
+      - "e2e/**"
+      - "prisma/**"
+      - "playwright.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/run-isolated-tests.ts"
+      - "scripts/test-environment.ts"
+      - "scripts/test-fixture.ts"
+      - ".github/workflows/webkit.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/app/**"
+      - "src/components/**"
+      - "src/features/**"
+      - "public/**"
+      - "e2e/**"
+      - "prisma/**"
+      - "playwright.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/run-isolated-tests.ts"
+      - "scripts/test-environment.ts"
+      - "scripts/test-fixture.ts"
+      - ".github/workflows/webkit.yml"
+
+concurrency:
+  group: webkit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    timeout-minutes: 12
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx playwright install --with-deps webkit
+      - run: npm run verify:browser
+        env:
+          VERIFY_ARTIFACT_NAME: verification-browser-${{ github.run_id }}
+      - name: Upload browser verification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-browser-${{ github.run_id }}
+          path: .verification-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true

@@ -36,7 +36,8 @@
 
 - `npm run verify:quick`：日常开发默认入口，执行 lint、类型检查和单元/集成测试。
 - `npm run verify:quality`：执行 CI quality 检查，包括文档、隐私、覆盖率和生产构建。
-- `npm run verify:browser`：在相互隔离的临时数据库上执行 Chromium 与 WebKit 回归。
+- `npm run verify:browser`：在隔离的临时数据库上执行 WebKit（Safari 基线）回归。
+- `npm run test:e2e:chromium`：保留的 Chromium 兼容性回归入口，仅在需要时手动运行，不属于日常 CI 门禁。
 - `npm run verify:release`：正式发布前执行 quality 与 browser 的完整合集。
 
 这些命令成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时先查看输出中的有限日志末尾，再按需打开单个日志。CI 会上传完整日志 artifact，已通过同一提交的 CI 时无需重复本地全量验证。
