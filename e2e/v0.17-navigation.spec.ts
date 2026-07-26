@@ -26,7 +26,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     const reportPage = await context.newPage();
     await reportPage.goto("/report");
     await expect(reportPage).toHaveURL(/\/daily-report/);
-    await expect(reportPage.getByRole("heading", { name: "班级日报" })).toBeVisible();
+    await expect(reportPage.getByRole("heading", { name: "教学总结" })).toBeVisible();
     await reportPage.close();
   });
 
@@ -43,14 +43,13 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.locator(".system-license-text")).toContainText("GNU AFFERO GENERAL PUBLIC LICENSE");
   });
 
-  test("daily report uses the shared teaching context", async ({ page }) => {
-    await page.route("**/api/report/daily", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ report: "E2E 班级日报：课堂状态稳定。" }) }));
+  test("teaching summary uses the shared teaching context", async ({ page }) => {
     await page.goto("/daily-report");
     await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
     await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
     await page.getByLabel("课次").selectOption(TEST_FIXTURE.sessions[0].code);
-    await page.getByRole("button", { name: "生成班级日报" }).click();
-    await expect(page.getByText("E2E 班级日报：课堂状态稳定。")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "确定性待办" })).toBeVisible();
+    await expect(page.getByText(TEST_FIXTURE.class.name, { exact: true }).last()).toBeVisible();
   });
 
   test("teaching context and an unfinished entry survive page switches", async ({ page }) => {
@@ -61,10 +60,10 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await page.getByRole("button", { name: "2 录入 录入与提取课堂记录" }).click();
     await page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。").fill("E2E 未提交课堂回顾");
 
-    await page.getByRole("link", { name: "班级日报" }).click();
+    await page.getByRole("link", { name: "教学总结" }).click();
     await expect(page).toHaveURL(new RegExp(`semesterId=${TEST_FIXTURE.semester.id}`));
-    await expect(page.getByLabel("班级")).toHaveValue(TEST_FIXTURE.class.name);
-    await expect(page.getByLabel("课次")).toHaveValue(TEST_FIXTURE.sessions[0].code);
+    await expect(page.getByLabel(/班级选择班级/)).toHaveValue(TEST_FIXTURE.class.name);
+    await expect(page.getByLabel(/课次选择课次/)).toHaveValue(TEST_FIXTURE.sessions[0].code);
 
     await page.getByRole("link", { name: "课后工作台" }).click();
     await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未提交课堂回顾");
