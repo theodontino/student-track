@@ -60,6 +60,7 @@ model Student {
   events          Event[]
   communications  Communication[]
   attendances     Attendance[]
+  teacherObservations TeacherObservation[]
 }
 
 // 2. 课次四维评分（每课次独立评分，sessionId 可空用于无课次场景）
@@ -128,6 +129,7 @@ model Communication {
 
   student Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  observationSources TeacherObservationSource[]
 }
 
 // 4b. 企微增量处理账本（不复制原始聊天正文）
@@ -273,6 +275,7 @@ model ClassSession {
   sessionMetrics SessionMetric[]
   events         Event[]
   communications  Communication[]
+  observationSources TeacherObservationSource[]
 }
 
 // 9. 系统操作日志（v0.11）
@@ -311,4 +314,61 @@ model WorkHistory {
 
   @@index([module, createdAt])
   @@index([module, key, createdAt])
+}
+
+// 11. 教师教学总结缓存（确定性事实实时计算，仅缓存结构化 LLM 解读）
+model TeachingSummaryCache {
+  id                    String   @id @default(cuid())
+  scopeType             String   // "session" | "date"
+  scopeKey              String
+  includeCommunications Boolean
+  sourceFingerprint     String
+  resultJson            String
+  promptVersion         String
+  modelName             String
+  generatedAt           DateTime @default(now())
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([scopeType, scopeKey, includeCommunications])
+  @@index([generatedAt])
+}
+
+// 12. 教师内部家校沟通观察；不参与评分、风险与家长反馈
+model TeacherObservation {
+  id              String   @id @default(cuid())
+  studentId       String
+  kind            String
+  topic           String
+  title           String
+  evidenceSummary String
+  status          String   @default("new")
+  analysisVersion String
+  firstDetectedAt DateTime @default(now())
+  lastDetectedAt  DateTime @default(now())
+  statusChangedAt DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  student Student                    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sources TeacherObservationSource[]
+
+  @@unique([studentId, kind, topic])
+  @@index([status, lastDetectedAt])
+  @@index([studentId])
+}
+
+model TeacherObservationSource {
+  observationId   String
+  communicationId String
+  relatedSessionId String?
+  createdAt       DateTime @default(now())
+
+  observation   TeacherObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  communication Communication      @relation(fields: [communicationId], references: [id], onDelete: Cascade)
+  relatedSession ClassSession?      @relation(fields: [relatedSessionId], references: [id], onDelete: SetNull)
+
+  @@id([observationId, communicationId])
+  @@index([communicationId])
+  @@index([relatedSessionId])
 }
