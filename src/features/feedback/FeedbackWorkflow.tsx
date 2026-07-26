@@ -7,6 +7,7 @@ import { ClassroomReviewComposer } from "./ClassroomReviewComposer";
 import { DraftConfirmationPanel } from "./DraftConfirmationPanel";
 import { FeedbackContextSection } from "./FeedbackContextSection";
 import { FeedbackGenerationPanel } from "./FeedbackGenerationPanel";
+import { FeedbackMaterialsPanel } from "./FeedbackMaterialsPanel";
 import type { FeedbackStep } from "./types";
 import type { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 
@@ -24,7 +25,7 @@ export function FeedbackWorkflow({ workspace }: { workspace: Workspace }) {
   return <div className="feedback-flow">
     <nav className="feedback-stepper" aria-label="反馈工作流步骤">{steps.map((step, stepIndex) => <button type="button" key={step.id} aria-current={step.id === workspace.activeStep ? "step" : undefined} className={step.id === workspace.activeStep ? "is-active" : stepIndex < index ? "is-complete" : ""} onClick={() => workspace.setActiveStep(step.id)}><span>{stepIndex + 1}</span><strong>{step.short}</strong><small>{step.label}</small></button>)}</nav>
     <div key={workspace.activeStep} className="feedback-stage">
-      {workspace.activeStep === "prepare" && <><FeedbackContextSection workspace={workspace} /><div className="feedback-integration-note"><span>企微家校沟通由独立工作区统一同步、复核和导入。</span><Link href="/wecom">前往企微家校</Link></div><FeedbackContextPreview students={workspace.contextStudents} loading={workspace.contextLoading} error={workspace.contextError} /></>}
+      {workspace.activeStep === "prepare" && <><FeedbackContextSection workspace={workspace} /><FeedbackMaterialsPanel workspace={workspace} /><div className="feedback-integration-note"><span>企微家校沟通由独立工作区统一同步、复核和导入。</span><Link href="/wecom">前往企微家校</Link></div><FeedbackContextPreview students={workspace.contextStudents} loading={workspace.contextLoading} error={workspace.contextError} /></>}
       {workspace.activeStep === "extract" && <div className="feedback-stage-split"><ClassroomReviewComposer workspace={workspace} /><AiWorkflowStatus state={workspace.workflow} /></div>}
       {workspace.activeStep === "review" && <DraftConfirmationPanel workspace={workspace} />}
       {workspace.activeStep === "generate" && <><AiWorkflowStatus state={workspace.workflow} /><FeedbackGenerationPanel workspace={workspace} mode="generate" /></>}

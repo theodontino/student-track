@@ -2,6 +2,11 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { normalizeAttentionSignalCandidates, type AttentionSignalCandidate } from "@/lib/attention-labels";
+import {
+  formatFeedbackCommunicationSummary,
+  normalizeFeedbackUseDecision,
+  shouldPersistFeedbackCommunication,
+} from "@/lib/feedback-communication";
 import { createDatabaseBackup } from "@/services/database-backup-service";
 import { addHighConfidenceAttentionLabels } from "@/services/student-label-service";
 
@@ -36,6 +41,7 @@ interface WeComRecord {
     toneHint?: string | null;
     nextAction?: string | null;
   } | null;
+  feedbackUse?: unknown;
   confidence?: Confidence | string | null;
   attentionSignals?: unknown;
 }
@@ -49,6 +55,7 @@ export interface WeComImportInput {
   expectedConversationId?: string;
   requireMessageIds?: boolean;
   useOccurredAtSession?: boolean;
+  requireFeedbackUse?: boolean;
 }
 
 export interface WeComImportPlanItem {
@@ -98,7 +105,12 @@ function isAllowedConfidence(value: unknown, includeMedium: boolean) {
 
 function buildSummary(record: WeComRecord) {
   const explicit = clean(record.summaryForStudentTrack) || clean(record.summaryForChemTrack);
-  if (explicit) return explicit;
+  const decision = normalizeFeedbackUseDecision(record.feedbackUse);
+  if (explicit) {
+    return decision
+      ? formatFeedbackCommunicationSummary(explicit, clean(record.occurredAt), decision)
+      : explicit;
+  }
 
   const occurredAt = clean(record.occurredAt) || "未知";
   const title = clean(record.source?.conversationTitle) || "未知会话";
@@ -109,7 +121,8 @@ function buildSummary(record: WeComRecord) {
     toneHint ? `反馈提示：${toneHint}` : "",
     nextAction ? `下一步：${nextAction}` : "",
   ].filter(Boolean).join("；");
-  return `[企微长期沟通｜实际沟通: ${occurredAt}｜会话: ${title}] ${body}${hints ? `（${hints}）` : ""}`;
+  const summary = `[企微长期沟通｜实际沟通: ${occurredAt}｜会话: ${title}] ${body}${hints ? `（${hints}）` : ""}`;
+  return decision ? formatFeedbackCommunicationSummary(summary, occurredAt, decision) : summary;
 }
 
 async function loadCandidateFile(input: WeComImportInput) {
@@ -219,7 +232,10 @@ export async function planWeComCommunicationImport(
 ): Promise<WeComImportResult> {
   const { data, sourceLabel } = await loadCandidateFile(input);
   const records = Array.isArray(data.records) ? data.records : [];
-  const communicationRecords = records.filter((record) => record.kind === "communication");
+  const allCommunicationRecords = records.filter((record) => record.kind === "communication");
+  const communicationRecords = input.requireFeedbackUse
+    ? allCommunicationRecords.filter((record) => shouldPersistFeedbackCommunication(record.feedbackUse))
+    : allCommunicationRecords;
   const aiContextCandidateCount = records.filter((record) => record.kind === "aiContext").length;
   const attentionCandidateCount = communicationRecords.reduce((sum, record) => sum + normalizeAttentionSignalCandidates(record.attentionSignals).length, 0);
   const includeMedium = input.includeMedium === true;
@@ -317,7 +333,7 @@ export async function planWeComCommunicationImport(
   return {
     sourceLabel,
     mode: "dry-run",
-    communicationCandidateCount: communicationRecords.length,
+    communicationCandidateCount: allCommunicationRecords.length,
     aiContextCandidateCount,
     attentionCandidateCount,
     importableCount: plans.length,

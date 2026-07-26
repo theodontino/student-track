@@ -6,6 +6,11 @@ import type { InputHistoryState } from "@/features/entry";
 import { teachingContextWorkspaceKey, useTeachingContext } from "@/features/teaching-context";
 import { useAiWorkflow } from "@/features/ai-workflow";
 import { requestJson } from "@/lib/api-client";
+import {
+  createEmptyLessonFeedbackMaterial,
+  parseLessonFeedbackMaterial,
+  type LessonFeedbackMaterial,
+} from "@/lib/feedback-materials";
 import { saveWorkHistory } from "@/lib/history";
 import { readSSEStream } from "@/lib/sse";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
@@ -13,6 +18,7 @@ import type { FeedbackReviewStatus } from "@/services/feedback-generation-servic
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import type { FeedbackCard, FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
 import { isInputHistoryState } from "./history-adapters";
+import { useAssessmentPdfImports } from "./useAssessmentPdfImports";
 import { isFeedbackWorkspace, todayLocalDate } from "./workspace-state";
 
 function errorMessage(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
@@ -60,14 +66,33 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   const [singleReviewIssues, setSingleReviewIssues] = useState<string[]>([]);
   const [singleLoading, setSingleLoading] = useState(false);
   const [legacyDraftAvailable, setLegacyDraftAvailable] = useState(false);
+  const [groupFeedbackRaw, setGroupFeedbackRaw] = useState("");
+  const [assessmentBriefRaw, setAssessmentBriefRaw] = useState("");
+  const [lessonMaterial, setLessonMaterial] = useState<LessonFeedbackMaterial>(createEmptyLessonFeedbackMaterial);
   const workflow = useAiWorkflow();
+  const assessmentStudents = useMemo<FeedbackStudentOption[]>(() => contextStudents.map((student) => ({
+    id: student.id,
+    name: student.name,
+    studentId: student.studentId,
+    class: className,
+  })), [className, contextStudents]);
+  const assessmentPdfs = useAssessmentPdfImports({
+    sessionCode,
+    students: assessmentStudents,
+    onInputsChanged: () => markFeedbackInputsChanged(
+      feedbackCards.length ? "出门测证据已改变，请重新生成反馈。" : "",
+    ),
+    setError,
+    setStatus,
+  });
 
   const workspaceValue = useMemo<FeedbackWorkspaceState>(() => ({
     activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult,
     reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone,
     feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback,
     singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow: workflow.state,
-  }), [activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow.state]);
+    groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentImports: assessmentPdfs.items,
+  }), [activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow.state, groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentPdfs.items]);
 
   const workspace = useSessionWorkspace({
     key: teachingContextWorkspaceKey("feedback", context), value: workspaceValue,
@@ -84,12 +109,19 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       setFeedbackDirty(saved?.feedbackDirty ?? false); setForceRegenerate(saved?.forceRegenerate ?? false);
       setSingleStudentId(saved?.singleStudentId ?? ""); setSingleDays(saved?.singleDays ?? 14); setSingleFeedback(saved?.singleFeedback ?? "");
       setSingleDraftFeedback(saved?.singleDraftFeedback ?? ""); setSingleReviewStatus(saved?.singleReviewStatus); setSingleReviewIssues(saved?.singleReviewIssues ?? []);
+      setGroupFeedbackRaw(saved?.groupFeedbackRaw ?? "");
+      setAssessmentBriefRaw(saved?.assessmentBriefRaw ?? "");
+      setLessonMaterial(saved?.lessonMaterial
+        ? { ...saved.lessonMaterial, sessionCode: saved.context.sessionCode }
+        : createEmptyLessonFeedbackMaterial(saved?.context.sessionCode));
+      assessmentPdfs.setItems(saved?.assessmentImports ?? []);
       workflow.restore(saved?.workflow);
       setStatus(saved ? saved.status || "已恢复上次离开时的页面内容。" : ""); setError("");
     },
   });
 
   const contextByStudent = useMemo(() => new Map(contextStudents.map((student) => [student.id, student])), [contextStudents]);
+  const confirmedAssessmentEvidence = assessmentPdfs.evidenceByStudent;
   useEffect(() => { requestJson<FeedbackStudentOption[]>("/api/students").then(setStudents).catch(() => setStudents([])); }, []);
   useEffect(() => {
     if (!workspace.hydrated) return;
@@ -124,11 +156,61 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   }, [sessionCode, contextReloadKey]);
 
   function resetFeedback() { setFeedbackCards([]); setFeedbackTotal(0); setFeedbackDone(0); setFeedbackPhase("idle"); setFeedbackDirty(false); setForceRegenerate(false); }
+  function markFeedbackInputsChanged(message = "") {
+    setForceRegenerate(true);
+    if (feedbackCards.length > 0) setFeedbackDirty(true);
+    if (message) setStatus(message);
+  }
+  function effectiveLessonMaterial() {
+    if (
+      lessonMaterial.groupFeedbackRaw === groupFeedbackRaw.trim()
+      && lessonMaterial.assessmentBriefRaw === assessmentBriefRaw.trim()
+    ) return { ...lessonMaterial, sessionCode };
+    return parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode);
+  }
+  function updateGroupFeedbackRaw(value: string) {
+    setGroupFeedbackRaw(value);
+    markFeedbackInputsChanged(feedbackCards.length ? "课程材料已改变，请重新生成反馈。" : "");
+  }
+  function updateAssessmentBriefRaw(value: string) {
+    setAssessmentBriefRaw(value);
+    markFeedbackInputsChanged(feedbackCards.length ? "测验说明已改变，请重新生成反馈。" : "");
+  }
+  function organizeLessonMaterial() {
+    const parsed = parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode);
+    setLessonMaterial(parsed);
+    markFeedbackInputsChanged(feedbackCards.length ? "课程材料已重新整理，请重新生成反馈。" : "课程材料已整理，可在下方检查。");
+  }
+  function clearLessonMaterials() {
+    setGroupFeedbackRaw("");
+    setAssessmentBriefRaw("");
+    setLessonMaterial(createEmptyLessonFeedbackMaterial(sessionCode));
+    markFeedbackInputsChanged(feedbackCards.length ? "课程材料已清空，请重新生成反馈。" : "课程材料已清空。");
+  }
+  function updateLessonMaterialSection(
+    key: "lessonTitle" | "classroomContent" | "classroomFocus" | "classroomExplanation" | "homework" | "assessmentFocus" | "correctionAdvice" | "otherNotes",
+    value: string,
+  ) {
+    setLessonMaterial((current) => ({
+      ...current,
+      sessionCode,
+      [key]: key === "lessonTitle"
+        ? value
+        : value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+    }));
+    markFeedbackInputsChanged(feedbackCards.length ? "整理后的课程材料已修改，请重新生成反馈。" : "");
+  }
+  function resetFeedbackInputs(nextSessionCode = sessionCode) {
+    setGroupFeedbackRaw("");
+    setAssessmentBriefRaw("");
+    setLessonMaterial(createEmptyLessonFeedbackMaterial(nextSessionCode));
+    assessmentPdfs.setItems([]);
+  }
   function onSemesterChange(id: string) { setSemesterId(id); setClassName(""); setSessionCode(""); resetFeedback(); }
   function onClassChange(value: string) { setClassName(value); setSessionCode(""); resetFeedback(); }
   function onSessionChange(code: string) {
     setSessionCode(code); setDraftId(""); setParsedResult(null); setReviewResult(null); setCorrections([]); setConfirmed(false);
-    resetFeedback(); workflow.reset(); setError(""); setStatus("");
+    resetFeedback(); resetFeedbackInputs(code); workflow.reset(); setError(""); setStatus("");
   }
   async function createSession() {
     if (!semesterId || !className) { setError("请先选择学期和班级"); return; }
@@ -198,7 +280,17 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     workflow.start("生成课后反馈", "正在检查课次和反馈上下文…");
     workflow.transition("generating", "正在先分析趋势与历史，再生成家长话术…");
     try {
-      const response = await fetch("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", bypassCache: forceRegenerate }) });
+      const response = await fetch("/api/report/feedback-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionCode,
+          historyModule: "feedback",
+          bypassCache: forceRegenerate,
+          lessonMaterial: effectiveLessonMaterial(),
+          assessmentEvidence: confirmedAssessmentEvidence,
+        }),
+      });
       if (!response.ok) throw new Error((await response.json()).error);
       if ((response.headers.get("content-type") || "").includes("application/json")) {
         const data = await response.json(); setFeedbackCards(data.students || []); setFeedbackTotal(data.total); setFeedbackDone(data.total); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "趋势与历史分析已转换成家长话术，并完成 AI 审核。"); setForceRegenerate(false); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请逐条检查后再导出。"); return;
@@ -224,12 +316,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   async function regenerateOne(studentId: string) {
     if (!sessionCode || !feedbackCards.some((card) => card.id === studentId)) return;
     setRegeneratingId(studentId); setError("");
-    try { const data = await requestJson<{ feedback?: string; draftFeedback?: string; reviewStatus?: FeedbackReviewStatus; reviewIssues?: string[] }>("/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode }) }); setFeedbackCards((current) => current.map((card) => card.id === studentId ? { ...card, feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } : card)); setFeedbackDirty(true); }
+    try { const data = await requestJson<{ feedback?: string; draftFeedback?: string; reviewStatus?: FeedbackReviewStatus; reviewIssues?: string[] }>("/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId] }) }); setFeedbackCards((current) => current.map((card) => card.id === studentId ? { ...card, feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } : card)); setFeedbackDirty(true); }
     catch (reason) { setError(errorMessage(reason, "重新生成失败")); }
     finally { setRegeneratingId(""); }
   }
   function updateFeedback(studentId: string, feedback: string) { setFeedbackCards((current) => current.map((card) => card.id === studentId ? { ...card, feedback, reviewStatus: "edited", reviewIssues: ["教师已人工修改，导出以当前文本为准"] } : card)); setFeedbackDirty(true); }
-  async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", saveState: true, students: feedbackCards }) }); setFeedbackDirty(false); }
+  async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", saveState: true, students: feedbackCards, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence }) }); setFeedbackDirty(false); }
   async function exportFeedback() {
     if (!sessionCode || !feedbackCards.length) return;
     const blockerCount = feedbackCards.filter((card) => card.reviewStatus === "needs_review").length;
@@ -254,7 +346,36 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       return;
     }
     if (state.kind === "single") { setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setSingleStudentId(state.studentId); setSingleDays(state.days); setSingleFeedback(state.feedback); setSingleDraftFeedback(state.draftFeedback ?? ""); setSingleReviewStatus(state.reviewStatus); setSingleReviewIssues(state.reviewIssues ?? []); setError(""); setStatus("已恢复单人反馈历史。"); return; }
-    setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setFeedbackCards(state.students); setFeedbackTotal(state.total); setFeedbackDone(state.total); setFeedbackDirty(false); setForceRegenerate(false); setActiveStep("export"); setContextReloadKey((current) => current + 1); setError(""); setStatus("已恢复历史反馈结果。");
+    setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
+    setFeedbackCards(state.students); setFeedbackTotal(state.total); setFeedbackDone(state.total); setFeedbackDirty(false); setForceRegenerate(false);
+    if (state.lessonMaterial) {
+      setLessonMaterial({ ...state.lessonMaterial, sessionCode: state.sessionCode });
+      setGroupFeedbackRaw(state.lessonMaterial.groupFeedbackRaw);
+      setAssessmentBriefRaw(state.lessonMaterial.assessmentBriefRaw);
+    } else {
+      setLessonMaterial(createEmptyLessonFeedbackMaterial(state.sessionCode));
+      setGroupFeedbackRaw("");
+      setAssessmentBriefRaw("");
+    }
+    if (state.assessmentEvidence) {
+      assessmentPdfs.setItems(Object.entries(state.assessmentEvidence).map(([studentId, evidence], index) => {
+        const card = state.students.find((item) => item.id === studentId);
+        return {
+          id: `history-${studentId}-${index}`,
+          fileName: "历史出门测证据",
+          status: "confirmed",
+          reportStudentName: card?.name ?? "",
+          reportStudentId: "",
+          matchedStudentId: studentId,
+          matchedStudentName: card?.name ?? "",
+          evidence: { ...evidence, sessionCode: state.sessionCode, studentId },
+          error: "",
+        };
+      }));
+    } else {
+      assessmentPdfs.setItems([]);
+    }
+    setActiveStep("export"); setContextReloadKey((current) => current + 1); setError(""); setStatus("已恢复历史反馈结果。");
   }
   function restoreLegacyDraft() {
     const legacyDraft = sessionStorage.getItem("student-track:nl-input-draft")
@@ -267,7 +388,9 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   async function generateSingleFeedback() {
     if (!singleStudentId) return; setSingleLoading(true); setError("");
     try {
-      const body = sessionCode ? { studentId: singleStudentId, sessionCode } : { studentId: singleStudentId, days: singleDays };
+      const body = sessionCode
+        ? { studentId: singleStudentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[singleStudentId] }
+        : { studentId: singleStudentId, days: singleDays };
       const data = await requestJson<{ feedback?: string; draftFeedback?: string; reviewStatus?: FeedbackReviewStatus; reviewIssues?: string[] }>("/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const feedback = data.feedback ?? ""; setSingleFeedback(feedback); setSingleDraftFeedback(data.draftFeedback ?? ""); setSingleReviewStatus(data.reviewStatus); setSingleReviewIssues(data.reviewIssues ?? []);
       await saveWorkHistory("feedback", `学生反馈 ${sessionCode || `近${singleDays}天`}`, { kind: "single", semesterId, className, studentId: singleStudentId, sessionCode, days: singleDays, feedback, draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues } satisfies SingleFeedbackHistoryState, sessionCode || singleStudentId);
@@ -282,12 +405,33 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   }
 
   const feedbackReviewBlockerCount = feedbackCards.filter((card) => card.reviewStatus === "needs_review").length;
+  const lessonMaterialNeedsOrganization = (
+    lessonMaterial.groupFeedbackRaw !== groupFeedbackRaw.trim()
+    || lessonMaterial.assessmentBriefRaw !== assessmentBriefRaw.trim()
+  );
 
   return {
     activeStep, setActiveStep, context, contextHydrated, sessionRefreshKey, newSessionDate, setNewSessionDate, creatingSession, rawText, setRawText,
     parsing, assistantImporting, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirming, confirmed,
     generating, regeneratingId, exporting, error, status, feedbackCards, feedbackTotal, feedbackDone, feedbackPhase, feedbackReviewBlockerCount, contextStudents, contextLoading,
     contextError, feedbackDirty, students, singleStudentId, setSingleStudentId, singleDays, setSingleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, updateSingleFeedback,
+    groupFeedbackRaw, assessmentBriefRaw, lessonMaterial,
+    assessmentImports: assessmentPdfs.items, assessmentBatchBusy: assessmentPdfs.busy,
+    assessmentFolderPlan: assessmentPdfs.folderPlan, assessmentStudents,
+    confirmedAssessmentEvidence,
+    assessmentConfirmedCount: assessmentPdfs.confirmedCount,
+    assessmentReadyCount: assessmentPdfs.readyCount,
+    assessmentAttentionCount: assessmentPdfs.attentionCount,
+    lessonMaterialNeedsOrganization,
+    updateGroupFeedbackRaw, updateAssessmentBriefRaw, organizeLessonMaterial, clearLessonMaterials, updateLessonMaterialSection,
+    importAssessmentPdfs: assessmentPdfs.importPdfs,
+    importAssessmentFolder: assessmentPdfs.importFolder,
+    matchAssessmentItem: assessmentPdfs.matchItem,
+    confirmAssessmentItem: assessmentPdfs.confirmItem,
+    confirmAllAssessmentMatches: assessmentPdfs.confirmAllMatches,
+    removeAssessmentItem: assessmentPdfs.removeItem,
+    removeFailedAssessmentImports: assessmentPdfs.removeFailed,
+    clearAssessmentImports: assessmentPdfs.clear,
     legacyDraftAvailable, restoreLegacyDraft,
     singleLoading, contextByStudent, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming), canGenerate: Boolean(sessionCode && !generating),
     onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, prepareRegeneration,

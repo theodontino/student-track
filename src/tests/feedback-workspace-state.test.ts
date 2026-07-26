@@ -33,6 +33,29 @@ describe("feedback workspace state", () => {
     expect(isFeedbackWorkspace({ ...workspaceState(), feedbackDone: "0" })).toBe(false);
   });
 
+  it("accepts restored course materials and parsed assessment evidence", () => {
+    const state = {
+      ...workspaceState(),
+      groupFeedbackRaw: "群反馈",
+      assessmentBriefRaw: "测验说明",
+      lessonMaterial: {
+        version: 1,
+        groupFeedbackRaw: "群反馈",
+        assessmentBriefRaw: "测验说明",
+        lessonTitle: "测试课",
+        classroomContent: ["内容"],
+        classroomFocus: [],
+        classroomExplanation: [],
+        homework: [],
+        assessmentFocus: [],
+        correctionAdvice: [],
+        otherNotes: [],
+      },
+      assessmentImports: [],
+    };
+    expect(isFeedbackWorkspace(state)).toBe(true);
+  });
+
   it("formats local dates without UTC rollover", () => {
     expect(todayLocalDate(new Date(2026, 6, 4, 23, 30))).toBe("2026-07-04");
   });

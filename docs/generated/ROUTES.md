@@ -10,9 +10,13 @@
 | `/api/diarize/tasks/[id]` | `DELETE`, `GET` |
 | `/api/diarize/tasks` | `GET`, `POST` |
 | `/api/export` | `POST` |
+| `/api/feedback/assessment-pdf` | `POST` |
 | `/api/feedback/assistant-roster` | `POST` |
 | `/api/history` | `DELETE`, `GET`, `POST` |
 | `/api/input/parse` | `POST` |
+| `/api/integrations/wecomcatch/v1/candidate-batches` | `POST` |
+| `/api/integrations/wecomcatch/v1/directory` | `GET` |
+| `/api/integrations/wecomcatch/v1/review/[id]` | `PATCH` |
 | `/api/quick-score` | `GET`, `POST` |
 | `/api/report/daily` | `POST` |
 | `/api/report/feedback-batch` | `GET`, `POST` |
@@ -36,6 +40,7 @@
 | `/api/wecom/auto-import` | `DELETE`, `GET`, `POST` |
 | `/api/wecom/bridge` | `POST` |
 | `/api/wecom/import` | `GET`, `POST` |
+| `/api/wecom/review-drafts` | `GET`, `PATCH`, `POST` |
 | `/api/wecomcatch/export` | `POST` |
 | `/api/wecomcatch/status` | `GET` |
 | `/api/wecomcatch/sync-start` | `POST` |

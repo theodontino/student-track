@@ -9,6 +9,7 @@ let studentIds: string[] = [];
 let labelName = "";
 let internalLabelName = "";
 let currentSessionCode = "";
+let currentSessionId = "";
 
 beforeEach(async () => {
   const suffix = randomUUID().slice(0, 8);
@@ -41,6 +42,7 @@ beforeEach(async () => {
     data: { code: `CTX${suffix}02`, semesterId, semesterNumber: 2, date: "2099-03-08", classId },
   });
   currentSessionCode = currentSession.code;
+  currentSessionId = currentSession.id;
 
   await prisma.sessionMetric.createMany({
     data: [
@@ -97,6 +99,7 @@ afterEach(async () => {
   labelName = "";
   internalLabelName = "";
   currentSessionCode = "";
+  currentSessionId = "";
 });
 
 describe("buildFeedbackContext", () => {
@@ -123,5 +126,118 @@ describe("buildFeedbackContext", () => {
     expect(student?.preview.today.join("；")).toContain("无记录");
     expect(student?.preview.trend).toBe("暂无近期评分趋势");
     expect(student?.preview.communications).toEqual([]);
+  });
+
+  it("keeps the preview compact while giving the model more communication history", async () => {
+    await Promise.all(Array.from({ length: 5 }, (_, index) => prisma.communication.create({
+      data: {
+        studentId: studentIds[0],
+        sessionId: currentSessionId,
+        target: "母亲",
+        summary: `近期学习沟通-${index + 1}`,
+      },
+    })));
+    await prisma.communication.create({
+      data: {
+        studentId: studentIds[0],
+        sessionId: currentSessionId,
+        target: "母亲",
+        summary: "收到老师，周日上午十点正常上课。",
+      },
+    });
+
+    const result = await buildFeedbackContext(prisma, currentSessionCode);
+    const student = result.students.find((item) => item.id === studentIds[0]);
+
+    expect(student?.preview.communications).toHaveLength(3);
+    expect(student?.rawMetrics.communications).toHaveLength(6);
+    expect(student?.promptContext).toContain("家长希望反馈时多强调进步和复盘方法");
+    expect(student?.promptContext).not.toContain("周日上午十点");
+  });
+
+  it("compares the latest two evaluations with both the personal semester baseline and same-session class means", async () => {
+    const suffix = randomUUID().slice(0, 8);
+    const peers = await Promise.all([1, 2].map((index) => prisma.student.create({
+      data: {
+        name: `同期学生${index}-${suffix}`,
+        studentId: `CTX-PEER-${index}-${suffix}`,
+        gender: "男",
+        classId,
+      },
+    })));
+    studentIds.push(...peers.map((student) => student.id));
+    const sessions = await prisma.classSession.findMany({
+      where: { semesterId, classId },
+      orderBy: { semesterNumber: "asc" },
+    });
+    const earlier = await prisma.classSession.create({
+      data: {
+        code: `CTX${suffix}00`,
+        semesterId,
+        semesterNumber: 0,
+        date: "2099-02-22",
+        classId,
+      },
+    });
+    await prisma.sessionMetric.createMany({
+      data: [
+        {
+          studentId: studentIds[0],
+          sessionId: earlier.id,
+          date: earlier.date,
+          scoreA: 2,
+          scoreB: 3,
+          scoreC: 3,
+          scoreD: 5,
+          operator: "teacher",
+        },
+        ...peers.flatMap((peer) => [
+          {
+            studentId: peer.id,
+            sessionId: earlier.id,
+            date: earlier.date,
+            scoreA: 2,
+            scoreB: 3,
+            scoreC: 3,
+            scoreD: 5,
+            operator: "teacher" as const,
+          },
+          {
+            studentId: peer.id,
+            sessionId: sessions[0].id,
+            date: sessions[0].date,
+            scoreA: 2,
+            scoreB: 3,
+            scoreC: 3,
+            scoreD: 5,
+            operator: "teacher" as const,
+          },
+          {
+            studentId: peer.id,
+            sessionId: sessions[1].id,
+            date: sessions[1].date,
+            scoreA: 4,
+            scoreB: 3,
+            scoreC: 3,
+            scoreD: 5,
+            operator: "teacher" as const,
+          },
+        ]),
+      ],
+    });
+
+    const result = await buildFeedbackContext(prisma, currentSessionCode);
+    const student = result.students.find((item) => item.id === studentIds[0]);
+    expect(student?.rawMetrics.performanceBaseline).toMatchObject({
+      semesterValidCount: 3,
+      recentValidCount: 2,
+      recentAverageA: 4,
+      classComparisonCount: 2,
+    });
+    expect(student?.rawMetrics.performanceBaseline.personalDifference).toBeCloseTo(0.67, 2);
+    expect(student?.rawMetrics.performanceBaseline.classAverageDifference).toBeCloseTo(0.67, 2);
+    expect(student?.promptContext).toContain("较个人本学期A均分");
+    expect(student?.promptContext).toContain("同期班级A均值");
+    expect(student?.promptContext).not.toContain("前两次");
   });
 });

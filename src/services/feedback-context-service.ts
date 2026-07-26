@@ -1,8 +1,14 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { publicStudentLabels } from "@/lib/attention-labels";
+import {
+  FEEDBACK_COMMUNICATION_CATEGORY_LABELS,
+  isUsefulLegacyFeedbackCommunication,
+  parseFeedbackCommunicationSummary,
+} from "@/lib/feedback-communication";
 
 const RECENT_SESSION_LIMIT = 5;
-const COMMUNICATION_LIMIT = 3;
+const COMMUNICATION_PREVIEW_LIMIT = 3;
+const COMMUNICATION_PROMPT_LIMIT = 8;
 const EVENT_LIMIT = 3;
 
 export interface FeedbackContextPreview {
@@ -12,6 +18,39 @@ export interface FeedbackContextPreview {
   labels: string[];
 }
 
+export interface StudentRawMetrics {
+  current: {
+    scoreA: number | null;
+    scoreB: number | null;
+    scoreC: number | null;
+    scoreD: number | null;
+    present: boolean | null;
+    events: string[];
+  };
+  recent: Array<{
+    date: string;
+    semesterNumber: number;
+    scoreA: number;
+    scoreB: number;
+    scoreC: number;
+    scoreD: number;
+  }>;
+  communications: Array<{
+    date: string;
+    target: string;
+    summary: string;
+  }>;
+  performanceBaseline: {
+    semesterValidCount: number;
+    recentValidCount: number;
+    semesterAverageA: number | null;
+    recentAverageA: number | null;
+    personalDifference: number | null;
+    classComparisonCount: number;
+    classAverageDifference: number | null;
+  };
+}
+
 export interface FeedbackContextStudent {
   id: string;
   name: string;
@@ -19,6 +58,7 @@ export interface FeedbackContextStudent {
   labels: string[];
   promptContext: string;
   preview: FeedbackContextPreview;
+  rawMetrics: StudentRawMetrics;
 }
 
 export interface FeedbackContextResult {
@@ -49,6 +89,18 @@ function shortSummary(value: string, limit = 120) {
   return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
 }
 
+function average(values: number[]) {
+  return values.length > 0
+    ? values.reduce((sum, value) => sum + value, 0) / values.length
+    : null;
+}
+
+function rounded(value: number | null, digits = 2) {
+  if (value === null) return null;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
 function groupByStudent<T extends { studentId: string }>(items: T[]) {
   const grouped = new Map<string, T[]>();
   for (const item of items) {
@@ -57,6 +109,50 @@ function groupByStudent<T extends { studentId: string }>(items: T[]) {
     grouped.set(item.studentId, list);
   }
   return grouped;
+}
+
+function feedbackCommunicationDate(input: {
+  summary: string;
+  createdAt: Date;
+  session: { date: string } | null;
+}) {
+  const parsed = parseFeedbackCommunicationSummary(input.summary);
+  const occurredAt = parsed.occurredAt.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(occurredAt)) return occurredAt;
+  if (input.session?.date) return input.session.date;
+  return input.createdAt.toISOString().slice(0, 10);
+}
+
+function rankFeedbackCommunications<T extends {
+  summary: string;
+  createdAt: Date;
+  session: { date: string } | null;
+}>(items: T[]) {
+  const priority = { high: 2, medium: 1, low: 0 };
+  return items
+    .filter((item) => isUsefulLegacyFeedbackCommunication(item.summary))
+    .map((item) => {
+      const parsed = parseFeedbackCommunicationSummary(item.summary);
+      return { ...item, feedbackSummary: parsed.summary, feedbackDecision: parsed.decision, feedbackDate: feedbackCommunicationDate(item) };
+    })
+    .sort((left, right) => (
+      right.feedbackDate.localeCompare(left.feedbackDate)
+      || (priority[right.feedbackDecision?.priority ?? "medium"] - priority[left.feedbackDecision?.priority ?? "medium"])
+      || right.createdAt.getTime() - left.createdAt.getTime()
+    ));
+}
+
+function feedbackCommunicationPromptLine(input: {
+  target: string;
+  feedbackSummary: string;
+  feedbackDate: string;
+  feedbackDecision: ReturnType<typeof parseFeedbackCommunicationSummary>["decision"];
+}) {
+  const decision = input.feedbackDecision;
+  const context = decision
+    ? `｜${decision.priority === "high" ? "高" : "中"}优先级｜${FEEDBACK_COMMUNICATION_CATEGORY_LABELS[decision.category]}`
+    : "";
+  return `${input.feedbackDate}${context} 与${input.target}：${shortSummary(input.feedbackSummary)}`;
 }
 
 function buildTodayPreview(input: {
@@ -100,16 +196,37 @@ function buildPromptContext(input: {
   today: string[];
   trend: string;
   communications: string[];
+  baseline: StudentRawMetrics["performanceBaseline"];
 }) {
   const labels = input.labels.length > 0 ? input.labels.join("、") : "无";
   const communications = input.communications.length > 0 ? input.communications.join("；") : "无";
+  const baseline = buildBaselineText(input.baseline);
   return [
     `${input.studentName}，${input.sessionDate}第${input.semesterNumber}次课。`,
     `学生标签：${labels}`,
     `今日表现：${input.today.join("；")}`,
     `近期趋势：${input.trend}`,
+    `学期对照：${baseline}`,
     `近期家校沟通：${communications}`,
   ].join("\n");
+}
+
+function signedDifference(value: number) {
+  if (Math.abs(value) < 0.05) return "基本持平";
+  return value > 0 ? `高${value.toFixed(1)}分` : `低${Math.abs(value).toFixed(1)}分`;
+}
+
+function buildBaselineText(baseline: StudentRawMetrics["performanceBaseline"]) {
+  if (baseline.recentValidCount < 2 || baseline.semesterValidCount < 3) {
+    return `个人本学期有效评价${baseline.semesterValidCount}次，暂不足以判断最近两次相对个人常态的变化`;
+  }
+  const personal = baseline.personalDifference === null
+    ? "个人常态暂无可比数据"
+    : `最近两次A均分${baseline.recentAverageA?.toFixed(1)}，较个人本学期A均分${baseline.semesterAverageA?.toFixed(1)}${signedDifference(baseline.personalDifference)}`;
+  const classroom = baseline.classAverageDifference === null
+    ? "对应课次班级有效评价不足，暂不做同期班均对照"
+    : `在${baseline.classComparisonCount}次可比课次中平均较同期班级A均值${signedDifference(baseline.classAverageDifference)}`;
+  return `${personal}；${classroom}`;
 }
 
 /**
@@ -146,6 +263,7 @@ export async function buildFeedbackContext(
   const recentSessions = await prisma.classSession.findMany({
     where: {
       classId: session.classId,
+      semesterId: session.semesterId,
       OR: [
         { date: { lt: session.date } },
         { date: session.date, semesterNumber: { lte: session.semesterNumber } },
@@ -157,7 +275,7 @@ export async function buildFeedbackContext(
   });
   const recentSessionIds = recentSessions.map((item) => item.id);
 
-  const [currentMetrics, currentAttendances, currentEvents, recentMetrics, recentEvents, communications] =
+  const [currentMetrics, currentAttendances, currentEvents, recentMetrics, recentEvents, communications, semesterMetrics] =
     await Promise.all([
       prisma.sessionMetric.findMany({ where: { sessionId: session.id, studentId: { in: studentIds } } }),
       prisma.attendance.findMany({ where: { sessionId: session.id, studentId: { in: studentIds } } }),
@@ -180,6 +298,30 @@ export async function buildFeedbackContext(
         include: { session: { select: { code: true, date: true, semesterNumber: true } } },
         orderBy: { createdAt: "desc" },
       }),
+      prisma.sessionMetric.findMany({
+        where: {
+          studentId: { in: studentIds },
+          session: {
+            semesterId: session.semesterId,
+            classId: session.classId,
+            OR: [
+              { date: { lt: session.date } },
+              { date: session.date, semesterNumber: { lte: session.semesterNumber } },
+            ],
+          },
+        },
+        select: {
+          studentId: true,
+          sessionId: true,
+          scoreA: true,
+          session: { select: { date: true, semesterNumber: true } },
+        },
+        orderBy: [
+          { session: { date: "desc" } },
+          { session: { semesterNumber: "desc" } },
+          { createdAt: "desc" },
+        ],
+      }),
     ]);
 
   const currentMetricMap = new Map(currentMetrics.map((metric) => [metric.studentId, metric]));
@@ -188,6 +330,14 @@ export async function buildFeedbackContext(
   const recentMetricsByStudent = groupByStudent(recentMetrics);
   const recentEventsByStudent = groupByStudent(recentEvents);
   const communicationsByStudent = groupByStudent(communications);
+  const semesterMetricsByStudent = groupByStudent(semesterMetrics);
+  const semesterMetricsBySession = new Map<string, typeof semesterMetrics>();
+  for (const metric of semesterMetrics) {
+    if (!metric.sessionId) continue;
+    const list = semesterMetricsBySession.get(metric.sessionId) ?? [];
+    list.push(metric);
+    semesterMetricsBySession.set(metric.sessionId, list);
+  }
 
   const contextStudents = students.map((student): FeedbackContextStudent => {
     const labels = publicStudentLabels(student.studentLabels.map((item) => item.label.name));
@@ -199,12 +349,15 @@ export async function buildFeedbackContext(
     });
 
     const trend = buildTrendPreview(recentMetricsByStudent.get(student.id) ?? []);
-    const communicationLines = (communicationsByStudent.get(student.id) ?? [])
-      .slice(0, COMMUNICATION_LIMIT)
-      .map((communication) => {
-        const date = communication.session?.date ?? "未知日期";
-        return `${date} 与${communication.target}：${shortSummary(communication.summary)}`;
-      });
+    const feedbackCommunications = rankFeedbackCommunications(communicationsByStudent.get(student.id) ?? []);
+    const promptCommunicationLines = feedbackCommunications
+      .slice(0, COMMUNICATION_PROMPT_LIMIT)
+      .map(feedbackCommunicationPromptLine);
+    const communicationLines = feedbackCommunications
+      .slice(0, COMMUNICATION_PREVIEW_LIMIT)
+      .map((communication) => (
+        `${communication.feedbackDate} 与${communication.target}：${shortSummary(communication.feedbackSummary)}`
+      ));
     const recentEventLines = (recentEventsByStudent.get(student.id) ?? [])
       .filter((event) => event.sessionId !== session.id)
       .slice(0, EVENT_LIMIT)
@@ -214,6 +367,56 @@ export async function buildFeedbackContext(
       trend: recentEventLines.length > 0 ? `${trend}；近期事件：${recentEventLines.join("；")}` : trend,
       communications: communicationLines,
       labels,
+    };
+    const studentSemesterMetrics = semesterMetricsByStudent.get(student.id) ?? [];
+    const recentStudentMetrics = studentSemesterMetrics.slice(0, 2);
+    const semesterAverageA = average(studentSemesterMetrics.map((metric) => metric.scoreA));
+    const recentAverageA = average(recentStudentMetrics.map((metric) => metric.scoreA));
+    const classDifferences = recentStudentMetrics.flatMap((metric) => {
+      if (!metric.sessionId) return [];
+      const sameSession = semesterMetricsBySession.get(metric.sessionId) ?? [];
+      if (sameSession.length < 3) return [];
+      const classAverage = average(sameSession.map((item) => item.scoreA));
+      return classAverage === null ? [] : [metric.scoreA - classAverage];
+    });
+    const baseline: StudentRawMetrics["performanceBaseline"] = {
+      semesterValidCount: studentSemesterMetrics.length,
+      recentValidCount: recentStudentMetrics.length,
+      semesterAverageA: rounded(semesterAverageA),
+      recentAverageA: rounded(recentAverageA),
+      personalDifference: semesterAverageA === null || recentAverageA === null
+        ? null
+        : rounded(recentAverageA - semesterAverageA),
+      classComparisonCount: classDifferences.length,
+      classAverageDifference: rounded(average(classDifferences)),
+    };
+    const currentMetric = currentMetricMap.get(student.id);
+    const present = attendanceMap.has(student.id) ? attendanceMap.get(student.id) ?? null : null;
+    const rawMetrics: StudentRawMetrics = {
+      current: {
+        scoreA: currentMetric?.scoreA ?? null,
+        scoreB: currentMetric?.scoreB ?? null,
+        scoreC: currentMetric?.scoreC ?? null,
+        scoreD: currentMetric?.scoreD ?? null,
+        present,
+        events: currentEventTexts,
+      },
+      recent: (recentMetricsByStudent.get(student.id) ?? []).map((metric) => ({
+        date: metric.session?.date ?? metric.date,
+        semesterNumber: metric.session?.semesterNumber ?? 0,
+        scoreA: metric.scoreA,
+        scoreB: metric.scoreB,
+        scoreC: metric.scoreC,
+        scoreD: metric.scoreD,
+      })),
+      communications: feedbackCommunications
+        .slice(0, COMMUNICATION_PROMPT_LIMIT)
+        .map((communication) => ({
+          date: communication.feedbackDate,
+          target: communication.target,
+          summary: shortSummary(communication.feedbackSummary),
+        })),
+      performanceBaseline: baseline,
     };
 
     return {
@@ -228,9 +431,11 @@ export async function buildFeedbackContext(
         labels,
         today,
         trend: preview.trend,
-        communications: communicationLines,
+        communications: promptCommunicationLines,
+        baseline,
       }),
       preview,
+      rawMetrics,
     };
   });
 

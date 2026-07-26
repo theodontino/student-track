@@ -81,6 +81,32 @@ vi.mock("@/services/feedback-context-service", () => ({
 
 import { POST } from "@/app/api/report/feedback-batch/route";
 
+const lessonMaterial = {
+  version: 1,
+  groupFeedbackRaw: "【课堂内容】示例内容",
+  assessmentBriefRaw: "考查示例概念",
+  lessonTitle: "示例课程",
+  classroomContent: ["示例内容"],
+  classroomFocus: ["示例重点"],
+  classroomExplanation: [],
+  homework: [],
+  assessmentFocus: ["示例概念"],
+  correctionAdvice: ["订正错题"],
+  otherNotes: [],
+};
+const assessmentEvidence = {
+  "student-1": {
+    reportTitle: "示例出门测",
+    reportDate: "2099-06-14",
+    totalQuestions: 5,
+    correctRate: 80,
+    cohortAverageRate: 70,
+    knowledgePoints: [],
+    wrongItems: [],
+    similarPracticeCount: 1,
+  },
+};
+
 describe("feedback batch NDJSON stream", () => {
   beforeEach(() => {
     mocks.historyCreate.mockReset().mockResolvedValue({ id: "history-1" });
@@ -95,7 +121,12 @@ describe("feedback batch NDJSON stream", () => {
     const request = () => new NextRequest("http://localhost:3000/api/report/feedback-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionCode: "VITEST-STREAM", historyModule: "feedback" }),
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        lessonMaterial,
+        assessmentEvidence,
+      }),
     });
 
     const response = await POST(request());
@@ -130,6 +161,22 @@ describe("feedback batch NDJSON stream", () => {
         content: expect.stringContaining("#稳定"),
       })],
     }));
+    expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
+      messages: [expect.objectContaining({
+        content: expect.stringContaining("示例出门测"),
+      })],
+    }));
+    expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
+      messages: [expect.objectContaining({
+        content: expect.stringContaining("【本次生成边界】课次：VITEST-STREAM；学生ID：student-1"),
+      })],
+    }));
+    const persistedState = JSON.parse(mocks.historyCreate.mock.calls[0][0].data.state);
+    expect(persistedState.lessonMaterial.sessionCode).toBe("VITEST-STREAM");
+    expect(persistedState.assessmentEvidence["student-1"]).toMatchObject({
+      sessionCode: "VITEST-STREAM",
+      studentId: "student-1",
+    });
 
     const cached = await POST(request());
     expect(cached.headers.get("content-type")).toContain("application/json");
@@ -167,6 +214,8 @@ describe("feedback batch NDJSON stream", () => {
         sessionCode: "VITEST-STREAM",
         historyModule: "feedback",
         saveState: true,
+        lessonMaterial,
+        assessmentEvidence,
         students: [
           { id: "student-1", feedback: "甲手动编辑反馈" },
           { id: "student-2", feedback: "乙手动编辑反馈" },
@@ -216,5 +265,41 @@ describe("feedback batch NDJSON stream", () => {
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       max_tokens: 2048,
     }));
+  });
+
+  it("rejects course material or PDF evidence bound to another session or student", async () => {
+    const wrongSession = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        lessonMaterial: { ...lessonMaterial, sessionCode: "OTHER-SESSION" },
+      }),
+    }));
+    expect(wrongSession.status).toBe(400);
+    await expect(wrongSession.json()).resolves.toMatchObject({
+      error: expect.stringContaining("不能用于"),
+    });
+
+    const wrongStudent = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        assessmentEvidence: {
+          "student-1": {
+            ...assessmentEvidence["student-1"],
+            sessionCode: "VITEST-STREAM",
+            studentId: "student-2",
+          },
+        },
+      }),
+    }));
+    expect(wrongStudent.status).toBe(400);
+    await expect(wrongStudent.json()).resolves.toMatchObject({
+      error: expect.stringContaining("不一致"),
+    });
   });
 });

@@ -115,12 +115,14 @@ describe("wecom auto import service", () => {
       matchedStudent: { id: "student-zhang", confidence: "high" },
       messageIds: ["message-0", "message-1"],
       factualSummary: "家长明确反馈学生近期需要获得更多鼓励。",
+      feedbackUse: { relevant: true, category: "learning-confidence", priority: "high" },
       confidence: "high",
     }], batch) as Array<Record<string, unknown>>;
 
     expect(records[0]).toMatchObject({
       target: "家长",
       occurredAt: "2026-07-18T00:05:00.000Z",
+      feedbackUse: { relevant: true, category: "learning-confidence", priority: "high" },
       sessionCode: null,
       attentionSignals: [],
     });
