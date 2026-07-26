@@ -33,6 +33,14 @@ describe("feedback workspace state", () => {
     expect(isFeedbackWorkspace({ ...workspaceState(), feedbackDone: "0" })).toBe(false);
   });
 
+  it("restores a draft before the teacher selects a semester, class or session", () => {
+    expect(isFeedbackWorkspace({
+      ...workspaceState(),
+      context: { semesterId: "", className: "", sessionCode: "" },
+      rawText: "尚未选择课次时输入的课堂记录",
+    })).toBe(true);
+  });
+
   it("accepts restored course materials and parsed assessment evidence", () => {
     const state = {
       ...workspaceState(),

@@ -10,18 +10,24 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByText(`${TEST_FIXTURE.semester.name} · 学期概览与风险提示`)).toBeVisible();
   });
 
-  test("legacy routes open their v0.17 workspaces", async ({ page }) => {
-    await page.goto("/input");
-    await expect(page).toHaveURL(/\/feedback\?.*step=extract/);
-    await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+  test("legacy routes open their v0.17 workspaces", async ({ context }) => {
+    const inputPage = await context.newPage();
+    await inputPage.goto("/input");
+    await expect(inputPage).toHaveURL(/\/feedback\?.*step=extract/);
+    await expect(inputPage.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+    await inputPage.close();
 
-    await page.goto("/settings");
-    await expect(page).toHaveURL(/\/system\/configuration/);
-    await expect(page.getByRole("heading", { name: "系统中心" })).toBeVisible();
+    const settingsPage = await context.newPage();
+    await settingsPage.goto("/settings");
+    await expect(settingsPage).toHaveURL(/\/system\/configuration/);
+    await expect(settingsPage.getByRole("heading", { name: "系统中心" })).toBeVisible();
+    await settingsPage.close();
 
-    await page.goto("/report");
-    await expect(page).toHaveURL(/\/daily-report/);
-    await expect(page.getByRole("heading", { name: "班级日报" })).toBeVisible();
+    const reportPage = await context.newPage();
+    await reportPage.goto("/report");
+    await expect(reportPage).toHaveURL(/\/daily-report/);
+    await expect(reportPage.getByRole("heading", { name: "班级日报" })).toBeVisible();
+    await reportPage.close();
   });
 
   test("system center exposes consistent about and license pages", async ({ page }) => {
@@ -66,8 +72,9 @@ test.describe.serial("v0.17.0 information architecture", () => {
 
   test("an unsaved quick-score edit survives page switches", async ({ page }) => {
     await page.goto("/quick-score");
-    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByLabel("学期", { exact: true }).selectOption(TEST_FIXTURE.semester.id);
+    await page.getByLabel("班级", { exact: true }).selectOption({ label: TEST_FIXTURE.class.name });
+    await page.getByLabel("课次", { exact: true }).selectOption(TEST_FIXTURE.sessions[0].code);
     const studentCard = page.getByText(TEST_FIXTURE.students[1].name, { exact: true }).locator("..").locator("..");
     await studentCard.getByText("学习", { exact: true }).locator("..").getByRole("button", { name: "4", exact: true }).click();
     await expect(page.getByText("已修改 1/", { exact: false })).toBeVisible();
@@ -90,13 +97,14 @@ test.describe.serial("v0.17.0 information architecture", () => {
 
     await page.unroute("**/api/students");
     await page.reload();
-    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByLabel("学期", { exact: true }).selectOption(TEST_FIXTURE.semester.id);
+    await page.getByLabel("班级", { exact: true }).selectOption({ label: TEST_FIXTURE.class.name });
+    await page.getByLabel("课次", { exact: true }).selectOption(TEST_FIXTURE.sessions[0].code);
     await page.getByRole("button", { name: "删除课次" }).click();
     await expect(page.getByRole("dialog", { name: "删除当前课次" })).toBeVisible();
     await page.getByRole("button", { name: "取消" }).click();
     await expect(page.getByRole("dialog", { name: "删除当前课次" })).toHaveCount(0);
-    await expect(page.locator("select").nth(2)).toHaveValue(TEST_FIXTURE.sessions[0].code);
+    await expect(page.getByLabel("课次", { exact: true })).toHaveValue(TEST_FIXTURE.sessions[0].code);
   });
 
   test("an unfinished feedback review survives page switches", async ({ page }) => {
@@ -189,26 +197,31 @@ test.describe.serial("v0.17.0 information architecture", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
-  test("remaining management pages use stable narrow layouts", async ({ page }) => {
-    await page.setViewportSize({ width: 720, height: 900 });
+  test("remaining management pages use stable narrow layouts", async ({ context }) => {
     for (const [path, heading] of [["/history", "工作历史"], ["/export", "数据导出"], ["/semesters", "学期 / 课次"]] as const) {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 720, height: 900 });
       await page.goto(path);
       await expect(page.getByRole("heading", { name: heading })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.close();
     }
   });
 
-  test("all remaining core workspaces avoid page-level narrow overflow", async ({ page }) => {
-    await page.setViewportSize({ width: 720, height: 900 });
+  test("all remaining core workspaces avoid page-level narrow overflow", async ({ context }) => {
+    test.setTimeout(90_000);
     const paths = [
       "/", "/quick-score", "/feedback?step=extract", "/daily-report", "/diarize",
       `/students/${TEST_FIXTURE.students[0].id}?semesterId=${TEST_FIXTURE.semester.id}`,
       `/semesters/${TEST_FIXTURE.semester.id}`, "/system/integrations",
     ];
     for (const path of paths) {
-      await page.goto(path);
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 720, height: 900 });
+      await page.goto(path, { waitUntil: "domcontentloaded" });
       await expect(page.locator("main, .dashboard-overview, .system-center").first()).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${path} should not overflow`).toBe(true);
+      await page.close();
     }
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "student-track",
-  "version": "0.20.8",
+  "version": "0.20.9",
   "license": "AGPL-3.0-only",
   "private": true,
   "engines": {
@@ -12,6 +12,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "db:seed": "npx tsx prisma/seed.ts",
     "db:reset": "npx prisma migrate reset --force && npm run db:seed",
     "db:backup": "npx tsx scripts/db-backup.ts",
@@ -28,7 +29,13 @@
     "test": "node --import tsx scripts/run-isolated-tests.ts vitest-run",
     "test:watch": "node --import tsx scripts/run-isolated-tests.ts vitest-watch",
     "test:coverage": "node --import tsx scripts/run-isolated-tests.ts vitest-coverage",
-    "test:e2e": "node --import tsx scripts/run-isolated-tests.ts playwright"
+    "test:e2e": "npm run test:e2e:chromium && npm run test:e2e:webkit",
+    "test:e2e:chromium": "node --import tsx scripts/run-isolated-tests.ts playwright --project=chromium",
+    "test:e2e:webkit": "node --import tsx scripts/run-isolated-tests.ts playwright --project=webkit",
+    "verify:quick": "node --import tsx scripts/verify-agent.ts quick",
+    "verify:quality": "node --import tsx scripts/verify-agent.ts quality",
+    "verify:browser": "node --import tsx scripts/verify-agent.ts browser",
+    "verify:release": "node --import tsx scripts/verify-agent.ts release"
   },
   "dependencies": {
     "@libsql/client": "^0.17.3",
@@ -40,7 +47,8 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "recharts": "^3.8.1",
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

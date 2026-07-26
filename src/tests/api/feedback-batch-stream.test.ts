@@ -155,22 +155,22 @@ describe("feedback batch NDJSON stream", () => {
       messages: [expect.objectContaining({
         content: expect.stringContaining("近期家校沟通"),
       })],
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       messages: [expect.objectContaining({
         content: expect.stringContaining("#稳定"),
       })],
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       messages: [expect.objectContaining({
         content: expect.stringContaining("示例出门测"),
       })],
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       messages: [expect.objectContaining({
         content: expect.stringContaining("【本次生成边界】课次：VITEST-STREAM；学生ID：student-1"),
       })],
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     const persistedState = JSON.parse(mocks.historyCreate.mock.calls[0][0].data.state);
     expect(persistedState.lessonMaterial.sessionCode).toBe("VITEST-STREAM");
     expect(persistedState.assessmentEvidence["student-1"]).toMatchObject({
@@ -207,7 +207,8 @@ describe("feedback batch NDJSON stream", () => {
     ]);
     expect(mocks.completionCreate).toHaveBeenCalledTimes(8);
 
-    const saved = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+    const historyWritesBeforeMixedSave = mocks.historyCreate.mock.calls.length;
+    const rejectedMixedSave = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -220,6 +221,29 @@ describe("feedback batch NDJSON stream", () => {
           { id: "student-1", feedback: "甲手动编辑反馈" },
           { id: "student-2", feedback: "乙手动编辑反馈" },
           { id: "unknown-student", feedback: "不应保存" },
+        ],
+      }),
+    }));
+    expect(rejectedMixedSave.status).toBe(400);
+    await expect(rejectedMixedSave.json()).resolves.toMatchObject({
+      error: expect.stringContaining("未保存任何内容"),
+      code: "invalid_request",
+      retryable: false,
+    });
+    expect(mocks.historyCreate).toHaveBeenCalledTimes(historyWritesBeforeMixedSave);
+
+    const saved = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        saveState: true,
+        lessonMaterial,
+        assessmentEvidence,
+        students: [
+          { id: "student-1", feedback: "甲手动编辑反馈" },
+          { id: "student-2", feedback: "乙手动编辑反馈" },
         ],
       }),
     }));
@@ -264,7 +288,37 @@ describe("feedback batch NDJSON stream", () => {
     expect(events[4]).toMatchObject({ studentId: "student-2", reviewStatus: "needs_review" });
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       max_tokens: 2048,
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
+  it("stops in-flight model work and does not persist an aborted batch", async () => {
+    mocks.completionCreate.mockReset().mockImplementation((
+      _payload: unknown,
+      options?: { signal?: AbortSignal },
+    ) => new Promise((_, reject) => {
+      const abort = () => reject(new DOMException("cancelled", "AbortError"));
+      if (options?.signal?.aborted) abort();
+      else options?.signal?.addEventListener("abort", abort, { once: true });
     }));
+    const controller = new AbortController();
+    const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM-CANCEL",
+        historyModule: "feedback",
+        bypassCache: true,
+      }),
+      signal: controller.signal,
+    }));
+
+    expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+    const body = response.text();
+    await vi.waitFor(() => expect(mocks.completionCreate).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    await expect(body).resolves.toContain("\"type\":\"init\"");
+    expect(mocks.historyCreate).not.toHaveBeenCalled();
   });
 
   it("rejects course material or PDF evidence bound to another session or student", async () => {

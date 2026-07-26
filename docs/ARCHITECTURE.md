@@ -43,6 +43,10 @@ Page / Component
 - Repository 只在复杂查询被多个 Service 重复使用时建立，不作为固定层级。
 - 教师或机构可能调整的规则进入 `src/config/`；数据库约束与稳定领域不变量保留在 Schema 或 Service。
 
+所有外部输入在 Route Handler 边界使用 `src/lib/contracts/` 的 Zod schema 校验。课堂解析、课后反馈和转写的流式事件统一通过 `src/lib/sse.ts` 解码；格式错误、截断和取消不会被当作正常完成。批量反馈缓存使用带 TTL 和容量上限的内存 LRU，不设置永久定时器，也不保存学生正文到浏览器缓存。
+
+`src/proxy.ts` 只允许回环地址上的精确同源 API 请求；浏览器提供 `Origin` 时必须与请求 URL 的协议、主机和端口完全一致，不能把 `localhost`、`127.0.0.1` 和 `::1` 相互替代，也不接受 `Sec-Fetch-Site: same-site`。跨源、跨站或外部 Host 直接返回受控 `403`。缺少浏览器 Fetch 元数据的本机 CLI/测试请求仍可通过，但不放宽回环地址限制。生产服务仍只绑定 `127.0.0.1`，这层检查不能替代未来真正的身份认证。
+
 ## 数据边界
 
 `prisma/schema.prisma` 是数据库结构的唯一事实来源。Schema 变更必须通过 migration，并在全新数据库和现有数据升级路径上验证。

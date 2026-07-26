@@ -20,20 +20,21 @@ export interface ReviewedFeedback {
   reviewIssues: string[];
 }
 
-interface FeedbackDraftInput {
+export interface FeedbackDraftInput {
   studentName: string;
   promptContext: string;
   lengthRequirement: string;
   client: LLMClient;
   model: string;
+  signal?: AbortSignal;
 }
 
-interface FeedbackReviewInput extends FeedbackDraftInput {
+export interface FeedbackReviewInput extends FeedbackDraftInput {
   draftFeedback: string;
   forbiddenStudentNames?: string[];
 }
 
-interface GenerateReviewedFeedbackInput {
+export interface GenerateReviewedFeedbackInput {
   studentName: string;
   promptContext: string;
   forbiddenStudentNames?: string[];
@@ -42,6 +43,13 @@ interface GenerateReviewedFeedbackInput {
   draftModel: string;
   reviewClient: LLMClient;
   reviewModel: string;
+  signal?: AbortSignal;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException("反馈生成已取消", "AbortError");
+  }
 }
 
 interface ReviewPayload {
@@ -115,7 +123,8 @@ function isJsonModeUnsupported(error: unknown) {
     && /response[_ -]?format|json[_ -]?object|json mode/i.test(candidate?.message || "");
 }
 
-async function createReviewCompletion(client: LLMClient, model: string, prompt: string) {
+async function createReviewCompletion(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
+  throwIfAborted(signal);
   const request = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
@@ -123,37 +132,46 @@ async function createReviewCompletion(client: LLMClient, model: string, prompt: 
     max_tokens: FEEDBACK_MAX_TOKENS,
   };
   try {
-    return await client.chat.completions.create({
+    const body = {
       ...request,
-      response_format: { type: "json_object" },
-    });
+      response_format: { type: "json_object" as const },
+    };
+    return signal
+      ? await client.chat.completions.create(body, { signal })
+      : await client.chat.completions.create(body);
   } catch (error) {
     if (!isJsonModeUnsupported(error)) throw error;
-    return client.chat.completions.create(request);
+    return signal ? client.chat.completions.create(request, { signal }) : client.chat.completions.create(request);
   }
 }
 
-async function generateDraft(client: LLMClient, model: string, prompt: string) {
+async function generateDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
-    const response = await client.chat.completions.create({
+    throwIfAborted(signal);
+    const body = {
       model,
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role: "user" as const, content: prompt }],
       temperature: 0.5,
       max_tokens: FEEDBACK_MAX_TOKENS,
-    });
+    };
+    const response = signal
+      ? await client.chat.completions.create(body, { signal })
+      : await client.chat.completions.create(body);
     const content = response.choices[0]?.message?.content?.trim();
     if (content) return content;
   }
   throw new Error("LLM 返回空反馈内容，请重试");
 }
 
-async function reviewDraft(client: LLMClient, model: string, prompt: string) {
+async function reviewDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
+    throwIfAborted(signal);
     try {
-      const response = await createReviewCompletion(client, model, prompt);
+      const response = await createReviewCompletion(client, model, prompt, signal);
       const content = response.choices[0]?.message?.content?.trim();
       if (content) return parseReviewPayload(content);
     } catch {
+      throwIfAborted(signal);
       // Retry once with the same evidence and stricter temperature before requiring manual review.
     }
   }
@@ -169,6 +187,7 @@ export async function generateReviewedFeedback(
     lengthRequirement: input.lengthRequirement,
     client: input.draftClient,
     model: input.draftModel,
+    signal: input.signal,
   });
   return reviewFeedbackDraft({
     studentName: input.studentName,
@@ -178,6 +197,7 @@ export async function generateReviewedFeedback(
     draftFeedback,
     client: input.reviewClient,
     model: input.reviewModel,
+    signal: input.signal,
   });
 }
 
@@ -197,7 +217,7 @@ ${input.promptContext}
 8. 课后动作必须具体到顺序、题号或材料以及完成标准；不要只写“订正巩固”“加强复习”。
 9. 只分析该生本人，不比较、不提其他学生姓名，不补充背景中不存在的成绩、考勤、事件或家校结论。
 10. 控制在 160–260 字，可分点；不要使用家长称呼、寒暄或可直接发送的结尾。最终家长话术将由下一阶段生成，目标长度为${input.lengthRequirement}。`;
-  return generateDraft(input.client, input.model, draftPrompt);
+  return generateDraft(input.client, input.model, draftPrompt, input.signal);
 }
 
 export async function reviewFeedbackDraft(input: FeedbackReviewInput): Promise<ReviewedFeedback> {
@@ -229,7 +249,7 @@ ${draftFeedback}
 13. 分析可靠且已成功成稿时 verdict="pass"；需要删改分析中的不可靠内容但仍能安全成稿时 verdict="revise"；无法可靠成稿时 verdict="needs_review"。
 14. 无论 pass 还是 revise 都必须返回完整最终 feedback；needs_review 可返回一份供教师修改的保守文本，并在 issues 中说明原因。
 15. 只返回合法 JSON：{"verdict":"pass|revise|needs_review","feedback":"最终文本","issues":["简短原因"]}。`;
-  const reviewed = await reviewDraft(input.client, input.model, reviewPrompt);
+  const reviewed = await reviewDraft(input.client, input.model, reviewPrompt, input.signal);
   if (!reviewed) {
     return {
       draftFeedback,

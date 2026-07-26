@@ -28,9 +28,18 @@
 2. 阅读 `AGENTS.md` 与相关稳定文档。
 3. 检查现有代码和测试。
 4. 实现最小充分改动。
-5. 运行 `npm run privacy:check`、测试、类型检查和 lint；涉及核心页面流程时同时运行 `npm run test:e2e`。
+5. 本地运行 `npm run verify:quick`；高风险或发布改动运行对应专项测试或 `npm run verify:release`，其余完整覆盖率、构建与浏览器回归由 CI 兜底。
 6. Commit 中引用 Issue，例如 `Refs #12`；完成时使用 `Closes #12`。
 7. 只有稳定认知变化时才更新 `docs/`。
+
+## 验证层级
+
+- `npm run verify:quick`：日常开发默认入口，执行 lint、类型检查和单元/集成测试。
+- `npm run verify:quality`：执行 CI quality 检查，包括文档、隐私、覆盖率和生产构建。
+- `npm run verify:browser`：在相互隔离的临时数据库上执行 Chromium 与 WebKit 回归。
+- `npm run verify:release`：正式发布前执行 quality 与 browser 的完整合集。
+
+这些命令成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时先查看输出中的有限日志末尾，再按需打开单个日志。CI 会上传完整日志 artifact，已通过同一提交的 CI 时无需重复本地全量验证。
 
 ## 文档职责
 

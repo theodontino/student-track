@@ -27,17 +27,19 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     await expect(page).toHaveURL(new RegExp(`/students/${TEST_FIXTURE.students[0].id}\\?semesterId=${TEST_FIXTURE.semester.id}`));
   });
 
-  test("feedback is the single entry workbench and links to the dedicated WeCom workspace", async ({ page }) => {
+  test("feedback is the single entry workbench and links to the dedicated WeCom workspace", async ({ context, page }) => {
     await page.goto("/entry?step=input");
     await expect(page).toHaveURL(/\/feedback\?.*step=extract/);
     await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
-    await page.getByRole("button", { name: "1 准备 选择课次与准备材料" }).click();
+    await page.goto("/feedback?step=prepare");
     await expect(page.getByRole("link", { name: "前往企微家校" })).toHaveAttribute("href", "/wecom");
     await expect(page.getByText("WeComCatch 手动同步")).toHaveCount(0);
 
-    await page.goto("/review");
-    await expect(page).toHaveURL(/\/history\?view=drafts/);
-    await expect(page.getByRole("heading", { name: "复核中心" })).toBeVisible();
+    const reviewPage = await context.newPage();
+    await reviewPage.goto("/review");
+    await expect(reviewPage).toHaveURL(/\/history\?view=drafts/);
+    await expect(reviewPage.getByRole("heading", { name: "复核中心" })).toBeVisible();
+    await reviewPage.close();
   });
 
   test("local tool checks use compact expandable cards", async ({ page }) => {

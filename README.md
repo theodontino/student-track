@@ -15,10 +15,7 @@ npm install
 npx prisma migrate deploy # 首次运行及升级执行迁移
 npm run db:seed
 npm run dev              # → http://127.0.0.1:3000
-npm test
-npm run test:coverage
-npm run test:e2e
-npx tsc --noEmit
+npm run verify:quick
 ```
 
 ## 工程文档

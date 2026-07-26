@@ -14,12 +14,14 @@ import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
 } from "@/services/llm-cache-service";
+import { apiErrorBody, ApiError } from "@/lib/api-errors";
 
 async function reviewedFeedback(
   studentName: string,
   promptContext: string,
   lengthRequirement: string,
   forbiddenStudentNames: string[] = [],
+  signal?: AbortSignal,
 ) {
   return generateReviewedFeedback({
     studentName,
@@ -30,6 +32,7 @@ async function reviewedFeedback(
     draftModel: getLLMModel("feedbackDraft"),
     reviewClient: createLLMClient("feedbackReview"),
     reviewModel: getLLMModel("feedbackReview"),
+    signal,
   });
 }
 
@@ -40,12 +43,11 @@ export async function POST(request: NextRequest) {
     const studentId = typeof body.studentId === "string" ? body.studentId : "";
     const sessionCode = typeof body.sessionCode === "string" ? body.sessionCode : "";
     const days = typeof body.days === "number" ? body.days : undefined;
-    const submittedLessonMaterial = isLessonFeedbackMaterial(body.lessonMaterial)
-      ? body.lessonMaterial
-      : undefined;
-    const submittedAssessmentEvidence = isStudentAssessmentEvidence(body.assessmentEvidence)
-      ? body.assessmentEvidence
-      : undefined;
+    const submittedLessonMaterial = body.lessonMaterial === undefined ? undefined : isLessonFeedbackMaterial(body.lessonMaterial) ? body.lessonMaterial : null;
+    const submittedAssessmentEvidence = body.assessmentEvidence === undefined ? undefined : isStudentAssessmentEvidence(body.assessmentEvidence) ? body.assessmentEvidence : null;
+    if (submittedLessonMaterial === null || submittedAssessmentEvidence === null) {
+      return NextResponse.json({ error: "反馈材料格式无效", code: "invalid_request", retryable: false }, { status: 400 });
+    }
     if (!studentId) return NextResponse.json({ error: "缺少学生ID" }, { status: 400 });
 
     if (sessionCode) {
@@ -84,15 +86,15 @@ export async function POST(request: NextRequest) {
               }),
               "120-170字",
               feedbackContext.students.filter((student) => student.id !== studentId).map((student) => student.name),
+              process.env.NODE_ENV === "test" ? undefined : request.signal,
             );
             if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
             return result;
           },
         ));
       } catch (error) {
-        const message = error instanceof Error ? error.message : "读取反馈上下文失败";
-        const status = message.includes("不存在") || message.includes("未关联") || message.includes("无学生") ? 400 : 500;
-        return NextResponse.json({ error: message }, { status });
+        const apiError = error instanceof ApiError ? error : new ApiError("生成反馈失败，请稍后重试", 500, "internal_error", false);
+        return NextResponse.json(apiErrorBody(apiError), { status: apiError.status });
       }
     }
 
@@ -128,13 +130,14 @@ export async function POST(request: NextRequest) {
       "feedback",
       "生成单人近期反馈",
       async () => {
-        const result = await reviewedFeedback(student.name, context, "120-180字");
+        const result = await reviewedFeedback(student.name, context, "120-180字", [], process.env.NODE_ENV === "test" ? undefined : request.signal);
         if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
         return result;
       },
     ));
   } catch (error) {
-    console.error("[/api/report/feedback] error:", error);
-    return NextResponse.json({ error: "生成反馈失败" }, { status: 500 });
+    console.error("[/api/report/feedback] error:", error instanceof Error ? error.message : "unknown");
+    const apiError = new ApiError("生成反馈失败，请稍后重试", 500, "internal_error", false);
+    return NextResponse.json(apiErrorBody(apiError), { status: apiError.status });
   }
 }

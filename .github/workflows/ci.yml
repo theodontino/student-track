@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run verify:quality
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-build.db
+          VERIFY_ARTIFACT_NAME: verification-quality-${{ github.run_id }}
+      - name: Upload quality verification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-quality-${{ github.run_id }}
+          path: .verification-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true
+
+  browser:
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run verify:browser
+        env:
+          VERIFY_ARTIFACT_NAME: verification-browser-${{ github.run_id }}
+      - name: Upload browser verification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-browser-${{ github.run_id }}
+          path: .verification-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true

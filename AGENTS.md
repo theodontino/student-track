@@ -59,14 +59,22 @@
 
 ## 完成标准
 
-至少运行与改动匹配的测试，并在可行时运行：
+验证采用“本地精简输出、CI 全量兜底、失败时按需展开”的流程。测试运行时间本身不是问题，默认禁止为了汇报成功而读取或回传完整测试日志。
 
 ```bash
-npm test
-npm run test:coverage
-npm run lint
-npx tsc --noEmit
-npm run build
+npm run verify:quick
 ```
 
-涉及快速评分、草案复核或反馈工作台流程时，同时运行 `npm run test:e2e`。所有自动化测试必须使用隔离的临时数据库。
+`verify:quick` 执行 lint、类型检查和单元/集成测试；成功时只输出步骤、耗时和测试摘要，完整日志写入被 Git 忽略的 `.verification-logs/`。
+
+### Agent 验证策略
+
+- 文案、样式、小型组件或低风险重构：运行改动直接相关的测试（如有），然后运行 `npm run verify:quick`。完整覆盖率、构建和双浏览器回归交给 CI。
+- API、Service、状态管理、LLM、导入、回滚或数据写入：先运行相关测试，再运行 `npm run verify:quick`；必要时运行对应的 `npm run test:e2e:chromium` 或 `npm run test:e2e:webkit`。
+- Schema、migration、发布候选或跨模块高风险变更：运行 `npm run verify:release`，或者推送当前提交并等待同一提交的 CI `quality` 与 `browser` 全部通过。已通过同一提交的 CI 时，不重复本地全量验证。
+- CI 的 `quality` 运行 `npm run verify:quality`；`browser` 运行 `npm run verify:browser`。两个浏览器使用各自的隔离临时数据库。
+- 成功时只读取命令退出状态和精简摘要，不打开 `.verification-logs/` 或 CI artifact。
+- 失败时只查看失败步骤打印的末尾日志；仍无法定位时，再读取该步骤的单个日志或 CI artifact，不批量读取全部日志。
+- 需要实时完整输出进行诊断时可临时使用 `VERIFY_VERBOSE=1 npm run verify:quick`，不得作为默认验证方式。
+
+所有自动化测试必须使用隔离的临时数据库，不得为了验证读取或修改真实 `dev.db`。
