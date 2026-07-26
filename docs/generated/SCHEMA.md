@@ -114,6 +114,40 @@ erDiagram
     TEXT detail
     DATETIME createdAt
   }
+  TeacherObservation {
+    TEXT id PK
+    TEXT studentId FK
+    TEXT kind
+    TEXT topic
+    TEXT title
+    TEXT evidenceSummary
+    TEXT status
+    TEXT analysisVersion
+    DATETIME firstDetectedAt
+    DATETIME lastDetectedAt
+    DATETIME statusChangedAt
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
+  TeacherObservationSource {
+    TEXT observationId PK,FK
+    TEXT communicationId PK,FK
+    TEXT relatedSessionId FK
+    DATETIME createdAt
+  }
+  TeachingSummaryCache {
+    TEXT id PK
+    TEXT scopeType
+    TEXT scopeKey
+    BOOLEAN includeCommunications
+    TEXT sourceFingerprint
+    TEXT resultJson
+    TEXT promptVersion
+    TEXT modelName
+    DATETIME generatedAt
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
   WeComImportChange {
     TEXT id PK
     TEXT operationId FK
@@ -198,9 +232,11 @@ erDiagram
   Class o|--o{ ClassSession : "classId"
   Class ||--o{ Student : "classId"
   ClassSession o|--o{ SessionMetric : "sessionId"
+  ClassSession o|--o{ TeacherObservationSource : "relatedSessionId"
   ClassSession ||--o{ Attendance : "sessionId"
   ClassSession ||--o{ Communication : "sessionId"
   ClassSession ||--o{ Event : "sessionId"
+  Communication ||--o{ TeacherObservationSource : "communicationId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ ClassSession : "semesterId"
   Student ||--o{ Attendance : "studentId"
@@ -208,6 +244,8 @@ erDiagram
   Student ||--o{ Event : "studentId"
   Student ||--o{ SessionMetric : "studentId"
   Student ||--o{ StudentLabel : "studentId"
+  Student ||--o{ TeacherObservation : "studentId"
+  TeacherObservation ||--o{ TeacherObservationSource : "observationId"
   WeComImportOperation o|--o{ WeComMessageReceipt : "operationId"
   WeComImportOperation ||--o{ WeComImportChange : "operationId"
   WeComImportRun ||--o{ WeComImportOperation : "runId"
@@ -378,6 +416,55 @@ erDiagram
 | `detail` | `TEXT` | 是 | default: '{}' |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
+
+### TeacherObservation
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `studentId` | `TEXT` | 是 | FK |
+| `kind` | `TEXT` | 是 |  |
+| `topic` | `TEXT` | 是 |  |
+| `title` | `TEXT` | 是 |  |
+| `evidenceSummary` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 | default: 'new' |
+| `analysisVersion` | `TEXT` | 是 |  |
+| `firstDetectedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `lastDetectedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `statusChangedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`studentId + kind + topic`。
+
+### TeacherObservationSource
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `observationId` | `TEXT` | 是 | PK, FK |
+| `communicationId` | `TEXT` | 是 | PK, FK |
+| `relatedSessionId` | `TEXT` | 否 | FK |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+复合唯一约束：`observationId + communicationId`。
+
+### TeachingSummaryCache
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `scopeType` | `TEXT` | 是 |  |
+| `scopeKey` | `TEXT` | 是 |  |
+| `includeCommunications` | `BOOLEAN` | 是 |  |
+| `sourceFingerprint` | `TEXT` | 是 |  |
+| `resultJson` | `TEXT` | 是 |  |
+| `promptVersion` | `TEXT` | 是 |  |
+| `modelName` | `TEXT` | 是 |  |
+| `generatedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`scopeType + scopeKey + includeCommunications`。
 
 ### WeComImportChange
 

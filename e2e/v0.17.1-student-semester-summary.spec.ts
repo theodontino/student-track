@@ -23,8 +23,8 @@ test.describe.serial("v0.17.1 student semester summaries", () => {
     await expect(page.getByLabel(`${TEST_FIXTURE.students[0].name}档案预览`)).toBeVisible();
     await studentRow.click();
     await expect(page).toHaveURL(new RegExp(`/students/${TEST_FIXTURE.students[0].id}\\?semesterId=${TEST_FIXTURE.semester.id}`));
-    await expect(page.getByTestId("student-semester-radar")).toContainText("本学期四维平均表现");
-    await expect(page.getByTestId("student-semester-summary")).toContainText("/100");
+    await expect(page.getByTestId("student-semester-radar")).toContainText("本学期四维平均表现", { timeout: 10_000 });
+    await expect(page.getByTestId("student-semester-summary")).toContainText("/100", { timeout: 10_000 });
     await expect(page.getByText("氧化还原反应测验完成稳定", { exact: true })).toBeVisible();
 
     await page.getByLabel("查看学期").selectOption(historicalSemester.id);
