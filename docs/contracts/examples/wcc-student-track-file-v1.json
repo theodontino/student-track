@@ -1,0 +1,45 @@
+{
+  "contractVersion": "wcc.student-track-file.v1",
+  "packageId": "pkg-synthetic-001",
+  "producedAt": "2026-07-26T10:00:00+08:00",
+  "producer": {
+    "name": "wecomcatch",
+    "version": "0.2.0"
+  },
+  "source": {
+    "id": "synthetic-wecom",
+    "watermark": 42
+  },
+  "conversation": {
+    "id": "conversation-synthetic-001",
+    "title": "合成测试会话"
+  },
+  "timeRange": {
+    "start": "2026-07-26T09:00:00+08:00",
+    "end": "2026-07-26T09:02:00+08:00",
+    "timezone": "Asia/Shanghai"
+  },
+  "completeness": {
+    "archiveStatus": "complete",
+    "sourceMessageCount": 2
+  },
+  "classification": {
+    "worthProcessing": true,
+    "decision": "untriaged",
+    "reasons": ["awaiting_student_track_filter"],
+    "classifier": "deterministic-hygiene-v1"
+  },
+  "messages": [
+    {
+      "id": "message-synthetic-001",
+      "sender": "合成家长",
+      "direction": "inbound",
+      "sentAt": "2026-07-26T09:00:00+08:00",
+      "timeContext": "上午 9:00",
+      "type": "text",
+      "content": "最近复习步骤比以前清楚，希望继续关注独立完成情况。",
+      "confidence": 1
+    }
+  ],
+  "sourceFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
