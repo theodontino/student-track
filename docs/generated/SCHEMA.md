@@ -148,6 +148,24 @@ erDiagram
     DATETIME createdAt
     DATETIME updatedAt
   }
+  WeComHandoffPackage {
+    TEXT id PK
+    TEXT sourceId
+    TEXT packageId
+    TEXT packageSha256
+    TEXT status
+    TEXT outcome
+    TEXT code
+    INTEGER messageCount
+    TEXT selectedStudentId FK
+    TEXT receiptId
+    DATETIME producedAt
+    DATETIME firstSeenAt
+    DATETIME lastAttemptAt
+    DATETIME processedAt
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
   WeComImportChange {
     TEXT id PK
     TEXT operationId FK
@@ -239,6 +257,7 @@ erDiagram
   Communication ||--o{ TeacherObservationSource : "communicationId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ ClassSession : "semesterId"
+  Student o|--o{ WeComHandoffPackage : "selectedStudentId"
   Student ||--o{ Attendance : "studentId"
   Student ||--o{ Communication : "studentId"
   Student ||--o{ Event : "studentId"
@@ -465,6 +484,29 @@ erDiagram
 | `updatedAt` | `DATETIME` | 是 |  |
 
 复合唯一约束：`scopeType + scopeKey + includeCommunications`。
+
+### WeComHandoffPackage
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `sourceId` | `TEXT` | 是 |  |
+| `packageId` | `TEXT` | 是 |  |
+| `packageSha256` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 |  |
+| `outcome` | `TEXT` | 否 |  |
+| `code` | `TEXT` | 否 |  |
+| `messageCount` | `INTEGER` | 是 |  |
+| `selectedStudentId` | `TEXT` | 否 | FK |
+| `receiptId` | `TEXT` | 否 |  |
+| `producedAt` | `DATETIME` | 是 |  |
+| `firstSeenAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `lastAttemptAt` | `DATETIME` | 否 |  |
+| `processedAt` | `DATETIME` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`sourceId + packageId + packageSha256`。
 
 ### WeComImportChange
 
