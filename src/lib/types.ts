@@ -69,7 +69,7 @@ export interface DraftReviewResult {
 export interface NameCorrection {
   original: string;
   corrected: string;
-  confidence: string;
+  confidence: "high" | "medium" | "low";
   reason?: string;
 }
 

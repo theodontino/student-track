@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fuzzyMatchName, correctNames } from "@/lib/parser";
+import { applyNameCorrections, fuzzyMatchName, correctNames } from "@/lib/parser";
 
 // ============================================================
 // fuzzyMatchName — 4 级匹配策略
@@ -32,6 +32,11 @@ describe("fuzzyMatchName", () => {
     expect(fuzzyMatchName("", candidates)).toBeNull();
     expect(fuzzyMatchName("不存在", candidates)).toBeNull();
     expect(fuzzyMatchName("周", candidates)).toBeNull();
+  });
+
+  it("相似候选无法唯一判断时保持未匹配", () => {
+    expect(fuzzyMatchName("张四", ["张四三", "张四五"])).toBeNull();
+    expect(fuzzyMatchName("小王", ["王一", "王二"])).toBeNull();
   });
 
   it("空候选列表返回 null", () => {
@@ -71,6 +76,22 @@ describe("correctNames", () => {
     expect(corrected.students[0].scores).toEqual({ A: 5, B: 2, C: null });
     expect(corrected.students[0].events).toEqual(["全对", "走神"]);
     expect(corrected.alert_suggestion).toBe("关注");
+  });
+});
+
+describe("applyNameCorrections", () => {
+  it("does not auto-apply conflicting corrections for the same source name", () => {
+    const result = applyNameCorrections("小林回答正确，小王补充。", ["林一", "林二", "王五"], [
+      { original: "小林", corrected: "林一", confidence: "high", reason: "候选一" },
+      { original: "小林", corrected: "林二", confidence: "high", reason: "候选二" },
+      { original: "小王", corrected: "王五", confidence: "high", reason: "唯一匹配" },
+      { original: "小王", corrected: "王五", confidence: "high", reason: "重复结果" },
+    ]);
+
+    expect(result.correctedText).toBe("小林回答正确，王五补充。");
+    expect(result.corrections).toEqual([
+      { original: "小王", corrected: "王五", confidence: "high", reason: "唯一匹配" },
+    ]);
   });
 });
 

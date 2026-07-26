@@ -1,53 +1,72 @@
-// v0.13.1: SSE 流式读取工具 — 通用 NDJSON 流解析
+// Strict SSE/NDJSON reader shared by classroom parsing, feedback and diarize.
 
-export interface SSEEvent {
-  type: string;
-  [key: string]: any;
+export class StreamProtocolError extends Error {
+  readonly code = "stream_protocol_error" as const;
+
+  constructor(message = "流式响应格式无效") {
+    super(message);
+    this.name = "StreamProtocolError";
+  }
 }
 
-/**
- * 读取 NDJSON stream（每行一个 JSON），对每条 event 调用 onEvent。
- * 支持 SSE 的 data: 前缀格式和裸 NDJSON 格式。
- *
- * 异常策略：
- * - JSON parse 失败 → 跳过该行（忽略噪声）
- * - onEvent 内部抛错 → 传播出去，调用方 catch
- */
-export async function readSSEStream(
+export interface ReadSSEStreamOptions<T> {
+  parse: (value: unknown) => T;
+  onEvent: (event: T) => void;
+  signal?: AbortSignal;
+}
+
+function parseLine<T>(line: string, parse: (value: unknown) => T): T | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith(":")) return null;
+  const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+  if (!payload) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(payload) as unknown;
+  } catch {
+    throw new StreamProtocolError("流式响应包含无法解析的 JSON");
+  }
+  try {
+    return parse(value);
+  } catch (error) {
+    if (error instanceof StreamProtocolError) throw error;
+    throw new StreamProtocolError("流式响应事件未通过校验");
+  }
+}
+
+export async function readSSEStream<T>(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  onEvent: (event: SSEEvent) => void,
-  signal?: AbortSignal
+  { parse, onEvent, signal }: ReadSSEStreamOptions<T>,
 ): Promise<void> {
   const decoder = new TextDecoder();
   let buffer = "";
+  let aborted = Boolean(signal?.aborted);
+  const abort = () => {
+    aborted = true;
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (aborted) abort();
 
   try {
-    while (true) {
-      if (signal?.aborted) break;
+    while (!aborted) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const json = trimmed.startsWith("data: ") ? trimmed.slice(6) : trimmed;
-        let parsed: SSEEvent;
-        try { parsed = JSON.parse(json); }
-        catch { continue; /* skip malformed lines */ }
-        onEvent(parsed);
+        const event = parseLine(line, parse);
+        if (event !== null) onEvent(event);
       }
     }
-    // Flush residual
-    if (buffer.trim()) {
-      const json = buffer.trim().startsWith("data: ") ? buffer.trim().slice(6) : buffer.trim();
-      let parsed: SSEEvent;
-      try { parsed = JSON.parse(json); }
-      catch { return; /* skip malformed residual */ }
-      onEvent(parsed);
+    buffer += decoder.decode();
+    if (!aborted && buffer.trim()) {
+      const event = parseLine(buffer, parse);
+      if (event !== null) onEvent(event);
     }
   } finally {
+    signal?.removeEventListener("abort", abort);
     reader.releaseLock();
   }
 }

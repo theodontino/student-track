@@ -1,6 +1,12 @@
 import { createLLMClient, getLLMModel } from "./llm";
 import { SYSTEM_PROMPT, REVIEW_PROMPT, NAME_FIX_SYSTEM_PROMPT } from "./prompts";
 import type { AttentionSignalCandidate } from "./attention-labels";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import {
+  DraftReviewResultSchema,
+  DraftStructuredResultSchema,
+  NameFixPayloadSchema,
+} from "@/lib/contracts/classroom-parse";
 
 export interface ParsedStudent {
   name: string;
@@ -20,56 +26,56 @@ interface ReviewResult {
   is_valid: boolean;
   issues: string[];
   suggestions: string[];
-  revised_scores: Record<string, { A: number | null; B: number | null; C: number | null }>;
+  revised_scores: Record<string, Record<string, number | null>>;
   revised_events: Record<string, string[]>;
 }
 
 // v0.6: LLM call with retry (up to 2 retries on timeout/error)
 async function llmCall(
-  messages: { role: string; content: string }[],
+  messages: ChatCompletionMessageParam[],
   temperature: number,
   maxRetries = 2
 ): Promise<string> {
   const client = createLLMClient();
   const model = getLLMModel();
-  let lastErr: any;
+  let lastErr: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const resp = await client.chat.completions.create({
-        model, messages: messages as any, temperature, max_tokens: 16384,
+        model, messages, temperature, max_tokens: 16384,
       });
       const content = resp.choices[0]?.message?.content?.trim() || "";
       if (resp.choices[0]?.finish_reason === "length") {
         throw new Error("LLM response truncated (token limit)");
       }
       return content;
-    } catch (e: any) {
-      lastErr = e;
+    } catch (error: unknown) {
+      lastErr = error;
       if (attempt < maxRetries) {
-        console.warn(`[llmCall] retry ${attempt + 1}/${maxRetries + 1}:`, e.message);
+        console.warn(`[llmCall] retry ${attempt + 1}/${maxRetries + 1}: ${errorMessage(error, "unknown error")}`);
         await new Promise((r) => setTimeout(r, 1500));
       }
     }
   }
-  throw lastErr || new Error("LLM failed after retries");
+  throw lastErr instanceof Error ? lastErr : new Error("LLM failed after retries");
 }
 
 /** v0.13: stream LLM call — calls onChunk for each token delta */
 export async function llmCallStream(
-  messages: { role: string; content: string }[],
+  messages: ChatCompletionMessageParam[],
   temperature: number,
   onChunk: (delta: string) => void,
   maxRetries = 2
 ): Promise<string> {
   const client = createLLMClient();
   const model = getLLMModel();
-  let lastErr: any;
+  let lastErr: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const stream = await client.chat.completions.create({
-        model, messages: messages as any, temperature, max_tokens: 16384, stream: true,
+        model, messages, temperature, max_tokens: 16384, stream: true,
       });
       let content = "";
       for await (const chunk of stream) {
@@ -78,15 +84,19 @@ export async function llmCallStream(
       }
       if (!content.trim()) throw new Error("LLM returned empty response");
       return content.trim();
-    } catch (e: any) {
-      lastErr = e;
+    } catch (error: unknown) {
+      lastErr = error;
       if (attempt < maxRetries) {
-        console.warn(`[llmCall] retry ${attempt + 1}/${maxRetries + 1}:`, e.message);
+        console.warn(`[llmCall] retry ${attempt + 1}/${maxRetries + 1}: ${errorMessage(error, "unknown error")}`);
         await new Promise((r) => setTimeout(r, 1500));
       }
     }
   }
-  throw lastErr || new Error("LLM failed after retries");
+  throw lastErr instanceof Error ? lastErr : new Error("LLM failed after retries");
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 export interface NameCorrection {
@@ -99,6 +109,38 @@ export interface NameCorrection {
 export interface NameFixResult {
   correctedText: string;
   corrections: NameCorrection[];
+}
+
+export function applyNameCorrections(
+  rawText: string,
+  studentNames: string[],
+  corrections: NameCorrection[],
+): NameFixResult {
+  const eligible = corrections.filter(
+    (item) => studentNames.includes(item.corrected) && rawText.includes(item.original),
+  );
+  const byOriginal = new Map<string, Map<string, NameCorrection>>();
+  for (const item of eligible) {
+    const byCorrected = byOriginal.get(item.original) ?? new Map<string, NameCorrection>();
+    if (!byCorrected.has(item.corrected)) byCorrected.set(item.corrected, item);
+    byOriginal.set(item.original, byCorrected);
+  }
+
+  const valid = [...byOriginal.values()]
+    .filter((byCorrected) => byCorrected.size === 1)
+    .map((byCorrected) => byCorrected.values().next().value as NameCorrection);
+  const highConfidence = valid
+    .filter((item) => item.confidence === "high")
+    .sort((left, right) => right.original.length - left.original.length);
+  const replacements = highConfidence.map((item) => [item.original, item.corrected] as const);
+  const correctedText = replacements.length
+    ? rawText.replace(
+      new RegExp(replacements.map(([original]) => escapeRegExp(original)).join("|"), "g"),
+      (match) => replacements.find(([original]) => original === match)?.[1] ?? match,
+    )
+    : rawText;
+
+  return { correctedText, corrections: valid };
 }
 
 /** v0.13: pre-correct student names in raw text via LLM */
@@ -117,14 +159,14 @@ ${rawText}`;
   ], 0.1, 1);
 
   try {
-    const parsed = JSON.parse(content);
-    return {
-      correctedText: parsed.correctedText || rawText,
-      corrections: Array.isArray(parsed.corrections) ? parsed.corrections : [],
-    };
+    const parsed = NameFixPayloadSchema.parse(parseJSONValue(content));
+    return applyNameCorrections(
+      rawText,
+      studentNames,
+      parsed.corrections.map((item): NameCorrection => ({ ...item, reason: item.reason ?? "" })),
+    );
   } catch {
-    // Fallback: if LLM didn't return valid JSON, treat whole text as corrected
-    return { correctedText: content, corrections: [] };
+    return { correctedText: rawText, corrections: [] };
   }
 }
 
@@ -143,7 +185,7 @@ ${rawText}
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: userPrompt },
   ], 0.3);
-  return parseJSON(content, "parseInput") as ParseResult;
+  return DraftStructuredResultSchema.parse(parseJSONValue(content));
 }
 
 /**
@@ -155,7 +197,7 @@ export async function reviewParsed(rawText: string, parsedResult: ParseResult): 
     .replace("{parsedResult}", JSON.stringify(parsedResult, null, 2));
 
   const content = await llmCall([{ role: "user", content: userPrompt }], 0.2);
-  return parseJSON(content, "reviewParsed") as ReviewResult;
+  return DraftReviewResultSchema.parse(parseJSONValue(content));
 }
 
 /**
@@ -169,19 +211,24 @@ export function fuzzyMatchName(llmName: string, candidates: string[]): string | 
   const noSuffix = input.replace(/同学|小朋友|老师/g, "").trim();
   if (noSuffix && candidates.includes(noSuffix)) return noSuffix;
 
-  for (const c of candidates) {
-    if (c.includes(input) || input.includes(c)) return c;
-    if (noSuffix && (c.includes(noSuffix) || noSuffix.includes(c))) return c;
-  }
+  const substringMatches = candidates.filter((candidate) => (
+    candidate.includes(input) || input.includes(candidate)
+    || Boolean(noSuffix && (candidate.includes(noSuffix) || noSuffix.includes(candidate)))
+  ));
+  if (substringMatches.length === 1) return substringMatches[0];
 
-  let bestMatch: string | null = null, bestScore = 0;
+  const scored: Array<{ candidate: string; score: number }> = [];
   for (const c of candidates) {
     if (c.length < 2 || input.length < 2) continue;
     const overlap = [...input].filter((ch) => c.includes(ch)).length;
     const score = overlap / Math.max(input.length, c.length);
-    if (score > 0.6 && score > bestScore) { bestScore = score; bestMatch = c; }
+    scored.push({ candidate: c, score });
   }
-  return bestMatch;
+  scored.sort((left, right) => right.score - left.score);
+  const best = scored[0];
+  const second = scored[1];
+  if (best && best.score > 0.6 && (!second || best.score - second.score >= 0.2)) return best.candidate;
+  return null;
 }
 
 /** Applies deterministic fuzzy matching after LLM parsing without mutating the input. */
@@ -189,7 +236,6 @@ export function correctNames(result: ParseResult, studentNames: string[]): Parse
   const corrected = result.students.map((stu) => {
     const match = fuzzyMatchName(stu.name, studentNames);
     if (match && match !== stu.name) {
-      console.log(`[fuzzyMatch] Corrected "${stu.name}" → "${match}"`);
       return { ...stu, name: match };
     }
     return stu;
@@ -197,15 +243,15 @@ export function correctNames(result: ParseResult, studentNames: string[]): Parse
   return { ...result, students: corrected };
 }
 
-function parseJSON(text: string, caller: string): object {
+function parseJSONValue(text: string): unknown {
   let cleaned = text.trim();
-  if (!cleaned) throw new Error(`[${caller}] LLM returned empty response`);
+  if (!cleaned) throw new Error("LLM returned empty response");
   if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/```\w*\n?/, "").replace(/\n?```$/, "");
   }
-  try { return JSON.parse(cleaned); } catch (e) {
-    const preview = cleaned.length > 500 ? cleaned.slice(0, 500) + "..." : cleaned;
-    console.error(`[${caller}] JSON parse failed:\n${preview}`);
-    throw e;
-  }
+  return JSON.parse(cleaned) as unknown;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

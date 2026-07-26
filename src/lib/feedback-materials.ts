@@ -1,3 +1,9 @@
+import {
+  AssessmentImportItemSchema,
+  LessonFeedbackMaterialSchema,
+  StudentAssessmentEvidenceSchema,
+} from "@/lib/contracts/feedback";
+
 export interface LessonFeedbackMaterial {
   version: 1;
   sessionCode?: string;
@@ -246,68 +252,16 @@ export function parseLessonFeedbackMaterial(
   };
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
 export function isLessonFeedbackMaterial(value: unknown): value is LessonFeedbackMaterial {
-  if (!value || typeof value !== "object") return false;
-  const material = value as Partial<LessonFeedbackMaterial>;
-  return material.version === 1
-    && (material.sessionCode === undefined || typeof material.sessionCode === "string")
-    && typeof material.groupFeedbackRaw === "string"
-    && typeof material.assessmentBriefRaw === "string"
-    && typeof material.lessonTitle === "string"
-    && isStringArray(material.classroomContent)
-    && isStringArray(material.classroomFocus)
-    && isStringArray(material.classroomExplanation)
-    && isStringArray(material.homework)
-    && isStringArray(material.assessmentFocus)
-    && isStringArray(material.correctionAdvice)
-    && isStringArray(material.otherNotes);
+  return LessonFeedbackMaterialSchema.safeParse(value).success;
 }
 
 export function isStudentAssessmentEvidence(value: unknown): value is StudentAssessmentEvidence {
-  if (!value || typeof value !== "object") return false;
-  const evidence = value as Partial<StudentAssessmentEvidence>;
-  return (evidence.sessionCode === undefined || typeof evidence.sessionCode === "string")
-    && (evidence.studentId === undefined || typeof evidence.studentId === "string")
-    && typeof evidence.reportTitle === "string"
-    && typeof evidence.reportDate === "string"
-    && typeof evidence.totalQuestions === "number"
-    && typeof evidence.correctRate === "number"
-    && (evidence.cohortAverageRate === null || typeof evidence.cohortAverageRate === "number")
-    && Array.isArray(evidence.knowledgePoints)
-    && evidence.knowledgePoints.every((item) => (
-      item && typeof item === "object"
-      && typeof item.name === "string"
-      && typeof item.questionCount === "number"
-      && typeof item.correctRate === "number"
-      && (item.cohortAverageRate === null || typeof item.cohortAverageRate === "number")
-    ))
-    && Array.isArray(evidence.wrongItems)
-    && evidence.wrongItems.every((item) => (
-      item && typeof item === "object"
-      && typeof item.questionNumber === "string"
-      && typeof item.studentAnswer === "string"
-      && typeof item.correctAnswer === "string"
-      && isStringArray(item.knowledgePoints)
-    ))
-    && typeof evidence.similarPracticeCount === "number";
+  return StudentAssessmentEvidenceSchema.safeParse(value).success;
 }
 
 export function isAssessmentImportItem(value: unknown): value is AssessmentImportItem {
-  if (!value || typeof value !== "object") return false;
-  const item = value as Partial<AssessmentImportItem>;
-  return typeof item.id === "string"
-    && typeof item.fileName === "string"
-    && ["parsing", "matched", "needs_match", "confirmed", "error"].includes(String(item.status))
-    && typeof item.reportStudentName === "string"
-    && typeof item.reportStudentId === "string"
-    && typeof item.matchedStudentId === "string"
-    && typeof item.matchedStudentName === "string"
-    && (item.evidence === null || isStudentAssessmentEvidence(item.evidence))
-    && typeof item.error === "string";
+  return AssessmentImportItemSchema.safeParse(value).success;
 }
 
 export function assessmentEvidenceByStudent(

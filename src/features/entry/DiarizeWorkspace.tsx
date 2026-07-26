@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/ui";
 import { readSSEStream } from "@/lib/sse";
+import { DiarizeStreamEventSchema } from "@/lib/contracts/diarize";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import { useUnsavedNavigationWarning } from "@/lib/use-unsaved-navigation-warning";
 import {
@@ -76,7 +77,9 @@ export default function DiarizeWorkspace() {
 
   async function consumeTaskStream(response: Response) {
     if (!response.body) throw new Error("转写任务流不可用");
-    await readSSEStream(response.body.getReader(), (event) => {
+    await readSSEStream(response.body.getReader(), {
+      parse: (value) => DiarizeStreamEventSchema.parse(value),
+      onEvent: (event) => {
       if (event.type === "created" || event.type === "task") {
         setActiveTask(event.task);
         updateTaskInList(event.task);
@@ -93,6 +96,7 @@ export default function DiarizeWorkspace() {
         }
         setError(event.message || "转写失败");
       }
+      },
     });
     await refreshTasks();
   }

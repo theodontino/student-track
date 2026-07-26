@@ -36,4 +36,19 @@ describe("/api/history", () => {
     const response = await GET(new NextRequest("http://localhost:3000/api/history?module=unknown"));
     expect(response.status).toBe(400);
   });
+
+  it("rejects a malformed POST body without treating it as a server failure", async () => {
+    const response = await POST(new NextRequest("http://localhost:3000/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "历史记录参数不完整",
+      code: "invalid_request",
+      retryable: false,
+    });
+  });
 });

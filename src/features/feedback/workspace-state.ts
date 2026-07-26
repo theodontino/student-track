@@ -1,42 +1,8 @@
-import { isTeachingContext } from "@/features/teaching-context/url-context";
-import { isAiWorkflowState } from "@/features/ai-workflow";
-import {
-  isAssessmentImportItem,
-  isLessonFeedbackMaterial,
-} from "@/lib/feedback-materials";
+import { FeedbackWorkspaceSchema } from "@/lib/contracts/feedback";
 import type { FeedbackWorkspaceState } from "./types";
 
 export function isFeedbackWorkspace(value: unknown): value is FeedbackWorkspaceState {
-  if (!value || typeof value !== "object") return false;
-  const state = value as Partial<FeedbackWorkspaceState>;
-  return isTeachingContext(state.context)
-    && (state.activeStep === undefined || ["prepare", "extract", "review", "generate", "export"].includes(state.activeStep))
-    && typeof state.newSessionDate === "string"
-    && typeof state.rawText === "string"
-    && typeof state.parseStatus === "string"
-    && typeof state.streamContent === "string"
-    && typeof state.draftId === "string"
-    && (state.parsedResult === null || typeof state.parsedResult === "object")
-    && (state.reviewResult === null || typeof state.reviewResult === "object")
-    && Array.isArray(state.corrections)
-    && typeof state.confirmed === "boolean"
-    && typeof state.status === "string"
-    && Array.isArray(state.feedbackCards)
-    && typeof state.feedbackTotal === "number"
-    && typeof state.feedbackDone === "number"
-    && typeof state.feedbackDirty === "boolean"
-    && typeof state.forceRegenerate === "boolean"
-    && typeof state.singleStudentId === "string"
-    && typeof state.singleDays === "number"
-    && typeof state.singleFeedback === "string"
-    && (state.workflow === undefined || isAiWorkflowState(state.workflow))
-    && (state.groupFeedbackRaw === undefined || typeof state.groupFeedbackRaw === "string")
-    && (state.assessmentBriefRaw === undefined || typeof state.assessmentBriefRaw === "string")
-    && (state.lessonMaterial === undefined || isLessonFeedbackMaterial(state.lessonMaterial))
-    && (state.assessmentImports === undefined || (
-      Array.isArray(state.assessmentImports)
-      && state.assessmentImports.every(isAssessmentImportItem)
-    ));
+  return FeedbackWorkspaceSchema.safeParse(value).success;
 }
 
 export function todayLocalDate(now = new Date()) {

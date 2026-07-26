@@ -155,14 +155,10 @@ npm run db:backup
 npm run db:verify-backup
 npx prisma migrate status
 npm run docs:generate
-npm run docs:check
-npm test
-npm run test:coverage
-npm run test:e2e
-npx tsc --noEmit
-npm run lint
-npm run build
+npm run verify:release
 ```
+
+`verify:release` 成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时按摘要指向的单个日志排查。也可以推送候选提交并等待同一提交的 CI `quality` 与 `browser` 全部通过，避免重复执行相同的全量验证。
 
 确认页面和只读接口正常后，再提交版本文件、创建带说明的 Git 标签并发布对应 GitHub Release。`package.json`、标签和 Release 使用同一版本号；运行数据和数据库备份不提交 Git。
 
