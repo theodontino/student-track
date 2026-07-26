@@ -66,16 +66,21 @@ async function main() {
     }
     const client = createClient({ url: `file:${copiedDatabase}` });
     try {
-      const result = await client.execute(
-        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('WeComImportState','WeComImportRun','WeComImportOperation','WeComMessageReceipt','WeComImportChange')",
-      );
-      if (Number(result.rows[0]?.count ?? 0) !== 5) {
-        throw new Error("企微处理账本表不完整");
+      const expectedTables = [
+        "WeComImportState", "WeComImportRun", "WeComImportOperation", "WeComMessageReceipt", "WeComImportChange",
+        "TeachingSummaryCache", "TeacherObservation", "TeacherObservationSource",
+      ];
+      const result = await client.execute({
+        sql: `SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN (${expectedTables.map(() => "?").join(",")})`,
+        args: expectedTables,
+      });
+      if (Number(result.rows[0]?.count ?? 0) !== expectedTables.length) {
+        throw new Error("集成账本或教学总结表不完整");
       }
     } finally {
       client.close();
     }
-    console.log("数据库副本升级验证通过：完整性正常，既有业务表行数未改变，企微账本表完整。");
+    console.log("数据库副本升级验证通过：完整性正常，既有业务表行数未改变，集成账本与教学总结表完整。");
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
