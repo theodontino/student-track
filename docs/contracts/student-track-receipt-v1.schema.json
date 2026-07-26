@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://student-track.local/contracts/student-track-receipt-v1.schema.json",
+  "title": "Student Track local handoff receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion", "receiptId", "packageId", "packageSha256",
+    "processedAt", "consumerVersion", "status"
+  ],
+  "properties": {
+    "contractVersion": { "const": "student-track.wecom-receipt.v1" },
+    "receiptId": { "$ref": "#/$defs/id" },
+    "packageId": { "$ref": "#/$defs/id" },
+    "packageSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "processedAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+    "consumerVersion": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "status": {
+      "enum": ["accepted", "duplicate", "rejected", "retryable_failure"]
+    },
+    "outcome": { "enum": ["pending_review", "no_value"] },
+    "code": {
+      "enum": [
+        "unsupported_contract", "invalid_package", "hash_mismatch",
+        "package_conflict", "evidence_mismatch", "service_unavailable",
+        "internal_error"
+      ]
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    }
+  }
+}

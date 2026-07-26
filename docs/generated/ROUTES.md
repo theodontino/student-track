@@ -22,6 +22,7 @@
 | `/api/report/feedback-batch` | `GET`, `POST` |
 | `/api/report/feedback-context` | `GET` |
 | `/api/report/feedback` | `POST` |
+| `/api/report/teaching-summary` | `GET`, `POST` |
 | `/api/review` | `GET`, `POST` |
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/semesters/[id]/session` | `DELETE`, `POST` |
@@ -37,6 +38,8 @@
 | `/api/system/local-tools` | `GET` |
 | `/api/system/logs` | `GET` |
 | `/api/system/wecom-rollbacks` | `GET`, `POST` |
+| `/api/teacher-observations/[id]` | `PATCH` |
+| `/api/teacher-observations` | `GET` |
 | `/api/wecom/auto-import` | `DELETE`, `GET`, `POST` |
 | `/api/wecom/bridge` | `POST` |
 | `/api/wecom/import` | `GET`, `POST` |

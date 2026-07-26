@@ -1,0 +1,10 @@
+{
+  "contractVersion": "student-track.wecom-receipt.v1",
+  "receiptId": "receipt-synthetic-001",
+  "packageId": "pkg-synthetic-001",
+  "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "processedAt": "2026-07-26T10:01:00+08:00",
+  "consumerVersion": "0.21.0",
+  "status": "accepted",
+  "outcome": "pending_review"
+}
