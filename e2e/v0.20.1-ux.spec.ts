@@ -5,9 +5,9 @@ test.describe.serial("v0.20.1 interaction polish", () => {
   test("dashboard exposes separate danger, apricot attention, and blue attendance glow surfaces", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator('[data-glow-tone="danger"]')).toBeVisible();
-    await expect(page.locator('[data-glow-tone="attention"]')).toBeVisible();
+    await expect(page.locator('.dashboard-alerts [data-glow-tone="attention"]')).toBeVisible();
     await expect(page.locator('[data-glow-tone="attendance"]')).toBeVisible();
-    const attention = page.locator('[data-glow-tone="attention"]');
+    const attention = page.locator('.dashboard-alerts [data-glow-tone="attention"]');
     await attention.hover({ position: { x: 4, y: 4 } });
     await expect.poll(() => attention.evaluate((element) => (element as HTMLElement).style.getPropertyValue("--glow-border-strength"))).not.toBe("18%");
   });
