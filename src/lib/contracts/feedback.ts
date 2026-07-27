@@ -75,6 +75,23 @@ export const AssessmentImportItemSchema: z.ZodType<AssessmentImportItem> = z.obj
   error: text(2000),
 });
 
+const FeedbackSectionSchema = z.object({
+  content: text(2000),
+  evidence: z.array(z.object({
+    source: z.enum(["current-session", "history", "assessment", "teaching-summary"]),
+    label: text(500),
+  })).max(8),
+});
+
+const FeedbackSectionsSchema = z.object({
+  currentFact: FeedbackSectionSchema,
+  flaggedIssue: FeedbackSectionSchema.optional(),
+  trendChange: FeedbackSectionSchema.optional(),
+  backgroundBaseline: FeedbackSectionSchema.optional(),
+  renewalAlert: FeedbackSectionSchema.optional(),
+  strategySuggestion: FeedbackSectionSchema.optional(),
+});
+
 export const FeedbackCardSchema: z.ZodType<FeedbackCard> = z.object({
   id: requiredText(200),
   name: requiredText(100),
@@ -85,7 +102,16 @@ export const FeedbackCardSchema: z.ZodType<FeedbackCard> = z.object({
   reviewIssues: z.array(text(1000)).max(50).optional(),
   feedbackIntensity: z.enum(FEEDBACK_INTENSITIES).optional(),
   feedbackRoutingReasons: z.array(z.enum(["dashboard-warning", "dashboard-attention", "recent-teacher-observation"])).max(3).optional(),
+  sections: FeedbackSectionsSchema.optional(),
 });
+
+const FeedbackOutputStrategySchema = z.object({
+  flaggedIssue: z.boolean(),
+  trendChange: z.boolean(),
+  backgroundBaseline: z.boolean(),
+  strategySuggestion: z.boolean(),
+  suggestedFeedback: z.boolean(),
+}).strict();
 
 const historyCard = FeedbackCardSchema;
 export const FeedbackBatchHistoryStateSchema = z.object({
@@ -97,6 +123,7 @@ export const FeedbackBatchHistoryStateSchema = z.object({
   total: count,
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentEvidence: assessmentEvidenceRecord.optional(),
+  outputStrategy: FeedbackOutputStrategySchema.optional(),
 }).passthrough();
 
 export const FeedbackHistoryStateSchema: z.ZodType<FeedbackHistoryState> = z.discriminatedUnion("kind", [
@@ -169,6 +196,7 @@ export const FeedbackWorkspaceSchema: z.ZodType<FeedbackWorkspaceState> = z.obje
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentImports: z.array(AssessmentImportItemSchema).max(200).optional(),
   routingOverrides: z.record(z.string().max(200), z.enum(FEEDBACK_INTENSITIES)).optional(),
+  outputStrategy: FeedbackOutputStrategySchema.optional(),
 }).passthrough().refine((value) => value.feedbackDone <= value.feedbackTotal, {
   message: "feedbackDone cannot exceed feedbackTotal",
   path: ["feedbackDone"],
@@ -194,6 +222,7 @@ export const FeedbackBatchPostSchema = z.object({
     reviewIssues: z.array(text(1000)).max(50).optional(),
     feedbackIntensity: z.enum(FEEDBACK_INTENSITIES).optional(),
     feedbackRoutingReasons: z.array(z.enum(["dashboard-warning", "dashboard-attention", "recent-teacher-observation"])).max(3).optional(),
+    sections: FeedbackSectionsSchema.optional(),
   })).max(200).optional(),
 }).passthrough();
 

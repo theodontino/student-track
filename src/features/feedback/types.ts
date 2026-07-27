@@ -4,6 +4,7 @@ import type { AiWorkflowState } from "@/features/ai-workflow";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
 import type { FeedbackIntensity, FeedbackRoutingReason } from "@/lib/feedback-intensity";
+import type { FeedbackOutputStrategy, FeedbackSections } from "@/lib/feedback-sections";
 import type {
   AssessmentImportItem,
   LessonFeedbackMaterial,
@@ -20,6 +21,7 @@ export interface FeedbackCard {
   reviewIssues?: string[];
   feedbackIntensity?: FeedbackIntensity;
   feedbackRoutingReasons?: FeedbackRoutingReason[];
+  sections?: FeedbackSections;
 }
 
 export interface FeedbackContextResponse {
@@ -44,6 +46,7 @@ export interface BatchFeedbackHistoryState {
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
   routingOverrides?: Record<string, FeedbackIntensity>;
+  outputStrategy?: FeedbackOutputStrategy;
 }
 
 export interface SingleFeedbackHistoryState {
@@ -91,6 +94,7 @@ export interface FeedbackWorkspaceState {
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentImports?: AssessmentImportItem[];
   routingOverrides?: Record<string, FeedbackIntensity>;
+  outputStrategy?: FeedbackOutputStrategy;
 }
 
 export interface FeedbackStudentOption {

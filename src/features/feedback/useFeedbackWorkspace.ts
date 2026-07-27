@@ -23,6 +23,7 @@ import {
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
 import type { FeedbackIntensity, FeedbackRoutingDecision } from "@/lib/feedback-intensity";
+import { DEFAULT_FEEDBACK_OUTPUT_STRATEGY, normalizeFeedbackOutputStrategy, type FeedbackOutputStrategy } from "@/lib/feedback-sections";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import type { FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
 import { isInputHistoryState } from "./history-adapters";
@@ -107,6 +108,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   const [contextStudents, setContextStudents] = useState<FeedbackContextStudent[]>([]);
   const [feedbackRouting, setFeedbackRouting] = useState<FeedbackRoutingDecision[]>([]);
   const [routingOverrides, setRoutingOverrides] = useState<Record<string, FeedbackIntensity>>({});
+  const [outputStrategy, setOutputStrategyState] = useState<FeedbackOutputStrategy>(DEFAULT_FEEDBACK_OUTPUT_STRATEGY);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
   const [contextReloadKey, setContextReloadKey] = useState(0);
@@ -136,8 +138,8 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone,
     feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback,
     singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow: workflow.state,
-    groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentImports: assessmentPdfs.items, routingOverrides,
-  }), [activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow.state, groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentPdfs.items, routingOverrides]);
+    groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentImports: assessmentPdfs.items, routingOverrides, outputStrategy,
+  }), [activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow.state, groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentPdfs.items, routingOverrides, outputStrategy]);
 
   const workspace = useSessionWorkspace({
     key: teachingContextWorkspaceKey("feedback", context), value: workspaceValue,
@@ -161,6 +163,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         : createEmptyLessonFeedbackMaterial(saved?.context.sessionCode));
       assessmentPdfs.setItems(saved?.assessmentImports ?? []);
       setRoutingOverrides(saved?.routingOverrides ?? {});
+      setOutputStrategyState(normalizeFeedbackOutputStrategy(saved?.outputStrategy));
       workflow.restore(saved?.workflow);
       setStatus(saved ? saved.status || "已恢复上次离开时的页面内容。" : ""); setError("");
     },
@@ -227,10 +230,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         ...(typeof card.draftFeedback === "string" ? { draftFeedback: card.draftFeedback } : {}),
         ...(card.reviewStatus ? { reviewStatus: card.reviewStatus } : {}),
         ...(Array.isArray(card.reviewIssues) ? { reviewIssues: card.reviewIssues } : {}),
+        ...(card.sections ? { sections: card.sections } : {}),
       })),
       lessonMaterial: effectiveLessonMaterial(),
       assessmentEvidence: confirmedAssessmentEvidence,
       routingOverrides,
+      outputStrategy,
     };
     const parsed = FeedbackBatchPostSchema.safeParse(payload);
     if (parsed.success) return parsed.data;
@@ -371,6 +376,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
           lessonMaterial: effectiveLessonMaterial(),
           assessmentEvidence: confirmedAssessmentEvidence,
           routingOverrides,
+          outputStrategy,
         }),
       });
       if (!response.ok) throw new Error((await response.json()).error);
@@ -419,7 +425,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   async function regenerateOne(studentId: string) {
     if (!sessionCode || !feedbackCards.some((card) => card.id === studentId)) return;
     setRegeneratingId(studentId); setError("");
-    try { const card = feedbackCards.find((item) => item.id === studentId); const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity }) }); dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } }); dispatchFeedback({ type: "dirty", value: true }); }
+    try { const card = feedbackCards.find((item) => item.id === studentId); const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy }) }); dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } }); dispatchFeedback({ type: "dirty", value: true }); }
     catch (reason) { setError(errorMessage(reason, "重新生成失败")); }
     finally { setRegeneratingId(""); }
   }
@@ -427,12 +433,17 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   function setFeedbackIntensity(studentId: string, intensity: FeedbackIntensity | "automatic") {
     setRoutingOverrides((current) => {
       if (intensity === "automatic") {
-        const { [studentId]: _removed, ...rest } = current;
-        return rest;
+        const next = { ...current };
+        delete next[studentId];
+        return next;
       }
       return { ...current, [studentId]: intensity };
     });
     markFeedbackInputsChanged(feedbackCards.length ? "反馈档位已改变，请重新生成反馈。" : "反馈档位已调整。");
+  }
+  function setOutputStrategy(strategy: FeedbackOutputStrategy) {
+    setOutputStrategyState(normalizeFeedbackOutputStrategy(strategy));
+    markFeedbackInputsChanged(feedbackCards.length ? "输出策略已改变，请重新生成反馈。" : "已更新本批次输出策略。");
   }
   async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(feedbackSavePayload()) }); dispatchFeedback({ type: "dirty", value: false }); }
   async function exportFeedback() {
@@ -460,7 +471,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     }
     if (state.kind === "single") { setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setSingleStudentId(state.studentId); setSingleDays(state.days); setSingleFeedback(state.feedback); setSingleDraftFeedback(state.draftFeedback ?? ""); setSingleReviewStatus(state.reviewStatus); setSingleReviewIssues(state.reviewIssues ?? []); setError(""); setStatus("已恢复单人反馈历史。"); return; }
     setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
-    dispatchFeedback({ type: "init", cards: state.students, total: state.total, done: state.total }); setRoutingOverrides(state.routingOverrides ?? {}); dispatchFeedback({ type: "force", value: false });
+    dispatchFeedback({ type: "init", cards: state.students, total: state.total, done: state.total }); setRoutingOverrides(state.routingOverrides ?? {}); setOutputStrategyState(normalizeFeedbackOutputStrategy(state.outputStrategy)); dispatchFeedback({ type: "force", value: false });
     if (state.lessonMaterial) {
       setLessonMaterial({ ...state.lessonMaterial, sessionCode: state.sessionCode });
       setGroupFeedbackRaw(state.lessonMaterial.groupFeedbackRaw);
@@ -531,7 +542,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     groupFeedbackRaw, assessmentBriefRaw, lessonMaterial,
     assessmentImports: assessmentPdfs.items, assessmentBatchBusy: assessmentPdfs.busy,
     assessmentFolderPlan: assessmentPdfs.folderPlan, assessmentStudents,
-    confirmedAssessmentEvidence, feedbackRouting, routingOverrides,
+    confirmedAssessmentEvidence, feedbackRouting, routingOverrides, outputStrategy,
     assessmentConfirmedCount: assessmentPdfs.confirmedCount,
     assessmentReadyCount: assessmentPdfs.readyCount,
     assessmentAttentionCount: assessmentPdfs.attentionCount,
@@ -548,6 +559,6 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     legacyDraftAvailable, restoreLegacyDraft,
     singleLoading, contextByStudent, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming), canGenerate: Boolean(sessionCode && !generating),
     onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, cancelGeneration, prepareRegeneration,
-    regenerateOne, updateFeedback, setFeedbackIntensity, exportFeedback, restoreHistory, generateSingleFeedback,
+    regenerateOne, updateFeedback, setFeedbackIntensity, setOutputStrategy, exportFeedback, restoreHistory, generateSingleFeedback,
   };
 }

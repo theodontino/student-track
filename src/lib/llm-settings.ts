@@ -6,6 +6,9 @@ export interface LLMSettings {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
+  maxTokens?: number;
+  reasoningEnabled?: boolean;
+  reasoningEffort?: "low" | "medium" | "high";
   updatedAt?: string;
 }
 
@@ -46,6 +49,13 @@ function normalizeSettings(input: Partial<LLMSettings>): LLMSettings {
     apiBaseUrl: (input.apiBaseUrl || "").trim(),
     apiKey: (input.apiKey || "").trim(),
     model: (input.model || "").trim(),
+    maxTokens: Number.isInteger(input.maxTokens) && (input.maxTokens as number) >= 256 && (input.maxTokens as number) <= 32768
+      ? input.maxTokens
+      : undefined,
+    reasoningEnabled: typeof input.reasoningEnabled === "boolean" ? input.reasoningEnabled : undefined,
+    reasoningEffort: input.reasoningEffort === "medium" || input.reasoningEffort === "high" || input.reasoningEffort === "low"
+      ? input.reasoningEffort
+      : "low",
     updatedAt: input.updatedAt,
   };
 }
@@ -59,6 +69,9 @@ function normalizeProfile(input: Partial<LLMProfile>, fallbackName = "默认配�
     apiBaseUrl: settings.apiBaseUrl,
     apiKey: settings.apiKey,
     model: settings.model,
+    maxTokens: settings.maxTokens,
+    reasoningEnabled: settings.reasoningEnabled,
+    reasoningEffort: settings.reasoningEffort,
     createdAt: input.createdAt || timestamp,
     updatedAt: input.updatedAt || timestamp,
   };
@@ -155,6 +168,9 @@ export function getEffectiveLLMSettings(role?: LLMProfileRole): LLMSettings {
     apiBaseUrl: activeProfile?.apiBaseUrl || process.env.LLM_API_BASE_URL || DEFAULT_API_BASE_URL,
     apiKey: activeProfile?.apiKey || process.env.LLM_API_KEY || "",
     model: activeProfile?.model || process.env.LLM_MODEL || DEFAULT_MODEL,
+    maxTokens: activeProfile?.maxTokens,
+    reasoningEnabled: activeProfile?.reasoningEnabled,
+    reasoningEffort: activeProfile?.reasoningEffort,
     updatedAt: activeProfile?.updatedAt,
   };
 }
@@ -164,6 +180,9 @@ export function validateLLMSettings(input: Partial<LLMSettings>): LLMSettings {
   if (!settings.apiBaseUrl) throw new Error("请填写 API Base URL");
   if (!settings.apiKey) throw new Error("请填写 API Key");
   if (!settings.model) throw new Error("请填写模型名");
+  if (input.maxTokens !== undefined && settings.maxTokens === undefined) {
+    throw new Error("Max tokens 需在 256 到 32768 之间");
+  }
 
   try {
     const url = new URL(settings.apiBaseUrl);
@@ -189,6 +208,9 @@ export function saveLLMProfile(input: Partial<LLMProfile>, activate = true): LLM
     apiBaseUrl: settings.apiBaseUrl,
     apiKey: settings.apiKey,
     model: settings.model,
+    maxTokens: settings.maxTokens,
+    reasoningEnabled: settings.reasoningEnabled,
+    reasoningEffort: settings.reasoningEffort,
     createdAt: previous?.createdAt || nowIso(),
     updatedAt: nowIso(),
   };

@@ -1,10 +1,11 @@
-import type { createLLMClient } from "@/lib/llm";
+import { getLLMCompletionOptions, type createLLMClient } from "@/lib/llm";
 import {
   assessmentEvidencePrompt,
   lessonMaterialPrompt,
   type LessonFeedbackMaterial,
   type StudentAssessmentEvidence,
 } from "@/lib/feedback-materials";
+import type { FeedbackOutputStrategy, FeedbackSections } from "@/lib/feedback-sections";
 
 const FEEDBACK_MAX_TOKENS = 2048;
 const FEEDBACK_REVIEW_MAX_TOKENS = 4096;
@@ -75,20 +76,32 @@ export function composeFeedbackPromptContext(input: {
   studentId?: string;
   lessonMaterial?: LessonFeedbackMaterial | null;
   assessmentEvidence?: StudentAssessmentEvidence | null;
+  sections?: FeedbackSections;
+  outputStrategy?: FeedbackOutputStrategy;
 }) {
+  const selectedSections = input.sections && input.outputStrategy
+    ? [
+        `【本次已确认事实】${input.sections.currentFact.content}`,
+        input.outputStrategy.flaggedIssue && input.sections.flaggedIssue ? `【挂牌问题】${input.sections.flaggedIssue.content}` : "",
+        input.outputStrategy.trendChange && input.sections.trendChange ? `【趋势变化】${input.sections.trendChange.content}` : "",
+        input.outputStrategy.backgroundBaseline && input.sections.backgroundBaseline ? `【背景基线】${input.sections.backgroundBaseline.content}` : "",
+        input.outputStrategy.strategySuggestion && input.sections.strategySuggestion ? `【教师策略】${input.sections.strategySuggestion.content}` : "",
+      ].filter(Boolean).join("\n")
+    : input.studentContext.trim();
   return [
     input.sessionCode
       ? `【本次生成边界】课次：${input.sessionCode}${input.studentId ? `；学生ID：${input.studentId}` : ""}。以下课堂信息、评价、助教记录、家长沟通和 PDF 证据统一作为本次背景；不得使用其他课次或其他学生的材料。`
       : "",
-    input.studentContext.trim(),
+    selectedSections,
     lessonMaterialPrompt(input.lessonMaterial),
     assessmentEvidencePrompt(input.assessmentEvidence),
     `【证据使用顺序】
 1. 个人出门测报告、已确认的本课评价、考勤、事件和助教备注必须同时符合上述课次与学生身份，才属于该生证据。
 2. 学期对照只描述最近两次相对个人常态和同期班均的位置，不得改写成排名。
-3. 家校沟通用于选择家长关心的表达重点，不得改变教学事实。
+3. 仅使用上方已确认事实；不得根据未提供的家校沟通、内部观察、风险或续班信息补充内容。
 4. 课程公共材料和统一出门测说明只能描述全班学习内容、考查范围与统一建议，不得据此断言该生掌握或失误。
-5. 多项证据冲突或依据不足时必须保守表达，并交给人工确认。`,
+5. 多项证据冲突或依据不足时必须保守表达，并交给人工确认。
+6. “教师策略”是内部处理方向，不得直接写入家长文本，除非它本身已由明确课堂证据支持。`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -134,6 +147,18 @@ function isJsonModeUnsupported(error: unknown) {
     && /response[_ -]?format|json[_ -]?object|json mode/i.test(candidate?.message || "");
 }
 
+function isReasoningUnsupported(error: unknown) {
+  const candidate = error as { status?: number; message?: string };
+  return [400, 404, 422].includes(candidate?.status ?? 0)
+    && /reasoning[_ -]?effort|thinking/i.test(candidate?.message || "");
+}
+
+function withoutReasoning<T extends Record<string, unknown>>(body: T) {
+  const { reasoning_effort, ...rest } = body;
+  void reasoning_effort;
+  return rest;
+}
+
 async function createReviewCompletion(
   client: LLMClient,
   model: string,
@@ -144,13 +169,14 @@ async function createReviewCompletion(
   throwIfAborted(signal);
   // Review 阶段需要更大 token 预算：推理模型（如 deepseek-v4-pro）的 reasoning_content
   // 会占用 max_tokens 配额，2048 不够写出完整 JSON，导致 finish_reason=length 被截断。
-  const reasoningEffort = options.disableReasoning ? "none" : "low";
+  const configured = getLLMCompletionOptions("feedbackReview", FEEDBACK_REVIEW_MAX_TOKENS, true);
+  const reasoningEffort = options.disableReasoning ? undefined : configured.reasoning_effort;
   const baseBody = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
     temperature: 0,
-    max_tokens: FEEDBACK_REVIEW_MAX_TOKENS,
-    reasoning_effort: reasoningEffort as "none" | "low",
+    max_tokens: configured.max_tokens,
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   };
   try {
     const body = {
@@ -161,21 +187,22 @@ async function createReviewCompletion(
       ? await client.chat.completions.create(body, { signal })
       : await client.chat.completions.create(body);
   } catch (error) {
-    if (!isJsonModeUnsupported(error)) throw error;
+    if (!isJsonModeUnsupported(error) && !isReasoningUnsupported(error)) throw error;
     // 降级：去掉 response_format 再试；reasoning_effort 保留以限制推理长度。
+    const fallbackBody = isReasoningUnsupported(error) ? withoutReasoning(baseBody) : baseBody;
     return signal
-      ? client.chat.completions.create(baseBody, { signal })
-      : client.chat.completions.create(baseBody);
+      ? client.chat.completions.create(fallbackBody, { signal })
+      : client.chat.completions.create(fallbackBody);
   }
 }
 
 async function createRoutineCompletion(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
+  const configured = getLLMCompletionOptions("feedbackReview", FEEDBACK_ROUTINE_MAX_TOKENS);
   const baseBody = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
     temperature: 0.2,
-    max_tokens: FEEDBACK_ROUTINE_MAX_TOKENS,
-    reasoning_effort: "none" as const,
+    ...configured,
   };
   try {
     const body = { ...baseBody, response_format: { type: "json_object" as const } };
@@ -183,25 +210,36 @@ async function createRoutineCompletion(client: LLMClient, model: string, prompt:
       ? await client.chat.completions.create(body, { signal })
       : await client.chat.completions.create(body);
   } catch (error) {
-    if (!isJsonModeUnsupported(error)) throw error;
+    if (!isJsonModeUnsupported(error) && !isReasoningUnsupported(error)) throw error;
+    const fallbackBody = isReasoningUnsupported(error) ? withoutReasoning(baseBody) : baseBody;
     return signal
-      ? client.chat.completions.create(baseBody, { signal })
-      : client.chat.completions.create(baseBody);
+      ? client.chat.completions.create(fallbackBody, { signal })
+      : client.chat.completions.create(fallbackBody);
   }
 }
 
 async function generateDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
+  const configured = getLLMCompletionOptions("feedbackDraft", FEEDBACK_MAX_TOKENS);
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
     throwIfAborted(signal);
     const body = {
       model,
       messages: [{ role: "user" as const, content: prompt }],
       temperature: 0.5,
-      max_tokens: FEEDBACK_MAX_TOKENS,
+      ...configured,
     };
-    const response = signal
-      ? await client.chat.completions.create(body, { signal })
-      : await client.chat.completions.create(body);
+    let response;
+    try {
+      response = signal
+        ? await client.chat.completions.create(body, { signal })
+        : await client.chat.completions.create(body);
+    } catch (error) {
+      if (!isReasoningUnsupported(error)) throw error;
+      const fallbackBody = withoutReasoning(body);
+      response = signal
+        ? await client.chat.completions.create(fallbackBody, { signal })
+        : await client.chat.completions.create(fallbackBody);
+    }
     const content = response.choices[0]?.message?.content?.trim();
     if (content) return content;
   }

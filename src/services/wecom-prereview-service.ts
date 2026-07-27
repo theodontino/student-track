@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import {
   WeComExtractionError,
 } from "@/services/wecom-bridge-service";
-import { createLLMClient, getLLMModel } from "@/lib/llm";
+import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
 import { withLLMCacheOperation } from "@/services/llm-cache-service";
 
 export type PreReviewVerdict = "confirm" | "reject" | "review";
@@ -41,7 +41,6 @@ const PRE_REVIEW_CONCURRENCY = 2;
 const PRE_REVIEW_MAX_TOKENS = 1024;
 const PRE_REVIEW_TEMPERATURE = 0;
 // 默认走 low，节省 reasoning tokens；模型不支持时自动降级到不传（默认 high）。
-const PRE_REVIEW_REASONING_EFFORT: "low" | "medium" | "high" = "low";
 
 const preReviewSchema = {
   type: "object",
@@ -324,6 +323,7 @@ async function callLlmWithSchemaFallback(
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
+  const completionOptions = getLLMCompletionOptions("feedbackReview", PRE_REVIEW_MAX_TOKENS, true);
 
   // Level 1: strict json_schema
   try {
@@ -331,7 +331,7 @@ async function callLlmWithSchemaFallback(
       model,
       messages,
       temperature: PRE_REVIEW_TEMPERATURE,
-      max_tokens: PRE_REVIEW_MAX_TOKENS,
+      ...completionOptions,
       response_format: {
         type: "json_schema",
         json_schema: { name: "wecom_prereview", strict: true, schema: preReviewSchema as unknown as Record<string, unknown> },
@@ -348,7 +348,7 @@ async function callLlmWithSchemaFallback(
       model,
       messages,
       temperature: PRE_REVIEW_TEMPERATURE,
-      max_tokens: PRE_REVIEW_MAX_TOKENS,
+      ...completionOptions,
       response_format: { type: "json_object" },
     });
     return { text: extractRaw(response), protocol: "json_object", model };
@@ -366,7 +366,7 @@ async function callLlmWithSchemaFallback(
     model,
     messages: freeTextMessages,
     temperature: PRE_REVIEW_TEMPERATURE,
-    max_tokens: PRE_REVIEW_MAX_TOKENS,
+    ...completionOptions,
   });
   return { text: extractRaw(response), protocol: "plain", model };
 }
@@ -376,6 +376,7 @@ type ChatCompletionPayload = {
   messages: ChatMessage[];
   temperature: number;
   max_tokens: number;
+  reasoning_effort?: "low" | "medium" | "high";
   response_format?: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } } | { type: "json_object" };
 };
 
@@ -383,13 +384,9 @@ async function createWithReasoningFallback(
   client: LlmClient,
   payload: ChatCompletionPayload,
 ): Promise<{ choices: Array<{ message?: { content?: string | null } }> }> {
-  // 第一次尝试：带 reasoning_effort。如果模型不支持（例如某些老版本只接受 high），
-  // 错误会被识别为 reasoning-related，自动降级重试。
+  // 若当前配置开启 reasoning_effort，模型不支持时自动降级重试。
   try {
-    return await client.chat.completions.create({
-      ...payload,
-      reasoning_effort: PRE_REVIEW_REASONING_EFFORT,
-    } as never);
+    return await client.chat.completions.create(payload as never);
   } catch (error) {
     if (!isReasoningUnsupported(error)) throw error;
     // 降级：不传 reasoning_effort，由模型使用默认思考等级。

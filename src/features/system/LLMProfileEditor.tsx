@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, FormField, Input, Section, StatusBanner } from "@/components/ui";
+import { Button, FormField, Input, Section, Select, StatusBanner } from "@/components/ui";
 import type { useLLMConfiguration } from "./useLLMConfiguration";
 
 type Workspace = ReturnType<typeof useLLMConfiguration>;
@@ -14,6 +14,9 @@ export function LLMProfileEditor({ workspace }: { workspace: Workspace }) {
         <FormField id="llm-api-base" label="API Base URL"><Input id="llm-api-base" value={workspace.form.apiBaseUrl} onChange={(event) => workspace.updateField("apiBaseUrl", event.target.value)} placeholder="http://localhost:1234/v1" /></FormField>
         <FormField id="llm-api-key" label="API Key"><Input id="llm-api-key" type="password" value={workspace.form.apiKey} onChange={(event) => workspace.updateField("apiKey", event.target.value)} placeholder="lm-studio" autoComplete="off" /></FormField>
         <FormField id="llm-model" label="模型名"><Input id="llm-model" value={workspace.form.model} onChange={(event) => workspace.updateField("model", event.target.value)} placeholder="例如 lmstudio-community/qwen2.5-7b-instruct" /></FormField>
+        <FormField id="llm-max-tokens" label="Max tokens"><Input id="llm-max-tokens" type="number" min="256" max="32768" value={String(workspace.form.maxTokens ?? 4096)} onChange={(event) => workspace.updateGenerationField("maxTokens", Number(event.target.value) || 0)} /></FormField>
+        <FormField id="llm-reasoning" label="模型思考"><label className="ui-toggle"><input id="llm-reasoning" type="checkbox" checked={workspace.form.reasoningEnabled === true} onChange={(event) => workspace.updateGenerationField("reasoningEnabled", event.target.checked)} />向兼容模型传入 reasoning_effort</label></FormField>
+        <FormField id="llm-reasoning-effort" label="思考强度"><Select id="llm-reasoning-effort" value={workspace.form.reasoningEffort ?? "low"} disabled={!workspace.form.reasoningEnabled} onChange={(event) => workspace.updateGenerationField("reasoningEffort", event.target.value as "low" | "medium" | "high")}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></Select></FormField>
         {workspace.form.updatedAt && <p className="llm-profile-editor__updated">上次保存：{new Date(workspace.form.updatedAt).toLocaleString()}</p>}
         {workspace.status && <StatusBanner tone="success">{workspace.status}</StatusBanner>}
         {workspace.error && <StatusBanner tone="danger">{workspace.error}</StatusBanner>}
