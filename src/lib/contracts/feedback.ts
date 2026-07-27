@@ -10,6 +10,7 @@ import {
   DraftStructuredResultSchema,
   NameCorrectionSchema,
 } from "@/lib/contracts/classroom-parse";
+import { FEEDBACK_INTENSITIES } from "@/lib/feedback-intensity";
 
 const text = (max: number) => z.string().max(max);
 const requiredText = (max: number) => text(max).trim().min(1);
@@ -82,6 +83,8 @@ export const FeedbackCardSchema: z.ZodType<FeedbackCard> = z.object({
   draftFeedback: text(10000).optional(),
   reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(),
   reviewIssues: z.array(text(1000)).max(50).optional(),
+  feedbackIntensity: z.enum(FEEDBACK_INTENSITIES).optional(),
+  feedbackRoutingReasons: z.array(z.enum(["dashboard-warning", "dashboard-attention", "recent-teacher-observation"])).max(3).optional(),
 });
 
 const historyCard = FeedbackCardSchema;
@@ -165,6 +168,7 @@ export const FeedbackWorkspaceSchema: z.ZodType<FeedbackWorkspaceState> = z.obje
   assessmentBriefRaw: text(100000).optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentImports: z.array(AssessmentImportItemSchema).max(200).optional(),
+  routingOverrides: z.record(z.string().max(200), z.enum(FEEDBACK_INTENSITIES)).optional(),
 }).passthrough().refine((value) => value.feedbackDone <= value.feedbackTotal, {
   message: "feedbackDone cannot exceed feedbackTotal",
   path: ["feedbackDone"],
@@ -177,6 +181,7 @@ export const FeedbackBatchPostSchema = z.object({
   saveState: z.boolean().optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentEvidence: assessmentEvidenceRecord.optional(),
+  routingOverrides: z.record(z.string().max(200), z.enum(FEEDBACK_INTENSITIES)).optional(),
   // 前端 saveFeedbackState 直接传入 feedbackCards，包含 name/labels 等展示字段；
   // name/labels 都设为可选，且不使用 strict 模式，避免拒绝前端展示字段。
   students: z.array(z.object({
@@ -187,12 +192,14 @@ export const FeedbackBatchPostSchema = z.object({
     draftFeedback: text(10000).optional(),
     reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(),
     reviewIssues: z.array(text(1000)).max(50).optional(),
+    feedbackIntensity: z.enum(FEEDBACK_INTENSITIES).optional(),
+    feedbackRoutingReasons: z.array(z.enum(["dashboard-warning", "dashboard-attention", "recent-teacher-observation"])).max(3).optional(),
   })).max(200).optional(),
 }).passthrough();
 
 export const FeedbackBatchStreamEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("init"), students: z.array(FeedbackCardSchema).max(200), total: count }),
-  z.object({ type: z.literal("draft"), studentId: requiredText(200), name: requiredText(100), feedback: text(10000), draftFeedback: text(10000).optional(), completed: count, total: count }),
+  z.object({ type: z.literal("draft"), studentId: requiredText(200), name: requiredText(100), feedback: text(10000), draftFeedback: text(10000).optional(), reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(), reviewIssues: z.array(text(1000)).max(50).optional(), completed: count, total: count }),
   z.object({ type: z.literal("review"), studentId: requiredText(200), name: requiredText(100), feedback: text(10000), draftFeedback: text(10000).optional(), reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(), reviewIssues: z.array(text(1000)).max(50).optional(), completed: count, total: count }),
   z.object({ type: z.literal("done"), students: z.array(FeedbackCardSchema).max(200), total: count }).passthrough(),
   z.object({ type: z.literal("error"), message: requiredText(2000), code: text(80).optional(), retryable: z.boolean().optional(), diagnosticId: text(100).optional() }),

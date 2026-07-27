@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import {
   composeFeedbackPromptContext,
+  generateRoutineFeedback,
   generateReviewedFeedback,
   reviewFeedbackDraft,
 } from "@/services/feedback-generation-service";
@@ -15,6 +16,27 @@ function clientWith(...contents: string[]) {
 }
 
 describe("feedback generation review", () => {
+  it("uses one short final pass for routine feedback without inventing advice", async () => {
+    const routine = clientWith(JSON.stringify({
+      verdict: "pass",
+      feedback: "今天课堂跟得比较稳，电离方程式的基础书写完成得顺利。",
+      issues: [],
+    }));
+    const result = await generateRoutineFeedback({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成电离方程式基础书写。",
+      client: routine.client,
+      model: "routine-model",
+    });
+    expect(result).toMatchObject({
+      feedback: "今天课堂跟得比较稳，电离方程式的基础书写完成得顺利。",
+      reviewStatus: "passed",
+      draftFeedback: "",
+    });
+    expect(routine.create).toHaveBeenCalledTimes(1);
+    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("默认只描述");
+    expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 768, reasoning_effort: "none" });
+  });
   it("keeps class copy separate from individual student evidence", () => {
     const context = composeFeedbackPromptContext({
       studentContext: "学生甲，本次个人记录：测验4分。",
@@ -53,10 +75,10 @@ describe("feedback generation review", () => {
     expect(draft.create.mock.calls[0][0].messages[0].content).toContain("内部分析草稿");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("内部分析只是辅助材料");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("三种真实感受");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("小成长叙事");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("只突出一个核心结论");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("只有明确的前后证据");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("不得将全学期常态对照改写");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("先不看答案重做具体题目");
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("普通情况可直接结束");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("整体表现优异");
   });
 

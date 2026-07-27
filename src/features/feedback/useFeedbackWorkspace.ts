@@ -22,6 +22,7 @@ import {
 } from "@/lib/contracts/feedback";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
+import type { FeedbackIntensity, FeedbackRoutingDecision } from "@/lib/feedback-intensity";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import type { FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
 import { isInputHistoryState } from "./history-adapters";
@@ -104,6 +105,8 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   const { cards: feedbackCards, total: feedbackTotal, done: feedbackDone, dirty: feedbackDirty, forceRegenerate } = feedbackState;
   const [feedbackPhase, setFeedbackPhase] = useState<"idle" | "draft" | "review">("idle");
   const [contextStudents, setContextStudents] = useState<FeedbackContextStudent[]>([]);
+  const [feedbackRouting, setFeedbackRouting] = useState<FeedbackRoutingDecision[]>([]);
+  const [routingOverrides, setRoutingOverrides] = useState<Record<string, FeedbackIntensity>>({});
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
   const [contextReloadKey, setContextReloadKey] = useState(0);
@@ -133,8 +136,8 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone,
     feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback,
     singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow: workflow.state,
-    groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentImports: assessmentPdfs.items,
-  }), [activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow.state, groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentPdfs.items]);
+    groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentImports: assessmentPdfs.items, routingOverrides,
+  }), [activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections, confirmed, status, feedbackCards, feedbackTotal, feedbackDone, feedbackDirty, forceRegenerate, singleStudentId, singleDays, singleFeedback, singleDraftFeedback, singleReviewStatus, singleReviewIssues, workflow.state, groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentPdfs.items, routingOverrides]);
 
   const workspace = useSessionWorkspace({
     key: teachingContextWorkspaceKey("feedback", context), value: workspaceValue,
@@ -157,6 +160,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         ? { ...saved.lessonMaterial, sessionCode: saved.context.sessionCode }
         : createEmptyLessonFeedbackMaterial(saved?.context.sessionCode));
       assessmentPdfs.setItems(saved?.assessmentImports ?? []);
+      setRoutingOverrides(saved?.routingOverrides ?? {});
       workflow.restore(saved?.workflow);
       setStatus(saved ? saved.status || "已恢复上次离开时的页面内容。" : ""); setError("");
     },
@@ -186,12 +190,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
   }, [activeStep, workspace.hydrated]);
   useEffect(() => {
-    if (!sessionCode) { setContextStudents([]); setContextError(""); return; }
+    if (!sessionCode) { setContextStudents([]); setFeedbackRouting([]); setContextError(""); return; }
     let cancelled = false;
     setContextLoading(true); setContextError("");
     requestJson<FeedbackContextResponse>(`/api/report/feedback-context?sessionCode=${encodeURIComponent(sessionCode)}`)
-      .then((data) => { if (!cancelled) setContextStudents(data.students || []); })
-      .catch((reason) => { if (!cancelled) { setContextStudents([]); setContextError(errorMessage(reason, "读取反馈上下文失败")); } })
+      .then((data) => { if (!cancelled) { setContextStudents(data.students || []); setFeedbackRouting(data.routing || []); } })
+      .catch((reason) => { if (!cancelled) { setContextStudents([]); setFeedbackRouting([]); setContextError(errorMessage(reason, "读取反馈上下文失败")); } })
       .finally(() => { if (!cancelled) setContextLoading(false); });
     return () => { cancelled = true; };
   }, [sessionCode, contextReloadKey]);
@@ -226,6 +230,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       })),
       lessonMaterial: effectiveLessonMaterial(),
       assessmentEvidence: confirmedAssessmentEvidence,
+      routingOverrides,
     };
     const parsed = FeedbackBatchPostSchema.safeParse(payload);
     if (parsed.success) return parsed.data;
@@ -275,11 +280,11 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setLessonMaterial(createEmptyLessonFeedbackMaterial(nextSessionCode));
     assessmentPdfs.setItems([]);
   }
-  function onSemesterChange(id: string) { setSemesterId(id); setClassName(""); setSessionCode(""); resetFeedback(); }
-  function onClassChange(value: string) { setClassName(value); setSessionCode(""); resetFeedback(); }
+  function onSemesterChange(id: string) { setSemesterId(id); setClassName(""); setSessionCode(""); setRoutingOverrides({}); resetFeedback(); }
+  function onClassChange(value: string) { setClassName(value); setSessionCode(""); setRoutingOverrides({}); resetFeedback(); }
   function onSessionChange(code: string) {
     setSessionCode(code); setDraftId(""); setParsedResult(null); setReviewResult(null); setCorrections([]); setConfirmed(false);
-    resetFeedback(); resetFeedbackInputs(code); workflow.reset(); setError(""); setStatus("");
+    setRoutingOverrides({}); resetFeedback(); resetFeedbackInputs(code); workflow.reset(); setError(""); setStatus("");
   }
   async function createSession() {
     if (!semesterId || !className) { setError("请先选择学期和班级"); return; }
@@ -353,7 +358,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     generationAbortRef.current = controller;
     setGenerating(true); setError(""); setStatus(""); dispatchFeedback({ type: "reset" }); setFeedbackPhase("draft");
     workflow.start("生成课后反馈", "正在检查课次和反馈上下文…");
-    workflow.transition("generating", "正在先分析趋势与历史，再生成家长话术…");
+    workflow.transition("generating", "正在按本次反馈强度生成家长话术…");
     try {
       const response = await fetch("/api/report/feedback-batch", {
         method: "POST",
@@ -365,11 +370,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
           bypassCache: forceRegenerate,
           lessonMaterial: effectiveLessonMaterial(),
           assessmentEvidence: confirmedAssessmentEvidence,
+          routingOverrides,
         }),
       });
       if (!response.ok) throw new Error((await response.json()).error);
       if ((response.headers.get("content-type") || "").includes("application/json")) {
-        const data = FeedbackBatchJsonResponseSchema.parse(await response.json()); dispatchFeedback({ type: "init", cards: data.students || [], total: data.total, done: data.total }); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "趋势与历史分析已转换成家长话术，并完成 AI 审核。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请逐条检查后再导出。"); return;
+        const data = FeedbackBatchJsonResponseSchema.parse(await response.json()); dispatchFeedback({ type: "init", cards: data.students || [], total: data.total, done: data.total }); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "已按本次反馈强度生成家长话术，请逐条检查后再导出。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已生成，请处理待人工确认项。"); return;
       }
       if (!response.body) throw new Error("生成流不可用");
       let streamTotal = 0;
@@ -377,10 +383,10 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         signal: controller.signal,
         parse: (value) => FeedbackBatchStreamEventSchema.parse(value),
         onEvent: (message) => {
-        if (message.type === "init") { streamTotal = message.total; dispatchFeedback({ type: "init", cards: message.students, total: message.total }); setFeedbackPhase("draft"); workflow.progress(0, `准备分析 ${message.total} 名学生的趋势与历史…`); }
-        else if (message.type === "draft") { const completed = Number(message.completed || 0); setFeedbackPhase("draft"); dispatchFeedback({ type: "progress", done: completed }); workflow.progress(streamTotal ? completed / (streamTotal * 2) : 0, `分析 ${completed}/${streamTotal}`); dispatchFeedback({ type: "patch", studentId: message.studentId, patch: { feedback: "", draftFeedback: message.draftFeedback } }); }
+        if (message.type === "init") { streamTotal = message.total; dispatchFeedback({ type: "init", cards: message.students, total: message.total }); setFeedbackPhase("draft"); workflow.progress(0, `准备生成 ${message.total} 名学生的反馈…`); }
+        else if (message.type === "draft") { const completed = Number(message.completed || 0); setFeedbackPhase("draft"); dispatchFeedback({ type: "progress", done: completed }); workflow.progress(streamTotal ? completed / (streamTotal * 2) : 0, `生成 ${completed}/${streamTotal}`); dispatchFeedback({ type: "patch", studentId: message.studentId, patch: { feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } }); }
         else if (message.type === "review") { const completed = Number(message.completed || 0); setFeedbackPhase("review"); dispatchFeedback({ type: "progress", done: completed }); workflow.progress(streamTotal ? (streamTotal + completed) / (streamTotal * 2) : 0, `成稿与审核 ${completed}/${streamTotal}`); dispatchFeedback({ type: "patch", studentId: message.studentId, patch: { feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } }); }
-        else if (message.type === "done") { dispatchFeedback({ type: "init", cards: message.students || [], total: message.total, done: message.total }); setFeedbackPhase("idle"); setStatus("趋势与历史分析已转换成家长话术，并完成 AI 审核。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已完成 AI 审核，请处理待人工确认项。"); }
+        else if (message.type === "done") { dispatchFeedback({ type: "init", cards: message.students || [], total: message.total, done: message.total }); setFeedbackPhase("idle"); setStatus("已按本次反馈强度生成家长话术，请逐条检查后再导出。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已生成，请处理待人工确认项。"); }
         else if (message.type === "error") throw new Error(message.message || "批量生成失败");
         },
       });
@@ -413,11 +419,21 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   async function regenerateOne(studentId: string) {
     if (!sessionCode || !feedbackCards.some((card) => card.id === studentId)) return;
     setRegeneratingId(studentId); setError("");
-    try { const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId] }) }); dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } }); dispatchFeedback({ type: "dirty", value: true }); }
+    try { const card = feedbackCards.find((item) => item.id === studentId); const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity }) }); dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } }); dispatchFeedback({ type: "dirty", value: true }); }
     catch (reason) { setError(errorMessage(reason, "重新生成失败")); }
     finally { setRegeneratingId(""); }
   }
   function updateFeedback(studentId: string, feedback: string) { dispatchFeedback({ type: "patch", studentId, patch: { feedback, reviewStatus: "edited", reviewIssues: ["教师已人工修改，导出以当前文本为准"] } }); dispatchFeedback({ type: "dirty", value: true }); }
+  function setFeedbackIntensity(studentId: string, intensity: FeedbackIntensity | "automatic") {
+    setRoutingOverrides((current) => {
+      if (intensity === "automatic") {
+        const { [studentId]: _removed, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [studentId]: intensity };
+    });
+    markFeedbackInputsChanged(feedbackCards.length ? "反馈档位已改变，请重新生成反馈。" : "反馈档位已调整。");
+  }
   async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(feedbackSavePayload()) }); dispatchFeedback({ type: "dirty", value: false }); }
   async function exportFeedback() {
     if (!sessionCode || !feedbackCards.length) return;
@@ -444,7 +460,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     }
     if (state.kind === "single") { setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode }); setSingleStudentId(state.studentId); setSingleDays(state.days); setSingleFeedback(state.feedback); setSingleDraftFeedback(state.draftFeedback ?? ""); setSingleReviewStatus(state.reviewStatus); setSingleReviewIssues(state.reviewIssues ?? []); setError(""); setStatus("已恢复单人反馈历史。"); return; }
     setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
-    dispatchFeedback({ type: "init", cards: state.students, total: state.total, done: state.total }); dispatchFeedback({ type: "force", value: false });
+    dispatchFeedback({ type: "init", cards: state.students, total: state.total, done: state.total }); setRoutingOverrides(state.routingOverrides ?? {}); dispatchFeedback({ type: "force", value: false });
     if (state.lessonMaterial) {
       setLessonMaterial({ ...state.lessonMaterial, sessionCode: state.sessionCode });
       setGroupFeedbackRaw(state.lessonMaterial.groupFeedbackRaw);
@@ -515,7 +531,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     groupFeedbackRaw, assessmentBriefRaw, lessonMaterial,
     assessmentImports: assessmentPdfs.items, assessmentBatchBusy: assessmentPdfs.busy,
     assessmentFolderPlan: assessmentPdfs.folderPlan, assessmentStudents,
-    confirmedAssessmentEvidence,
+    confirmedAssessmentEvidence, feedbackRouting, routingOverrides,
     assessmentConfirmedCount: assessmentPdfs.confirmedCount,
     assessmentReadyCount: assessmentPdfs.readyCount,
     assessmentAttentionCount: assessmentPdfs.attentionCount,
@@ -532,6 +548,6 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     legacyDraftAvailable, restoreLegacyDraft,
     singleLoading, contextByStudent, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming), canGenerate: Boolean(sessionCode && !generating),
     onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, cancelGeneration, prepareRegeneration,
-    regenerateOne, updateFeedback, exportFeedback, restoreHistory, generateSingleFeedback,
+    regenerateOne, updateFeedback, setFeedbackIntensity, exportFeedback, restoreHistory, generateSingleFeedback,
   };
 }

@@ -3,6 +3,7 @@ import type { TeachingContext } from "@/features/teaching-context";
 import type { AiWorkflowState } from "@/features/ai-workflow";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
+import type { FeedbackIntensity, FeedbackRoutingReason } from "@/lib/feedback-intensity";
 import type {
   AssessmentImportItem,
   LessonFeedbackMaterial,
@@ -17,12 +18,20 @@ export interface FeedbackCard {
   draftFeedback?: string;
   reviewStatus?: FeedbackReviewStatus;
   reviewIssues?: string[];
+  feedbackIntensity?: FeedbackIntensity;
+  feedbackRoutingReasons?: FeedbackRoutingReason[];
 }
 
 export interface FeedbackContextResponse {
   className: string;
   total: number;
   students: FeedbackContextStudent[];
+  routing?: Array<{
+    studentId: string;
+    baseline: Exclude<FeedbackIntensity, "manual">;
+    intensity: FeedbackIntensity;
+    reasons: FeedbackRoutingReason[];
+  }>;
 }
 
 export interface BatchFeedbackHistoryState {
@@ -34,6 +43,7 @@ export interface BatchFeedbackHistoryState {
   total: number;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
+  routingOverrides?: Record<string, FeedbackIntensity>;
 }
 
 export interface SingleFeedbackHistoryState {
@@ -80,6 +90,7 @@ export interface FeedbackWorkspaceState {
   assessmentBriefRaw?: string;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentImports?: AssessmentImportItem[];
+  routingOverrides?: Record<string, FeedbackIntensity>;
 }
 
 export interface FeedbackStudentOption {

@@ -4,12 +4,17 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   buildFeedbackContext: vi.fn(),
   completionCreate: vi.fn(),
+  routing: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 
 vi.mock("@/services/feedback-context-service", () => ({
   buildFeedbackContext: mocks.buildFeedbackContext,
+}));
+
+vi.mock("@/services/feedback-intensity-service", () => ({
+  buildFeedbackRouting: mocks.routing,
 }));
 
 vi.mock("@/lib/llm", () => ({
@@ -21,6 +26,9 @@ import { POST } from "@/app/api/report/feedback/route";
 
 describe("/api/report/feedback", () => {
   beforeEach(() => {
+    mocks.routing.mockReset().mockResolvedValue([
+      { studentId: "student-1", baseline: "priority", intensity: "priority", reasons: ["dashboard-warning"] },
+    ]);
     mocks.buildFeedbackContext.mockReset().mockResolvedValue({
       session: {
         id: "session-1",

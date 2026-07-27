@@ -98,6 +98,7 @@ export interface ListTeacherObservationOptions {
   observationId?: string;
   semesterId?: string;
   classId?: string;
+  studentIds?: string[];
   statuses?: ObservationStatus[];
   limit?: number;
 }
@@ -112,6 +113,7 @@ export async function listTeacherObservations(
       ...(options.observationId ? { id: options.observationId } : {}),
       ...(statuses?.length ? { status: { in: statuses } } : {}),
       ...(options.classId ? { student: { classId: options.classId } } : {}),
+      ...(options.studentIds?.length ? { studentId: { in: options.studentIds } } : {}),
       sources: {
         some: options.semesterId
           ? { communication: { session: { semesterId: options.semesterId } } }
@@ -119,7 +121,7 @@ export async function listTeacherObservations(
       },
     },
     orderBy: [{ status: "asc" }, { lastDetectedAt: "desc" }],
-    take: Math.max(1, Math.min(options.limit ?? 50, 100)),
+    take: Math.max(1, Math.min(options.limit ?? 50, 1000)),
     include: {
       student: { select: { id: true, name: true, studentId: true, class: { select: { id: true, code: true, name: true } } } },
       sources: {
