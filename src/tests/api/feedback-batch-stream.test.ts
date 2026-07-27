@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   historyCreate: vi.fn(),
   completionCreate: vi.fn(),
+  routing: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -79,6 +80,10 @@ vi.mock("@/services/feedback-context-service", () => ({
   }),
 }));
 
+vi.mock("@/services/feedback-intensity-service", () => ({
+  buildFeedbackRouting: mocks.routing,
+}));
+
 import { POST } from "@/app/api/report/feedback-batch/route";
 
 const lessonMaterial = {
@@ -109,6 +114,10 @@ const assessmentEvidence = {
 
 describe("feedback batch NDJSON stream", () => {
   beforeEach(() => {
+    mocks.routing.mockReset().mockResolvedValue([
+      { studentId: "student-1", baseline: "priority", intensity: "priority", reasons: ["dashboard-warning"] },
+      { studentId: "student-2", baseline: "priority", intensity: "priority", reasons: ["dashboard-warning"] },
+    ]);
     mocks.historyCreate.mockReset().mockResolvedValue({ id: "history-1" });
     mocks.completionCreate.mockReset()
       .mockResolvedValueOnce({ choices: [{ message: { content: "甲反馈" } }] })
@@ -303,7 +312,11 @@ describe("feedback batch NDJSON stream", () => {
     expect(events[1]).toMatchObject({ studentId: "student-1", feedback: "", draftFeedback: "甲重试反馈" });
     expect(events[2]).toMatchObject({ studentId: "student-2", feedback: "" });
     expect(events[3]).toMatchObject({ studentId: "student-1", reviewStatus: "passed" });
-    expect(events[4]).toMatchObject({ studentId: "student-2", reviewStatus: "needs_review" });
+    expect(events[2]).toMatchObject({ studentId: "student-2", reviewStatus: "needs_review" });
+    expect(events[4]).toMatchObject({ type: "done" });
+    expect(events[4].students).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "student-2", reviewStatus: "needs_review" }),
+    ]));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       max_tokens: 2048,
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));

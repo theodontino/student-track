@@ -6,10 +6,13 @@ import {
   isStudentAssessmentEvidence,
 } from "@/lib/feedback-materials";
 import { buildFeedbackContext } from "@/services/feedback-context-service";
+import { buildFeedbackRouting } from "@/services/feedback-intensity-service";
 import {
   composeFeedbackPromptContext,
   generateReviewedFeedback,
+  generateRoutineFeedback,
 } from "@/services/feedback-generation-service";
+import { FEEDBACK_INTENSITIES, type FeedbackIntensity } from "@/lib/feedback-intensity";
 import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
@@ -43,6 +46,9 @@ export async function POST(request: NextRequest) {
     const studentId = typeof body.studentId === "string" ? body.studentId : "";
     const sessionCode = typeof body.sessionCode === "string" ? body.sessionCode : "";
     const days = typeof body.days === "number" ? body.days : undefined;
+    const requestedIntensity = typeof body.feedbackIntensity === "string" && FEEDBACK_INTENSITIES.includes(body.feedbackIntensity as FeedbackIntensity)
+      ? body.feedbackIntensity as FeedbackIntensity
+      : undefined;
     const submittedLessonMaterial = body.lessonMaterial === undefined ? undefined : isLessonFeedbackMaterial(body.lessonMaterial) ? body.lessonMaterial : null;
     const submittedAssessmentEvidence = body.assessmentEvidence === undefined ? undefined : isStudentAssessmentEvidence(body.assessmentEvidence) ? body.assessmentEvidence : null;
     if (submittedLessonMaterial === null || submittedAssessmentEvidence === null) {
@@ -70,24 +76,44 @@ export async function POST(request: NextRequest) {
         const feedbackContext = await buildFeedbackContext(prisma, sessionCode);
         const studentContext = feedbackContext.students.find((student) => student.id === studentId);
         if (!studentContext) return NextResponse.json({ error: "该学生不属于当前课次班级" }, { status: 404 });
+        const routing = await buildFeedbackRouting(prisma, feedbackContext);
+        const intensity = requestedIntensity ?? routing.find((item) => item.studentId === studentId)?.baseline ?? "routine";
+        if (intensity === "manual") {
+          return NextResponse.json({
+            feedback: "",
+            reviewStatus: "needs_review",
+            reviewIssues: ["已设为人工确认，未调用模型"],
+          });
+        }
 
         return NextResponse.json(await withLLMCacheOperation(
           "feedback",
           "生成单人课次反馈",
           async () => {
-            const result = await reviewedFeedback(
-              studentContext.name,
-              composeFeedbackPromptContext({
-                studentContext: studentContext.promptContext,
-                sessionCode,
-                studentId,
-                lessonMaterial,
-                assessmentEvidence,
-              }),
-              "120-170字",
-              feedbackContext.students.filter((student) => student.id !== studentId).map((student) => student.name),
-              process.env.NODE_ENV === "test" ? undefined : request.signal,
-            );
+            const promptContext = composeFeedbackPromptContext({
+              studentContext: studentContext.promptContext,
+              sessionCode,
+              studentId,
+              lessonMaterial,
+              assessmentEvidence,
+            });
+            const forbiddenStudentNames = feedbackContext.students.filter((student) => student.id !== studentId).map((student) => student.name);
+            const result = intensity === "routine"
+              ? await generateRoutineFeedback({
+                  studentName: studentContext.name,
+                  promptContext,
+                  forbiddenStudentNames,
+                  client: createLLMClient("feedbackReview"),
+                  model: getLLMModel("feedbackReview"),
+                  signal: process.env.NODE_ENV === "test" ? undefined : request.signal,
+                })
+              : await reviewedFeedback(
+                  studentContext.name,
+                  promptContext,
+                  intensity === "priority" ? "110-160字" : "80-120字",
+                  forbiddenStudentNames,
+                  process.env.NODE_ENV === "test" ? undefined : request.signal,
+                );
             if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
             return result;
           },

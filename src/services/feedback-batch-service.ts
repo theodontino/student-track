@@ -22,6 +22,7 @@ import { getAlertDashboard } from "@/services/alert-service";
 import {
   composeFeedbackPromptContext,
   generateFeedbackDraft,
+  generateRoutineFeedback,
   reviewFeedbackDraft,
   type FeedbackReviewStatus,
 } from "@/services/feedback-generation-service";
@@ -29,6 +30,13 @@ import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
 } from "@/services/llm-cache-service";
+import {
+  buildFeedbackRouting,
+} from "@/services/feedback-intensity-service";
+import type {
+  FeedbackIntensity,
+  FeedbackRoutingDecision,
+} from "@/lib/feedback-intensity";
 
 export type FeedbackBatchInput = z.infer<typeof FeedbackBatchPostSchema>;
 export type FeedbackHistoryModule = "feedback" | "report";
@@ -41,6 +49,8 @@ interface FeedbackCard {
   draftFeedback?: string;
   reviewStatus?: FeedbackReviewStatus;
   reviewIssues?: string[];
+  feedbackIntensity?: FeedbackIntensity;
+  feedbackRoutingReasons?: FeedbackRoutingDecision["reasons"];
   contextPreview?: FeedbackContextPreview;
 }
 
@@ -54,6 +64,7 @@ interface FeedbackState {
   inputRevision?: string;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
+  routingOverrides?: Record<string, FeedbackIntensity>;
 }
 
 export type FeedbackBatchExecution =
@@ -135,12 +146,17 @@ function normalizeInputs(input: FeedbackBatchInput) {
 function inputRevision(
   lessonMaterial: LessonFeedbackMaterial | undefined,
   assessmentEvidence: Record<string, StudentAssessmentEvidence>,
+  routing: FeedbackRoutingDecision[],
 ) {
   const sortedEvidence = Object.fromEntries(
     Object.entries(assessmentEvidence).sort(([left], [right]) => left.localeCompare(right)),
   );
   return createHash("sha256")
-    .update(JSON.stringify({ lessonMaterial: lessonMaterial ?? null, assessmentEvidence: sortedEvidence }))
+    .update(JSON.stringify({
+      lessonMaterial: lessonMaterial ?? null,
+      assessmentEvidence: sortedEvidence,
+      routing: routing.map(({ studentId, baseline, intensity, reasons }) => ({ studentId, baseline, intensity, reasons })),
+    }))
     .digest("hex")
     .slice(0, 16);
 }
@@ -185,6 +201,8 @@ function submittedCardsFrom(
       draftFeedback: item.draftFeedback?.trim(),
       reviewStatus: item.reviewStatus,
       reviewIssues: item.reviewIssues?.slice(0, 8),
+      feedbackIntensity: item.feedbackIntensity,
+      feedbackRoutingReasons: item.feedbackRoutingReasons,
       contextPreview: student.preview,
     };
   });
@@ -250,6 +268,7 @@ function createGenerationStream(input: {
   revision: string;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence: Record<string, StudentAssessmentEvidence>;
+  routing: FeedbackRoutingDecision[];
   feedbackContext: Awaited<ReturnType<typeof buildFeedbackContext>>;
   contextByStudent: Map<string, FeedbackContextStudent>;
   signal?: AbortSignal;
@@ -260,6 +279,7 @@ function createGenerationStream(input: {
     revision,
     lessonMaterial,
     assessmentEvidence,
+    routing,
     feedbackContext,
     contextByStudent,
     signal,
@@ -268,6 +288,7 @@ function createGenerationStream(input: {
   const draftModel = getLLMModel("feedbackDraft");
   const reviewClient = createLLMClient("feedbackReview");
   const reviewModel = getLLMModel("feedbackReview");
+  const routingByStudent = new Map(routing.map((item) => [item.studentId, item]));
   const total = feedbackContext.total;
   const cards: FeedbackCard[] = feedbackContext.students.map((student) => ({
     id: student.id,
@@ -275,6 +296,8 @@ function createGenerationStream(input: {
     labels: student.labels,
     feedback: "",
     contextPreview: student.preview,
+    feedbackIntensity: routingByStudent.get(student.id)?.intensity ?? "routine",
+    feedbackRoutingReasons: routingByStudent.get(student.id)?.reasons ?? [],
   }));
   const encoder = new TextEncoder();
   const throwIfAborted = () => {
@@ -292,6 +315,11 @@ function createGenerationStream(input: {
           for (const window of feedbackBatchWindows(cards, concurrency)) {
             throwIfAborted();
             await Promise.all(window.map(async ({ item: card }) => {
+              if (card.feedbackIntensity === "manual") {
+                card.reviewStatus = "needs_review";
+                card.reviewIssues = ["已设为人工确认，未调用模型"];
+                return;
+              }
               const studentContext = contextByStudent.get(card.id);
               try {
                 const promptContext = composeFeedbackPromptContext({
@@ -301,15 +329,26 @@ function createGenerationStream(input: {
                   lessonMaterial,
                   assessmentEvidence: assessmentEvidence[card.id],
                 });
-                card.draftFeedback = await generateFeedbackDraft({
-                  studentName: card.name,
-                  promptContext,
-                  lengthRequirement: "120-170字",
-                  client: draftClient,
-                  model: draftModel,
-                  signal,
-                });
-                card.feedback = "";
+                if (card.feedbackIntensity === "routine") {
+                  Object.assign(card, await generateRoutineFeedback({
+                    studentName: card.name,
+                    promptContext,
+                    forbiddenStudentNames: cards.filter((item) => item.id !== card.id).map((item) => item.name),
+                    client: reviewClient,
+                    model: reviewModel,
+                    signal,
+                  }));
+                } else {
+                  card.draftFeedback = await generateFeedbackDraft({
+                    studentName: card.name,
+                    promptContext,
+                    lengthRequirement: card.feedbackIntensity === "priority" ? "110-160字" : "80-120字",
+                    client: draftClient,
+                    model: draftModel,
+                    signal,
+                  });
+                  card.feedback = "";
+                }
               } catch (error) {
                 if (signal?.aborted || isAbortError(error)) throw error;
                 console.error(
@@ -327,15 +366,20 @@ function createGenerationStream(input: {
                 type: "draft",
                 studentId: card.id,
                 name: card.name,
-                feedback: "",
+                feedback: card.feedback,
                 draftFeedback: card.draftFeedback,
+                reviewStatus: card.reviewStatus,
+                reviewIssues: card.reviewIssues,
                 completed: index + 1,
                 total,
               })}\n`));
             }
           }
 
-          for (const window of feedbackBatchWindows(cards, concurrency)) {
+          const reviewCards = cards.filter((card) => (
+            card.feedbackIntensity !== "routine" && card.feedbackIntensity !== "manual" && Boolean(card.draftFeedback)
+          ));
+          for (const window of feedbackBatchWindows(reviewCards, concurrency)) {
             throwIfAborted();
             await Promise.all(window.map(async ({ item: card }) => {
               if (!card.draftFeedback) return;
@@ -354,7 +398,7 @@ function createGenerationStream(input: {
                   forbiddenStudentNames: cards
                     .filter((item) => item.id !== card.id)
                     .map((item) => item.name),
-                  lengthRequirement: "120-170字",
+                  lengthRequirement: card.feedbackIntensity === "priority" ? "110-160字" : "80-120字",
                   draftFeedback: card.draftFeedback,
                   client: reviewClient,
                   model: reviewModel,
@@ -398,6 +442,9 @@ function createGenerationStream(input: {
             inputRevision: revision,
             lessonMaterial,
             assessmentEvidence,
+            routingOverrides: Object.fromEntries(routing
+              .filter((item) => item.intensity !== item.baseline)
+              .map((item) => [item.studentId, item.intensity])),
           };
           await persistState(
             historyModule,
@@ -437,7 +484,22 @@ export async function executeFeedbackBatch(
   if (signal?.aborted) throw new ApiError("反馈生成已取消", 499, "cancelled", false);
 
   const normalized = normalizeInputs(input);
-  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence);
+  const feedbackContext = await buildFeedbackContext(prisma, input.sessionCode);
+  const contextByStudent = new Map(
+    feedbackContext.students.map((student) => [student.id, student]),
+  );
+  const unknownOverrideStudent = Object.keys(input.routingOverrides ?? {})
+    .find((studentId) => !contextByStudent.has(studentId));
+  if (unknownOverrideStudent) {
+    throw new ApiError("反馈档位包含不属于当前课次班级的学生", 400, "invalid_request", false);
+  }
+  const routing = await buildFeedbackRouting(prisma, feedbackContext);
+  const routingByStudent = new Map(routing.map((item) => [item.studentId, item]));
+  for (const [studentId, intensity] of Object.entries(input.routingOverrides ?? {})) {
+    const decision = routingByStudent.get(studentId);
+    if (decision) decision.intensity = intensity;
+  }
+  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence, routing);
   const key = cacheKey(historyModule, input.sessionCode);
   const cached = cache.get(key);
   if (
@@ -448,11 +510,6 @@ export async function executeFeedbackBatch(
   ) {
     return { kind: "json", body: { cached: true, ...cached } };
   }
-
-  const feedbackContext = await buildFeedbackContext(prisma, input.sessionCode);
-  const contextByStudent = new Map(
-    feedbackContext.students.map((student) => [student.id, student]),
-  );
   const foreignEvidenceStudent = Object.keys(normalized.assessmentEvidence)
     .find((studentId) => !contextByStudent.has(studentId));
   if (foreignEvidenceStudent) {
@@ -476,6 +533,7 @@ export async function executeFeedbackBatch(
       inputRevision: revision,
       lessonMaterial: normalized.lessonMaterial,
       assessmentEvidence: normalized.assessmentEvidence,
+      routingOverrides: input.routingOverrides,
     };
     await persistState(
       historyModule,
@@ -496,6 +554,7 @@ export async function executeFeedbackBatch(
       assessmentEvidence: normalized.assessmentEvidence,
       feedbackContext,
       contextByStudent,
+      routing,
       signal,
     }),
   };
