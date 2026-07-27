@@ -17,7 +17,7 @@ import {
   isUsefulLegacyFeedbackCommunication,
   parseFeedbackCommunicationSummary,
 } from "@/lib/feedback-communication";
-import { createLLMClient, getLLMModel } from "@/lib/llm";
+import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
 import { prisma } from "@/lib/prisma";
 import { withLLMCacheOperation } from "@/services/llm-cache-service";
 import {
@@ -562,8 +562,7 @@ async function generateStructuredInterpretation(
     temperature: 0.2,
     // 当前 DeepSeek 配置接受 low、拒绝 none。提高预算是为了给低强度推理
     // 和结构化正文同时留出空间；实际用量仍由模型按完成时停止决定。
-    max_tokens: 8192,
-    reasoning_effort: "low" as const,
+    ...getLLMCompletionOptions(undefined, 8192, true),
   };
   const contentOf = (response: { choices?: Array<{ message?: { content?: string | null } }> }) => {
     const content = response.choices?.[0]?.message?.content;

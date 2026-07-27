@@ -13,6 +13,8 @@ import {
   generateRoutineFeedback,
 } from "@/services/feedback-generation-service";
 import { FEEDBACK_INTENSITIES, type FeedbackIntensity } from "@/lib/feedback-intensity";
+import { normalizeFeedbackOutputStrategy } from "@/lib/feedback-sections";
+import { buildFeedbackSections } from "@/services/feedback-sections-service";
 import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
@@ -49,6 +51,9 @@ export async function POST(request: NextRequest) {
     const requestedIntensity = typeof body.feedbackIntensity === "string" && FEEDBACK_INTENSITIES.includes(body.feedbackIntensity as FeedbackIntensity)
       ? body.feedbackIntensity as FeedbackIntensity
       : undefined;
+    const outputStrategy = normalizeFeedbackOutputStrategy(
+      body.outputStrategy && typeof body.outputStrategy === "object" ? body.outputStrategy as Record<string, boolean> : undefined,
+    );
     const submittedLessonMaterial = body.lessonMaterial === undefined ? undefined : isLessonFeedbackMaterial(body.lessonMaterial) ? body.lessonMaterial : null;
     const submittedAssessmentEvidence = body.assessmentEvidence === undefined ? undefined : isStudentAssessmentEvidence(body.assessmentEvidence) ? body.assessmentEvidence : null;
     if (submittedLessonMaterial === null || submittedAssessmentEvidence === null) {
@@ -78,6 +83,12 @@ export async function POST(request: NextRequest) {
         if (!studentContext) return NextResponse.json({ error: "该学生不属于当前课次班级" }, { status: 404 });
         const routing = await buildFeedbackRouting(prisma, feedbackContext);
         const intensity = requestedIntensity ?? routing.find((item) => item.studentId === studentId)?.baseline ?? "routine";
+        if (!outputStrategy.suggestedFeedback) {
+          return NextResponse.json({
+            feedback: "",
+            reviewIssues: ["本批次未选择建议反馈文本，未调用模型"],
+          });
+        }
         if (intensity === "manual") {
           return NextResponse.json({
             feedback: "",
@@ -96,6 +107,8 @@ export async function POST(request: NextRequest) {
               studentId,
               lessonMaterial,
               assessmentEvidence,
+              sections: buildFeedbackSections(feedbackContext, routing, assessmentEvidence ? { [studentId]: assessmentEvidence } : {}).get(studentId),
+              outputStrategy,
             });
             const forbiddenStudentNames = feedbackContext.students.filter((student) => student.id !== studentId).map((student) => student.name);
             const result = intensity === "routine"

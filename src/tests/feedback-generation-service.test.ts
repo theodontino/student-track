@@ -35,7 +35,8 @@ describe("feedback generation review", () => {
     });
     expect(routine.create).toHaveBeenCalledTimes(1);
     expect(routine.create.mock.calls[0][0].messages[0].content).toContain("默认只描述");
-    expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 768, reasoning_effort: "none" });
+    expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 768 });
+    expect(routine.create.mock.calls[0][0]).not.toHaveProperty("reasoning_effort");
   });
   it("keeps class copy separate from individual student evidence", () => {
     const context = composeFeedbackPromptContext({
@@ -48,6 +49,21 @@ describe("feedback generation review", () => {
     expect(context).toContain("课程公共材料");
     expect(context).toContain("不得据此断言该生掌握或失误");
     expect(context).not.toContain("存在一定错误");
+  });
+
+  it("never places teacher-only renewal alerts into the parent prompt", () => {
+    const context = composeFeedbackPromptContext({
+      studentContext: "不应进入结构化模式的旧上下文",
+      sections: {
+        currentFact: { content: "学习测验 4 分", evidence: [] },
+        flaggedIssue: { content: "本次有一道概念题需要留意。", evidence: [] },
+        renewalAlert: { content: "续班风险警告：家长仍在犹豫。", evidence: [] },
+      },
+      outputStrategy: { flaggedIssue: true, trendChange: false, backgroundBaseline: false, strategySuggestion: false, suggestedFeedback: true },
+    });
+    expect(context).toContain("本次有一道概念题需要留意");
+    expect(context).not.toContain("续班风险警告");
+    expect(context).not.toContain("旧上下文");
   });
 
   it("turns an internal analysis into a separately reviewed parent message", async () => {

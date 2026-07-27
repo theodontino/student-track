@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { FEEDBACK_COMMUNICATION_CATEGORIES } from "@/lib/feedback-communication";
-import { createLLMClient, getLLMModel } from "@/lib/llm";
+import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 
 export interface GenerateWeComBridgeInput {
@@ -440,8 +440,10 @@ async function createStructuredCompletion(
     model,
     messages: [{ role: "user" as const, content: prompt }],
     temperature,
-    max_tokens: 8192,
+    ...getLLMCompletionOptions("wecomExtraction", 8192),
   };
+  const { reasoning_effort: _reasoningEffort, ...baseWithoutReasoning } = base;
+  void _reasoningEffort;
   const schemaFormat = {
     type: "json_schema" as const,
     json_schema: { name: "wecom_candidate", strict: true, schema },
@@ -451,14 +453,13 @@ async function createStructuredCompletion(
     const response = await callOnceWithNetworkRetry(() => client.chat.completions.create({
       ...base,
       response_format: schemaFormat,
-      reasoning_effort: "none",
     }), onRetry);
     return { response, protocol: "json_schema" };
   } catch (error) {
     if (isReasoningUnsupported(error)) {
       try {
         const response = await callOnceWithNetworkRetry(() => client.chat.completions.create({
-          ...base,
+          ...baseWithoutReasoning,
           response_format: schemaFormat,
         }), onRetry);
         return { response, protocol: "json_schema" };

@@ -112,6 +112,15 @@ export function useLLMConfiguration() {
     setError("");
   }
 
+  function updateGenerationField(
+    field: "maxTokens" | "reasoningEnabled" | "reasoningEffort",
+    value: number | boolean | "low" | "medium" | "high",
+  ) {
+    setForm((current) => ({ ...current, [field]: value }));
+    setStatus("");
+    setError("");
+  }
+
   async function saveProfile(activate = true) {
     setSaving(true);
     setStatus("");
@@ -246,6 +255,7 @@ export function useLLMConfiguration() {
     testConnection,
     testing,
     updateField,
+    updateGenerationField,
     updateRole,
   };
 }

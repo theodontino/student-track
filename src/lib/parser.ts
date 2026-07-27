@@ -1,4 +1,4 @@
-import { createLLMClient, getLLMModel } from "./llm";
+import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "./llm";
 import { SYSTEM_PROMPT, REVIEW_PROMPT, NAME_FIX_SYSTEM_PROMPT } from "./prompts";
 import type { AttentionSignalCandidate } from "./attention-labels";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
@@ -43,7 +43,7 @@ async function llmCall(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const resp = await client.chat.completions.create({
-        model, messages, temperature, max_tokens: 16384,
+        model, messages, temperature, ...getLLMCompletionOptions(undefined, 16384),
       });
       const content = resp.choices[0]?.message?.content?.trim() || "";
       if (resp.choices[0]?.finish_reason === "length") {
@@ -75,7 +75,7 @@ export async function llmCallStream(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const stream = await client.chat.completions.create({
-        model, messages, temperature, max_tokens: 16384, stream: true,
+        model, messages, temperature, ...getLLMCompletionOptions(undefined, 16384), stream: true,
       });
       let content = "";
       for await (const chunk of stream) {

@@ -21,3 +21,17 @@ export function createLLMClient(role?: LLMProfileRole) {
 export function getLLMModel(role?: LLMProfileRole): string {
   return getEffectiveLLMSettings(role).model;
 }
+
+/** Shared completion limits for every Student Track LLM caller. */
+export function getLLMCompletionOptions(
+  role: LLMProfileRole | undefined,
+  fallbackMaxTokens: number,
+  defaultReasoning = false,
+) {
+  const settings = getEffectiveLLMSettings(role);
+  const reasoningEnabled = settings.reasoningEnabled ?? defaultReasoning;
+  return {
+    max_tokens: settings.maxTokens ?? fallbackMaxTokens,
+    ...(reasoningEnabled ? { reasoning_effort: settings.reasoningEffort ?? "low" } : {}),
+  };
+}

@@ -314,6 +314,18 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .feedback-workspace-grid { display: grid; grid-template-columns: minmax(17rem, .78fr) minmax(22rem, 1fr) minmax(22rem, 1fr); align-items: start; gap: var(--space-4); }
 .feedback-preparation-column, .feedback-draft-column { min-width: 0; display: grid; align-content: start; gap: var(--space-4); }
 .feedback-context-section { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-4); padding: var(--space-4) var(--space-6); }
+.feedback-output-strategy { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-raised); }
+.feedback-output-strategy p { margin: var(--space-1) 0 0; color: var(--color-muted); font-size: .9rem; }
+.feedback-output-strategy__presets, .feedback-output-strategy__toggles { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.feedback-output-strategy__toggles label, .ui-toggle { display: inline-flex; gap: .45rem; align-items: center; color: var(--color-ink-soft); font-size: .9rem; }
+.feedback-card__sections { margin: var(--space-3) 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-surface-raised) 86%, transparent); }
+.feedback-card__sections summary { cursor: pointer; color: var(--color-ink-soft); }
+.feedback-card__sections dl { display: grid; gap: var(--space-2); margin: var(--space-3) 0 0; }
+.feedback-card__sections dl div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: var(--space-2); }
+.feedback-card__sections dt { color: var(--color-muted); font-weight: 600; }
+.feedback-card__sections dd { margin: 0; color: var(--color-ink-soft); }
+.feedback-card__sections dd small { display: block; margin-top: .25rem; color: var(--color-muted); font-size: .78rem; }
+.feedback-card__renewal { padding: var(--space-2); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-warning-bg) 55%, transparent); }
 .feedback-new-session { display: grid; grid-template-columns: minmax(8.5rem, auto) auto; align-items: end; gap: .4rem; }
 .feedback-new-session label { grid-column: 1 / -1; color: var(--color-muted); font-size: .72rem; font-weight: 700; }
 .feedback-new-session .ui-field { min-width: 8.5rem; }

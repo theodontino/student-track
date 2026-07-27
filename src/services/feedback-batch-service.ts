@@ -37,6 +37,12 @@ import type {
   FeedbackIntensity,
   FeedbackRoutingDecision,
 } from "@/lib/feedback-intensity";
+import {
+  normalizeFeedbackOutputStrategy,
+  type FeedbackOutputStrategy,
+  type FeedbackSections,
+} from "@/lib/feedback-sections";
+import { buildFeedbackSections } from "@/services/feedback-sections-service";
 
 export type FeedbackBatchInput = z.infer<typeof FeedbackBatchPostSchema>;
 export type FeedbackHistoryModule = "feedback" | "report";
@@ -51,6 +57,7 @@ interface FeedbackCard {
   reviewIssues?: string[];
   feedbackIntensity?: FeedbackIntensity;
   feedbackRoutingReasons?: FeedbackRoutingDecision["reasons"];
+  sections?: FeedbackSections;
   contextPreview?: FeedbackContextPreview;
 }
 
@@ -65,6 +72,7 @@ interface FeedbackState {
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
   routingOverrides?: Record<string, FeedbackIntensity>;
+  outputStrategy?: FeedbackOutputStrategy;
 }
 
 export type FeedbackBatchExecution =
@@ -147,6 +155,7 @@ function inputRevision(
   lessonMaterial: LessonFeedbackMaterial | undefined,
   assessmentEvidence: Record<string, StudentAssessmentEvidence>,
   routing: FeedbackRoutingDecision[],
+  outputStrategy: FeedbackOutputStrategy,
 ) {
   const sortedEvidence = Object.fromEntries(
     Object.entries(assessmentEvidence).sort(([left], [right]) => left.localeCompare(right)),
@@ -156,6 +165,7 @@ function inputRevision(
       lessonMaterial: lessonMaterial ?? null,
       assessmentEvidence: sortedEvidence,
       routing: routing.map(({ studentId, baseline, intensity, reasons }) => ({ studentId, baseline, intensity, reasons })),
+      outputStrategy,
     }))
     .digest("hex")
     .slice(0, 16);
@@ -203,6 +213,7 @@ function submittedCardsFrom(
       reviewIssues: item.reviewIssues?.slice(0, 8),
       feedbackIntensity: item.feedbackIntensity,
       feedbackRoutingReasons: item.feedbackRoutingReasons,
+      sections: item.sections,
       contextPreview: student.preview,
     };
   });
@@ -241,6 +252,9 @@ export async function buildFeedbackBatchExport(
     state = history ? parseHistoryState(history.state) : null;
   }
   if (!state) throw new ApiError("尚未生成反馈", 404, "not_found", false);
+  if (state.outputStrategy && !state.outputStrategy.suggestedFeedback) {
+    throw new ApiError("本批次仅生成教师研判，未生成家长反馈文本", 409, "conflict", false);
+  }
 
   const reviewBlockerCount = state.students.filter(
     (card) => card.reviewStatus === "needs_review",
@@ -269,6 +283,8 @@ function createGenerationStream(input: {
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence: Record<string, StudentAssessmentEvidence>;
   routing: FeedbackRoutingDecision[];
+  outputStrategy: FeedbackOutputStrategy;
+  sectionsByStudent: Map<string, FeedbackSections>;
   feedbackContext: Awaited<ReturnType<typeof buildFeedbackContext>>;
   contextByStudent: Map<string, FeedbackContextStudent>;
   signal?: AbortSignal;
@@ -280,14 +296,16 @@ function createGenerationStream(input: {
     lessonMaterial,
     assessmentEvidence,
     routing,
+    outputStrategy,
+    sectionsByStudent,
     feedbackContext,
     contextByStudent,
     signal,
   } = input;
-  const draftClient = createLLMClient("feedbackDraft");
-  const draftModel = getLLMModel("feedbackDraft");
-  const reviewClient = createLLMClient("feedbackReview");
-  const reviewModel = getLLMModel("feedbackReview");
+  const draftClient = outputStrategy.suggestedFeedback ? createLLMClient("feedbackDraft") : null;
+  const draftModel = outputStrategy.suggestedFeedback ? getLLMModel("feedbackDraft") : "";
+  const reviewClient = outputStrategy.suggestedFeedback ? createLLMClient("feedbackReview") : null;
+  const reviewModel = outputStrategy.suggestedFeedback ? getLLMModel("feedbackReview") : "";
   const routingByStudent = new Map(routing.map((item) => [item.studentId, item]));
   const total = feedbackContext.total;
   const cards: FeedbackCard[] = feedbackContext.students.map((student) => ({
@@ -298,6 +316,7 @@ function createGenerationStream(input: {
     contextPreview: student.preview,
     feedbackIntensity: routingByStudent.get(student.id)?.intensity ?? "routine",
     feedbackRoutingReasons: routingByStudent.get(student.id)?.reasons ?? [],
+    sections: sectionsByStudent.get(student.id),
   }));
   const encoder = new TextEncoder();
   const throwIfAborted = () => {
@@ -315,6 +334,11 @@ function createGenerationStream(input: {
           for (const window of feedbackBatchWindows(cards, concurrency)) {
             throwIfAborted();
             await Promise.all(window.map(async ({ item: card }) => {
+              if (!outputStrategy.suggestedFeedback) {
+                card.reviewIssues = ["本批次为教师研判模式，未调用模型成文"];
+                return;
+              }
+              if (!reviewClient) throw new Error("反馈成稿模型未配置");
               if (card.feedbackIntensity === "manual") {
                 card.reviewStatus = "needs_review";
                 card.reviewIssues = ["已设为人工确认，未调用模型"];
@@ -328,6 +352,8 @@ function createGenerationStream(input: {
                   studentId: card.id,
                   lessonMaterial,
                   assessmentEvidence: assessmentEvidence[card.id],
+                  sections: card.sections,
+                  outputStrategy,
                 });
                 if (card.feedbackIntensity === "routine") {
                   Object.assign(card, await generateRoutineFeedback({
@@ -343,7 +369,7 @@ function createGenerationStream(input: {
                     studentName: card.name,
                     promptContext,
                     lengthRequirement: card.feedbackIntensity === "priority" ? "110-160字" : "80-120字",
-                    client: draftClient,
+                    client: draftClient ?? reviewClient,
                     model: draftModel,
                     signal,
                   });
@@ -377,12 +403,15 @@ function createGenerationStream(input: {
           }
 
           const reviewCards = cards.filter((card) => (
+            outputStrategy.suggestedFeedback
+            &&
             card.feedbackIntensity !== "routine" && card.feedbackIntensity !== "manual" && Boolean(card.draftFeedback)
           ));
           for (const window of feedbackBatchWindows(reviewCards, concurrency)) {
             throwIfAborted();
             await Promise.all(window.map(async ({ item: card }) => {
               if (!card.draftFeedback) return;
+              if (!reviewClient) throw new Error("反馈成稿模型未配置");
               const studentContext = contextByStudent.get(card.id);
               const promptContext = composeFeedbackPromptContext({
                 studentContext: studentContext?.promptContext ?? card.name,
@@ -390,6 +419,8 @@ function createGenerationStream(input: {
                 studentId: card.id,
                 lessonMaterial,
                 assessmentEvidence: assessmentEvidence[card.id],
+                sections: card.sections,
+                outputStrategy,
               });
               try {
                 const reviewed = await reviewFeedbackDraft({
@@ -445,6 +476,7 @@ function createGenerationStream(input: {
             routingOverrides: Object.fromEntries(routing
               .filter((item) => item.intensity !== item.baseline)
               .map((item) => [item.studentId, item.intensity])),
+            outputStrategy,
           };
           await persistState(
             historyModule,
@@ -499,7 +531,12 @@ export async function executeFeedbackBatch(
     const decision = routingByStudent.get(studentId);
     if (decision) decision.intensity = intensity;
   }
-  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence, routing);
+  const outputStrategy = normalizeFeedbackOutputStrategy(
+    input.outputStrategy && typeof input.outputStrategy === "object"
+      ? input.outputStrategy as Partial<FeedbackOutputStrategy>
+      : undefined,
+  );
+  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence, routing, outputStrategy);
   const key = cacheKey(historyModule, input.sessionCode);
   const cached = cache.get(key);
   if (
@@ -534,6 +571,7 @@ export async function executeFeedbackBatch(
       lessonMaterial: normalized.lessonMaterial,
       assessmentEvidence: normalized.assessmentEvidence,
       routingOverrides: input.routingOverrides,
+      outputStrategy,
     };
     await persistState(
       historyModule,
@@ -555,6 +593,8 @@ export async function executeFeedbackBatch(
       feedbackContext,
       contextByStudent,
       routing,
+      outputStrategy,
+      sectionsByStudent: buildFeedbackSections(feedbackContext, routing, normalized.assessmentEvidence),
       signal,
     }),
   };
