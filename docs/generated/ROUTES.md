@@ -45,6 +45,10 @@
 | `/api/wecom/handoff/[id]` | `PATCH` |
 | `/api/wecom/handoff` | `GET`, `POST` |
 | `/api/wecom/import` | `GET`, `POST` |
+| `/api/wecom/review-drafts/accept-confidence` | `POST` |
+| `/api/wecom/review-drafts/bulk` | `POST` |
+| `/api/wecom/review-drafts/preview` | `POST` |
+| `/api/wecom/review-drafts/preview/status` | `GET`, `POST` |
 | `/api/wecom/review-drafts` | `GET`, `PATCH`, `POST` |
 | `/api/wecomcatch/export` | `POST` |
 | `/api/wecomcatch/status` | `GET` |

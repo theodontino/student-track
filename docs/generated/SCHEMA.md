@@ -318,6 +318,7 @@ erDiagram
 | `sourceKey` | `TEXT` | 否 | unique |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
+复合唯一约束：`studentId + sessionId + summary`。
 
 ### DraftRecord
 

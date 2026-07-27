@@ -7,6 +7,7 @@ import {
 } from "@/lib/feedback-materials";
 
 const FEEDBACK_MAX_TOKENS = 2048;
+const FEEDBACK_REVIEW_MAX_TOKENS = 4096;
 const FEEDBACK_MAX_ATTEMPTS = 2;
 
 type LLMClient = ReturnType<typeof createLLMClient>;
@@ -123,17 +124,27 @@ function isJsonModeUnsupported(error: unknown) {
     && /response[_ -]?format|json[_ -]?object|json mode/i.test(candidate?.message || "");
 }
 
-async function createReviewCompletion(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
+async function createReviewCompletion(
+  client: LLMClient,
+  model: string,
+  prompt: string,
+  signal?: AbortSignal,
+  options: { disableReasoning?: boolean } = {},
+) {
   throwIfAborted(signal);
-  const request = {
+  // Review 阶段需要更大 token 预算：推理模型（如 deepseek-v4-pro）的 reasoning_content
+  // 会占用 max_tokens 配额，2048 不够写出完整 JSON，导致 finish_reason=length 被截断。
+  const reasoningEffort = options.disableReasoning ? "none" : "low";
+  const baseBody = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
     temperature: 0,
-    max_tokens: FEEDBACK_MAX_TOKENS,
+    max_tokens: FEEDBACK_REVIEW_MAX_TOKENS,
+    reasoning_effort: reasoningEffort as "none" | "low",
   };
   try {
     const body = {
-      ...request,
+      ...baseBody,
       response_format: { type: "json_object" as const },
     };
     return signal
@@ -141,7 +152,10 @@ async function createReviewCompletion(client: LLMClient, model: string, prompt: 
       : await client.chat.completions.create(body);
   } catch (error) {
     if (!isJsonModeUnsupported(error)) throw error;
-    return signal ? client.chat.completions.create(request, { signal }) : client.chat.completions.create(request);
+    // 降级：去掉 response_format 再试；reasoning_effort 保留以限制推理长度。
+    return signal
+      ? client.chat.completions.create(baseBody, { signal })
+      : client.chat.completions.create(baseBody);
   }
 }
 
@@ -163,16 +177,30 @@ async function generateDraft(client: LLMClient, model: string, prompt: string, s
   throw new Error("LLM 返回空反馈内容，请重试");
 }
 
+function isLengthTruncated(response: { choices?: Array<{ finish_reason?: string | null }> }): boolean {
+  return response.choices?.[0]?.finish_reason === "length";
+}
+
 async function reviewDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
+  // 第 1 次：reasoning_effort=low + json_object，max_tokens=4096
+  // 第 2 次：若第 1 次因 length 截断或 JSON 解析失败，禁用推理（reasoning_effort=none）
+  //          以彻底消除 reasoning_content 对 max_tokens 的占用
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
     throwIfAborted(signal);
     try {
-      const response = await createReviewCompletion(client, model, prompt, signal);
+      const response = await createReviewCompletion(
+        client, model, prompt, signal,
+        { disableReasoning: attempt > 1 },
+      );
+      if (isLengthTruncated(response)) {
+        // 截断意味着推理吃光了 token 预算；下一次禁用推理。
+        continue;
+      }
       const content = response.choices[0]?.message?.content?.trim();
       if (content) return parseReviewPayload(content);
     } catch {
       throwIfAborted(signal);
-      // Retry once with the same evidence and stricter temperature before requiring manual review.
+      // Retry once with reasoning disabled before requiring manual review.
     }
   }
   return null;

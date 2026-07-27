@@ -46,5 +46,6 @@ next-env.d.ts
 
 /src/generated/prisma
 dev.db
+dev.db.bak.*
 /archives/
 /data/

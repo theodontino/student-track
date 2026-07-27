@@ -19,6 +19,12 @@ function mapServiceError(error: unknown) {
   const code = error instanceof Error ? error.message : "";
   if (["session_not_found", "semester_not_found"].includes(code)) return new ApiError("课次或学期不存在", 404, "not_found", false);
   if (code === "date_outside_semester") return new ApiError("日期不在所选学期内", 400, "invalid_request", false);
+  if (code === "llm_output_truncated") {
+    return new ApiError("AI 解读输出未完成；已保留课堂事实，请重新生成", 422, "llm_schema_invalid", true);
+  }
+  if (code === "llm_output_empty") {
+    return new ApiError("AI 未返回可用解读；请检查当前模型后重试", 422, "llm_schema_invalid", true);
+  }
   if (code === "llm_reference_invalid" || error instanceof z.ZodError) {
     return new ApiError("AI 解读未通过来源校验", 422, "llm_schema_invalid", true);
   }
@@ -44,13 +50,15 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const parsed = TeachingSummaryRequestSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    const safe = new ApiError("教学总结参数不完整", 400, "invalid_request", false);
+    return NextResponse.json(apiErrorBody(safe), { status: safe.status });
+  }
   try {
-    const input = TeachingSummaryRequestSchema.parse(await request.json().catch(() => null));
-    return NextResponse.json(await generateTeachingSummary(input));
+    return NextResponse.json(await generateTeachingSummary(parsed.data));
   } catch (error) {
-    const safe = error instanceof z.ZodError
-      ? new ApiError("教学总结参数不完整", 400, "invalid_request", false)
-      : mapServiceError(error);
+    const safe = mapServiceError(error);
     console.error(`[/api/report/teaching-summary] POST error (${safe.diagnosticId ?? "no-diagnostic-id"}):`, error);
     return NextResponse.json(apiErrorBody(safe), { status: safe.status });
   }

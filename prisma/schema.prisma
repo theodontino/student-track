@@ -131,6 +131,8 @@ model Communication {
   student Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   observationSources TeacherObservationSource[]
+
+  @@unique([studentId, sessionId, summary])
 }
 
 // 4b. 企微增量处理账本（不复制原始聊天正文）
