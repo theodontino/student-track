@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
 import { normalizeAttentionSignalCandidates } from "@/lib/attention-labels";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
@@ -261,16 +262,38 @@ export async function processDraftReview(input: ProcessDraftInput) {
         if (!session) {
           warnings.push(`${student.name} 的家校沟通记录因无课次关联被跳过`);
         } else {
-          await tx.communication.create({
-            data: {
-              studentId: student.id,
-              sessionId: session.id,
-              target: parsedStudent.communication.type.includes("家长")
-                ? "家长"
-                : parsedStudent.communication.type,
-              summary: parsedStudent.communication.summary,
+          const target = parsedStudent.communication.type.includes("家长")
+            ? "家长"
+            : parsedStudent.communication.type;
+          const summary = parsedStudent.communication.summary;
+          // Derive a stable sourceKey from the draft to prevent duplicate writes
+          // on re-confirmation. Falls back to <studentId|sessionId|summary-hash>
+          // when draft has no WCC id.
+          const sourceKey = draft.id.startsWith("wcc-")
+            ? `draft:${draft.id}:${student.id}`
+            : `draft:${student.id}:${session.id}:${createHash("sha256").update(summary).digest("hex").slice(0, 16)}`;
+          const existing = await tx.communication.findFirst({
+            where: {
+              OR: [
+                { sourceKey },
+                { studentId: student.id, sessionId: session.id, summary },
+              ],
             },
+            select: { id: true },
           });
+          if (existing) {
+            warnings.push(`${student.name} 的家校沟通记录已存在，跳过重复写入`);
+          } else {
+            await tx.communication.create({
+              data: {
+                studentId: student.id,
+                sessionId: session.id,
+                target,
+                summary,
+                sourceKey,
+              },
+            });
+          }
         }
       }
     }

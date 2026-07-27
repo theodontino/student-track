@@ -177,13 +177,17 @@ export const FeedbackBatchPostSchema = z.object({
   saveState: z.boolean().optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentEvidence: assessmentEvidenceRecord.optional(),
+  // 前端 saveFeedbackState 直接传入 feedbackCards，包含 name/labels 等展示字段；
+  // name/labels 都设为可选，且不使用 strict 模式，避免拒绝前端展示字段。
   students: z.array(z.object({
     id: requiredText(200),
+    name: text(100).optional(),
+    labels: z.array(text(200)).max(50).optional(),
     feedback: text(10000),
     draftFeedback: text(10000).optional(),
     reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(),
     reviewIssues: z.array(text(1000)).max(50).optional(),
-  }).strict()).max(200).optional(),
+  })).max(200).optional(),
 }).passthrough();
 
 export const FeedbackBatchStreamEventSchema = z.discriminatedUnion("type", [

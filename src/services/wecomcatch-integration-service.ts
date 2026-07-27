@@ -6,6 +6,7 @@ import {
 } from "@/lib/feedback-communication";
 import { generateWeComBridgeJson } from "@/services/wecom-bridge-service";
 import { buildWccDirectorySnapshot } from "@/services/wecomcatch-directory-service";
+import { shanghaiCalendarDate, summarizeMessageDateRange } from "@/services/wecom-session-matcher";
 
 interface WccMessage {
   id: string;
@@ -82,9 +83,35 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
     }
   }
 
+  // 花名册里的班级是快照信息，不是稳定身份；候选范围只按当前已复核的学生 ID
+  // 决定。课次绑定在每条候选的证据消息校验后再做，不能借整批最早消息猜测。
+  const candidateStudentIds = students.map((student) => student.id);
+  const messageDateById = new Map(batch.messages.map((message) => [
+    message.id,
+    shanghaiCalendarDate(message.sentAt),
+  ]));
+  const evidenceDates = [...new Set([...messageDateById.values()].filter((value): value is string => Boolean(value)))];
+  const currentClassIds = [...new Set(students.map((student) => student.classId).filter((value): value is string => Boolean(value)))];
+  const sameDaySessions = evidenceDates.length && currentClassIds.length
+    ? await prisma.classSession.findMany({
+      where: {
+        classId: { in: currentClassIds },
+        date: { in: evidenceDates },
+        ...(batch.semesterSuggestion ? { semesterId: batch.semesterSuggestion } : {}),
+      },
+      select: { code: true, classId: true, date: true },
+      orderBy: { code: "asc" },
+    })
+    : [];
+  const sessionsByClassDate = new Map<string, string[]>();
+  for (const session of sameDaySessions) {
+    const key = `${session.classId}\0${session.date}`;
+    sessionsByClassDate.set(key, [...(sessionsByClassDate.get(key) ?? []), session.code]);
+  }
+
   const generated = await generateWeComBridgeJson(prisma, {
     sourceText: sourceText(batch),
-    candidateStudentIds: requestedIds,
+    candidateStudentIds,
     groundedMessages: batch.messages.map((message) => ({ id: message.id, content: message.content })),
   });
   const records = Array.isArray(objectValue(generated.bridgeJson).records)
@@ -96,6 +123,8 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
     const matched = objectValue(record.matchedStudent);
     const student = current.get(String(matched.id || ""));
     if (!student) continue;
+    // 二次校验：LLM 只能选择本次确定性花名册中的学生。
+    if (!candidateStudentIds.includes(student.id)) continue;
     const summary = String(record.factualSummary || record.summaryForStudentTrack || record.summary || "").trim();
     if (!summary) continue;
     const feedbackUse = normalizeFeedbackUseDecision(record.feedbackUse);
@@ -105,9 +134,10 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
       : Array.isArray(objectValue(record.source).messageIds)
         ? (objectValue(record.source).messageIds as string[]).filter((value) => uniqueMessageIds.includes(value))
         : uniqueMessageIds;
-    const occurredAt = batch.messages
-      .filter((message) => messageIds.includes(message.id) && message.sentAt)
-      .map((message) => String(message.sentAt))
+    const evidenceMessages = batch.messages.filter((message) => messageIds.includes(message.id));
+    const evidenceRange = summarizeMessageDateRange(evidenceMessages.map((message) => message.sentAt));
+    const occurredAt = evidenceMessages
+      .map((message) => message.sentAt || "")
       .sort()
       .at(-1) ?? "";
     const id = stableDraftId(batch.batchId, student.id, messageIds);
@@ -117,6 +147,17 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
       feedbackUse,
     );
     const evidence = Array.isArray(record.evidence) ? record.evidence : [];
+    // 只有证据都落在同一中国日历日、学生未转班、且该班当天恰好一节课时才自动绑定。
+    // 其余情形保留为 null，由教师在候选面板明确选择，避免把正式沟通绑错课次。
+    const sourceSubject = batch.subjects.find((subject) => subject.id === student.id);
+    const evidenceDate = evidenceRange && evidenceRange.min === evidenceRange.max
+      ? evidenceRange.min
+      : null;
+    const canAutoBind = Boolean(evidenceDate && student.classId && sourceSubject?.classId === student.classId);
+    const exactSessionCodes = canAutoBind
+      ? sessionsByClassDate.get(`${student.classId}\0${evidenceDate}`) ?? []
+      : [];
+    const sessionCode = exactSessionCodes.length === 1 ? exactSessionCodes[0] : null;
     const parsedResult = {
       students: [{
         name: student.name,
@@ -134,6 +175,8 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
         feedbackUse,
         semesterSuggestion: batch.semesterSuggestion || null,
         triage: batch.triage || null,
+        // 只保存此候选的证据日期范围，而不是整批会话范围。
+        occurredAt: evidenceRange,
       },
     };
     const draft = await prisma.draftRecord.upsert({
@@ -150,8 +193,9 @@ export async function acceptWccCandidateBatch(prisma: PrismaClient, batch: WccCa
         parsedResult: JSON.stringify(parsedResult),
         status: "pending",
         studentId: student.id,
-        sessionCode: null,
+        sessionCode,
       },
+      // 重复交付只能幂等返回，不能改写已确认草稿的历史课次。
       update: {},
     });
     drafts.push({ id: draft.id, status: draft.status, studentId: student.id, studentName: student.name });

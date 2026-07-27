@@ -296,15 +296,21 @@ async function consumeValidatedPackage(
     const batch = await toCandidateBatch(prisma, payload, matchedStudentId);
     const result = await acceptWccCandidateBatch(prisma, batch);
     const outcome = result.status === "pending_review" ? "pending_review" : "no_value";
-    const receipt = await writeReceipt(
-      payload.source.id, payload.packageId, sha256, "accepted", outcome,
-    );
+    let receiptId: string | null = null;
+    try {
+      const receipt = await writeReceipt(
+        payload.source.id, payload.packageId, sha256, "accepted", outcome,
+      );
+      receiptId = receipt.receiptId;
+    } catch {
+      // 回执落盘失败不阻塞状态更新；DB 仍能反映最终结果。
+    }
     const updated = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
       data: {
         status: outcome,
         outcome,
-        receiptId: receipt.receiptId,
+        ...(receiptId ? { receiptId } : {}),
         processedAt: new Date(),
         code: null,
       },
@@ -312,20 +318,26 @@ async function consumeValidatedPackage(
     return { id: updated.id, status: updated.status, outcome, draftCount: result.drafts.length };
   } catch (error) {
     const failure = safeFailure(error);
-    const receipt = await writeReceipt(
-      payload.source.id,
-      payload.packageId,
-      sha256,
-      failure.status,
-      undefined,
-      failure.code,
-    );
+    let receiptId: string | null = null;
+    try {
+      const receipt = await writeReceipt(
+        payload.source.id,
+        payload.packageId,
+        sha256,
+        failure.status,
+        undefined,
+        failure.code,
+      );
+      receiptId = receipt.receiptId;
+    } catch {
+      // 同上，回执落盘失败不阻塞状态更新。
+    }
     const updated = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
       data: {
         status: failure.status,
         code: failure.code,
-        receiptId: receipt.receiptId,
+        ...(receiptId ? { receiptId } : {}),
         processedAt: new Date(),
       },
     });
@@ -334,7 +346,28 @@ async function consumeValidatedPackage(
 }
 
 async function performScanAndConsume(prisma: PrismaClient, limit = 20) {
-  const markers = (await markerFiles()).slice(0, Math.max(1, Math.min(limit, 100)));
+  // 取所有 marker，按 DB 已有记录的 marker 排在后面，再截前 `limit`。
+  // 这样能跳过已处理过的前 N 个，把新包送进处理路径。
+  const allMarkers = await markerFiles();
+  const seen = await prisma.weComHandoffPackage.findMany({
+    select: { sourceId: true, packageId: true, packageSha256: true },
+  });
+  const seenKeys = new Set(seen.map((row) => `${row.sourceId}/${row.packageId}/${row.packageSha256}`));
+  const ordered = [
+    ...allMarkers.filter((marker) => {
+      const packageId = path.basename(marker, ".sha256");
+      const sourceId = path.basename(path.dirname(marker));
+      // marker 的 sha256 需要读文件才知道，先用 (sourceId, packageId) 粗筛
+      return !Array.from(seenKeys).some((key) => key.startsWith(`${sourceId}/${packageId}/`));
+    }),
+    ...allMarkers.filter((marker) => {
+      const packageId = path.basename(marker, ".sha256");
+      const sourceId = path.basename(path.dirname(marker));
+      return Array.from(seenKeys).some((key) => key.startsWith(`${sourceId}/${packageId}/`));
+    }),
+  ];
+  const cap = Math.max(1, Math.min(limit, 100));
+  const markers = ordered.slice(0, cap);
   const results = [];
   for (const marker of markers) {
     try {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import type { PrismaClient } from "@/generated/prisma/client";
 import {
   TeachingInterpretationSchema,
@@ -25,7 +26,7 @@ import {
   type ResolvedObservationCandidate,
 } from "@/services/teacher-observation-service";
 
-const PROMPT_VERSION = "teaching-summary-v1";
+const PROMPT_VERSION = "teaching-summary-v2";
 const OBSERVATION_VERSION = "teacher-observation-v1";
 const MAX_COMMUNICATIONS_PER_STUDENT = 5;
 const MAX_COMMUNICATION_INPUT = 120;
@@ -430,7 +431,11 @@ export async function buildTeachingSummaryContext(
         change: student.change,
         eventCount: student.eventCount,
       })),
-      pendingItems: facts.pendingItems.map(({ href: _href, ...item }) => item),
+      pendingItems: facts.pendingItems.map((item) => {
+        const { href, ...withoutHref } = item;
+        void href;
+        return withoutHref;
+      }),
     },
     communications: [...communicationReferences].map(([ref, communication]) => ({
       ref,
@@ -524,6 +529,87 @@ function parseCachedResult(value: string): ResolvedTeachingInterpretation | null
   }
 }
 
+function errorStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const direct = (error as { status?: unknown }).status;
+  if (typeof direct === "number") return direct;
+  const nested = (error as { response?: { status?: unknown } }).response?.status;
+  return typeof nested === "number" ? nested : null;
+}
+
+function canRetryWithoutStructuredMode(error: unknown) {
+  // OpenAI-compatible providers often return a generic 400 when response_format
+  // is unsupported. The response is still parsed and reference-validated locally.
+  return [400, 422].includes(errorStatus(error) ?? 0);
+}
+
+function parseModelJson(content: string) {
+  const trimmed = content.trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  return JSON.parse(trimmed) as unknown;
+}
+
+async function generateStructuredInterpretation(
+  prompt: string,
+  modelName: string,
+  plainOnly = false,
+) {
+  const client = createLLMClient();
+  const base = {
+    model: modelName,
+    messages: [{ role: "user" as const, content: prompt }],
+    temperature: 0.2,
+    // 当前 DeepSeek 配置接受 low、拒绝 none。提高预算是为了给低强度推理
+    // 和结构化正文同时留出空间；实际用量仍由模型按完成时停止决定。
+    max_tokens: 8192,
+    reasoning_effort: "low" as const,
+  };
+  const contentOf = (response: { choices?: Array<{ message?: { content?: string | null } }> }) => {
+    const content = response.choices?.[0]?.message?.content;
+    if (!content) {
+      const finishReason = (response as { choices?: Array<{ finish_reason?: string | null }> })
+        .choices?.[0]?.finish_reason;
+      throw new Error(finishReason === "length" ? "llm_output_truncated" : "llm_output_empty");
+    }
+    return content;
+  };
+
+  if (!plainOnly) {
+    try {
+      const response = await client.chat.completions.create({
+        ...base,
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "teaching_summary", strict: true, schema: interpretationJsonSchema },
+        },
+      });
+      return parseModelJson(contentOf(response));
+    } catch (error) {
+      if (!canRetryWithoutStructuredMode(error)) throw error;
+    }
+
+    try {
+      const response = await client.chat.completions.create({
+        ...base,
+        response_format: { type: "json_object" },
+      });
+      return parseModelJson(contentOf(response));
+    } catch (error) {
+      if (!canRetryWithoutStructuredMode(error)) throw error;
+    }
+  }
+
+  const response = await client.chat.completions.create({
+    ...base,
+    messages: [{
+      role: "user" as const,
+      content: `${prompt}\n\n严格要求：只返回符合上述字段的 JSON 对象，不要 Markdown、解释或前后缀。`,
+    }],
+  });
+  return parseModelJson(contentOf(response));
+}
+
 async function observationsForContext(context: TeachingSummaryContext, db: PrismaClient) {
   const rows = await listTeacherObservations({ semesterId: context.facts.semester.id, limit: 100 }, db);
   return rows.filter((row) => context.involvedStudentIds.has(row.student.id));
@@ -600,25 +686,45 @@ export async function generateTeachingSummary(
 一般观察不是警告。只有沟通内容与课堂事实有明确呼应、冲突、重复关切、关注升级或未兑现教师承诺时，才输出 observationCandidates。
 没有证据时返回空数组。不要输出家长话术，不要评价人格。
 
+输出必须严格使用以下 JSON 结构和字段名，不得改名、缩写或增加字段：
+{
+  "overview": "字符串或 null",
+  "classComparisons": [{ "title": "字符串", "detail": "字符串", "studentRefs": ["S001"], "sessionRefs": ["X001"], "communicationRefs": ["C001"] }],
+  "noteworthyChanges": [{ "title": "字符串", "detail": "字符串", "studentRefs": [], "sessionRefs": ["X001"], "communicationRefs": [] }],
+  "suggestedActions": [{ "title": "字符串", "detail": "字符串", "studentRefs": ["S001"], "sessionRefs": [], "communicationRefs": [] }],
+  "observationCandidates": [{
+    "studentRef": "S001",
+    "kind": "repeated-parent-concern | classroom-alignment | classroom-conflict | pending-teacher-commitment | concern-escalation",
+    "topic": "learning-progress | learning-difficulty | learning-habit | learning-method | learning-confidence | parent-concern | feedback-preference | teacher-commitment | temporary-learning-context",
+    "title": "字符串",
+    "evidenceSummary": "字符串",
+    "communicationRefs": ["C001"],
+    "sessionRefs": ["X001"]
+  }]
+}
+每个 classComparisons、noteworthyChanges、suggestedActions 项至少引用一个真实短编号。每个 observationCandidates 项必须引用至少一条真实 C 编号；未纳入沟通时 observationCandidates 必须为空数组。
+
 输入：
 ${JSON.stringify(context.promptPayload)}`;
 
-  const raw = await withLLMCacheOperation("daily-report", "生成教师教学总结", async () => {
-    const response = await createLLMClient().chat.completions.create({
-      model: modelName,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.2,
-      max_tokens: 4096,
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "teaching_summary", strict: true, schema: interpretationJsonSchema },
-      },
-    });
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error("llm_output_empty");
-    return JSON.parse(content) as unknown;
+  const resolved = await withLLMCacheOperation("daily-report", "生成教师教学总结", async () => {
+    const first = await generateStructuredInterpretation(prompt, modelName);
+    try {
+      return resolveInterpretation(first, context.references);
+    } catch (error) {
+      if (!(error instanceof z.ZodError) && !(error instanceof Error && error.message === "llm_reference_invalid")) {
+        throw error;
+      }
+      // 某些 OpenAI-compatible 模型不支持 response_format。首次自由 JSON 偏离契约时，
+      // 只进行一次明确纠错；第二次仍不合格则交给 API 返回可操作错误。
+      const corrected = await generateStructuredInterpretation(
+        `${prompt}\n\n上一次输出未通过结构或来源校验。请逐字使用上面的字段名和枚举，只返回完整 JSON 对象。`,
+        modelName,
+        true,
+      );
+      return resolveInterpretation(corrected, context.references);
+    }
   });
-  const resolved = resolveInterpretation(raw, context.references);
   if (request.includeCommunications) {
     await persistObservationCandidates(db, resolved.observationCandidates, OBSERVATION_VERSION);
   } else if (resolved.observationCandidates.length) {

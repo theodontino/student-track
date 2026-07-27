@@ -16,6 +16,7 @@ import { readSSEStream } from "@/lib/sse";
 import { ParseStreamEventSchema } from "@/lib/contracts/classroom-parse";
 import {
   FeedbackBatchJsonResponseSchema,
+  FeedbackBatchPostSchema,
   FeedbackBatchStreamEventSchema,
   FeedbackSingleResponseSchema,
 } from "@/lib/contracts/feedback";
@@ -208,6 +209,34 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     ) return { ...lessonMaterial, sessionCode };
     return parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode);
   }
+  function feedbackSavePayload() {
+    const payload = {
+      sessionCode,
+      historyModule: "feedback" as const,
+      saveState: true,
+      // 只提交持久化契约需要的字段；旧工作台缓存中的展示字段不会污染保存请求。
+      students: feedbackCards.map((card) => ({
+        id: card.id,
+        name: card.name,
+        labels: card.labels ?? [],
+        feedback: card.feedback ?? "",
+        ...(typeof card.draftFeedback === "string" ? { draftFeedback: card.draftFeedback } : {}),
+        ...(card.reviewStatus ? { reviewStatus: card.reviewStatus } : {}),
+        ...(Array.isArray(card.reviewIssues) ? { reviewIssues: card.reviewIssues } : {}),
+      })),
+      lessonMaterial: effectiveLessonMaterial(),
+      assessmentEvidence: confirmedAssessmentEvidence,
+    };
+    const parsed = FeedbackBatchPostSchema.safeParse(payload);
+    if (parsed.success) return parsed.data;
+    const fields = [...new Set(parsed.error.issues
+      .map((issue) => issue.path.map(String).join("."))
+      .filter(Boolean))]
+      .slice(0, 5);
+    throw new Error(fields.length
+      ? `保存前检查发现资料不完整：${fields.join("、")}。请重新确认对应材料后再试。`
+      : "保存前检查发现反馈资料不完整，请重新确认后再试。");
+  }
   function updateGroupFeedbackRaw(value: string) {
     setGroupFeedbackRaw(value);
     markFeedbackInputsChanged(feedbackCards.length ? "课程材料已改变，请重新生成反馈。" : "");
@@ -389,7 +418,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     finally { setRegeneratingId(""); }
   }
   function updateFeedback(studentId: string, feedback: string) { dispatchFeedback({ type: "patch", studentId, patch: { feedback, reviewStatus: "edited", reviewIssues: ["教师已人工修改，导出以当前文本为准"] } }); dispatchFeedback({ type: "dirty", value: true }); }
-  async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode, historyModule: "feedback", saveState: true, students: feedbackCards, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence }) }); dispatchFeedback({ type: "dirty", value: false }); }
+  async function saveFeedbackState() { if (!sessionCode || !feedbackCards.length) return; await requestJson("/api/report/feedback-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(feedbackSavePayload()) }); dispatchFeedback({ type: "dirty", value: false }); }
   async function exportFeedback() {
     if (!sessionCode || !feedbackCards.length) return;
     const blockerCount = feedbackCards.filter((card) => card.reviewStatus === "needs_review").length;

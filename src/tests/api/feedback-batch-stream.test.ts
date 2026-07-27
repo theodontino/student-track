@@ -117,6 +117,24 @@ describe("feedback batch NDJSON stream", () => {
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "乙反馈", issues: [] }) } }] });
   });
 
+  it("returns safe field hints when a saved feedback request is incomplete", async () => {
+    const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        saveState: true,
+        lessonMaterial: { version: 1 },
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("lessonMaterial"),
+      code: "invalid_request",
+    });
+  });
+
   it("streams progress by studentId, persists final cards, and returns full cached data", async () => {
     const request = () => new NextRequest("http://localhost:3000/api/report/feedback-batch", {
       method: "POST",

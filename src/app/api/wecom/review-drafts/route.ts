@@ -2,24 +2,54 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { processDraftReview } from "@/services/review-service";
 import { assignWccDraftSession } from "@/services/wecomcatch-integration-service";
+import { readPreReviewSuggestion } from "@/services/wecom-prereview-service";
 
 function parsed(value: string) {
   try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
 }
 
-export async function GET() {
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+export async function GET(request: NextRequest) {
+  const search = request.nextUrl.searchParams;
+  const rawLimit = Number(search.get("limit") ?? DEFAULT_PAGE_SIZE);
+  const rawOffset = Number(search.get("offset") ?? 0);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(MAX_PAGE_SIZE, Math.floor(rawLimit))) : DEFAULT_PAGE_SIZE;
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
+  const query = (search.get("q") || "").trim();
+  const verdictFilter = (search.get("verdict") || "").trim();
+  const includeAllStatuses = search.get("status") === "all";
+  const missingSessionOnly = search.get("missingSession") === "1";
+
+  const where: Record<string, unknown> = { id: { startsWith: "wcc-" } };
+  if (!includeAllStatuses) where.status = "pending";
+  if (missingSessionOnly) where.sessionCode = null;
+
   const drafts = await prisma.draftRecord.findMany({
-    where: { status: "pending", id: { startsWith: "wcc-" } },
+    where,
     orderBy: { createdAt: "desc" },
   });
-  const output = [];
-  for (const draft of drafts) {
-    const student = draft.studentId
-      ? await prisma.student.findUnique({
-        where: { id: draft.studentId },
+  const studentIds = [...new Set(drafts.map((draft) => draft.studentId).filter((id): id is string => Boolean(id)))];
+  const students = studentIds.length
+    ? await prisma.student.findMany({
+        where: { id: { in: studentIds } },
         select: { id: true, name: true, studentId: true, classId: true },
       })
-      : null;
+    : [];
+  const studentsById = new Map(students.map((student) => [student.id, student]));
+  const classIds = [...new Set(students.map((student) => student.classId))];
+  const allSessions = classIds.length
+    ? await prisma.classSession.findMany({
+        where: { classId: { in: classIds } },
+        select: { code: true, date: true, semesterNumber: true, classId: true, semesterId: true },
+        orderBy: { date: "desc" },
+      })
+    : [];
+
+  const output = [];
+  for (const draft of drafts) {
+    const student = draft.studentId ? studentsById.get(draft.studentId) ?? null : null;
     const result = parsed(draft.parsedResult);
     const source = result.wccSource && typeof result.wccSource === "object"
       ? result.wccSource as Record<string, unknown>
@@ -28,16 +58,12 @@ export async function GET() {
       ? source.semesterSuggestion
       : undefined;
     const sessions = student
-      ? await prisma.classSession.findMany({
-        where: {
-          classId: student.classId,
-          ...(semesterSuggestion ? { semesterId: semesterSuggestion } : {}),
-        },
-        select: { code: true, date: true, semesterNumber: true },
-        orderBy: { date: "desc" },
-      })
+      ? allSessions
+        .filter((session) => session.classId === student.classId && (!semesterSuggestion || session.semesterId === semesterSuggestion))
+        .map(({ code, date, semesterNumber }) => ({ code, date, semesterNumber }))
       : [];
-    output.push({
+    const suggestion = readPreReviewSuggestion(draft.reviewResult);
+    const row = {
       id: draft.id,
       sessionCode: draft.sessionCode,
       student,
@@ -45,9 +71,24 @@ export async function GET() {
       source,
       sessions,
       createdAt: draft.createdAt,
-    });
+      preReview: suggestion,
+    };
+    if (query) {
+      const haystack = [
+        student?.name || "",
+        student?.studentId || "",
+        source?.conversation && typeof source.conversation === "object"
+          ? String((source.conversation as Record<string, unknown>).title || "")
+          : "",
+      ].join(" ").toLowerCase();
+      if (!haystack.includes(query.toLowerCase())) continue;
+    }
+    if (verdictFilter && (!suggestion || suggestion.verdict !== verdictFilter)) continue;
+    output.push(row);
   }
-  return NextResponse.json(output);
+  const total = output.length;
+  const items = output.slice(offset, offset + limit);
+  return NextResponse.json({ items, total, limit, offset });
 }
 
 export async function PATCH(request: NextRequest) {
