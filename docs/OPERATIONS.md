@@ -115,15 +115,15 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 
 浏览器现场录音依赖麦克风权限和浏览器 `MediaRecorder` 支持。权限被拒绝或浏览器不支持录音时，仍可上传已有音频文件。
 
-## WCC handoff 与只读花名册
+## WCG handoff 与只读花名册
 
-WeComCatch 是仓库外的独立工具。Student Track 不包含其源码，也不读取或启动其
+WCG（WeComCatch GUI）是仓库外的独立工具。Student Track 不包含其源码，也不读取或启动其
 CLI、配置、archive/gui SQLite、编译产物或备份。
 
 推荐的跨应用交接使用本地文件协议。两端默认共享
 `~/Library/Application Support/WCC Student Track Exchange`；如需改目录，
-在 Student Track `.env` 设置 `STUDENT_TRACK_WCC_EXCHANGE_ROOT`，并在 WCC
-设置相同位置的 `WECOMCATCH_ST_EXCHANGE_ROOT`。WCC 发布完成后可以退出，
+在 Student Track `.env` 设置 `STUDENT_TRACK_WCC_EXCHANGE_ROOT`，并在 WCG
+设置相同位置的 `WECOMCATCH_ST_EXCHANGE_ROOT`。WCG 发布完成后可以退出，
 Student Track 会独立校验 SHA-256、执行学生匹配与业务提取，并把不含正文和姓名的
 回执写回共享目录。详细规则见 `docs/WECOM_FILE_HANDOFF.md`。
 
@@ -189,4 +189,4 @@ npx prisma migrate status
 npm test
 ```
 
-本地外部依赖需要单独确认：LLM 配置保存在本机运行配置中；音频转写依赖 `~/tools/funasr-diarize`；WCC 交付只依赖共享交换目录。核心学生数据以 `dev.db` 及通过验证的 `archives/` 备份为准。
+本地外部依赖需要单独确认：LLM 配置保存在本机运行配置中；音频转写依赖 `~/tools/funasr-diarize`；WCG 交付只依赖共享交换目录。核心学生数据以 `dev.db` 及通过验证的 `archives/` 备份为准。

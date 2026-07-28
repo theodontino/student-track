@@ -5,9 +5,9 @@
 | 组件 | 版本 | 与另一端的关系 |
 |---|---:|---|
 | Student Track | 0.23.0 | 消费 `wcc.student-track-file.v1`，写入 receipt v1。 |
-| WeComCatch | 0.4.0 | 发布 `wcc.student-track-file.v1`，只读 receipt v1。 |
+| WCG（WeComCatch GUI） | 0.4.0 | 发布 `wcc.student-track-file.v1`，只读 receipt v1。 |
 
-两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCC 用户显式刷新时调用 ST 的认证只读花名册 API。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
+两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
 
 ## 发布时的文档检查
 
