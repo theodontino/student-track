@@ -231,7 +231,7 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
     await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
     await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-    await page.getByRole("button", { name: "分析并生成反馈" }).click();
+    await page.getByRole("button", { name: "生成班级反馈" }).click();
     const stopButton = page.getByRole("button", { name: "停止生成" });
     await expect(stopButton).toHaveClass(/ui-button--warning/);
     await stopButton.click();
