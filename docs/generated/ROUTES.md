@@ -40,6 +40,7 @@
 | `/api/system/wecom-rollbacks` | `GET`, `POST` |
 | `/api/teacher-observations/[id]` | `PATCH` |
 | `/api/teacher-observations` | `GET` |
+| `/api/teaching-memory` | `GET`, `PATCH`, `POST` |
 | `/api/wecom/auto-import` | `DELETE`, `GET`, `POST` |
 | `/api/wecom/bridge` | `POST` |
 | `/api/wecom/handoff/[id]` | `PATCH` |

@@ -390,7 +390,9 @@ async function createWithReasoningFallback(
   } catch (error) {
     if (!isReasoningUnsupported(error)) throw error;
     // 降级：不传 reasoning_effort，由模型使用默认思考等级。
-    return await client.chat.completions.create(payload as never);
+    const { reasoning_effort: _reasoningEffort, ...withoutReasoning } = payload;
+    void _reasoningEffort;
+    return await client.chat.completions.create(withoutReasoning as never);
   }
 }
 

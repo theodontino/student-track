@@ -25,6 +25,7 @@ import {
   persistObservationCandidates,
   type ResolvedObservationCandidate,
 } from "@/services/teacher-observation-service";
+import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 
 const PROMPT_VERSION = "teaching-summary-v2";
 const OBSERVATION_VERSION = "teacher-observation-v1";
@@ -756,6 +757,22 @@ ${JSON.stringify(context.promptPayload)}`;
       generatedAt,
     },
   });
+  const classIds = [...new Set(context.facts.sessions.flatMap((session) => session.classId ? [session.classId] : []))];
+  await recordSuccessfulGeneration({
+    taskType: "teaching-summary",
+    stage: "interpretation",
+    semesterId: context.facts.semester.id,
+    classId: classIds.length === 1 ? classIds[0] : null,
+    sessionId: request.scope.type === "session" ? context.facts.sessions[0]?.id ?? null : null,
+    sourceRefs: [
+      ...context.facts.sessions.map((session) => ({ type: "session" as const, id: session.id })),
+      ...context.facts.students.map((student) => ({ type: "student" as const, id: student.id })),
+    ],
+    promptVersion: PROMPT_VERSION,
+    inputSnapshot: { facts: context.facts, includeCommunications: request.includeCommunications },
+    outputSnapshot: { analysis: resolved.interpretation },
+  }, db).catch(() => undefined);
+  if (classIds.length === 1) await compactHotGenerationRecordsForClass(classIds[0], db).catch(() => undefined);
   return {
     facts: context.facts,
     analysis: resolved.interpretation,

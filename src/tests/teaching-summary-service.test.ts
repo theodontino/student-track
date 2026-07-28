@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({ completionCreate: vi.fn() }));
 vi.mock("@/lib/llm", () => ({
   createLLMClient: () => ({ chat: { completions: { create: mocks.completionCreate } } }),
   getLLMModel: () => "test-teaching-model",
+  getLLMCompletionOptions: () => ({ reasoning_effort: "low" }),
 }));
 import { TEST_FIXTURE } from "../../scripts/test-fixture-data";
 import { TeachingSummaryRequestSchema } from "@/lib/contracts/teaching-summary";
