@@ -61,7 +61,7 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     await expect(page.getByText("WeComCatch 手动同步")).toHaveCount(0);
   });
 
-  test("third-party notice gates the standalone WeCom workspace and navigation entry", async ({ page }) => {
+  test("third-party notice gates the handoff workspace and navigation entry", async ({ page }) => {
     await page.goto("/wecom");
     await expect(page.getByText("该工作区尚未在本机启用")).toBeVisible();
     await expect(page.getByRole("link", { name: "企微家校", exact: true })).toHaveCount(0);
@@ -77,8 +77,8 @@ test.describe.serial("v0.20.1 interaction polish", () => {
 
     await expect(page).toHaveURL(/\/wecom$/);
     await expect(page.getByRole("link", { name: "企微家校", exact: true })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "同步与导入" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "复核与回滚" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "中转仓库" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "教师复核" })).toBeVisible();
     await page.reload();
     await expect(page.getByRole("link", { name: "企微家校", exact: true })).toBeVisible();
   });

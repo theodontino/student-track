@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/generated/prisma/client";
 
-export async function buildWccDirectorySnapshot(
+export async function buildWccRosterSnapshot(
   prisma: PrismaClient,
   semesterId = "",
   classId = "",

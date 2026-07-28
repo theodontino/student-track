@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import {
   WeComExtractionError,
-} from "@/services/wecom-bridge-service";
+} from "@/services/wecom-handoff-extraction-service";
 import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
 import { withLLMCacheOperation } from "@/services/llm-cache-service";
 

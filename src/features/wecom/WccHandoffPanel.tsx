@@ -21,6 +21,14 @@ type HandoffResponse = {
   items: HandoffItem[];
   students: StudentOption[];
 };
+type ReceiptRepairPreview = {
+  alreadyLinked: number;
+  missingReceiptId: number;
+  eligible: number;
+  linkExisting: number;
+  createReceipt: number;
+  skipped: Record<string, number>;
+};
 
 const STATUS_LABELS: Record<string, string> = {
   discovered: "已发现",
@@ -48,6 +56,8 @@ export default function WccHandoffPanel() {
   const [selection, setSelection] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
+  const [receiptPreview, setReceiptPreview] = useState<ReceiptRepairPreview | null>(null);
+  const [repairConfirmation, setRepairConfirmation] = useState("");
   const refresh = () => request("/api/wecom/handoff")
     .then(setData)
     .catch((error) => setMessage(error.message));
@@ -97,6 +107,37 @@ export default function WccHandoffPanel() {
     }
   }
 
+  async function previewReceipts() {
+    setBusy("receipt-preview");
+    try {
+      const preview = await request("/api/wecom/handoff/receipt-repair") as ReceiptRepairPreview;
+      setReceiptPreview(preview);
+      setMessage(`回执只读预检完成：${preview.eligible} 条可修复，${Object.values(preview.skipped).reduce((sum, count) => sum + count, 0)} 条跳过`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "回执预检失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function repairReceipts() {
+    setBusy("receipt-repair");
+    try {
+      const result = await request("/api/wecom/handoff/receipt-repair", {
+        method: "POST",
+        body: JSON.stringify({ confirmation: repairConfirmation }),
+      });
+      setRepairConfirmation("");
+      setReceiptPreview(null);
+      setMessage(`回执修复完成：关联已有 ${result.linkedExisting}，新建 ${result.createdReceipts}；数据库备份已验证`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "回执修复失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
   return <section className="handoff-panel">
     <div className="handoff-panel__header">
       <div>
@@ -113,6 +154,29 @@ export default function WccHandoffPanel() {
       <span><strong>{counts.pendingReview}</strong>待教师复核</span>
       <span><strong>{counts.attention}</strong>需要介入</span>
       <span><strong>{counts.complete}</strong>无需处理</span>
+    </div>
+    <div className="handoff-item__actions">
+      <Button variant="secondary" onClick={() => void previewReceipts()} disabled={Boolean(busy)}>
+        {busy === "receipt-preview" ? "正在预检回执…" : "只读预检历史回执"}
+      </Button>
+      {receiptPreview && <span>
+        缺少关联 {receiptPreview.missingReceiptId} · 可关联已有 {receiptPreview.linkExisting} · 可新建 {receiptPreview.createReceipt}
+      </span>}
+      {receiptPreview?.eligible ? <>
+        <input
+          aria-label="回执修复确认"
+          value={repairConfirmation}
+          onChange={(event) => setRepairConfirmation(event.target.value)}
+          placeholder="输入 REPAIR_HANDOFF_RECEIPTS"
+        />
+        <Button
+          variant="secondary"
+          onClick={() => void repairReceipts()}
+          disabled={repairConfirmation !== "REPAIR_HANDOFF_RECEIPTS" || Boolean(busy)}
+        >
+          {busy === "receipt-repair" ? "正在备份并修复…" : "备份后修复 receiptId"}
+        </Button>
+      </> : null}
     </div>
     {message && <StatusBanner tone={message.includes("失败") ? "warning" : "info"}>{message}</StatusBanner>}
     {data.items.length === 0 ? <EmptyState

@@ -62,7 +62,9 @@ Student Track 用于校外教学机构围绕学生生成和追踪课后家校反
 
 `Label`、`StudentLabel` 用于学生分类；`DraftRecord`、`WorkHistory`、`SystemLog` 和 `SessionMetricHistory` 支持业务流程与追踪，但不改变学生、班级、学期、课次、评价和考勤构成的核心领域。
 
-`WeComImportState` 保存成功水位和运行租约；`WeComImportRun` 表示一次“一键同步并导入”；`WeComImportOperation` 表示运行中的单个会话批次；`WeComMessageReceipt` 区分未处理、处理中、已写入、无有效内容、待复核、失败、忽略和已回滚消息；`WeComImportChange` 只记录本批新增实体和标签贡献，不复制原始聊天正文或整库快照。这些模型属于集成处理账本，不是学生档案。
+`WeComImportState`、`WeComImportRun`、`WeComImportOperation`、
+`WeComMessageReceipt` 和 `WeComImportChange` 是旧集成的只读历史账本，不是学生档案。
+新代码不再活动写入、运行或回滚这些记录，本次解耦不删表、不改行。
 
 `WeComHandoffPackage` 是 WCC 本地文件转交账本，只保存来源、包 ID、文件哈希、
 处理状态和可选的匹配学生，不复制聊天正文。文件包和安全回执位于 Git 仓库外的

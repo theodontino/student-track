@@ -2,13 +2,25 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const extraction = vi.hoisted(() => ({ generate: vi.fn() }));
+vi.mock("@/services/wecom-handoff-extraction-service", () => ({
+  generateWeComBridgeJson: extraction.generate,
+  WeComExtractionError: class WeComExtractionError extends Error {
+    code = "provider_error";
+  },
+}));
+
 import { prisma } from "@/lib/prisma";
 import {
   actOnWccHandoffPackage,
   listWccHandoffPackages,
   scanAndConsumeWccPackages,
 } from "@/services/wecom-file-handoff-service";
+import { previewWccHandoffReceiptRepair } from "@/services/wecom-handoff-receipt-repair-service";
+import { assignWccDraftSession } from "@/services/wecom-handoff-consumer-service";
+import { processDraftReview } from "@/services/review-service";
 
 let exchangeRoot = "";
 
@@ -51,10 +63,13 @@ async function publishSynthetic(payload = packagePayload()) {
 beforeEach(async () => {
   exchangeRoot = await mkdtemp(path.join(os.tmpdir(), "student-track-handoff-test-"));
   process.env.STUDENT_TRACK_WCC_EXCHANGE_ROOT = exchangeRoot;
+  extraction.generate.mockReset();
   await prisma.weComHandoffPackage.deleteMany();
 });
 
 afterEach(async () => {
+  await prisma.communication.deleteMany({ where: { sourceKey: { startsWith: "draft:wcc-" } } });
+  await prisma.draftRecord.deleteMany({ where: { id: { startsWith: "wcc-" } } });
   await prisma.weComHandoffPackage.deleteMany();
   delete process.env.STUDENT_TRACK_WCC_EXCHANGE_ROOT;
   await rm(exchangeRoot, { recursive: true, force: true });
@@ -103,6 +118,49 @@ describe("WCC file handoff consumer", () => {
     expect(receiptNames).toHaveLength(1);
   });
 
+  it("previews receipt repair without changing the ledger or filesystem", async () => {
+    await publishSynthetic();
+    await scanAndConsumeWccPackages(prisma);
+    const item = await prisma.weComHandoffPackage.findFirstOrThrow();
+    await prisma.weComHandoffPackage.update({
+      where: { id: item.id },
+      data: { receiptId: null },
+    });
+    const receiptDir = path.join(
+      exchangeRoot, "v1", "receipts", "source-test", "pkg-no-value",
+    );
+    const beforeFiles = await readdir(receiptDir);
+
+    const preview = await previewWccHandoffReceiptRepair(prisma);
+
+    expect(preview).toMatchObject({
+      missingReceiptId: 1,
+      eligible: 1,
+      linkExisting: 1,
+      createReceipt: 0,
+    });
+    expect((await prisma.weComHandoffPackage.findUniqueOrThrow({ where: { id: item.id } })).receiptId).toBeNull();
+    expect(await readdir(receiptDir)).toEqual(beforeFiles);
+  });
+
+  it("previews a new receipt only when the validated package has no legal receipt", async () => {
+    await publishSynthetic();
+    await scanAndConsumeWccPackages(prisma);
+    const item = await prisma.weComHandoffPackage.findFirstOrThrow();
+    await prisma.weComHandoffPackage.update({
+      where: { id: item.id },
+      data: { receiptId: null },
+    });
+    await rm(path.join(exchangeRoot, "v1", "receipts"), { recursive: true, force: true });
+
+    await expect(previewWccHandoffReceiptRepair(prisma)).resolves.toMatchObject({
+      missingReceiptId: 1,
+      eligible: 1,
+      linkExisting: 0,
+      createReceipt: 1,
+    });
+  });
+
   it("rejects a marker whose hash does not match the package", async () => {
     await publishSynthetic();
     const marker = path.join(
@@ -139,5 +197,76 @@ describe("WCC file handoff consumer", () => {
     await actOnWccHandoffPackage(prisma, item.id, "discard");
     const discarded = await prisma.weComHandoffPackage.findUniqueOrThrow({ where: { id: item.id } });
     expect(discarded).toMatchObject({ status: "discarded", outcome: "no_value" });
+  });
+
+  it("completes publish, consume, teacher confirmation and receipt visibility", async () => {
+    const students = await prisma.student.findMany({
+      select: { id: true, name: true, classId: true },
+    });
+    const student = students.find((candidate) => (
+      candidate.classId
+      && students.filter((other) => candidate.name.includes(other.name)).length === 1
+    ));
+    expect(student?.classId).toBeTruthy();
+    const session = await prisma.classSession.findFirstOrThrow({
+      where: { classId: student!.classId! },
+      select: { code: true, date: true },
+    });
+    extraction.generate.mockResolvedValue({
+      bridgeJson: {
+        records: [{
+          matchedStudent: { id: student!.id, confidence: "high" },
+          messageIds: ["message-test"],
+          factualSummary: "家长反馈学生近期学习信心有所改善。",
+          feedbackUse: { relevant: true, category: "learning-confidence", priority: "high" },
+          evidence: [{ messageId: "message-test", quote: "近期学习信心有所改善" }],
+          confidence: "high",
+        }],
+      },
+      diagnostics: { modelName: "synthetic-model" },
+    });
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-full-handoff",
+      conversation: { id: "conversation-test", title: student!.name },
+      classification: {
+        worthProcessing: true,
+        decision: "student_related",
+        reasons: ["learning_confidence"],
+        classifier: "synthetic-triage",
+      },
+      messages: [{
+        id: "message-test",
+        sentAt: `${session.date}T10:00:00+08:00`,
+        content: "近期学习信心有所改善",
+      }],
+    }));
+
+    const consumed = await scanAndConsumeWccPackages(prisma);
+    expect(consumed).toMatchObject({ accepted: 1, failed: 0 });
+    const draft = await prisma.draftRecord.findFirstOrThrow({
+      where: { id: { startsWith: "wcc-" }, studentId: student!.id },
+    });
+    if (!draft.sessionCode) await assignWccDraftSession(prisma, draft.id, session.code);
+    const communicationCount = await prisma.communication.count();
+
+    await processDraftReview({ draftId: draft.id, action: "confirm" });
+
+    expect(await prisma.communication.count()).toBe(communicationCount + 1);
+    expect(await prisma.draftRecord.findUniqueOrThrow({ where: { id: draft.id } })).toMatchObject({
+      status: "confirmed",
+    });
+    const receiptFiles = await readdir(path.join(
+      exchangeRoot, "v1", "receipts", "source-test", "pkg-full-handoff",
+    ));
+    expect(receiptFiles).toHaveLength(1);
+    const receipt = JSON.parse(await readFile(path.join(
+      exchangeRoot,
+      "v1",
+      "receipts",
+      "source-test",
+      "pkg-full-handoff",
+      receiptFiles[0],
+    ), "utf8"));
+    expect(receipt).toMatchObject({ status: "accepted", outcome: "pending_review" });
   });
 });

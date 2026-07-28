@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   generateWeComBridgeJson,
   WeComExtractionError,
-} from "@/services/wecom-bridge-service";
+} from "@/services/wecom-handoff-extraction-service";
 
 const mocks = vi.hoisted(() => ({
   completionCreate: vi.fn(),

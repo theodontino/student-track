@@ -11,12 +11,8 @@ import {
   type StudentTrackReceiptV1,
   type WccStudentTrackFileV1,
 } from "@/lib/contracts/wecom-file-transfer";
-import { buildWccDirectorySnapshot } from "@/services/wecomcatch-directory-service";
-import {
-  acceptWccCandidateBatch,
-  type WccCandidateBatch,
-} from "@/services/wecomcatch-integration-service";
-import { WeComExtractionError } from "@/services/wecom-bridge-service";
+import { consumeWccHandoffPackage } from "@/services/wecom-handoff-consumer-service";
+import { WeComExtractionError } from "@/services/wecom-handoff-extraction-service";
 
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -53,7 +49,7 @@ async function atomicWrite(filePath: string, content: string) {
   await fs.rename(temporary, filePath);
 }
 
-async function writeReceipt(
+export async function writeWccHandoffReceipt(
   sourceId: string,
   packageId: string,
   packageSha256: string,
@@ -136,6 +132,44 @@ async function readPackage(markerPath: string) {
   return { payload, sha256: actual };
 }
 
+function safeHandoffIdentifier(value: string) {
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(value)) throw new Error("invalid_package");
+  return value;
+}
+
+export async function readWccHandoffPackage(sourceId: string, packageId: string) {
+  const marker = path.join(
+    packageDirectory(),
+    safeHandoffIdentifier(sourceId),
+    `${safeHandoffIdentifier(packageId)}.sha256`,
+  );
+  return readPackage(marker);
+}
+
+export async function listWccHandoffReceipts(sourceId: string, packageId: string) {
+  const directory = receiptDirectory(
+    safeHandoffIdentifier(sourceId),
+    safeHandoffIdentifier(packageId),
+  );
+  const names = await fs.readdir(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  const receipts: StudentTrackReceiptV1[] = [];
+  for (const name of names.sort()) {
+    if (!/^[A-Za-z0-9._:-]{1,160}\.json$/.test(name)) continue;
+    const raw = await fs.readFile(path.join(directory, name), "utf8").catch(() => "");
+    if (!raw) continue;
+    try {
+      const parsed = StudentTrackReceiptV1Schema.safeParse(JSON.parse(raw));
+      if (parsed.success) receipts.push(parsed.data);
+    } catch {
+      // Invalid historical receipt files are ignored and never overwritten.
+    }
+  }
+  return receipts;
+}
+
 function exactTitleMatches(
   title: string | undefined,
   students: Array<{ id: string; name: string; studentId: string; classId: string }>,
@@ -143,42 +177,6 @@ function exactTitleMatches(
   const normalized = (title || "").trim();
   if (!normalized) return [];
   return students.filter((student) => normalized.includes(student.name));
-}
-
-async function toCandidateBatch(
-  prisma: PrismaClient,
-  payload: WccStudentTrackFileV1,
-  studentId: string,
-): Promise<WccCandidateBatch> {
-  const [directory, student] = await Promise.all([
-    buildWccDirectorySnapshot(prisma),
-    prisma.student.findUnique({
-      where: { id: studentId },
-      select: { id: true, name: true, studentId: true, classId: true },
-    }),
-  ]);
-  if (!student) throw new Error("directory_conflict");
-  return {
-    contractVersion: "wcc.student-track-candidates.v1",
-    batchId: payload.packageId,
-    directoryVersion: directory.version,
-    source: { id: payload.source.id },
-    conversation: {
-      id: payload.conversation.id,
-      title: payload.conversation.title || "",
-    },
-    messages: payload.messages.map((message) => ({
-      id: message.id,
-      sender: message.sender,
-      sentAt: message.sentAt,
-      content: message.content,
-    })),
-    subjects: [student],
-    triage: {
-      classifier: payload.classification.classifier,
-      reasonCodes: payload.classification.reasons,
-    },
-  };
 }
 
 function safeFailure(error: unknown) {
@@ -217,7 +215,7 @@ async function consumeValidatedPackage(
     return { id: same.id, status: "duplicate", outcome: same.outcome };
   }
   if (existingIdentity.some((item) => item.packageSha256 !== sha256)) {
-    const receipt = await writeReceipt(
+    const receipt = await writeWccHandoffReceipt(
       payload.source.id, payload.packageId, sha256, "rejected", undefined, "package_conflict",
     );
     const conflict = await prisma.weComHandoffPackage.create({
@@ -248,7 +246,7 @@ async function consumeValidatedPackage(
   });
 
   if (!payload.classification.worthProcessing) {
-    const receipt = await writeReceipt(
+    const receipt = await writeWccHandoffReceipt(
       payload.source.id, payload.packageId, sha256, "accepted", "no_value",
     );
     const updated = await prisma.weComHandoffPackage.update({
@@ -273,7 +271,7 @@ async function consumeValidatedPackage(
     if (matches.length === 1) matchedStudentId = matches[0].id;
   }
   if (!matchedStudentId) {
-    const receipt = await writeReceipt(
+    const receipt = await writeWccHandoffReceipt(
       payload.source.id, payload.packageId, sha256, "accepted", "pending_review",
     );
     const pending = await prisma.weComHandoffPackage.update({
@@ -293,12 +291,11 @@ async function consumeValidatedPackage(
     data: { status: "processing", selectedStudentId: matchedStudentId, lastAttemptAt: new Date() },
   });
   try {
-    const batch = await toCandidateBatch(prisma, payload, matchedStudentId);
-    const result = await acceptWccCandidateBatch(prisma, batch);
+    const result = await consumeWccHandoffPackage(prisma, payload, matchedStudentId);
     const outcome = result.status === "pending_review" ? "pending_review" : "no_value";
     let receiptId: string | null = null;
     try {
-      const receipt = await writeReceipt(
+      const receipt = await writeWccHandoffReceipt(
         payload.source.id, payload.packageId, sha256, "accepted", outcome,
       );
       receiptId = receipt.receiptId;
@@ -320,7 +317,7 @@ async function consumeValidatedPackage(
     const failure = safeFailure(error);
     let receiptId: string | null = null;
     try {
-      const receipt = await writeReceipt(
+      const receipt = await writeWccHandoffReceipt(
         payload.source.id,
         payload.packageId,
         sha256,
@@ -389,7 +386,7 @@ async function performScanAndConsume(prisma: PrismaClient, limit = 20) {
       });
       let receipt: StudentTrackReceiptV1 | null = null;
       if (!existing) {
-        receipt = await writeReceipt(
+        receipt = await writeWccHandoffReceipt(
           sourceId,
           packageId,
           digest,
@@ -499,7 +496,7 @@ export async function actOnWccHandoffPackage(
   }
   const loaded = await packageForLedger(prisma, id);
   if (action === "discard") {
-    const receipt = await writeReceipt(
+    const receipt = await writeWccHandoffReceipt(
       loaded.payload.source.id,
       loaded.payload.packageId,
       loaded.sha256,

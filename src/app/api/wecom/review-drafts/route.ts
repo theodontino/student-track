@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { processDraftReview } from "@/services/review-service";
-import { assignWccDraftSession } from "@/services/wecomcatch-integration-service";
+import { assignWccDraftSession } from "@/services/wecom-handoff-consumer-service";
 import { readPreReviewSuggestion } from "@/services/wecom-prereview-service";
 
 function parsed(value: string) {

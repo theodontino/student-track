@@ -60,50 +60,35 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
   await expect(page.getByText("已进入教师复核")).toBeVisible();
 });
 
-test("active WeCom import survives refresh and offers stop-and-rollback", async ({ page }) => {
+test("handoff receipt repair requires a read-only preflight and explicit confirmation", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem("student-track:wecom-access", JSON.stringify({
     version: "wecom-third-party-notice-v1",
     acceptedAt: new Date().toISOString(),
   })));
-  let requestedMode = "";
-  await page.route("**/api/wecom/auto-import", async (route) => {
-    if (route.request().method() === "GET") {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({
-          active: true,
-          run: {
-            id: "test-active-run",
-            status: "running",
-            messageCount: 100,
-            batchCount: 20,
-            communicationCount: 8,
-            receiptCounts: { pending: 60, imported: 30, no_value: 5, needs_review: 5 },
-            progress: 40,
-            cancelRequestedAt: null,
-            cancelMode: null,
-          },
-        }),
-      });
-      return;
+  let repaired = false;
+  await page.route("**/api/wecom/handoff/receipt-repair", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: {
+      alreadyLinked: 2, missingReceiptId: 3, eligible: 2, linkExisting: 1, createReceipt: 1, skipped: { missing_package: 1 },
+    } });
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ confirmation: "REPAIR_HANDOFF_RECEIPTS" });
+      repaired = true;
+      return route.fulfill({ json: { linkedExisting: 1, createdReceipts: 1 } });
     }
-    if (route.request().method() === "DELETE") {
-      requestedMode = (route.request().postDataJSON() as { mode?: string }).mode || "";
-      await route.fulfill({
-        status: 202,
-        contentType: "application/json",
-        body: JSON.stringify({ accepted: true, rollbackRequested: true }),
-      });
-      return;
-    }
-    await route.abort();
+    return route.abort();
+  });
+  await page.route("**/api/wecom/handoff", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { items: [], students: [] } });
+    return route.abort();
   });
 
   await page.goto("/wecom");
-  await expect(page.getByText("企微导入正在后台运行…")).toBeVisible();
-  await expect(page.getByText("已写入 8 条 · 待处理 60 条 · 待复核 5 条")).toBeVisible();
-  await page.getByRole("button", { name: "停止并回滚本次" }).click();
-  await expect(page.getByRole("dialog")).toContainText("只撤销本次运行产生的增量");
-  await page.getByRole("button", { name: "停止并回滚", exact: true }).click();
-  await expect.poll(() => requestedMode).toBe("stop_and_rollback");
+  await page.getByRole("button", { name: "只读预检历史回执" }).click();
+  await expect(page.getByText("回执只读预检完成：2 条可修复，1 条跳过")).toBeVisible();
+  const repair = page.getByRole("button", { name: "备份后修复 receiptId" });
+  await expect(repair).toBeDisabled();
+  await page.getByLabel("回执修复确认").fill("REPAIR_HANDOFF_RECEIPTS");
+  await repair.click();
+  await expect.poll(() => repaired).toBe(true);
+  await expect(page.getByText("回执修复完成：关联已有 1，新建 1；数据库备份已验证")).toBeVisible();
 });

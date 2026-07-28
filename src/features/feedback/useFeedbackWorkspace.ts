@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { FeedbackContextStudent } from "@/components/wecom/types";
+import type { FeedbackContextStudent } from "@/features/feedback/context-types";
 import type { InputHistoryState } from "@/features/entry";
 import { teachingContextWorkspaceKey, useTeachingContext } from "@/features/teaching-context";
 import { useAiWorkflow } from "@/features/ai-workflow";

@@ -3,7 +3,7 @@ vi.mock("@/lib/llm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/llm")>()),
   getLLMCompletionOptions: () => ({ max_tokens: 4096, reasoning_effort: "low" }),
 }));
-import { WeComExtractionError } from "@/services/wecom-bridge-service";
+import { WeComExtractionError } from "@/services/wecom-handoff-extraction-service";
 import {
   callLlmWithSchemaFallback,
   parsePreReviewText,

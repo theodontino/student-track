@@ -5,10 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   getLocalToolsStatus,
   inspectFunASR,
-  inspectWeComCatch,
+  inspectWccHandoff,
   preflightDiarize,
-  preflightWeComCatchSync,
-  resolveWeComCatchPaths,
+  resolveWccHandoffPaths,
 } from "@/services/local-tool-status-service";
 
 const temporaryDirectories: string[] = [];
@@ -41,11 +40,10 @@ function installFunASRFixture(cwd: string, homeDir: string, includeVenv = true) 
   fs.mkdirSync(path.join(cwd, "data", "diarize"), { recursive: true });
 }
 
-function installWeComCatchFixture(cwd: string) {
-  const root = path.join(cwd, "tools", "wecomcatch");
-  writeFile(path.join(root, "bin", "wecomcatch"), "#!/bin/sh\n", true);
-  writeFile(path.join(root, "config.local.json"), '{"apiKey":"never-return-this"}');
-  writeFile(path.join(root, "runtime", "archive.sqlite3"), "private-chat-content");
+function installWccHandoffFixture(cwd: string) {
+  const root = path.join(cwd, "wcc-exchange");
+  fs.mkdirSync(path.join(root, "v1", "packages"), { recursive: true });
+  fs.mkdirSync(path.join(root, "v1", "receipts"), { recursive: true });
   return root;
 }
 
@@ -56,10 +54,10 @@ afterEach(() => {
 });
 
 describe("local-tool-status-service", () => {
-  it("reports available fixtures without returning config or database contents", () => {
+  it("reports available fixtures without returning API token contents", () => {
     const { cwd, homeDir } = temporaryProject();
     installFunASRFixture(cwd, homeDir);
-    const weComCatchRoot = installWeComCatchFixture(cwd);
+    const exchangeRoot = installWccHandoffFixture(cwd);
     const commandDir = path.join(cwd, "commands");
     writeFile(path.join(commandDir, "ffmpeg"), "#!/bin/sh\n", true);
     writeFile(path.join(commandDir, "ffprobe"), "#!/bin/sh\n", true);
@@ -67,7 +65,11 @@ describe("local-tool-status-service", () => {
     const result = getLocalToolsStatus({
       cwd,
       homeDir,
-      env: { PATH: commandDir, WECOMCATCH_PROJECT_ROOT: weComCatchRoot },
+      env: {
+        PATH: commandDir,
+        STUDENT_TRACK_WCC_EXCHANGE_ROOT: exchangeRoot,
+        WECOMCATCH_API_TOKEN: "never-return-this",
+      },
     });
 
     expect(result.tools.map((tool) => [tool.id, tool.status])).toEqual([
@@ -75,7 +77,6 @@ describe("local-tool-status-service", () => {
       ["wecomcatch", "available"],
     ]);
     expect(JSON.stringify(result)).not.toContain("never-return-this");
-    expect(JSON.stringify(result)).not.toContain("private-chat-content");
   });
 
   it("uses warnings for optional FunASR dependencies and blocks only selected core paths", () => {
@@ -91,19 +92,14 @@ describe("local-tool-status-service", () => {
     });
   });
 
-  it("reports missing required WeComCatch paths and resolves overrides without reading them", () => {
+  it("reports an unusable handoff path without inspecting WCC runtime", () => {
     const { cwd, homeDir } = temporaryProject();
-    const env = {
-      WECOMCATCH_CLI_PATH: "custom/bin/wecomcatch",
-      WECOMCATCH_RUNTIME_DIR: "shared-runtime",
-      WECOMCATCH_CONFIG_PATH: "shared-config.json",
-    };
+    const blockedParent = path.join(cwd, "blocked");
+    writeFile(blockedParent);
+    const env = { STUDENT_TRACK_WCC_EXCHANGE_ROOT: path.join(blockedParent, "exchange") };
 
-    const paths = resolveWeComCatchPaths({ cwd, homeDir, env });
-    expect(paths.cli).toBe(path.join(cwd, "custom", "bin", "wecomcatch"));
-    expect(paths.runtimeDir).toBe(path.join(cwd, "custom", "shared-runtime"));
-    expect(paths.config).toBe(path.join(cwd, "custom", "shared-config.json"));
-    expect(inspectWeComCatch({ cwd, homeDir, env }).status).toBe("unavailable");
-    expect(preflightWeComCatchSync({ cwd, homeDir, env }).ready).toBe(false);
+    const paths = resolveWccHandoffPaths({ cwd, homeDir, env });
+    expect(paths.exchangeRoot).toBe(path.join(blockedParent, "exchange"));
+    expect(inspectWccHandoff({ cwd, homeDir, env }).status).toBe("unavailable");
   });
 });

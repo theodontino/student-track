@@ -279,6 +279,12 @@ export function useStudentsWorkspace() {
   }
 
   function openStudent(studentId: string) {
+    // A list-row click can blur the active preview in WebKit before navigation
+    // settles. Cancel that asynchronous transition so it cannot compete with
+    // the route change.
+    clearPreviewTimers();
+    setSelectedStudentId("");
+    setPreviewPhase("idle");
     const query = selectedSemesterId
       ? `?semesterId=${encodeURIComponent(selectedSemesterId)}`
       : "";

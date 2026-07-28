@@ -1,6 +1,6 @@
 "use client";
 
-import type { FeedbackContextStudent } from "@/components/wecom/types";
+import type { FeedbackContextStudent } from "@/features/feedback/context-types";
 
 interface FeedbackContextPreviewProps {
   students: FeedbackContextStudent[];

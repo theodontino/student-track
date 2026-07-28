@@ -28,12 +28,10 @@ interface ResolvedFunASRPaths {
   dataDir: string;
 }
 
-interface ResolvedWeComCatchPaths {
-  projectRoot: string;
-  cli: string;
-  runtimeDir: string;
-  config: string;
-  database: string;
+interface ResolvedWccHandoffPaths {
+  exchangeRoot: string;
+  packages: string;
+  receipts: string;
 }
 
 const STATUS_PRIORITY: Record<LocalToolAvailability, number> = {
@@ -91,37 +89,21 @@ export function resolveFunASRPaths(options: LocalToolStatusOptions = {}): Resolv
   };
 }
 
-export function resolveWeComCatchPaths(options: LocalToolStatusOptions = {}): ResolvedWeComCatchPaths {
+export function resolveWccHandoffPaths(options: LocalToolStatusOptions = {}): ResolvedWccHandoffPaths {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? os.homedir();
-  const configuredCli = env.WECOMCATCH_CLI_PATH?.trim()
-    ? expandPath(env.WECOMCATCH_CLI_PATH.trim(), cwd, homeDir)
-    : null;
-  const inferredRoot = configuredCli
-    ? path.dirname(path.dirname(configuredCli))
-    : path.join(homeDir, "wecomcatch");
-  const projectRoot = resolveOverride(env.WECOMCATCH_PROJECT_ROOT, inferredRoot, cwd, homeDir);
-  const cli = configuredCli ?? path.join(projectRoot, "bin", "wecomcatch");
-  const runtimeDir = resolveOverride(
-    env.WECOMCATCH_RUNTIME_DIR,
-    path.join(projectRoot, "runtime"),
-    projectRoot,
-    homeDir,
-  );
-  const config = resolveOverride(
-    env.WECOMCATCH_CONFIG_PATH,
-    path.join(projectRoot, "config.local.json"),
-    projectRoot,
+  const exchangeRoot = resolveOverride(
+    env.STUDENT_TRACK_WCC_EXCHANGE_ROOT,
+    path.join(homeDir, "Library", "Application Support", "WCC Student Track Exchange"),
+    cwd,
     homeDir,
   );
 
   return {
-    projectRoot,
-    cli,
-    runtimeDir,
-    config,
-    database: path.join(runtimeDir, "archive.sqlite3"),
+    exchangeRoot,
+    packages: path.join(exchangeRoot, "v1", "packages"),
+    receipts: path.join(exchangeRoot, "v1", "receipts"),
   };
 }
 
@@ -165,6 +147,7 @@ function readableDirectory(targetPath: string) {
 function nearestExistingDirectory(targetPath: string) {
   let candidate = targetPath;
   while (!isDirectory(candidate)) {
+    if (fs.existsSync(candidate)) return null;
     const parent = path.dirname(candidate);
     if (parent === candidate) return null;
     candidate = parent;
@@ -316,60 +299,54 @@ export function inspectFunASR(options: LocalToolStatusOptions = {}): LocalToolSt
   };
 }
 
-export function inspectWeComCatch(options: LocalToolStatusOptions = {}): LocalToolStatus {
-  const paths = resolveWeComCatchPaths(options);
-  const runtimeExists = isDirectory(paths.runtimeDir);
-  const databaseExists = isFile(paths.database);
+export function inspectWccHandoff(options: LocalToolStatusOptions = {}): LocalToolStatus {
+  const paths = resolveWccHandoffPaths(options);
+  const env = options.env ?? process.env;
   const checks: LocalToolCheck[] = [
     check(
-      "cli",
-      "WeComCatch CLI",
-      executableFile(paths.cli) ? "available" : "unavailable",
-      executableFile(paths.cli) ? "CLI 可执行" : "CLI 不存在或不可执行",
-      paths.cli,
+      "exchange-root",
+      "handoff 交换目录",
+      dataDirectoryReady(paths.exchangeRoot) ? "available" : "unavailable",
+      dataDirectoryReady(paths.exchangeRoot) ? "目录可读写或可安全创建" : "目录不可读写",
+      paths.exchangeRoot,
     ),
     check(
-      "runtime-directory",
-      "运行数据目录",
-      runtimeExists ? readableDirectory(paths.runtimeDir) ? "available" : "unavailable" : "warning",
-      runtimeExists
-        ? readableDirectory(paths.runtimeDir) ? "目录可读取" : "目录不可读取"
-        : "目录尚未创建",
-      paths.runtimeDir,
+      "packages",
+      "handoff 包目录",
+      isDirectory(paths.packages) ? readableDirectory(paths.packages) ? "available" : "unavailable" : "warning",
+      isDirectory(paths.packages) ? "目录可读取" : "尚无已投递包",
+      paths.packages,
     ),
     check(
-      "config",
-      "本地配置",
-      readableFile(paths.config) ? "available" : "unavailable",
-      readableFile(paths.config) ? "配置文件可读取；内容不会由自检接口返回" : "配置文件不存在或不可读取",
-      paths.config,
+      "receipts",
+      "handoff 回执目录",
+      dataDirectoryReady(paths.receipts) ? "available" : "unavailable",
+      dataDirectoryReady(paths.receipts) ? "目录可读写或可安全创建" : "目录不可读写",
+      paths.receipts,
     ),
     check(
-      "database",
-      "归档数据库",
-      databaseExists ? readableFile(paths.database) ? "available" : "unavailable" : "warning",
-      databaseExists
-        ? readableFile(paths.database) ? "数据库文件可读取；未执行写入或维护命令" : "数据库文件不可读取"
-        : "数据库尚未创建",
-      paths.database,
+      "directory-api-token",
+      "只读花名册 API",
+      env.WECOMCATCH_API_TOKEN?.trim() ? "available" : "warning",
+      env.WECOMCATCH_API_TOKEN?.trim() ? "认证 Token 已配置；不会显示其内容" : "未配置目录 API Token",
     ),
   ];
   const status = overallStatus(checks);
 
   return {
     id: "wecomcatch",
-    name: "WeComCatch",
+    name: "WCC handoff",
     status,
     summary: summaryFor(status),
     checks,
-    notice: "WeComCatch 是仓库外的可选本地工具；Student Track 不包含或分发其源码和运行数据。",
+    notice: "这里只检查交换目录和 ST 自身的只读花名册 API 配置；不会检查、读取或启动 WCC runtime。",
   };
 }
 
 export function getLocalToolsStatus(options: LocalToolStatusOptions = {}): LocalToolsStatusResponse {
   return {
     checkedAt: new Date().toISOString(),
-    tools: [inspectFunASR(options), inspectWeComCatch(options)],
+    tools: [inspectFunASR(options), inspectWccHandoff(options)],
   };
 }
 
@@ -393,13 +370,5 @@ export function preflightDiarize(
   }
   if (!dataDirectoryReady(paths.dataDir)) blockers.push("转写数据目录不可写且无法安全创建");
 
-  return { ready: blockers.length === 0, blockers };
-}
-
-export function preflightWeComCatchSync(options: LocalToolStatusOptions = {}): LocalToolPreflight {
-  const paths = resolveWeComCatchPaths(options);
-  const blockers: string[] = [];
-  if (!executableFile(paths.cli)) blockers.push("WeComCatch CLI 不存在或不可执行");
-  if (!readableFile(paths.config)) blockers.push("WeComCatch 本地配置不存在或不可读取");
   return { ready: blockers.length === 0, blockers };
 }

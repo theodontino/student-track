@@ -14,9 +14,7 @@
 | `/api/feedback/assistant-roster` | `POST` |
 | `/api/history` | `DELETE`, `GET`, `POST` |
 | `/api/input/parse` | `POST` |
-| `/api/integrations/wecomcatch/v1/candidate-batches` | `POST` |
 | `/api/integrations/wecomcatch/v1/directory` | `GET` |
-| `/api/integrations/wecomcatch/v1/review/[id]` | `PATCH` |
 | `/api/quick-score` | `GET`, `POST` |
 | `/api/report/daily` | `POST` |
 | `/api/report/feedback-batch` | `GET`, `POST` |
@@ -37,21 +35,14 @@
 | `/api/system/llm-cache` | `DELETE`, `GET` |
 | `/api/system/local-tools` | `GET` |
 | `/api/system/logs` | `GET` |
-| `/api/system/wecom-rollbacks` | `GET`, `POST` |
 | `/api/teacher-observations/[id]` | `PATCH` |
 | `/api/teacher-observations` | `GET` |
 | `/api/teaching-memory` | `GET`, `PATCH`, `POST` |
-| `/api/wecom/auto-import` | `DELETE`, `GET`, `POST` |
-| `/api/wecom/bridge` | `POST` |
 | `/api/wecom/handoff/[id]` | `PATCH` |
+| `/api/wecom/handoff/receipt-repair` | `GET`, `POST` |
 | `/api/wecom/handoff` | `GET`, `POST` |
-| `/api/wecom/import` | `GET`, `POST` |
 | `/api/wecom/review-drafts/accept-confidence` | `POST` |
 | `/api/wecom/review-drafts/bulk` | `POST` |
 | `/api/wecom/review-drafts/preview` | `POST` |
 | `/api/wecom/review-drafts/preview/status` | `GET`, `POST` |
 | `/api/wecom/review-drafts` | `GET`, `PATCH`, `POST` |
-| `/api/wecomcatch/export` | `POST` |
-| `/api/wecomcatch/status` | `GET` |
-| `/api/wecomcatch/sync-start` | `POST` |
-| `/api/wecomcatch/sync-status` | `GET` |
