@@ -70,6 +70,8 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     await page.getByRole("button", { name: "阅读第三方工具使用须知" }).click();
     const dialog = page.getByRole("dialog", { name: "第三方工具使用须知" });
     await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("Student Track 只保存 handoff 台账、用于教师复核的草案、经确认的沟通摘要和最小诊断元数据；聊天原文仍由外部工具管理。")).toBeVisible();
+    await expect(dialog.getByText("自动提取结果可能出错。系统先校验证据并唯一匹配学生，再生成待复核草案；教师选择实际课次并确认后，才会写入正式沟通。")).toBeVisible();
     const accept = dialog.getByRole("button", { name: "确认并启用入口" });
     await expect(accept).toBeDisabled();
     await dialog.getByRole("checkbox").check();
