@@ -28,6 +28,7 @@ const prisma = { student: { findMany: mocks.studentFindMany } } as any;
 function completion(content = '{"source":"wecomcatch","mode":"candidateOnly","records":[]}', options: {
   finishReason?: string;
   reasoningTokens?: number;
+  reasoningContent?: string;
 } = {}) {
   return {
     id: "test",
@@ -37,7 +38,7 @@ function completion(content = '{"source":"wecomcatch","mode":"candidateOnly","re
     choices: [{
       index: 0,
       finish_reason: options.finishReason ?? "stop",
-      message: { role: "assistant", content, refusal: null },
+      message: { role: "assistant", content, reasoning_content: options.reasoningContent, refusal: null },
       logprobs: null,
     }],
     usage: {
@@ -82,6 +83,19 @@ describe("wecom bridge service", () => {
     expect(request.response_format.type).toBe("json_schema");
     expect(request.response_format.json_schema.strict).toBe(true);
     expect(request.reasoning_effort).toBeUndefined();
+  });
+
+  it("accepts a JSON Schema response carried by LM Studio reasoning_content", async () => {
+    mocks.completionCreate.mockResolvedValue(completion("", {
+      reasoningContent: '{"source":"wecomcatch","mode":"candidateOnly","records":[]}',
+      reasoningTokens: 5,
+    }));
+
+    await expect(generateWeComBridgeJson(prisma, { sourceText: "张三妈妈：最近希望多鼓励。" }))
+      .resolves.toMatchObject({
+        bridgeJson: { source: "wecomcatch", mode: "candidateOnly", records: [] },
+        diagnostics: { reasoningTokens: 5, protocol: "json_schema" },
+      });
   });
 
   it("keeps JSON Schema when only the reasoning parameter is unsupported", async () => {

@@ -21,6 +21,9 @@ const optionalRate = rate.nullable();
 export const LessonFeedbackMaterialSchema: z.ZodType<LessonFeedbackMaterial> = z.object({
   version: z.literal(1),
   sessionCode: text(128).optional(),
+  lessonSummary: text(2000).optional(),
+  lessonSummarySourceHash: text(64).optional(),
+  lessonSummaryStatus: z.enum(["model", "fallback"]).optional(),
   groupFeedbackRaw: text(100000),
   assessmentBriefRaw: text(100000),
   lessonTitle: text(2000),
@@ -152,6 +155,7 @@ export const FeedbackSingleResponseSchema = z.object({
   draftFeedback: text(10000).optional(),
   reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(),
   reviewIssues: z.array(text(1000)).max(50).optional(),
+  lessonMaterial: LessonFeedbackMaterialSchema.optional(),
 }).passthrough();
 
 const AiWorkflowStateSchema = z.union([
@@ -230,7 +234,7 @@ export const FeedbackBatchStreamEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("init"), students: z.array(FeedbackCardSchema).max(200), total: count }),
   z.object({ type: z.literal("draft"), studentId: requiredText(200), name: requiredText(100), feedback: text(10000), draftFeedback: text(10000).optional(), reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(), reviewIssues: z.array(text(1000)).max(50).optional(), completed: count, total: count }),
   z.object({ type: z.literal("review"), studentId: requiredText(200), name: requiredText(100), feedback: text(10000), draftFeedback: text(10000).optional(), reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(), reviewIssues: z.array(text(1000)).max(50).optional(), completed: count, total: count }),
-  z.object({ type: z.literal("done"), students: z.array(FeedbackCardSchema).max(200), total: count }).passthrough(),
+  z.object({ type: z.literal("done"), students: z.array(FeedbackCardSchema).max(200), total: count, lessonMaterial: LessonFeedbackMaterialSchema.optional() }).passthrough(),
   z.object({ type: z.literal("error"), message: requiredText(2000), code: text(80).optional(), retryable: z.boolean().optional(), diagnosticId: text(100).optional() }),
 ]);
 

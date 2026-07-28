@@ -496,6 +496,78 @@ async function packageForLedger(prisma: PrismaClient, id: string) {
   return { item, ...loaded };
 }
 
+/** Read-only, package-level evidence for teacher diagnostics. */
+export async function getWccHandoffPackageDetails(prisma: PrismaClient, id: string) {
+  const { item, payload, sha256 } = await packageForLedger(prisma, id);
+  return {
+    id: item.id,
+    packageId: item.packageId,
+    sourceId: item.sourceId,
+    packageSha256: sha256,
+    status: item.status,
+    outcome: item.outcome,
+    code: item.code,
+    conversation: payload.conversation,
+    timeRange: payload.timeRange,
+    classification: payload.classification,
+    messages: payload.messages.map((message) => ({
+      id: message.id,
+      sentAt: message.sentAt,
+      sender: message.sender,
+      direction: message.direction,
+      type: message.type,
+      content: message.content,
+      timeContext: message.timeContext,
+      confidence: message.confidence,
+    })),
+  };
+}
+
+/**
+ * Bounded, sequential retry for a selected group of recoverable packages.
+ * The extraction role may target a local model, so parallel retries would make
+ * diagnosis worse and can exhaust the provider while hiding the first error.
+ */
+export async function retryWccHandoffPackages(
+  prisma: PrismaClient,
+  ids: string[],
+) {
+  const selected = [...new Set(ids.filter(Boolean))].slice(0, 25);
+  const results: Array<{ id: string; status: string; code?: string | null; error?: string }> = [];
+  for (const id of selected) {
+    const current = await prisma.weComHandoffPackage.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!current) {
+      results.push({ id, status: "skipped", error: "package_not_found" });
+      continue;
+    }
+    if (current.status !== "retryable_failure") {
+      results.push({ id, status: "skipped", error: "not_retryable" });
+      continue;
+    }
+    try {
+      const result = await actOnWccHandoffPackage(prisma, id, "retry");
+      results.push({ id, status: result.status, code: result.code });
+    } catch (error) {
+      results.push({
+        id,
+        status: "failed",
+        error: error instanceof Error ? error.message : "handoff_action_failed",
+      });
+    }
+  }
+  return {
+    total: selected.length,
+    recovered: results.filter((item) => ["pending_review", "no_value", "pending_alignment"].includes(item.status)).length,
+    stillRetryable: results.filter((item) => item.status === "retryable_failure").length,
+    failed: results.filter((item) => item.status === "failed").length,
+    skipped: results.filter((item) => item.status === "skipped").length,
+    results,
+  };
+}
+
 export async function actOnWccHandoffPackage(
   prisma: PrismaClient,
   id: string,

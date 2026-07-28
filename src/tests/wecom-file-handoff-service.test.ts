@@ -15,7 +15,9 @@ vi.mock("@/services/wecom-handoff-extraction-service", () => ({
 import { prisma } from "@/lib/prisma";
 import {
   actOnWccHandoffPackage,
+  getWccHandoffPackageDetails,
   listWccHandoffPackages,
+  retryWccHandoffPackages,
   scanAndConsumeWccPackages,
 } from "@/services/wecom-file-handoff-service";
 import { previewWccHandoffReceiptRepair } from "@/services/wecom-handoff-receipt-repair-service";
@@ -116,6 +118,44 @@ describe("WCC file handoff consumer", () => {
       exchangeRoot, "v1", "receipts", "source-test", "pkg-no-value",
     ));
     expect(receiptNames).toHaveLength(1);
+  });
+
+  it("reads immutable package evidence for diagnostics without copying it into the ledger", async () => {
+    await publishSynthetic();
+    await scanAndConsumeWccPackages(prisma);
+    const item = await prisma.weComHandoffPackage.findFirstOrThrow();
+
+    await expect(getWccHandoffPackageDetails(prisma, item.id)).resolves.toMatchObject({
+      id: item.id,
+      packageId: "pkg-no-value",
+      conversation: { title: "合成会话" },
+      classification: { reasons: ["synthetic_no_value"] },
+      messages: [{ id: "message-test", content: "固定合成消息" }],
+    });
+    await expect(prisma.weComHandoffPackage.findUniqueOrThrow({ where: { id: item.id } }))
+      .resolves.toMatchObject({ status: "no_value", code: null });
+  });
+
+  it("retries selected recoverable packages sequentially and skips other states", async () => {
+    await publishSynthetic();
+    await scanAndConsumeWccPackages(prisma);
+    const item = await prisma.weComHandoffPackage.findFirstOrThrow();
+    await prisma.weComHandoffPackage.update({
+      where: { id: item.id },
+      data: { status: "retryable_failure", outcome: null, code: "service_unavailable", receiptId: null },
+    });
+
+    await expect(retryWccHandoffPackages(prisma, [item.id])).resolves.toMatchObject({
+      total: 1,
+      recovered: 1,
+      stillRetryable: 0,
+      failed: 0,
+      skipped: 0,
+    });
+    await expect(retryWccHandoffPackages(prisma, [item.id])).resolves.toMatchObject({
+      total: 1,
+      skipped: 1,
+    });
   });
 
   it("recovers a stale processing package as an explicit retryable failure", async () => {

@@ -128,6 +128,9 @@ describe("feedback batch NDJSON stream", () => {
     ]);
     mocks.historyCreate.mockReset().mockResolvedValue({ id: "history-1" });
     mocks.completionCreate.mockReset()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+        summary: "本课围绕示例内容和示例重点展开，并用出门测检查示例概念。",
+      }) } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: "甲反馈" } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: "乙反馈" } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "甲反馈", issues: [] }) } }] })
@@ -196,11 +199,15 @@ describe("feedback batch NDJSON stream", () => {
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       messages: [expect.objectContaining({
-        content: expect.stringContaining("【本次生成边界】课次：VITEST-STREAM；学生ID：student-1"),
+        content: expect.stringContaining("【本次生成边界】课次:VITEST-STREAM;学生ID:student-1"),
       })],
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     const persistedState = JSON.parse(mocks.historyCreate.mock.calls[0][0].data.state);
     expect(persistedState.lessonMaterial.sessionCode).toBe("VITEST-STREAM");
+    expect(persistedState.lessonMaterial).toMatchObject({
+      lessonSummaryStatus: "model",
+      lessonSummary: expect.stringContaining("示例内容"),
+    });
     expect(persistedState.assessmentEvidence["student-1"]).toMatchObject({
       sessionCode: "VITEST-STREAM",
       studentId: "student-1",
@@ -216,7 +223,7 @@ describe("feedback batch NDJSON stream", () => {
         expect.objectContaining({ id: "student-2", feedback: "乙反馈" }),
       ],
     });
-    expect(mocks.completionCreate).toHaveBeenCalledTimes(4);
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(5);
 
     mocks.completionCreate
       .mockResolvedValueOnce({ choices: [{ message: { content: "甲新反馈" } }] })
@@ -233,7 +240,7 @@ describe("feedback batch NDJSON stream", () => {
       expect.objectContaining({ id: "student-1", feedback: "甲新反馈" }),
       expect.objectContaining({ id: "student-2", feedback: "乙新反馈" }),
     ]);
-    expect(mocks.completionCreate).toHaveBeenCalledTimes(8);
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(9);
 
     const historyWritesBeforeMixedSave = mocks.historyCreate.mock.calls.length;
     const rejectedMixedSave = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
@@ -283,7 +290,7 @@ describe("feedback batch NDJSON stream", () => {
         expect.objectContaining({ id: "student-2", feedback: "乙手动编辑反馈" }),
       ],
     });
-    expect(mocks.completionCreate).toHaveBeenCalledTimes(8);
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(9);
 
     const cachedAfterSave = await POST(request());
     await expect(cachedAfterSave.json()).resolves.toMatchObject({
@@ -351,6 +358,7 @@ describe("feedback batch NDJSON stream", () => {
   });
 
   it("stops in-flight model work and does not persist an aborted batch", async () => {
+    const controller = new AbortController();
     mocks.completionCreate.mockReset().mockImplementation((
       _payload: unknown,
       options?: { signal?: AbortSignal },
@@ -358,8 +366,8 @@ describe("feedback batch NDJSON stream", () => {
       const abort = () => reject(new DOMException("cancelled", "AbortError"));
       if (options?.signal?.aborted) abort();
       else options?.signal?.addEventListener("abort", abort, { once: true });
+      controller.signal.addEventListener("abort", abort, { once: true });
     }));
-    const controller = new AbortController();
     const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -29,6 +29,25 @@ type ReceiptRepairPreview = {
   createReceipt: number;
   skipped: Record<string, number>;
 };
+type PackageDetail = {
+  id: string;
+  packageId: string;
+  packageSha256: string;
+  status: string;
+  code: string | null;
+  conversation: { title?: string };
+  timeRange: { start?: string | null; end?: string | null };
+  classification: { reasons?: string[]; classifier?: string };
+  messages: Array<{
+    id: string;
+    sentAt?: string | null;
+    sender?: string | null;
+    direction?: string | null;
+    type?: string | null;
+    content: string;
+    confidence?: number | null;
+  }>;
+};
 
 const STATUS_LABELS: Record<string, string> = {
   discovered: "已发现",
@@ -39,6 +58,16 @@ const STATUS_LABELS: Record<string, string> = {
   retryable_failure: "可重试",
   rejected: "已拒绝",
   discarded: "已丢弃",
+};
+
+const ERROR_HELP: Record<string, string> = {
+  service_unavailable: "提取模型当时不可用或返回了无法处理的结果；修复模型后可批量重试。",
+  internal_error: "本机处理未完成；可先查看包内容与运行状态，再重试。",
+  evidence_mismatch: "模型生成的摘要或引用不能由原始消息逐字证明，已阻止写入。",
+  hash_mismatch: "包文件或完成标记的 SHA-256 不一致，不能安全读取。",
+  invalid_package: "包结构不符合 handoff v1，不能安全读取。",
+  package_conflict: "同一包身份存在不同内容，系统拒绝覆盖不可变历史。",
+  unsupported_contract: "该包使用了当前 Student Track 不支持的协议版本。",
 };
 
 async function request(path: string, init?: RequestInit) {
@@ -58,6 +87,9 @@ export default function WccHandoffPanel() {
   const [message, setMessage] = useState("");
   const [receiptPreview, setReceiptPreview] = useState<ReceiptRepairPreview | null>(null);
   const [repairConfirmation, setRepairConfirmation] = useState("");
+  const [filter, setFilter] = useState<"attention" | "review" | "complete" | "all">("attention");
+  const [selectedRetries, setSelectedRetries] = useState<Set<string>>(new Set());
+  const [details, setDetails] = useState<Record<string, PackageDetail>>({});
   const refresh = () => request("/api/wecom/handoff")
     .then(setData)
     .catch((error) => setMessage(error.message));
@@ -68,6 +100,18 @@ export default function WccHandoffPanel() {
     pendingReview: data.items.filter((item) => item.status === "pending_review").length,
     complete: data.items.filter((item) => ["no_value", "discarded"].includes(item.status)).length,
   }), [data.items]);
+  const visibleItems = useMemo(() => data.items.filter((item) => {
+    if (filter === "attention") return ["pending_alignment", "retryable_failure", "rejected"].includes(item.status);
+    if (filter === "review") return item.status === "pending_review";
+    if (filter === "complete") return ["no_value", "discarded"].includes(item.status);
+    return true;
+  }), [data.items, filter]);
+  const retryableVisibleIds = useMemo(
+    () => visibleItems.filter((item) => item.status === "retryable_failure").map((item) => item.id).slice(0, 25),
+    [visibleItems],
+  );
+  const allVisibleRetriesSelected = retryableVisibleIds.length > 0
+    && retryableVisibleIds.every((id) => selectedRetries.has(id));
 
   async function scan() {
     setBusy("scan");
@@ -102,6 +146,41 @@ export default function WccHandoffPanel() {
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "处理失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function loadDetail(item: HandoffItem) {
+    if (details[item.id]) {
+      setDetails((current) => { const next = { ...current }; delete next[item.id]; return next; });
+      return;
+    }
+    setBusy(`detail-${item.id}`);
+    try {
+      const detail = await request(`/api/wecom/handoff/${encodeURIComponent(item.id)}`) as PackageDetail;
+      setDetails((current) => ({ ...current, [item.id]: detail }));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "读取包内容失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function retrySelected() {
+    const ids = [...selectedRetries];
+    if (!ids.length) return;
+    setBusy("batch-retry");
+    try {
+      const result = await request(
+        "/api/wecom/handoff/batch-retry",
+        { method: "POST", body: JSON.stringify({ ids }) },
+      ) as { total: number; recovered: number; stillRetryable: number; failed: number; skipped: number };
+      setMessage(`批量重试 ${result.total} 项：已恢复 ${result.recovered}，仍需重试 ${result.stillRetryable}，失败 ${result.failed}，跳过 ${result.skipped}`);
+      setSelectedRetries(new Set());
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "批量重试失败");
     } finally {
       setBusy("");
     }
@@ -142,8 +221,8 @@ export default function WccHandoffPanel() {
     <div className="handoff-panel__header">
       <div>
         <span className="handoff-panel__eyebrow">离线文件协议 v1</span>
-        <h3>WCC 中转仓库</h3>
-        <p>扫描 WCC 已发布的证据包，在本机完成学生匹配、二次提取和教师复核。WCC 无需保持运行。</p>
+        <h3>接收与诊断</h3>
+        <p>扫描不可变 handoff 包、查看完整证据、处理匹配或模型异常。正式沟通只在“教师复核”确认后写入。</p>
       </div>
       <Button onClick={() => void scan()} disabled={busy === "scan"}>
         {busy === "scan" ? "正在扫描与接收…" : "扫描并接收新包"}
@@ -151,9 +230,9 @@ export default function WccHandoffPanel() {
     </div>
     <div className="handoff-panel__metrics">
       <span><strong>{data.items.length}</strong>已登记</span>
-      <span><strong>{counts.pendingReview}</strong>待教师复核</span>
-      <span><strong>{counts.attention}</strong>需要介入</span>
-      <span><strong>{counts.complete}</strong>无需处理</span>
+      <span><strong>{counts.pendingReview}</strong>已送教师复核</span>
+      <span><strong>{counts.attention}</strong>接收异常</span>
+      <span><strong>{counts.complete}</strong>已完成</span>
     </div>
     <div className="handoff-item__actions">
       <Button variant="secondary" onClick={() => void previewReceipts()} disabled={Boolean(busy)}>
@@ -182,16 +261,70 @@ export default function WccHandoffPanel() {
     {data.items.length === 0 ? <EmptyState
       title="还没有收到转交文件"
       description="先在 WeComCatch 的“中转仓库”发布已准备项目，再回到这里扫描。"
-    /> : <div className="handoff-panel__list">
-      {data.items.map((item) => <article className={`handoff-item handoff-item--${item.status}`} key={item.id}>
+    /> : <>
+      <div className="handoff-item__actions">
+        <label>查看
+          <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
+            <option value="attention">仅接收异常</option>
+            <option value="review">已送教师复核</option>
+            <option value="complete">已完成</option>
+            <option value="all">全部已登记</option>
+          </select>
+        </label>
+        {filter === "attention" && <Button
+          variant="secondary"
+          disabled={!retryableVisibleIds.length || Boolean(busy)}
+          onClick={() => setSelectedRetries((current) => {
+            const next = new Set(current);
+            if (allVisibleRetriesSelected) {
+              for (const id of retryableVisibleIds) next.delete(id);
+            } else {
+              for (const id of retryableVisibleIds) next.add(id);
+            }
+            return next;
+          })}
+        >
+          {allVisibleRetriesSelected ? `取消选择当前 ${retryableVisibleIds.length} 项` : `选择当前 ${retryableVisibleIds.length} 个可重试包`}
+        </Button>}
+        {filter === "attention" && <Button
+          disabled={!selectedRetries.size || Boolean(busy)}
+          onClick={() => void retrySelected()}
+        >
+          {busy === "batch-retry" ? `正在顺序重试 ${selectedRetries.size} 项…` : `顺序批量重试 (${selectedRetries.size}/25)`}
+        </Button>}
+        <span>每包均可展开查看完整消息与安全诊断。</span>
+      </div>
+      {visibleItems.length === 0 ? <EmptyState title="当前筛选没有项目" description="可切换状态查看已送复核或历史完成记录。" /> : <div className="handoff-panel__list">
+      {visibleItems.map((item) => <article className={`handoff-item handoff-item--${item.status}`} key={item.id}>
         <div className="handoff-item__main">
           <div className="handoff-item__title">
+            {item.status === "retryable_failure" && <input
+              aria-label={`选择重试 ${item.packageId}`}
+              type="checkbox"
+              checked={selectedRetries.has(item.id)}
+              onChange={() => setSelectedRetries((current) => {
+                const next = new Set(current);
+                if (next.has(item.id)) next.delete(item.id); else if (next.size < 25) next.add(item.id);
+                return next;
+              })}
+            />}
             <strong>{item.selectedStudent?.name || "尚未匹配学生"}</strong>
             <span>{STATUS_LABELS[item.status] || item.status}</span>
           </div>
           <p>{item.messageCount} 条候选消息 · {new Date(item.producedAt).toLocaleString("zh-CN")}</p>
           <code>{item.packageId}</code>
-          {item.code && <small>安全错误码：{item.code}</small>}
+          {item.code && <small>安全错误码：{item.code} · {ERROR_HELP[item.code] || "请查看包内容与本机模型设置。"}</small>}
+          <Button variant="secondary" onClick={() => void loadDetail(item)} disabled={busy === `detail-${item.id}`}>
+            {busy === `detail-${item.id}` ? "正在读取…" : details[item.id] ? "收起包内容" : "查看包内容与诊断"}
+          </Button>
+          {details[item.id] && <div className="handoff-item__detail">
+            <p>会话：{details[item.id].conversation.title || "未命名"} · 时间：{details[item.id].timeRange.start || "未知"} 至 {details[item.id].timeRange.end || "未知"}</p>
+            <p>分类：{details[item.id].classification.reasons?.join("、") || "无"} · SHA-256：<code>{details[item.id].packageSha256}</code></p>
+            {details[item.id].messages.map((message) => <blockquote key={message.id}>
+              <strong>{message.sender || "未知发送者"}</strong> · {message.sentAt || "时间未知"} · {message.direction || "方向未知"}<br />
+              {message.content}<br /><code>{message.id}</code>
+            </blockquote>)}
+          </div>}
         </div>
         <div className="handoff-item__actions">
           {item.status === "pending_alignment" && <>
@@ -210,6 +343,6 @@ export default function WccHandoffPanel() {
             && <Button variant="secondary" onClick={() => void act(item, "discard")} disabled={busy === item.id}>丢弃</Button>}
         </div>
       </article>)}
-    </div>}
+    </div>}</>}
   </section>;
 }

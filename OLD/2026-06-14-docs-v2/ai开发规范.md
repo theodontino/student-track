@@ -21,7 +21,7 @@
 ## 2. 快速启动
 
 ```bash
-cd $HOME/Documents/engineering/档案中心/chem-track-ai
+cd "$HOME/Documents/engineering/archive-center/chem-track-ai"
 
 npm install          # 首次
 npm run db:seed      # 初始化数据库（首次或重置）

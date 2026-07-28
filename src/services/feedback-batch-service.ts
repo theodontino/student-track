@@ -24,6 +24,7 @@ import {
   generateFeedbackDraft,
   generateRoutineFeedback,
   reviewFeedbackDraft,
+  summarizeLessonMaterial,
   type FeedbackReviewStatus,
 } from "@/services/feedback-generation-service";
 import {
@@ -158,12 +159,25 @@ function inputRevision(
   routing: FeedbackRoutingDecision[],
   outputStrategy: FeedbackOutputStrategy,
 ) {
+  const {
+    lessonSummary: _lessonSummary,
+    lessonSummarySourceHash: _lessonSummarySourceHash,
+    lessonSummaryStatus: _lessonSummaryStatus,
+    ...lessonMaterialSource
+  } = lessonMaterial ?? {
+    lessonSummary: undefined,
+    lessonSummarySourceHash: undefined,
+    lessonSummaryStatus: undefined,
+  };
+  void _lessonSummary;
+  void _lessonSummarySourceHash;
+  void _lessonSummaryStatus;
   const sortedEvidence = Object.fromEntries(
     Object.entries(assessmentEvidence).sort(([left], [right]) => left.localeCompare(right)),
   );
   return createHash("sha256")
     .update(JSON.stringify({
-      lessonMaterial: lessonMaterial ?? null,
+      lessonMaterial: lessonMaterial ? lessonMaterialSource : null,
       assessmentEvidence: sortedEvidence,
       routing: routing.map(({ studentId, baseline, intensity, reasons }) => ({ studentId, baseline, intensity, reasons })),
       outputStrategy,
@@ -331,6 +345,19 @@ function createGenerationStream(input: {
       try {
         await withLLMCacheOperation("feedback", "批量分析并生成家长反馈", async () => {
           throwIfAborted();
+          const resolvedLessonMaterial = (
+            outputStrategy.suggestedFeedback
+            && lessonMaterial
+            && draftClient
+          )
+            ? await summarizeLessonMaterial({
+                material: lessonMaterial,
+                assessmentEvidence,
+                client: draftClient,
+                model: draftModel,
+                signal,
+              })
+            : lessonMaterial;
           controller.enqueue(encoder.encode(`${JSON.stringify({ type: "init", students: cards, total })}\n`));
 
           const concurrency = feedbackBatchConcurrency();
@@ -353,7 +380,7 @@ function createGenerationStream(input: {
                   studentContext: studentContext?.promptContext ?? card.name,
                   sessionCode,
                   studentId: card.id,
-                  lessonMaterial,
+                  lessonMaterial: resolvedLessonMaterial,
                   assessmentEvidence: assessmentEvidence[card.id],
                   sections: card.sections,
                   outputStrategy,
@@ -420,7 +447,7 @@ function createGenerationStream(input: {
                 studentContext: studentContext?.promptContext ?? card.name,
                 sessionCode,
                 studentId: card.id,
-                lessonMaterial,
+                lessonMaterial: resolvedLessonMaterial,
                 assessmentEvidence: assessmentEvidence[card.id],
                 sections: card.sections,
                 outputStrategy,
@@ -474,7 +501,7 @@ function createGenerationStream(input: {
             students: cards,
             total,
             inputRevision: revision,
-            lessonMaterial,
+            lessonMaterial: resolvedLessonMaterial,
             assessmentEvidence,
             routingOverrides: Object.fromEntries(routing
               .filter((item) => item.intensity !== item.baseline)
@@ -496,7 +523,7 @@ function createGenerationStream(input: {
                 sessionId: feedbackContext.session.id,
                 studentId: card.id,
                 sourceRefs,
-                promptVersion: "feedback-composable-v1",
+                promptVersion: "feedback-composable-v2",
                 inputSnapshot: { sections: card.sections, outputStrategy, intensity: card.feedbackIntensity },
               };
               if (card.feedbackIntensity === "routine" && card.feedback) {

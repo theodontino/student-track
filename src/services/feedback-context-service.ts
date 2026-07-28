@@ -5,6 +5,7 @@ import {
   isUsefulLegacyFeedbackCommunication,
   parseFeedbackCommunicationSummary,
 } from "@/lib/feedback-communication";
+import { safeFeedbackCommunicationTarget } from "@/lib/feedback-text-safety";
 
 const RECENT_SESSION_LIMIT = 5;
 const COMMUNICATION_PREVIEW_LIMIT = 3;
@@ -152,7 +153,7 @@ function feedbackCommunicationPromptLine(input: {
   const context = decision
     ? `｜${decision.priority === "high" ? "高" : "中"}优先级｜${FEEDBACK_COMMUNICATION_CATEGORY_LABELS[decision.category]}`
     : "";
-  return `${input.feedbackDate}${context} 与${input.target}：${shortSummary(input.feedbackSummary)}`;
+  return `${input.feedbackDate}${context} 与${safeFeedbackCommunicationTarget(input.target)}：${shortSummary(input.feedbackSummary)}`;
 }
 
 function buildTodayPreview(input: {

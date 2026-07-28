@@ -40,6 +40,10 @@ describe("feedback materials", () => {
     const prompt = lessonMaterialPrompt(material);
     expect(prompt).not.toContain("存在一定错误");
     expect(prompt).toContain("不能证明该学生已经掌握");
+    expect(prompt).toContain("通过实验和分类示例");
+    expect(prompt).toContain("整理笔记");
+    expect(prompt).toContain("出门测考查范围");
+    expect(prompt).toContain("电离方程式的书写");
   });
 
   it("formats only distilled assessment evidence for the model", () => {
@@ -84,6 +88,26 @@ describe("feedback materials", () => {
       "孩子可以结合讲解视频进行订正，有不会的问题及时答疑。",
     ]);
     expect(lessonMaterialPrompt(material)).not.toContain("存在一定错误");
+  });
+
+  it("removes recipient placeholders from reusable public material", () => {
+    const material = parseLessonFeedbackMaterial(
+      "XX妈妈您好，今天群内统一反馈如下\n张三妈妈您好\n【课堂内容】\n离子反应基础",
+      "某某家长您好，请查收出门测说明。\n主要考察以下内容：\n1. 离子方程式",
+      "SESSION-1",
+    );
+
+    expect([
+      ...material.classroomContent,
+      ...material.classroomFocus,
+      ...material.classroomExplanation,
+      ...material.homework,
+      ...material.assessmentFocus,
+      ...material.correctionAdvice,
+      ...material.otherNotes,
+    ].join("；")).not.toMatch(/XX妈妈|某某家长|张三妈妈/);
+    expect(material.groupFeedbackRaw).toContain("XX妈妈");
+    expect(lessonMaterialPrompt(material)).not.toMatch(/XX妈妈|某某家长/);
   });
 
   it("pre-matches one report folder against only the selected session roster", () => {

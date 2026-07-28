@@ -32,8 +32,8 @@ export default function WeComWorkspace() {
         value={view}
         onChange={(value) => setView(value as WeComView)}
         items={[
-          { value: "handoff", label: "中转仓库" },
-          { value: "review", label: "教师复核" },
+          { value: "handoff", label: "接收与诊断" },
+          { value: "review", label: "教师复核与入库" },
         ]}
       />
       <div role="tabpanel" className="wecom-workspace__panel">

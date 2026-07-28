@@ -3,10 +3,14 @@ import {
   LessonFeedbackMaterialSchema,
   StudentAssessmentEvidenceSchema,
 } from "@/lib/contracts/feedback";
+import { containsRecipientPlaceholder } from "@/lib/feedback-text-safety";
 
 export interface LessonFeedbackMaterial {
   version: 1;
   sessionCode?: string;
+  lessonSummary?: string;
+  lessonSummarySourceHash?: string;
+  lessonSummaryStatus?: "model" | "fallback";
   groupFeedbackRaw: string;
   assessmentBriefRaw: string;
   lessonTitle: string;
@@ -143,7 +147,13 @@ function sectionHeading(value: string) {
 }
 
 function compactUnique(values: string[], limit = 20) {
-  return [...new Set(values.map(cleanListItem).filter(Boolean))].slice(0, limit);
+  return [...new Set(values
+    .map(cleanListItem)
+    .filter((value) => (
+      Boolean(value)
+      && !containsRecipientPlaceholder(value)
+      && !/(?:妈妈|爸爸|家长)\s*(?:您好|你好|好)[，,。！!：:]?/u.test(value)
+    )))].slice(0, limit);
 }
 
 function parseGroupFeedback(raw: string) {
@@ -356,24 +366,45 @@ export function lessonMaterialHasContent(material: LessonFeedbackMaterial) {
   );
 }
 
+export function lessonMaterialSummarySource(material: LessonFeedbackMaterial) {
+  return {
+    sessionCode: material.sessionCode ?? "",
+    lessonTitle: material.lessonTitle,
+    classroomContent: material.classroomContent,
+    classroomFocus: material.classroomFocus,
+    classroomExplanation: material.classroomExplanation,
+    homework: material.homework,
+    assessmentFocus: material.assessmentFocus,
+    correctionAdvice: material.correctionAdvice,
+    otherNotes: material.otherNotes,
+  };
+}
+
 function promptList(label: string, values: string[]) {
   return values.length ? `${label}：${values.join("；")}` : "";
 }
 
-export function lessonMaterialPrompt(material: LessonFeedbackMaterial | null | undefined) {
-  if (!material || !lessonMaterialHasContent(material)) return "";
+export function fallbackLessonSummary(material: LessonFeedbackMaterial) {
   return [
-    "【本节课程公共材料】",
-    material.sessionCode ? `绑定课次：${material.sessionCode}` : "",
-    material.lessonTitle ? `课程主题：${material.lessonTitle}` : "",
+    material.lessonTitle ? `本课主题为${material.lessonTitle}。` : "",
     promptList("课堂内容", material.classroomContent),
     promptList("课堂重点", material.classroomFocus),
-    promptList("课堂处理与说明", material.classroomExplanation),
-    promptList("课后作业", material.homework),
+    promptList("课堂讲解与处理", material.classroomExplanation),
+    promptList("课后任务", material.homework),
     promptList("出门测考查范围", material.assessmentFocus),
-    promptList("统一订正建议", material.correctionAdvice),
-    promptList("其他说明", material.otherNotes),
-    "证据边界：以上是全班公共材料，只能说明本节教了什么、测了什么和统一建议，不能证明该学生已经掌握或没有掌握。",
+    promptList("统一订正说明", material.correctionAdvice),
+    promptList("其他课程说明", material.otherNotes),
+  ].filter(Boolean).join("\n").slice(0, 2000);
+}
+
+export function lessonMaterialPrompt(material: LessonFeedbackMaterial | null | undefined) {
+  if (!material || !lessonMaterialHasContent(material)) return "";
+  const summary = material.lessonSummary?.trim() || fallbackLessonSummary(material);
+  return [
+    "【本班本课课程摘要（每班整理一次，不是个人证据）】",
+    material.sessionCode ? `绑定课次：${material.sessionCode}` : "",
+    summary,
+    "使用边界：本区只帮助理解本节课讲授内容、知识组织和统一考查结构。它不能证明该学生已经掌握、失误或完成统一任务；学生结论必须来自该生个人证据。",
   ].filter(Boolean).join("\n");
 }
 

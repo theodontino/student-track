@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
+import { lessonMaterialPrompt, parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import {
   composeFeedbackPromptContext,
   generateRoutineFeedback,
   generateReviewedFeedback,
   reviewFeedbackDraft,
+  summarizeLessonMaterial,
 } from "@/services/feedback-generation-service";
 
 function clientWith(...contents: string[]) {
@@ -35,8 +36,29 @@ describe("feedback generation review", () => {
     });
     expect(routine.create).toHaveBeenCalledTimes(1);
     expect(routine.create.mock.calls[0][0].messages[0].content).toContain("默认只描述");
-    expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 768 });
+    expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 2048 });
     expect(routine.create.mock.calls[0][0]).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("retries a truncated routine response with a larger token budget", async () => {
+    const create = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ finish_reason: "length", message: { content: "" } }] })
+      .mockResolvedValueOnce({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+        verdict: "pass",
+        feedback: "今天能够结合课堂步骤完成基础判断，关键概念的对应关系比较清楚。",
+        issues: [],
+      }) } }] });
+    const result = await generateRoutineFeedback({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成基础判断。",
+      client: { chat: { completions: { create } } } as any,
+      model: "routine-model",
+    });
+
+    expect(result).toMatchObject({ reviewStatus: "passed", reviewIssues: [] });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[0][0]).toMatchObject({ max_tokens: 2048 });
+    expect(create.mock.calls[1][0]).toMatchObject({ max_tokens: 4096 });
   });
   it("keeps class copy separate from individual student evidence", () => {
     const context = composeFeedbackPromptContext({
@@ -46,9 +68,101 @@ describe("feedback generation review", () => {
         "主要考察以下内容：\n1. 电解质概念\n孩子这次存在一定错误。",
       ),
     });
-    expect(context).toContain("课程公共材料");
+    expect(context).toContain("本班本课课程摘要");
     expect(context).toContain("不得据此断言该生掌握或失误");
     expect(context).not.toContain("存在一定错误");
+  });
+
+  it("places individual assessment evidence before the minimal public topic boundary", () => {
+    const context = composeFeedbackPromptContext({
+      studentContext: "学生甲，本次个人记录：测验4分。",
+      lessonMaterial: parseLessonFeedbackMaterial(
+        "【课堂内容】\n电解质分类\n【课堂重点】\n概念判断",
+        "主要考察以下内容：\n1. 电解质概念",
+      ),
+      assessmentEvidence: {
+        reportTitle: "个人出门测",
+        reportDate: "2026-07-28",
+        totalQuestions: 5,
+        correctRate: 80,
+        cohortAverageRate: null,
+        knowledgePoints: [],
+        wrongItems: [],
+        similarPracticeCount: 0,
+      },
+    });
+
+    expect(context.indexOf("【该生出门测客观证据】"))
+      .toBeLessThan(context.indexOf("【本班本课课程摘要"));
+  });
+
+  it("builds one reusable lesson understanding from class material and an anonymized PDF structure", async () => {
+    const material = parseLessonFeedbackMaterial(
+      "【课堂内容】\n电解质分类\n电离方程式书写\n【课堂重点】\n强弱电解质判断",
+      "主要考察以下内容：\n1. 电解质概念\n2. 电离方程式",
+      "SESSION-1",
+    );
+    const summaryClient = clientWith(JSON.stringify({
+      summary: "本课围绕电解质分类、电离方程式书写及强弱电解质判断展开，并通过五道出门测覆盖概念辨析与方程式表达。",
+    }));
+    const evidence = {
+      "private-student-id": {
+        sessionCode: "SESSION-1",
+        studentId: "private-student-id",
+        reportTitle: "张三的出门测报告",
+        reportDate: "2026-07-28",
+        totalQuestions: 5,
+        correctRate: 40,
+        cohortAverageRate: 80,
+        knowledgePoints: [{
+          name: "电离方程式",
+          questionCount: 2,
+          correctRate: 0,
+          cohortAverageRate: 75,
+        }],
+        wrongItems: [{
+          questionNumber: "3",
+          studentAnswer: "D",
+          correctAnswer: "A",
+          knowledgePoints: ["电离方程式"],
+        }],
+        similarPracticeCount: 1,
+      },
+    };
+
+    const summarized = await summarizeLessonMaterial({
+      material,
+      assessmentEvidence: evidence,
+      client: summaryClient.client,
+      model: "summary-model",
+    });
+    const reused = await summarizeLessonMaterial({
+      material: summarized,
+      assessmentEvidence: evidence,
+      client: summaryClient.client,
+      model: "summary-model",
+    });
+
+    expect(summaryClient.create).toHaveBeenCalledTimes(1);
+    expect(reused.lessonSummaryStatus).toBe("model");
+    expect(lessonMaterialPrompt(reused)).toContain("本课围绕电解质分类");
+    const requestText = summaryClient.create.mock.calls[0][0].messages[0].content;
+    expect(requestText).toContain("电离方程式");
+    expect(requestText).toContain('"totalQuestions":5');
+    expect(requestText).not.toContain("private-student-id");
+    expect(requestText).not.toContain("张三");
+    expect(requestText).not.toContain('"correctRate"');
+    expect(requestText).not.toContain('"studentAnswer"');
+    expect(requestText).not.toContain('"correctAnswer"');
+  });
+
+  it("sanitizes recipient placeholders anywhere in model context", () => {
+    const context = composeFeedbackPromptContext({
+      studentContext: "XX妈妈此前提到孩子做题容易着急。",
+    });
+
+    expect(context).not.toContain("XX妈妈");
+    expect(context).toContain("家长此前提到");
   });
 
   it("never places teacher-only renewal alerts into the parent prompt", () => {
@@ -153,5 +267,42 @@ describe("feedback generation review", () => {
     expect(result.reviewStatus).toBe("needs_review");
     expect(result.reviewIssues).toContain("反馈中出现了其他学生姓名");
     expect(result.feedback).toBe("");
+  });
+
+  it("blocks recipient placeholders in routine parent-facing output", async () => {
+    const routine = clientWith(JSON.stringify({
+      verdict: "pass",
+      feedback: "XX妈妈您好，孩子今天完成了基础概念判断。",
+      issues: [],
+    }));
+    const result = await generateRoutineFeedback({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成基础概念判断。",
+      client: routine.client,
+      model: "routine-model",
+    });
+
+    expect(result.reviewStatus).toBe("needs_review");
+    expect(result.feedback).toBe("");
+    expect(result.reviewIssues).toContain("反馈中出现了家长称呼占位符");
+  });
+
+  it("blocks recipient placeholders in reviewed parent-facing output", async () => {
+    const result = await reviewFeedbackDraft({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成练习。",
+      lengthRequirement: "90-140字",
+      draftFeedback: "本次完成练习。",
+      client: clientWith(JSON.stringify({
+        verdict: "pass",
+        feedback: "某某家长您好，孩子本节课完成了练习。",
+        issues: [],
+      })).client,
+      model: "review-model",
+    });
+
+    expect(result.reviewStatus).toBe("needs_review");
+    expect(result.feedback).toBe("");
+    expect(result.reviewIssues).toContain("反馈中出现了家长称呼占位符");
   });
 });

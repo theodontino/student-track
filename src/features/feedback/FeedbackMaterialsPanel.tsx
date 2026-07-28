@@ -37,7 +37,7 @@ export function FeedbackMaterialsPanel({ workspace }: { workspace: Workspace }) 
   return (
     <Section
       title="本节反馈材料"
-      description="公共课程材料负责说明教了什么；个人报告和现有记录负责证明每名学生的真实表现。"
+      description="生成前，模型会按班级整理一次课程摘要；个人报告和现有记录仍只负责证明对应学生的真实表现。"
       className="feedback-materials"
       actions={<div className="feedback-stage-status">
         <Badge tone={workspace.lessonMaterialNeedsOrganization ? "warning" : "info"}>
@@ -158,6 +158,22 @@ export function FeedbackMaterialsPanel({ workspace }: { workspace: Workspace }) 
               </label>
             </div>
           </details>
+        )}
+
+        {material.lessonSummary && (
+          <div className="feedback-materials__lesson-summary">
+            <div>
+              <strong>本班本课课程认识</strong>
+              <Badge tone={material.lessonSummaryStatus === "model" ? "success" : "warning"}>
+                {material.lessonSummaryStatus === "model" ? "模型已整理" : "安全降级摘要"}
+              </Badge>
+            </div>
+            <p>{material.lessonSummary}</p>
+            <small>
+              每班每课只整理一次。系统可匿名借用一份已确认出门测的题量和知识点结构，
+              但不会把该生姓名、分数、答案或错题结论带入公共摘要。
+            </small>
+          </div>
         )}
 
         <div className="feedback-pdf-import">
@@ -314,7 +330,7 @@ export function FeedbackMaterialsPanel({ workspace }: { workspace: Workspace }) 
             <StatusBanner tone="warning">请先选择课次，系统才能用当前班级名单匹配 PDF。</StatusBanner>
           )}
           <StatusBanner tone="info">
-            课程材料绑定当前课次；采用后的 PDF 证据同时绑定当前课次和学生。生成时只会进入对应学生的 Prompt。
+            课程材料绑定当前课次；一份代表性 PDF 可匿名帮助建立课程与母题结构认识。每名学生的成绩、答案和错题仍只进入其本人 Prompt。
           </StatusBanner>
         </div>
       </div>

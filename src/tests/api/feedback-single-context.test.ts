@@ -97,7 +97,7 @@ describe("/api/report/feedback", () => {
     }));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       messages: [expect.objectContaining({
-        content: expect.stringContaining("【本次生成边界】课次：VITEST-SINGLE；学生ID：student-1"),
+        content: expect.stringContaining("【本次生成边界】课次:VITEST-SINGLE;学生ID:student-1"),
       })],
     }));
   });

@@ -216,6 +216,21 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     ) return { ...lessonMaterial, sessionCode };
     return parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode);
   }
+  function withoutLessonSummary(material: LessonFeedbackMaterial): LessonFeedbackMaterial {
+    const {
+      lessonSummary: _lessonSummary,
+      lessonSummarySourceHash: _lessonSummarySourceHash,
+      lessonSummaryStatus: _lessonSummaryStatus,
+      ...source
+    } = material;
+    void _lessonSummary;
+    void _lessonSummarySourceHash;
+    void _lessonSummaryStatus;
+    return source;
+  }
+  function adoptLessonMaterial(material?: LessonFeedbackMaterial) {
+    if (material) setLessonMaterial({ ...material, sessionCode });
+  }
   function feedbackSavePayload() {
     const payload = {
       sessionCode,
@@ -249,10 +264,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   }
   function updateGroupFeedbackRaw(value: string) {
     setGroupFeedbackRaw(value);
+    setLessonMaterial(withoutLessonSummary(lessonMaterial));
     markFeedbackInputsChanged(feedbackCards.length ? "课程材料已改变，请重新生成反馈。" : "");
   }
   function updateAssessmentBriefRaw(value: string) {
     setAssessmentBriefRaw(value);
+    setLessonMaterial(withoutLessonSummary(lessonMaterial));
     markFeedbackInputsChanged(feedbackCards.length ? "测验说明已改变，请重新生成反馈。" : "");
   }
   function organizeLessonMaterial() {
@@ -271,7 +288,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     value: string,
   ) {
     setLessonMaterial({
-      ...lessonMaterial,
+      ...withoutLessonSummary(lessonMaterial),
       sessionCode,
       [key]: key === "lessonTitle"
         ? value
@@ -381,7 +398,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       });
       if (!response.ok) throw new Error((await response.json()).error);
       if ((response.headers.get("content-type") || "").includes("application/json")) {
-        const data = FeedbackBatchJsonResponseSchema.parse(await response.json()); dispatchFeedback({ type: "init", cards: data.students || [], total: data.total, done: data.total }); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "已按本次反馈强度生成家长话术，请逐条检查后再导出。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已生成，请处理待人工确认项。"); return;
+        const data = FeedbackBatchJsonResponseSchema.parse(await response.json()); adoptLessonMaterial(data.lessonMaterial); dispatchFeedback({ type: "init", cards: data.students || [], total: data.total, done: data.total }); setFeedbackPhase("idle"); setStatus(data.cached ? "已恢复最近一次生成结果。" : "已按本次反馈强度生成家长话术，请逐条检查后再导出。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已生成，请处理待人工确认项。"); return;
       }
       if (!response.body) throw new Error("生成流不可用");
       let streamTotal = 0;
@@ -392,7 +409,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         if (message.type === "init") { streamTotal = message.total; dispatchFeedback({ type: "init", cards: message.students, total: message.total }); setFeedbackPhase("draft"); workflow.progress(0, `准备生成 ${message.total} 名学生的反馈…`); }
         else if (message.type === "draft") { const completed = Number(message.completed || 0); setFeedbackPhase("draft"); dispatchFeedback({ type: "progress", done: completed }); workflow.progress(streamTotal ? completed / (streamTotal * 2) : 0, `生成 ${completed}/${streamTotal}`); dispatchFeedback({ type: "patch", studentId: message.studentId, patch: { feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } }); }
         else if (message.type === "review") { const completed = Number(message.completed || 0); setFeedbackPhase("review"); dispatchFeedback({ type: "progress", done: completed }); workflow.progress(streamTotal ? (streamTotal + completed) / (streamTotal * 2) : 0, `成稿与审核 ${completed}/${streamTotal}`); dispatchFeedback({ type: "patch", studentId: message.studentId, patch: { feedback: message.feedback, draftFeedback: message.draftFeedback, reviewStatus: message.reviewStatus, reviewIssues: message.reviewIssues || [] } }); }
-        else if (message.type === "done") { dispatchFeedback({ type: "init", cards: message.students || [], total: message.total, done: message.total }); setFeedbackPhase("idle"); setStatus("已按本次反馈强度生成家长话术，请逐条检查后再导出。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已生成，请处理待人工确认项。"); }
+        else if (message.type === "done") { adoptLessonMaterial(message.lessonMaterial); dispatchFeedback({ type: "init", cards: message.students || [], total: message.total, done: message.total }); setFeedbackPhase("idle"); setStatus("已按本次反馈强度生成家长话术，请逐条检查后再导出。"); dispatchFeedback({ type: "force", value: false }); setActiveStep("export"); workflow.transition("reviewing", "家长话术已生成，请处理待人工确认项。"); }
         else if (message.type === "error") throw new Error(message.message || "批量生成失败");
         },
       });
@@ -425,7 +442,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   async function regenerateOne(studentId: string) {
     if (!sessionCode || !feedbackCards.some((card) => card.id === studentId)) return;
     setRegeneratingId(studentId); setError("");
-    try { const card = feedbackCards.find((item) => item.id === studentId); const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy }) }); dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } }); dispatchFeedback({ type: "dirty", value: true }); }
+    try { const card = feedbackCards.find((item) => item.id === studentId); const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy }) }); adoptLessonMaterial(data.lessonMaterial); dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } }); dispatchFeedback({ type: "dirty", value: true }); }
     catch (reason) { setError(errorMessage(reason, "重新生成失败")); }
     finally { setRegeneratingId(""); }
   }

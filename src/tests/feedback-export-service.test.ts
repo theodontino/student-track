@@ -35,6 +35,12 @@ describe("feedback export service", () => {
           id: "student-1",
           name: "学生甲",
           feedback: "甲最终反馈",
+          draftFeedback: "内部分析：本次能主动订正。",
+          reviewStatus: "passed",
+          sections: {
+            currentFact: { content: "学习测验 4 分；课堂状态 3 分", evidence: [] },
+            backgroundBaseline: { content: "本学期个人平均 3.5 分。", evidence: [] },
+          },
           contextPreview: { communications: ["2026-07-07 与母亲：关注学习方法"] },
         },
         { id: "student-2", name: "学生乙", feedback: "乙最终反馈" },
@@ -81,6 +87,30 @@ describe("feedback export service", () => {
         上次课后任务: 3,
       }),
     ]);
+
+    const teacherRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["教师内部研判"], {
+      defval: "",
+    });
+    expect(Object.keys(teacherRows[0])).toEqual([
+      "姓名", "本次事实", "背景基线", "建议反馈文本（模型/已编辑）", "内部分析草稿",
+    ]);
+    expect(teacherRows).toEqual([
+      expect.objectContaining({
+        姓名: "学生甲",
+        本次事实: "学习测验 4 分；课堂状态 3 分",
+        背景基线: "本学期个人平均 3.5 分。",
+        "建议反馈文本（模型/已编辑）": "甲最终反馈",
+        内部分析草稿: "内部分析：本次能主动订正。",
+      }),
+      expect.objectContaining({ 姓名: "学生乙" }),
+    ]);
+
+    const overview = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["导出概览"], {
+      header: 1,
+      defval: "",
+    });
+    expect(overview).toContainEqual(["AI 审核通过", 1, "████████░░░░░░░░"]);
+    expect(overview).toContainEqual(["学习测验", 3, "██████░░░░"]);
   });
 
   it("leaves unavailable scores blank and excludes internal qualitative labels", async () => {

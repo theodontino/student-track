@@ -13,7 +13,7 @@
 ## 2. 快速启动
 
 ```bash
-cd $HOME/Documents/engineering/档案中心/chem-track-ai
+cd "$HOME/Documents/engineering/archive-center/chem-track-ai"
 
 # 安装依赖（首次）
 npm install
@@ -26,7 +26,7 @@ npm run dev
 # → http://localhost:3000
 
 # 或使用一键启动脚本
-cd $HOME/Documents/engineering/档案中心
+cd "$HOME/Documents/engineering/archive-center"
 ./start.sh
 ```
 

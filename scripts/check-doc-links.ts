@@ -7,9 +7,9 @@ interface BrokenLink {
   target: string;
 }
 
-const markdownFiles = execFileSync("git", ["ls-files", "*.md"], { encoding: "utf8" })
-  .split("\n")
-  .filter(Boolean);
+const markdownFiles = execFileSync("git", ["ls-files", "-z", "*.md"], { encoding: "utf8" })
+  .split("\0")
+  .filter((file) => file && !file.startsWith("OLD/"));
 const brokenLinks: BrokenLink[] = [];
 const markdownLink = /\[[^\]]*\]\(([^)]+)\)/g;
 

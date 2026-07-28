@@ -11,6 +11,7 @@ import {
   composeFeedbackPromptContext,
   generateReviewedFeedback,
   generateRoutineFeedback,
+  summarizeLessonMaterial,
 } from "@/services/feedback-generation-service";
 import { FEEDBACK_INTENSITIES, type FeedbackIntensity } from "@/lib/feedback-intensity";
 import { normalizeFeedbackOutputStrategy } from "@/lib/feedback-sections";
@@ -102,12 +103,25 @@ export async function POST(request: NextRequest) {
           "feedback",
           "生成单人课次反馈",
           async () => {
+            // 批量生成返回的课程摘要已经覆盖本班代表性 PDF 结构。单人重写只
+            // 收到该生的 PDF，不能据此重建班级摘要；仅在尚无摘要时补建。
+            const resolvedLessonMaterial = lessonMaterial?.lessonSummary
+              ? lessonMaterial
+              : lessonMaterial
+              ? await summarizeLessonMaterial({
+                  material: lessonMaterial,
+                  assessmentEvidence: assessmentEvidence ? { [studentId]: assessmentEvidence } : {},
+                  client: createLLMClient("feedbackDraft"),
+                  model: getLLMModel("feedbackDraft"),
+                  signal: process.env.NODE_ENV === "test" ? undefined : request.signal,
+                })
+              : undefined;
             const sections = buildFeedbackSections(feedbackContext, routing, assessmentEvidence ? { [studentId]: assessmentEvidence } : {}).get(studentId);
             const promptContext = composeFeedbackPromptContext({
               studentContext: studentContext.promptContext,
               sessionCode,
               studentId,
-              lessonMaterial,
+              lessonMaterial: resolvedLessonMaterial,
               assessmentEvidence,
               sections,
               outputStrategy,
@@ -136,14 +150,14 @@ export async function POST(request: NextRequest) {
                 semesterId: feedbackContext.session.semesterId, classId: feedbackContext.session.classId,
                 sessionId: feedbackContext.session.id, studentId,
                 sourceRefs: [{ type: "session", id: feedbackContext.session.id }, { type: "student", id: studentId }],
-                promptVersion: "feedback-composable-v1", modelRole: "feedbackReview",
+                promptVersion: "feedback-composable-v2", modelRole: "feedbackReview",
                 inputSnapshot: { sections, outputStrategy, intensity },
                 outputSnapshot: { sections, reviewStatus: result.reviewStatus, draftFeedback: result.draftFeedback },
                 finalText: result.feedback || null,
               }).catch(() => undefined);
               await compactHotGenerationRecordsForClass(feedbackContext.session.classId).catch(() => undefined);
             }
-            return result;
+            return { ...result, lessonMaterial: resolvedLessonMaterial };
           },
         ));
       } catch (error) {

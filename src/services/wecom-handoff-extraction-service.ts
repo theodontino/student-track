@@ -534,6 +534,21 @@ function completionDiagnostics(
   };
 }
 
+function structuredResponseText(response: CompletionResponse, protocol: "json_schema" | "json_object") {
+  const message = response.choices[0]?.message as (typeof response.choices)[number]["message"] & {
+    reasoning_content?: unknown;
+  };
+  const content = message?.content?.trim() || "";
+  // LM Studio's Qwen-compatible server can place a JSON Schema response in
+  // reasoning_content while leaving content empty. Accept that non-standard
+  // location only for structured output; the same Schema and evidence checks
+  // below still decide whether it is safe to consume.
+  if (!content && protocol === "json_schema" && typeof message?.reasoning_content === "string") {
+    return message.reasoning_content.trim();
+  }
+  return content;
+}
+
 function extractCompletion(
   response: CompletionResponse,
   modelName: string,
@@ -541,7 +556,7 @@ function extractCompletion(
   groundedMessages?: Array<{ id: string; content: string }>,
   candidateStudentIds: string[] = [],
 ) {
-  const rawOutput = response.choices[0]?.message?.content?.trim() || "";
+  const rawOutput = structuredResponseText(response, protocol);
   const diagnostics = completionDiagnostics(response, modelName, protocol, rawOutput.length);
   if (diagnostics.finishReason === "length") {
     throw new WeComExtractionError("output_truncated", "LLM 输出达到长度上限", diagnostics);
