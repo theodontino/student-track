@@ -35,7 +35,9 @@ describe("feedback generation review", () => {
       draftFeedback: "",
     });
     expect(routine.create).toHaveBeenCalledTimes(1);
-    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("默认只描述");
+    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("90—140字");
+    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("孩子被看见");
+    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("不得用空泛夸奖代替事实");
     expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 2048 });
     expect(routine.create.mock.calls[0][0]).not.toHaveProperty("reasoning_effort");
   });
