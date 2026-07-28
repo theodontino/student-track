@@ -118,6 +118,27 @@ describe("WCC file handoff consumer", () => {
     expect(receiptNames).toHaveLength(1);
   });
 
+  it("recovers a stale processing package as an explicit retryable failure", async () => {
+    await publishSynthetic();
+    await scanAndConsumeWccPackages(prisma);
+    const item = await prisma.weComHandoffPackage.findFirstOrThrow();
+    await prisma.weComHandoffPackage.update({
+      where: { id: item.id },
+      data: {
+        status: "processing",
+        outcome: null,
+        receiptId: null,
+        lastAttemptAt: new Date(Date.now() - 31 * 60 * 1000),
+        processedAt: null,
+      },
+    });
+
+    const scanned = await scanAndConsumeWccPackages(prisma);
+    expect(scanned.results[0]).toMatchObject({ status: "retryable_failure", code: "internal_error" });
+    await expect(prisma.weComHandoffPackage.findUniqueOrThrow({ where: { id: item.id } }))
+      .resolves.toMatchObject({ status: "retryable_failure", receiptId: expect.any(String) });
+  });
+
   it("previews receipt repair without changing the ledger or filesystem", async () => {
     await publishSynthetic();
     await scanAndConsumeWccPackages(prisma);
@@ -268,5 +289,34 @@ describe("WCC file handoff consumer", () => {
       receiptFiles[0],
     ), "utf8"));
     expect(receipt).toMatchObject({ status: "accepted", outcome: "pending_review" });
+  });
+
+  it("does not allow WCC confirmation to change its evidence, student, or missing session", async () => {
+    const student = await prisma.student.findFirstOrThrow();
+    const draft = await prisma.draftRecord.create({
+      data: {
+        id: "wcc-locked-review",
+        rawText: "{}",
+        parsedResult: JSON.stringify({
+          students: [{
+            name: student.name,
+            scores: { A: null, B: null, C: null },
+            events: [],
+            communication: { type: "家长", summary: "合成沟通" },
+          }],
+        }),
+        studentId: student.id,
+      },
+    });
+
+    await expect(processDraftReview({ draftId: draft.id, action: "confirm" }))
+      .rejects.toThrow("必须先绑定学生和课次");
+    await expect(processDraftReview({
+      draftId: draft.id,
+      action: "confirm",
+      edits: { students: [] },
+    })).rejects.toThrow("不支持编辑后确认");
+    await expect(prisma.draftRecord.findUniqueOrThrow({ where: { id: draft.id } }))
+      .resolves.toMatchObject({ status: "pending" });
   });
 });

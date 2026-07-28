@@ -106,13 +106,16 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as { draftId?: string; action?: "confirm" | "reject"; edits?: unknown };
     if (!body.draftId || !body.draftId.startsWith("wcc-")) throw new Error("invalid_draft");
+    if (body.action !== "confirm" && body.action !== "reject") {
+      throw new Error("invalid_action");
+    }
     if (body.action === "confirm") {
       const draft = await prisma.draftRecord.findUnique({ where: { id: body.draftId } });
       if (!draft?.sessionCode) throw new Error("session_required_before_confirmation");
     }
     return NextResponse.json(await processDraftReview({
       draftId: body.draftId,
-      action: body.action === "reject" ? "reject" : "confirm",
+      action: body.action,
       edits: body.edits,
     }));
   } catch (error) {

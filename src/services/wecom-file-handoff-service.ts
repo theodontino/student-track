@@ -16,6 +16,7 @@ import { WeComExtractionError } from "@/services/wecom-handoff-extraction-servic
 
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const PROCESSING_STALE_AFTER_MS = 30 * 60 * 1000;
 let activeScan: Promise<Awaited<ReturnType<typeof performScanAndConsume>>> | null = null;
 
 export type HandoffAction = "retry" | "align" | "discard";
@@ -74,6 +75,29 @@ export async function writeWccHandoffReceipt(
   );
   await atomicWrite(destination, `${JSON.stringify(receipt, null, 2)}\n`);
   return receipt;
+}
+
+async function attachReceiptAfterFinalization(
+  prisma: PrismaClient,
+  ledgerId: string,
+  sourceId: string,
+  packageId: string,
+  packageSha256: string,
+  status: StudentTrackReceiptV1["status"],
+  outcome?: StudentTrackReceiptV1["outcome"],
+  code?: StudentTrackReceiptV1["code"],
+) {
+  try {
+    const receipt = await writeWccHandoffReceipt(
+      sourceId, packageId, packageSha256, status, outcome, code,
+    );
+    await prisma.weComHandoffPackage.update({
+      where: { id: ledgerId },
+      data: { receiptId: receipt.receiptId },
+    });
+  } catch {
+    // The ledger is already terminal. Receipt repair can safely fill this link later.
+  }
 }
 
 async function markerFiles(root = getWccExchangeRoot()) {
@@ -212,12 +236,30 @@ async function consumeValidatedPackage(
   });
   const same = existingIdentity.find((item) => item.packageSha256 === sha256);
   if (same && !force && !["discovered"].includes(same.status)) {
+    if (same.status === "processing") {
+      const stale = !same.lastAttemptAt
+        || Date.now() - same.lastAttemptAt.getTime() >= PROCESSING_STALE_AFTER_MS;
+      if (stale) {
+        const recovered = await prisma.weComHandoffPackage.update({
+          where: { id: same.id },
+          data: {
+            status: "retryable_failure",
+            code: "internal_error",
+            outcome: null,
+            receiptId: null,
+            processedAt: new Date(),
+          },
+        });
+        await attachReceiptAfterFinalization(
+          prisma, recovered.id, payload.source.id, payload.packageId, sha256,
+          "retryable_failure", undefined, "internal_error",
+        );
+        return { id: recovered.id, status: recovered.status, code: recovered.code };
+      }
+    }
     return { id: same.id, status: "duplicate", outcome: same.outcome };
   }
   if (existingIdentity.some((item) => item.packageSha256 !== sha256)) {
-    const receipt = await writeWccHandoffReceipt(
-      payload.source.id, payload.packageId, sha256, "rejected", undefined, "package_conflict",
-    );
     const conflict = await prisma.weComHandoffPackage.create({
       data: {
         sourceId: payload.source.id,
@@ -227,10 +269,13 @@ async function consumeValidatedPackage(
         code: "package_conflict",
         messageCount: payload.messages.length,
         producedAt: new Date(payload.producedAt),
-        receiptId: receipt.receiptId,
         processedAt: new Date(),
       },
     });
+    await attachReceiptAfterFinalization(
+      prisma, conflict.id, payload.source.id, payload.packageId, sha256,
+      "rejected", undefined, "package_conflict",
+    );
     return { id: conflict.id, status: conflict.status, code: conflict.code };
   }
 
@@ -246,19 +291,19 @@ async function consumeValidatedPackage(
   });
 
   if (!payload.classification.worthProcessing) {
-    const receipt = await writeWccHandoffReceipt(
-      payload.source.id, payload.packageId, sha256, "accepted", "no_value",
-    );
     const updated = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
       data: {
         status: "no_value",
         outcome: "no_value",
-        receiptId: receipt.receiptId,
+        receiptId: null,
         processedAt: new Date(),
         lastAttemptAt: new Date(),
       },
     });
+    await attachReceiptAfterFinalization(
+      prisma, updated.id, payload.source.id, payload.packageId, sha256, "accepted", "no_value",
+    );
     return { id: updated.id, status: updated.status, outcome: updated.outcome };
   }
 
@@ -271,18 +316,18 @@ async function consumeValidatedPackage(
     if (matches.length === 1) matchedStudentId = matches[0].id;
   }
   if (!matchedStudentId) {
-    const receipt = await writeWccHandoffReceipt(
-      payload.source.id, payload.packageId, sha256, "accepted", "pending_review",
-    );
     const pending = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
       data: {
         status: "pending_alignment",
         outcome: "pending_review",
-        receiptId: receipt.receiptId,
+        receiptId: null,
         lastAttemptAt: new Date(),
       },
     });
+    await attachReceiptAfterFinalization(
+      prisma, pending.id, payload.source.id, payload.packageId, sha256, "accepted", "pending_review",
+    );
     return { id: pending.id, status: pending.status, outcome: pending.outcome };
   }
 
@@ -293,51 +338,35 @@ async function consumeValidatedPackage(
   try {
     const result = await consumeWccHandoffPackage(prisma, payload, matchedStudentId);
     const outcome = result.status === "pending_review" ? "pending_review" : "no_value";
-    let receiptId: string | null = null;
-    try {
-      const receipt = await writeWccHandoffReceipt(
-        payload.source.id, payload.packageId, sha256, "accepted", outcome,
-      );
-      receiptId = receipt.receiptId;
-    } catch {
-      // 回执落盘失败不阻塞状态更新；DB 仍能反映最终结果。
-    }
     const updated = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
       data: {
         status: outcome,
         outcome,
-        ...(receiptId ? { receiptId } : {}),
+        receiptId: null,
         processedAt: new Date(),
         code: null,
       },
     });
+    await attachReceiptAfterFinalization(
+      prisma, updated.id, payload.source.id, payload.packageId, sha256, "accepted", outcome,
+    );
     return { id: updated.id, status: updated.status, outcome, draftCount: result.drafts.length };
   } catch (error) {
     const failure = safeFailure(error);
-    let receiptId: string | null = null;
-    try {
-      const receipt = await writeWccHandoffReceipt(
-        payload.source.id,
-        payload.packageId,
-        sha256,
-        failure.status,
-        undefined,
-        failure.code,
-      );
-      receiptId = receipt.receiptId;
-    } catch {
-      // 同上，回执落盘失败不阻塞状态更新。
-    }
     const updated = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
       data: {
         status: failure.status,
         code: failure.code,
-        ...(receiptId ? { receiptId } : {}),
+        receiptId: null,
         processedAt: new Date(),
       },
     });
+    await attachReceiptAfterFinalization(
+      prisma, updated.id, payload.source.id, payload.packageId, sha256,
+      failure.status, undefined, failure.code,
+    );
     return { id: updated.id, status: updated.status, code: updated.code };
   }
 }
@@ -384,17 +413,8 @@ async function performScanAndConsume(prisma: PrismaClient, limit = 20) {
       const existing = await prisma.weComHandoffPackage.findFirst({
         where: { sourceId, packageId, packageSha256: digest },
       });
-      let receipt: StudentTrackReceiptV1 | null = null;
       if (!existing) {
-        receipt = await writeWccHandoffReceipt(
-          sourceId,
-          packageId,
-          digest,
-          "rejected",
-          undefined,
-          failure.code,
-        );
-        await prisma.weComHandoffPackage.create({
+        const rejected = await prisma.weComHandoffPackage.create({
           data: {
             sourceId,
             packageId,
@@ -404,9 +424,12 @@ async function performScanAndConsume(prisma: PrismaClient, limit = 20) {
             messageCount: 0,
             producedAt: new Date(),
             processedAt: new Date(),
-            receiptId: receipt.receiptId,
           },
         });
+        await attachReceiptAfterFinalization(
+          prisma, rejected.id, sourceId, packageId, digest,
+          "rejected", undefined, failure.code,
+        );
       }
       results.push({ status: "rejected", code: failure.code });
     }
@@ -496,24 +519,22 @@ export async function actOnWccHandoffPackage(
   }
   const loaded = await packageForLedger(prisma, id);
   if (action === "discard") {
-    const receipt = await writeWccHandoffReceipt(
-      loaded.payload.source.id,
-      loaded.payload.packageId,
-      loaded.sha256,
-      "accepted",
-      "no_value",
-    );
-    return prisma.weComHandoffPackage.update({
+    const discarded = await prisma.weComHandoffPackage.update({
       where: { id },
       data: {
         status: "discarded",
         outcome: "no_value",
         code: null,
-        receiptId: receipt.receiptId,
+        receiptId: null,
         processedAt: new Date(),
         lastAttemptAt: new Date(),
       },
     });
+    await attachReceiptAfterFinalization(
+      prisma, discarded.id, loaded.payload.source.id, loaded.payload.packageId, loaded.sha256,
+      "accepted", "no_value",
+    );
+    return discarded;
   }
   if (action === "align" && !studentId) throw new Error("student_required");
   return consumeValidatedPackage(

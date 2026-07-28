@@ -112,6 +112,14 @@ export async function processDraftReview(input: ProcessDraftInput) {
       return { status: "rejected" as const, warnings: [], logs: [] };
     }
 
+    const isWccDraft = draft.id.startsWith("wcc-");
+    if (isWccDraft && input.edits !== undefined) {
+      throw new ServiceError("WCC 草案不支持编辑后确认，请保留原始证据", 400);
+    }
+    if (isWccDraft && (!draft.studentId || !draft.sessionCode)) {
+      throw new ServiceError("WCC 草案必须先绑定学生和课次才能确认", 409);
+    }
+
     let source: unknown = input.edits;
     if (source === undefined) {
       try {
@@ -132,6 +140,23 @@ export async function processDraftReview(input: ProcessDraftInput) {
       throw new ServiceError(`关联课次 ${draft.sessionCode} 已被删除，请重新录入`, 409);
     }
 
+    if (isWccDraft && !session) {
+      throw new ServiceError("WCC 草案必须关联有效课次才能确认", 409);
+    }
+
+    const boundWccStudent = isWccDraft && draft.studentId
+      ? await tx.student.findUnique({
+        where: { id: draft.studentId },
+        select: { id: true, name: true, classId: true },
+      })
+      : null;
+    if (isWccDraft && (!boundWccStudent || boundWccStudent.classId !== session?.classId)) {
+      throw new ServiceError("WCC 草案绑定的学生已不存在或与课次班级不一致", 409);
+    }
+    if (isWccDraft && parsedData.students.length !== 1) {
+      throw new ServiceError("WCC 草案必须只包含一名已绑定学生", 422);
+    }
+
     const names = Array.from(new Set(parsedData.students.map((student) => student.name)));
     const matchingStudents = await tx.student.findMany({
       where: {
@@ -140,15 +165,6 @@ export async function processDraftReview(input: ProcessDraftInput) {
       },
       select: { id: true, name: true },
     });
-    const boundWccStudent = draft.id.startsWith("wcc-") && draft.studentId
-      ? await tx.student.findFirst({
-        where: {
-          id: draft.studentId,
-          ...(session?.classId ? { classId: session.classId } : {}),
-        },
-        select: { id: true, name: true },
-      })
-      : null;
     const studentsByName = new Map<string, typeof matchingStudents>();
     for (const student of matchingStudents) {
       studentsByName.set(student.name, [...(studentsByName.get(student.name) ?? []), student]);
@@ -159,7 +175,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
     const logs: Array<{ studentId: string; studentName: string; scores: ParsedStudent["scores"] }> = [];
 
     for (const parsedStudent of parsedData.students) {
-      const matches = boundWccStudent?.name === parsedStudent.name
+      const matches = isWccDraft && boundWccStudent
         ? [boundWccStudent]
         : studentsByName.get(parsedStudent.name) ?? [];
       if (matches.length === 0) {
