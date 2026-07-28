@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+vi.mock("@/lib/llm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/llm")>()),
+  getLLMCompletionOptions: () => ({ max_tokens: 4096, reasoning_effort: "low" }),
+}));
 import { WeComExtractionError } from "@/services/wecom-bridge-service";
 import {
   callLlmWithSchemaFallback,
@@ -184,7 +188,7 @@ describe("callLlmWithSchemaFallback", () => {
     ).rejects.toMatchObject({ code: "provider_error" });
   });
 
-  it("retries without reasoning_effort when the model rejects the low effort hint", async () => {
+  it("keeps the request compatible when the provider reports an unsupported reasoning hint", async () => {
     const reasoningError = Object.assign(new Error("400 Bad Request: reasoning_effort not supported by this model"), {
       status: 400,
     });
@@ -200,9 +204,8 @@ describe("callLlmWithSchemaFallback", () => {
     );
     expect(result.protocol).toBe("json_schema");
     expect(create).toHaveBeenCalledTimes(2);
-    // 第一次：传了 reasoning_effort=low
+    // 首次携带低思考强度；兼容重试会明确去掉该字段。
     expect(create.mock.calls[0][0].reasoning_effort).toBe("low");
-    // 第二次降级：去掉 reasoning_effort
     expect(create.mock.calls[1][0].reasoning_effort).toBeUndefined();
   });
 });

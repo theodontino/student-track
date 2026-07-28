@@ -4,6 +4,7 @@ import { parseInput, reviewParsed, correctNames, llmCallStream, correctNamesWith
 import { SYSTEM_PROMPT } from "@/lib/prompts";
 import { completeClassAttendance } from "@/lib/nlAttendance";
 import { withLLMCacheOperation } from "@/services/llm-cache-service";
+import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 import { DraftStructuredResultSchema, ParseRequestSchema } from "@/lib/contracts/classroom-parse";
 import type { DraftStructuredResult } from "@/lib/types";
 import { apiErrorBody, apiStreamErrorBody, ApiError } from "@/lib/api-errors";
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
 
     const session = await prisma.classSession.findUnique({
       where: { code: sessionCode },
-      select: { classId: true },
+      select: { id: true, classId: true, semesterId: true },
     });
     if (!session) return NextResponse.json({ error: "课次不存在", code: "not_found", retryable: false }, { status: 404 });
     if (!session.classId) return NextResponse.json({ error: "该课次未关联班级，无法补齐考勤", code: "invalid_request", retryable: false }, { status: 400 });
@@ -101,6 +102,14 @@ ${fixedText}
                   studentId: matchedStudentIds[0] ?? null,
                 },
               });
+              await recordSuccessfulGeneration({
+                taskType: "classroom-parse", stage: "parse", semesterId: session.semesterId, classId: session.classId,
+                sessionId: session.id, operationKey: draft.id,
+                sourceRefs: [{ type: "session", id: session.id }, { type: "draft", id: draft.id }, ...matchedStudentIds.map((id) => ({ type: "student" as const, id }))],
+                promptVersion: "classroom-parse-v1", inputSnapshot: { sessionCode, draftId: draft.id },
+                outputSnapshot: { parsedResult, reviewResult, corrections, warnings },
+              }).catch(() => undefined);
+              await compactHotGenerationRecordsForClass(session.classId!).catch(() => undefined);
 
               controller.enqueue(encoder.encode(
                 `data: ${JSON.stringify({ type: "result", draftId: draft.id, parsedResult, reviewResult, corrections, warnings })}\n\n`
@@ -159,6 +168,14 @@ ${fixedText}
           studentId: matchedStudentIds[0] ?? null,  // v0.10: store primary matched studentId
         },
       });
+      await recordSuccessfulGeneration({
+        taskType: "classroom-parse", stage: "parse", semesterId: session.semesterId, classId: session.classId,
+        sessionId: session.id, operationKey: draft.id,
+        sourceRefs: [{ type: "session", id: session.id }, { type: "draft", id: draft.id }, ...matchedStudentIds.map((id) => ({ type: "student" as const, id }))],
+        promptVersion: "classroom-parse-v1", inputSnapshot: { sessionCode, draftId: draft.id },
+        outputSnapshot: { parsedResult, reviewResult, corrections, warnings },
+      }).catch(() => undefined);
+      await compactHotGenerationRecordsForClass(session.classId!).catch(() => undefined);
 
       return {
         draftId: draft.id,

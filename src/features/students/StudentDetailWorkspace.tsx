@@ -6,6 +6,7 @@ import { SemesterContextSelector } from "@/features/teaching-context";
 import { StudentPerformanceOverview } from "./StudentPerformanceOverview";
 import { StudentRecords } from "./StudentRecords";
 import { StudentTrendChart } from "./StudentTrendChart";
+import { StudentTeachingMemory } from "./StudentTeachingMemory";
 import { useStudentDetailWorkspace } from "./useStudentDetailWorkspace";
 
 export default function StudentDetailWorkspace() {
@@ -52,6 +53,7 @@ export default function StudentDetailWorkspace() {
 
       <StudentPerformanceOverview summary={summary} />
       <StudentTrendChart metrics={student.sessionMetrics} />
+      <StudentTeachingMemory studentId={student.id} semesterId={selectedSemesterId || undefined} />
       <StudentRecords
         student={student}
         activePanel={workspace.activePanel}

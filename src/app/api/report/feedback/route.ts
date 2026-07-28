@@ -19,6 +19,7 @@ import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
 } from "@/services/llm-cache-service";
+import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 import { apiErrorBody, ApiError } from "@/lib/api-errors";
 
 async function reviewedFeedback(
@@ -101,13 +102,14 @@ export async function POST(request: NextRequest) {
           "feedback",
           "生成单人课次反馈",
           async () => {
+            const sections = buildFeedbackSections(feedbackContext, routing, assessmentEvidence ? { [studentId]: assessmentEvidence } : {}).get(studentId);
             const promptContext = composeFeedbackPromptContext({
               studentContext: studentContext.promptContext,
               sessionCode,
               studentId,
               lessonMaterial,
               assessmentEvidence,
-              sections: buildFeedbackSections(feedbackContext, routing, assessmentEvidence ? { [studentId]: assessmentEvidence } : {}).get(studentId),
+              sections,
               outputStrategy,
             });
             const forbiddenStudentNames = feedbackContext.students.filter((student) => student.id !== studentId).map((student) => student.name);
@@ -126,8 +128,21 @@ export async function POST(request: NextRequest) {
                   intensity === "priority" ? "110-160字" : "80-120字",
                   forbiddenStudentNames,
                   process.env.NODE_ENV === "test" ? undefined : request.signal,
-                );
+            );
             if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
+            if (result.feedback || result.draftFeedback) {
+              await recordSuccessfulGeneration({
+                taskType: "feedback", stage: intensity === "routine" ? "routine" : "review",
+                semesterId: feedbackContext.session.semesterId, classId: feedbackContext.session.classId,
+                sessionId: feedbackContext.session.id, studentId,
+                sourceRefs: [{ type: "session", id: feedbackContext.session.id }, { type: "student", id: studentId }],
+                promptVersion: "feedback-composable-v1", modelRole: "feedbackReview",
+                inputSnapshot: { sections, outputStrategy, intensity },
+                outputSnapshot: { sections, reviewStatus: result.reviewStatus, draftFeedback: result.draftFeedback },
+                finalText: result.feedback || null,
+              }).catch(() => undefined);
+              await compactHotGenerationRecordsForClass(feedbackContext.session.classId).catch(() => undefined);
+            }
             return result;
           },
         ));
@@ -171,6 +186,11 @@ export async function POST(request: NextRequest) {
       async () => {
         const result = await reviewedFeedback(student.name, context, "120-180字", [], process.env.NODE_ENV === "test" ? undefined : request.signal);
         if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
+        await recordSuccessfulGeneration({
+          taskType: "feedback", stage: "review", classId: student.classId, studentId,
+          sourceRefs: [{ type: "student", id: studentId }], promptVersion: "feedback-recent-v1", modelRole: "feedbackReview",
+          inputSnapshot: { days: d }, outputSnapshot: { reviewStatus: result.reviewStatus, draftFeedback: result.draftFeedback }, finalText: result.feedback || null,
+        }).catch(() => undefined);
         return result;
       },
     ));

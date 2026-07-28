@@ -376,6 +376,89 @@ model TeacherObservationSource {
   @@index([relatedSessionId])
 }
 
+// 12b. 成功的业务级 LLM 生成记录。热数据保留完整业务快照；压缩后只留审计摘要。
+// 不保存供应商原始响应、思维内容、凭据或 WCC 原始聊天。
+model GenerationRecord {
+  id                String   @id @default(cuid())
+  taskType          String   // "feedback" | "teaching-summary" | "classroom-parse" | "wecom-*"
+  stage             String   // "routine" | "draft" | "review" | "interpretation" | "parse" | "extraction"
+  lifecycle         String   @default("hot") // "hot" | "warm" | "purged"
+  semesterId        String?
+  classId           String?
+  sessionId         String?
+  studentId         String?
+  operationKey      String?
+  sourceRefs        String   @default("[]") // JSON；只保存内部业务 ID 与类型
+  sourceFingerprint String
+  promptVersion     String
+  modelName         String
+  modelRole         String?
+  modelSettings     String   @default("{}") // JSON；不保存 endpoint 或凭据
+  inputSnapshot     String?  // JSON；仅热数据
+  outputSnapshot    String?  // JSON；仅热数据
+  finalText         String?  // 仅热数据；教师采纳后更新
+  warmSnapshot      String?  // JSON；不可全盘复原的学期快照
+  generatedAt       DateTime @default(now())
+  adoptedAt         DateTime?
+  compactedAt       DateTime?
+  purgedAt          DateTime?
+  staleAt           DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([lifecycle, generatedAt])
+  @@index([semesterId, classId, sessionId])
+  @@index([studentId, lifecycle])
+  @@index([taskType, generatedAt])
+}
+
+// 12c. 面向后续教学的受控记忆。semesterKey 为学期 ID 或 "long-term"，避免 nullable 唯一键歧义。
+model TeachingMemory {
+  id                String   @id @default(cuid())
+  scopeType         String   // "student" | "class"
+  scopeId           String
+  semesterKey       String
+  semesterId        String?
+  memoryTier        String   // "semester" | "long-term"
+  status            String   @default("confirmed") // "draft" | "confirmed" | "superseded" | "stale"
+  content           String   // JSON（semester）或短文本（long-term）
+  sourceRefs        String   @default("[]")
+  sourceFingerprint String
+  effectiveThrough  String?
+  generatedAt       DateTime @default(now())
+  confirmedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([scopeType, scopeId, semesterKey, memoryTier])
+  @@index([scopeType, scopeId, status])
+  @@index([semesterId, memoryTier])
+}
+
+// 12d. 热/温/长期记忆压缩账本。回滚数据只在短期撤销窗口内存在。
+model MemoryCompactionRun {
+  id              String   @id @default(cuid())
+  classId         String
+  semesterId      String?
+  fromSessionId   String?
+  toSessionId     String?
+  phase           String   // "hot-to-warm" | "warm-to-long"
+  status          String   @default("pending") // "pending" | "running" | "succeeded" | "failed" | "undone"
+  sourceFingerprint String
+  affectedCount   Int      @default(0)
+  resultJson      String?
+  rollbackPayload String?
+  undoUntil       DateTime?
+  failureCode     String?
+  createdAt       DateTime @default(now())
+  completedAt     DateTime?
+  updatedAt       DateTime @updatedAt
+
+  @@unique([classId, phase, sourceFingerprint])
+  @@index([status, createdAt])
+  @@index([classId, phase, completedAt])
+}
+
 // 13. WCC 本地转交包账本；只存包标识、哈希和处理状态，不复制聊天正文。
 model WeComHandoffPackage {
   id                String   @id @default(cuid())

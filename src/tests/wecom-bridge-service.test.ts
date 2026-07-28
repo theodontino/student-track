@@ -20,6 +20,7 @@ vi.mock("@/lib/llm", () => ({
     mocks.getModel(role);
     return "test-model";
   },
+  getLLMCompletionOptions: () => ({ max_tokens: 8192 }),
 }));
 
 const prisma = { student: { findMany: mocks.studentFindMany } } as any;
@@ -80,7 +81,7 @@ describe("wecom bridge service", () => {
     const request = mocks.completionCreate.mock.calls[0][0];
     expect(request.response_format.type).toBe("json_schema");
     expect(request.response_format.json_schema.strict).toBe(true);
-    expect(request.reasoning_effort).toBe("none");
+    expect(request.reasoning_effort).toBeUndefined();
   });
 
   it("keeps JSON Schema when only the reasoning parameter is unsupported", async () => {

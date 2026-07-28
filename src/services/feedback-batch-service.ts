@@ -43,6 +43,7 @@ import {
   type FeedbackSections,
 } from "@/lib/feedback-sections";
 import { buildFeedbackSections } from "@/services/feedback-sections-service";
+import { adoptFeedbackGenerationRecords, compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 
 export type FeedbackBatchInput = z.infer<typeof FeedbackBatchPostSchema>;
 export type FeedbackHistoryModule = "feedback" | "report";
@@ -267,6 +268,8 @@ export async function buildFeedbackBatchExport(
       false,
     );
   }
+  const session = await prisma.classSession.findUnique({ where: { code: sessionCode }, select: { id: true } });
+  if (session) await adoptFeedbackGenerationRecords({ sessionId: session.id, students: state.students.map((card) => ({ id: card.id, feedback: card.feedback })) }).catch(() => undefined);
   const dashboard = await getAlertDashboard({ semesterId: state.semesterId });
   return buildFeedbackExportWorkbook(
     prisma,
@@ -478,6 +481,35 @@ function createGenerationStream(input: {
               .map((item) => [item.studentId, item.intensity])),
             outputStrategy,
           };
+          // Store business-valid LLM results separately from recoverable page history.
+          // Teacher-only mode intentionally has no model result to record.
+          if (outputStrategy.suggestedFeedback) {
+            await Promise.all(cards.flatMap((card) => {
+              const sourceRefs = [
+                { type: "session" as const, id: feedbackContext.session.id },
+                { type: "student" as const, id: card.id },
+              ];
+              const shared = {
+                taskType: "feedback" as const,
+                semesterId: feedbackContext.session.semesterId,
+                classId: feedbackContext.session.classId,
+                sessionId: feedbackContext.session.id,
+                studentId: card.id,
+                sourceRefs,
+                promptVersion: "feedback-composable-v1",
+                inputSnapshot: { sections: card.sections, outputStrategy, intensity: card.feedbackIntensity },
+              };
+              if (card.feedbackIntensity === "routine" && card.feedback) {
+                return [recordSuccessfulGeneration({ ...shared, stage: "routine", modelRole: "feedbackReview", outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus }, finalText: card.feedback })];
+              }
+              const records = [];
+              if (card.draftFeedback) records.push(recordSuccessfulGeneration({ ...shared, stage: "draft", modelRole: "feedbackDraft", outputSnapshot: { sections: card.sections, draftFeedback: card.draftFeedback } }));
+              if (card.feedback) records.push(recordSuccessfulGeneration({ ...shared, stage: "review", modelRole: "feedbackReview", outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus }, finalText: card.feedback }));
+              return records;
+            })).catch(() => undefined);
+            // This scan is deterministic and does not call the model. A history failure must not invalidate feedback.
+            await compactHotGenerationRecordsForClass(feedbackContext.session.classId).catch(() => undefined);
+          }
           await persistState(
             historyModule,
             state,

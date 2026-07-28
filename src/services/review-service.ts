@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { addHighConfidenceAttentionLabels } from "@/services/student-label-service";
+import { adoptGenerationByOperationKey, compactHotGenerationRecordsForClass } from "@/services/generation-memory-service";
 
 type ReviewAction = "confirm" | "reject";
 
@@ -325,6 +326,15 @@ export async function processDraftReview(input: ProcessDraftInput) {
       targetName: entry.studentName,
       detail: { ...entry.scores, operator: "nlReview" },
     });
+  }
+
+  if (result.status === "confirmed") {
+    await adoptGenerationByOperationKey(input.draftId).catch(() => undefined);
+    const draftSession = await prisma.draftRecord.findUnique({ where: { id: input.draftId } });
+    if (draftSession?.sessionCode) {
+      const session = await prisma.classSession.findUnique({ where: { code: draftSession.sessionCode }, select: { classId: true } });
+      if (session?.classId) await compactHotGenerationRecordsForClass(session.classId).catch(() => undefined);
+    }
   }
 
   return {
