@@ -69,6 +69,7 @@ async function main() {
       const expectedTables = [
         "WeComImportState", "WeComImportRun", "WeComImportOperation", "WeComMessageReceipt", "WeComImportChange",
         "TeachingSummaryCache", "TeacherObservation", "TeacherObservationSource",
+        "GenerationRecord", "TeachingMemory", "MemoryCompactionRun",
       ];
       const result = await client.execute({
         sql: `SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN (${expectedTables.map(() => "?").join(",")})`,

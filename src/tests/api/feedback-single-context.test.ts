@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   buildFeedbackContext: vi.fn(),
   completionCreate: vi.fn(),
+  routing: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
@@ -12,15 +13,34 @@ vi.mock("@/services/feedback-context-service", () => ({
   buildFeedbackContext: mocks.buildFeedbackContext,
 }));
 
+vi.mock("@/services/feedback-intensity-service", () => ({
+  buildFeedbackRouting: mocks.routing,
+}));
+
+vi.mock("@/services/feedback-sections-service", () => ({
+  buildFeedbackSections: vi.fn().mockReturnValue(new Map([
+    ["student-1", { currentFact: { content: "学习测验 4 分", evidence: [] } }],
+  ])),
+}));
+
+vi.mock("@/services/generation-memory-service", () => ({
+  recordSuccessfulGeneration: vi.fn().mockResolvedValue(undefined),
+  compactHotGenerationRecordsForClass: vi.fn().mockResolvedValue({ compacted: 0, runId: null }),
+}));
+
 vi.mock("@/lib/llm", () => ({
   createLLMClient: () => ({ chat: { completions: { create: mocks.completionCreate } } }),
   getLLMModel: () => "test-model",
+  getLLMCompletionOptions: (_role: unknown, maxTokens: number) => ({ max_tokens: maxTokens }),
 }));
 
 import { POST } from "@/app/api/report/feedback/route";
 
 describe("/api/report/feedback", () => {
   beforeEach(() => {
+    mocks.routing.mockReset().mockResolvedValue([
+      { studentId: "student-1", baseline: "priority", intensity: "priority", reasons: ["dashboard-warning"] },
+    ]);
     mocks.buildFeedbackContext.mockReset().mockResolvedValue({
       session: {
         id: "session-1",
@@ -73,14 +93,7 @@ describe("/api/report/feedback", () => {
     expect(mocks.buildFeedbackContext).toHaveBeenCalledWith(expect.anything(), "VITEST-SINGLE");
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       max_tokens: 2048,
-      messages: [expect.objectContaining({
-        content: expect.stringContaining("学生标签：#稳定"),
-      })],
-    }));
-    expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
-      messages: [expect.objectContaining({
-        content: expect.stringContaining("近期家校沟通"),
-      })],
+      messages: [expect.objectContaining({ content: expect.stringContaining("【本次已确认事实】学习测验 4 分") })],
     }));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       messages: [expect.objectContaining({

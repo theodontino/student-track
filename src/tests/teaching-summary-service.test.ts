@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({ completionCreate: vi.fn() }));
 vi.mock("@/lib/llm", () => ({
   createLLMClient: () => ({ chat: { completions: { create: mocks.completionCreate } } }),
   getLLMModel: () => "test-teaching-model",
+  getLLMCompletionOptions: () => ({ reasoning_effort: "low" }),
 }));
 import { TEST_FIXTURE } from "../../scripts/test-fixture-data";
 import { TeachingSummaryRequestSchema } from "@/lib/contracts/teaching-summary";
@@ -113,11 +114,66 @@ describe("teaching summary facts", () => {
     expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       response_format: expect.objectContaining({ type: "json_schema" }),
+      reasoning_effort: "low",
     }));
 
     const cached = await generateTeachingSummary(request);
     expect(cached.cache.status).toBe("hit");
     expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back when the configured provider rejects strict JSON Schema", async () => {
+    const request = TeachingSummaryRequestSchema.parse({
+      scope: { type: "session", sessionCode: TEST_FIXTURE.sessions[0].code },
+      includeCommunications: false,
+      forceRefresh: true,
+    });
+    mocks.completionCreate
+      .mockRejectedValueOnce(Object.assign(new Error("response_format is unsupported"), { status: 400 }))
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              overview: "已按兼容模式生成解读。",
+              classComparisons: [],
+              noteworthyChanges: [],
+              suggestedActions: [],
+              observationCandidates: [],
+            }),
+          },
+        }],
+      });
+
+    const generated = await generateTeachingSummary(request);
+    expect(generated.analysis?.overview).toContain("兼容模式");
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(2);
+    expect(mocks.completionCreate.mock.calls[1][0].response_format).toEqual({ type: "json_object" });
+  });
+
+  it("corrects one structurally invalid model response before persisting", async () => {
+    const request = TeachingSummaryRequestSchema.parse({
+      scope: { type: "session", sessionCode: TEST_FIXTURE.sessions[0].code },
+      includeCommunications: false,
+      forceRefresh: true,
+    });
+    mocks.completionCreate
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: JSON.stringify({ observationCandidates: [] }) } }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: JSON.stringify({
+          overview: "纠错后结构完整。",
+          classComparisons: [],
+          noteworthyChanges: [],
+          suggestedActions: [],
+          observationCandidates: [],
+        }) } }],
+      });
+
+    const generated = await generateTeachingSummary(request);
+    expect(generated.analysis?.overview).toContain("纠错后");
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(2);
+    expect(mocks.completionCreate.mock.calls[1][0].response_format).toBeUndefined();
   });
 
   it("rejects an interpretation that cites an unknown short reference", async () => {

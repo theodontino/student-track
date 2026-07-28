@@ -22,6 +22,7 @@ import { getAlertDashboard } from "@/services/alert-service";
 import {
   composeFeedbackPromptContext,
   generateFeedbackDraft,
+  generateRoutineFeedback,
   reviewFeedbackDraft,
   type FeedbackReviewStatus,
 } from "@/services/feedback-generation-service";
@@ -29,6 +30,20 @@ import {
   markCurrentLLMCacheOperationIncomplete,
   withLLMCacheOperation,
 } from "@/services/llm-cache-service";
+import {
+  buildFeedbackRouting,
+} from "@/services/feedback-intensity-service";
+import type {
+  FeedbackIntensity,
+  FeedbackRoutingDecision,
+} from "@/lib/feedback-intensity";
+import {
+  normalizeFeedbackOutputStrategy,
+  type FeedbackOutputStrategy,
+  type FeedbackSections,
+} from "@/lib/feedback-sections";
+import { buildFeedbackSections } from "@/services/feedback-sections-service";
+import { adoptFeedbackGenerationRecords, compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 
 export type FeedbackBatchInput = z.infer<typeof FeedbackBatchPostSchema>;
 export type FeedbackHistoryModule = "feedback" | "report";
@@ -41,6 +56,9 @@ interface FeedbackCard {
   draftFeedback?: string;
   reviewStatus?: FeedbackReviewStatus;
   reviewIssues?: string[];
+  feedbackIntensity?: FeedbackIntensity;
+  feedbackRoutingReasons?: FeedbackRoutingDecision["reasons"];
+  sections?: FeedbackSections;
   contextPreview?: FeedbackContextPreview;
 }
 
@@ -54,6 +72,8 @@ interface FeedbackState {
   inputRevision?: string;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
+  routingOverrides?: Record<string, FeedbackIntensity>;
+  outputStrategy?: FeedbackOutputStrategy;
 }
 
 export type FeedbackBatchExecution =
@@ -135,12 +155,19 @@ function normalizeInputs(input: FeedbackBatchInput) {
 function inputRevision(
   lessonMaterial: LessonFeedbackMaterial | undefined,
   assessmentEvidence: Record<string, StudentAssessmentEvidence>,
+  routing: FeedbackRoutingDecision[],
+  outputStrategy: FeedbackOutputStrategy,
 ) {
   const sortedEvidence = Object.fromEntries(
     Object.entries(assessmentEvidence).sort(([left], [right]) => left.localeCompare(right)),
   );
   return createHash("sha256")
-    .update(JSON.stringify({ lessonMaterial: lessonMaterial ?? null, assessmentEvidence: sortedEvidence }))
+    .update(JSON.stringify({
+      lessonMaterial: lessonMaterial ?? null,
+      assessmentEvidence: sortedEvidence,
+      routing: routing.map(({ studentId, baseline, intensity, reasons }) => ({ studentId, baseline, intensity, reasons })),
+      outputStrategy,
+    }))
     .digest("hex")
     .slice(0, 16);
 }
@@ -185,6 +212,9 @@ function submittedCardsFrom(
       draftFeedback: item.draftFeedback?.trim(),
       reviewStatus: item.reviewStatus,
       reviewIssues: item.reviewIssues?.slice(0, 8),
+      feedbackIntensity: item.feedbackIntensity,
+      feedbackRoutingReasons: item.feedbackRoutingReasons,
+      sections: item.sections,
       contextPreview: student.preview,
     };
   });
@@ -223,6 +253,9 @@ export async function buildFeedbackBatchExport(
     state = history ? parseHistoryState(history.state) : null;
   }
   if (!state) throw new ApiError("尚未生成反馈", 404, "not_found", false);
+  if (state.outputStrategy && !state.outputStrategy.suggestedFeedback) {
+    throw new ApiError("本批次仅生成教师研判，未生成家长反馈文本", 409, "conflict", false);
+  }
 
   const reviewBlockerCount = state.students.filter(
     (card) => card.reviewStatus === "needs_review",
@@ -235,6 +268,8 @@ export async function buildFeedbackBatchExport(
       false,
     );
   }
+  const session = await prisma.classSession.findUnique({ where: { code: sessionCode }, select: { id: true } });
+  if (session) await adoptFeedbackGenerationRecords({ sessionId: session.id, students: state.students.map((card) => ({ id: card.id, feedback: card.feedback })) }).catch(() => undefined);
   const dashboard = await getAlertDashboard({ semesterId: state.semesterId });
   return buildFeedbackExportWorkbook(
     prisma,
@@ -250,6 +285,9 @@ function createGenerationStream(input: {
   revision: string;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence: Record<string, StudentAssessmentEvidence>;
+  routing: FeedbackRoutingDecision[];
+  outputStrategy: FeedbackOutputStrategy;
+  sectionsByStudent: Map<string, FeedbackSections>;
   feedbackContext: Awaited<ReturnType<typeof buildFeedbackContext>>;
   contextByStudent: Map<string, FeedbackContextStudent>;
   signal?: AbortSignal;
@@ -260,14 +298,18 @@ function createGenerationStream(input: {
     revision,
     lessonMaterial,
     assessmentEvidence,
+    routing,
+    outputStrategy,
+    sectionsByStudent,
     feedbackContext,
     contextByStudent,
     signal,
   } = input;
-  const draftClient = createLLMClient("feedbackDraft");
-  const draftModel = getLLMModel("feedbackDraft");
-  const reviewClient = createLLMClient("feedbackReview");
-  const reviewModel = getLLMModel("feedbackReview");
+  const draftClient = outputStrategy.suggestedFeedback ? createLLMClient("feedbackDraft") : null;
+  const draftModel = outputStrategy.suggestedFeedback ? getLLMModel("feedbackDraft") : "";
+  const reviewClient = outputStrategy.suggestedFeedback ? createLLMClient("feedbackReview") : null;
+  const reviewModel = outputStrategy.suggestedFeedback ? getLLMModel("feedbackReview") : "";
+  const routingByStudent = new Map(routing.map((item) => [item.studentId, item]));
   const total = feedbackContext.total;
   const cards: FeedbackCard[] = feedbackContext.students.map((student) => ({
     id: student.id,
@@ -275,6 +317,9 @@ function createGenerationStream(input: {
     labels: student.labels,
     feedback: "",
     contextPreview: student.preview,
+    feedbackIntensity: routingByStudent.get(student.id)?.intensity ?? "routine",
+    feedbackRoutingReasons: routingByStudent.get(student.id)?.reasons ?? [],
+    sections: sectionsByStudent.get(student.id),
   }));
   const encoder = new TextEncoder();
   const throwIfAborted = () => {
@@ -292,6 +337,16 @@ function createGenerationStream(input: {
           for (const window of feedbackBatchWindows(cards, concurrency)) {
             throwIfAborted();
             await Promise.all(window.map(async ({ item: card }) => {
+              if (!outputStrategy.suggestedFeedback) {
+                card.reviewIssues = ["本批次为教师研判模式，未调用模型成文"];
+                return;
+              }
+              if (!reviewClient) throw new Error("反馈成稿模型未配置");
+              if (card.feedbackIntensity === "manual") {
+                card.reviewStatus = "needs_review";
+                card.reviewIssues = ["已设为人工确认，未调用模型"];
+                return;
+              }
               const studentContext = contextByStudent.get(card.id);
               try {
                 const promptContext = composeFeedbackPromptContext({
@@ -300,16 +355,29 @@ function createGenerationStream(input: {
                   studentId: card.id,
                   lessonMaterial,
                   assessmentEvidence: assessmentEvidence[card.id],
+                  sections: card.sections,
+                  outputStrategy,
                 });
-                card.draftFeedback = await generateFeedbackDraft({
-                  studentName: card.name,
-                  promptContext,
-                  lengthRequirement: "120-170字",
-                  client: draftClient,
-                  model: draftModel,
-                  signal,
-                });
-                card.feedback = "";
+                if (card.feedbackIntensity === "routine") {
+                  Object.assign(card, await generateRoutineFeedback({
+                    studentName: card.name,
+                    promptContext,
+                    forbiddenStudentNames: cards.filter((item) => item.id !== card.id).map((item) => item.name),
+                    client: reviewClient,
+                    model: reviewModel,
+                    signal,
+                  }));
+                } else {
+                  card.draftFeedback = await generateFeedbackDraft({
+                    studentName: card.name,
+                    promptContext,
+                    lengthRequirement: card.feedbackIntensity === "priority" ? "110-160字" : "80-120字",
+                    client: draftClient ?? reviewClient,
+                    model: draftModel,
+                    signal,
+                  });
+                  card.feedback = "";
+                }
               } catch (error) {
                 if (signal?.aborted || isAbortError(error)) throw error;
                 console.error(
@@ -327,18 +395,26 @@ function createGenerationStream(input: {
                 type: "draft",
                 studentId: card.id,
                 name: card.name,
-                feedback: "",
+                feedback: card.feedback,
                 draftFeedback: card.draftFeedback,
+                reviewStatus: card.reviewStatus,
+                reviewIssues: card.reviewIssues,
                 completed: index + 1,
                 total,
               })}\n`));
             }
           }
 
-          for (const window of feedbackBatchWindows(cards, concurrency)) {
+          const reviewCards = cards.filter((card) => (
+            outputStrategy.suggestedFeedback
+            &&
+            card.feedbackIntensity !== "routine" && card.feedbackIntensity !== "manual" && Boolean(card.draftFeedback)
+          ));
+          for (const window of feedbackBatchWindows(reviewCards, concurrency)) {
             throwIfAborted();
             await Promise.all(window.map(async ({ item: card }) => {
               if (!card.draftFeedback) return;
+              if (!reviewClient) throw new Error("反馈成稿模型未配置");
               const studentContext = contextByStudent.get(card.id);
               const promptContext = composeFeedbackPromptContext({
                 studentContext: studentContext?.promptContext ?? card.name,
@@ -346,6 +422,8 @@ function createGenerationStream(input: {
                 studentId: card.id,
                 lessonMaterial,
                 assessmentEvidence: assessmentEvidence[card.id],
+                sections: card.sections,
+                outputStrategy,
               });
               try {
                 const reviewed = await reviewFeedbackDraft({
@@ -354,7 +432,7 @@ function createGenerationStream(input: {
                   forbiddenStudentNames: cards
                     .filter((item) => item.id !== card.id)
                     .map((item) => item.name),
-                  lengthRequirement: "120-170字",
+                  lengthRequirement: card.feedbackIntensity === "priority" ? "110-160字" : "80-120字",
                   draftFeedback: card.draftFeedback,
                   client: reviewClient,
                   model: reviewModel,
@@ -398,7 +476,40 @@ function createGenerationStream(input: {
             inputRevision: revision,
             lessonMaterial,
             assessmentEvidence,
+            routingOverrides: Object.fromEntries(routing
+              .filter((item) => item.intensity !== item.baseline)
+              .map((item) => [item.studentId, item.intensity])),
+            outputStrategy,
           };
+          // Store business-valid LLM results separately from recoverable page history.
+          // Teacher-only mode intentionally has no model result to record.
+          if (outputStrategy.suggestedFeedback) {
+            await Promise.all(cards.flatMap((card) => {
+              const sourceRefs = [
+                { type: "session" as const, id: feedbackContext.session.id },
+                { type: "student" as const, id: card.id },
+              ];
+              const shared = {
+                taskType: "feedback" as const,
+                semesterId: feedbackContext.session.semesterId,
+                classId: feedbackContext.session.classId,
+                sessionId: feedbackContext.session.id,
+                studentId: card.id,
+                sourceRefs,
+                promptVersion: "feedback-composable-v1",
+                inputSnapshot: { sections: card.sections, outputStrategy, intensity: card.feedbackIntensity },
+              };
+              if (card.feedbackIntensity === "routine" && card.feedback) {
+                return [recordSuccessfulGeneration({ ...shared, stage: "routine", modelRole: "feedbackReview", outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus }, finalText: card.feedback })];
+              }
+              const records = [];
+              if (card.draftFeedback) records.push(recordSuccessfulGeneration({ ...shared, stage: "draft", modelRole: "feedbackDraft", outputSnapshot: { sections: card.sections, draftFeedback: card.draftFeedback } }));
+              if (card.feedback) records.push(recordSuccessfulGeneration({ ...shared, stage: "review", modelRole: "feedbackReview", outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus }, finalText: card.feedback }));
+              return records;
+            })).catch(() => undefined);
+            // This scan is deterministic and does not call the model. A history failure must not invalidate feedback.
+            await compactHotGenerationRecordsForClass(feedbackContext.session.classId).catch(() => undefined);
+          }
           await persistState(
             historyModule,
             state,
@@ -437,7 +548,27 @@ export async function executeFeedbackBatch(
   if (signal?.aborted) throw new ApiError("反馈生成已取消", 499, "cancelled", false);
 
   const normalized = normalizeInputs(input);
-  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence);
+  const feedbackContext = await buildFeedbackContext(prisma, input.sessionCode);
+  const contextByStudent = new Map(
+    feedbackContext.students.map((student) => [student.id, student]),
+  );
+  const unknownOverrideStudent = Object.keys(input.routingOverrides ?? {})
+    .find((studentId) => !contextByStudent.has(studentId));
+  if (unknownOverrideStudent) {
+    throw new ApiError("反馈档位包含不属于当前课次班级的学生", 400, "invalid_request", false);
+  }
+  const routing = await buildFeedbackRouting(prisma, feedbackContext);
+  const routingByStudent = new Map(routing.map((item) => [item.studentId, item]));
+  for (const [studentId, intensity] of Object.entries(input.routingOverrides ?? {})) {
+    const decision = routingByStudent.get(studentId);
+    if (decision) decision.intensity = intensity;
+  }
+  const outputStrategy = normalizeFeedbackOutputStrategy(
+    input.outputStrategy && typeof input.outputStrategy === "object"
+      ? input.outputStrategy as Partial<FeedbackOutputStrategy>
+      : undefined,
+  );
+  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence, routing, outputStrategy);
   const key = cacheKey(historyModule, input.sessionCode);
   const cached = cache.get(key);
   if (
@@ -448,11 +579,6 @@ export async function executeFeedbackBatch(
   ) {
     return { kind: "json", body: { cached: true, ...cached } };
   }
-
-  const feedbackContext = await buildFeedbackContext(prisma, input.sessionCode);
-  const contextByStudent = new Map(
-    feedbackContext.students.map((student) => [student.id, student]),
-  );
   const foreignEvidenceStudent = Object.keys(normalized.assessmentEvidence)
     .find((studentId) => !contextByStudent.has(studentId));
   if (foreignEvidenceStudent) {
@@ -476,6 +602,8 @@ export async function executeFeedbackBatch(
       inputRevision: revision,
       lessonMaterial: normalized.lessonMaterial,
       assessmentEvidence: normalized.assessmentEvidence,
+      routingOverrides: input.routingOverrides,
+      outputStrategy,
     };
     await persistState(
       historyModule,
@@ -496,6 +624,9 @@ export async function executeFeedbackBatch(
       assessmentEvidence: normalized.assessmentEvidence,
       feedbackContext,
       contextByStudent,
+      routing,
+      outputStrategy,
+      sectionsByStudent: buildFeedbackSections(feedbackContext, routing, normalized.assessmentEvidence),
       signal,
     }),
   };

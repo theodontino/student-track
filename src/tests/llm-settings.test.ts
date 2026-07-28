@@ -53,6 +53,26 @@ describe("llm-settings", () => {
     });
   });
 
+  it("persists model token and reasoning controls with safe defaults", () => {
+    saveLLMProfile({
+      name: "Local",
+      apiBaseUrl: "http://localhost:1234/v1",
+      apiKey: "lm-studio",
+      model: "local-model",
+      maxTokens: 8192,
+      reasoningEnabled: true,
+      reasoningEffort: "medium",
+    });
+    expect(getEffectiveLLMSettings()).toMatchObject({
+      maxTokens: 8192,
+      reasoningEnabled: true,
+      reasoningEffort: "medium",
+    });
+    expect(() => validateLLMSettings({
+      apiBaseUrl: "http://localhost:1234/v1", apiKey: "x", model: "m", maxTokens: 12,
+    })).toThrow("Max tokens");
+  });
+
   it("falls back to environment values after clearing saved settings", () => {
     saveLLMProfile({
       name: "Local",

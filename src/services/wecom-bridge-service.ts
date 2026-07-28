@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { FEEDBACK_COMMUNICATION_CATEGORIES } from "@/lib/feedback-communication";
-import { createLLMClient, getLLMModel } from "@/lib/llm";
+import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 
 export interface GenerateWeComBridgeInput {
@@ -67,7 +67,7 @@ const candidateBridgeSchema = {
         type: "object",
         additionalProperties: false,
         required: [
-          "kind", "source", "matchedStudent", "occurredAt", "sessionCode", "target",
+          "kind", "source", "matchedStudent", "occurredAt", "target",
           "summary", "summaryForStudentTrack", "feedbackUse", "feedbackContext", "attentionSignals", "confidence",
         ],
         properties: {
@@ -94,7 +94,6 @@ const candidateBridgeSchema = {
             },
           },
           occurredAt: { type: "string" },
-          sessionCode: { type: ["string", "null"] },
           target: { type: "string" },
           summary: { type: "string" },
           summaryForStudentTrack: { type: "string" },
@@ -434,15 +433,17 @@ async function createStructuredCompletion(
   model: string,
   prompt: string,
   temperature: number,
-  schema: typeof candidateBridgeSchema | typeof groundedBridgeSchema,
+  schema: Record<string, unknown>,
   onRetry?: GenerateWeComBridgeOptions["onRetry"],
 ): Promise<{ response: CompletionResponse; protocol: "json_schema" | "json_object" }> {
   const base = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
     temperature,
-    max_tokens: 8192,
+    ...getLLMCompletionOptions("wecomExtraction", 8192),
   };
+  const { reasoning_effort: _reasoningEffort, ...baseWithoutReasoning } = base;
+  void _reasoningEffort;
   const schemaFormat = {
     type: "json_schema" as const,
     json_schema: { name: "wecom_candidate", strict: true, schema },
@@ -452,14 +453,13 @@ async function createStructuredCompletion(
     const response = await callOnceWithNetworkRetry(() => client.chat.completions.create({
       ...base,
       response_format: schemaFormat,
-      reasoning_effort: "none",
     }), onRetry);
     return { response, protocol: "json_schema" };
   } catch (error) {
     if (isReasoningUnsupported(error)) {
       try {
         const response = await callOnceWithNetworkRetry(() => client.chat.completions.create({
-          ...base,
+          ...baseWithoutReasoning,
           response_format: schemaFormat,
         }), onRetry);
         return { response, protocol: "json_schema" };
@@ -486,6 +486,21 @@ async function createStructuredCompletion(
     }
     throw classifyProviderError(error);
   }
+}
+
+export async function createWecomStructuredCompletion(
+  client: CompletionClient,
+  model: string,
+  prompt: string,
+  temperature: number,
+  schema: Record<string, unknown>,
+  onRetry?: GenerateWeComBridgeOptions["onRetry"],
+): Promise<{ response: CompletionResponse; protocol: "json_schema" | "json_object" }> {
+  return createStructuredCompletion(client, model, prompt, temperature, schema, onRetry);
+}
+
+export function classifyWeComProviderError(error: unknown): WeComExtractionError {
+  return classifyProviderError(error);
 }
 
 function classifyProviderError(error: unknown): WeComExtractionError {
@@ -635,7 +650,7 @@ ${promptText}`
 学生名单：
 ${JSON.stringify(roster, null, 2)}
 
-输出必须严格符合提供的 JSON Schema。只生成 kind=communication 的记录；只有对后续课后反馈有中高价值的信息才令 feedbackUse.relevant=true 并输出：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。收悉、感谢、排课、报名缴费、接送、普通请假、文件发送、群通知和无新增事实的寒暄不得输出。越接近当前时间且尚未被后续消息取代的信息，priority 越高。没有有价值的新事实时 records 返回空数组。不能明确匹配唯一学生时 confidence 填 low，不得臆测。没有明确课次时 sessionCode 填 null。summaryForStudentTrack 只保留家长关注点、学生状态和仍需兑现的行动。attentionSignals 只根据明确文字事实识别 academic-performance、learning-confidence、parent-concern、withdrawal-intent，没有时返回空数组。输入提供的会话 ID 和消息 ID 必须照抄，messageIds 只包含支撑记录的输入消息 ID。只是重复 recentCommunications 且没有新事实、新变化或新行动时不生成记录。
+输出必须严格符合提供的 JSON Schema。只生成 kind=communication 的记录；只有对后续课后反馈有中高价值的信息才令 feedbackUse.relevant=true 并输出：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。收悉、感谢、排课、报名缴费、接送、普通请假、文件发送、群通知和无新增事实的寒暄不得输出。越接近当前时间且尚未被后续消息取代的信息，priority 越高。没有有价值的新事实时 records 返回空数组。不能明确匹配唯一学生时 confidence 填 low，不得臆测。summaryForStudentTrack 只保留家长关注点、学生状态和仍需兑现的行动。attentionSignals 只根据明确文字事实识别 academic-performance、learning-confidence、parent-concern、withdrawal-intent，没有时返回空数组。输入提供的会话 ID 和消息 ID 必须照抄，messageIds 只包含支撑记录的输入消息 ID。只是重复 recentCommunications 且没有新事实、新变化或新行动时不生成记录。
 
 当前连续交流段：
 ${text}`;

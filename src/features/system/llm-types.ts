@@ -4,6 +4,9 @@ export interface LLMProfile {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
+  maxTokens?: number;
+  reasoningEnabled?: boolean;
+  reasoningEffort?: "low" | "medium" | "high";
   createdAt: string;
   updatedAt: string;
 }
@@ -16,6 +19,9 @@ export interface LLMSettingsResponse {
     apiBaseUrl: string;
     apiKey: string;
     model: string;
+    maxTokens?: number;
+    reasoningEnabled?: boolean;
+    reasoningEffort?: "low" | "medium" | "high";
     updatedAt?: string;
   };
 }
@@ -31,6 +37,9 @@ export type LLMProfileForm = Partial<LLMProfile> & {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
+  maxTokens?: number;
+  reasoningEnabled?: boolean;
+  reasoningEffort?: "low" | "medium" | "high";
 };
 
 export const EMPTY_LLM_PROFILE: LLMProfileForm = {
@@ -38,4 +47,7 @@ export const EMPTY_LLM_PROFILE: LLMProfileForm = {
   apiBaseUrl: "http://localhost:1234/v1",
   apiKey: "lm-studio",
   model: "",
+  maxTokens: 4096,
+  reasoningEnabled: false,
+  reasoningEffort: "low",
 };

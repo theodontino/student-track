@@ -12,6 +12,13 @@ function errorResponse(error: unknown, fallback: string) {
   return NextResponse.json(apiErrorBody(failure), { status: failure.status });
 }
 
+function feedbackRequestFieldHints(error: { issues: Array<{ path: PropertyKey[] }> }) {
+  return [...new Set(error.issues
+    .map((issue) => issue.path.map(String).join("."))
+    .filter(Boolean))]
+    .slice(0, 5);
+}
+
 // GET /api/report/feedback-batch?sessionCode=xxx&module=feedback
 export async function GET(request: NextRequest) {
   try {
@@ -42,7 +49,10 @@ export async function POST(request: NextRequest) {
     const rawBody: unknown = await request.json().catch(() => null);
     const parsed = FeedbackBatchPostSchema.safeParse(rawBody);
     if (!parsed.success) {
-      throw new ApiError("反馈请求格式无效", 400, "invalid_request", false, parsed.error.flatten());
+      // 只暴露字段路径，不返回学生文本、PDF 内容或完整请求体。
+      const fields = feedbackRequestFieldHints(parsed.error);
+      const suffix = fields.length ? `：请检查 ${fields.join("、")}` : "";
+      throw new ApiError(`反馈请求格式无效${suffix}`, 400, "invalid_request", false);
     }
     const result = await executeFeedbackBatch(parsed.data, request.signal);
     if (result.kind === "json") return NextResponse.json(result.body);

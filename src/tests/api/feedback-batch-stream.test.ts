@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   historyCreate: vi.fn(),
   completionCreate: vi.fn(),
+  routing: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -34,6 +35,7 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/llm", () => ({
   createLLMClient: () => ({ chat: { completions: { create: mocks.completionCreate } } }),
   getLLMModel: () => "test-model",
+  getLLMCompletionOptions: (_role: unknown, maxTokens: number) => ({ max_tokens: maxTokens }),
 }));
 
 vi.mock("@/services/feedback-context-service", () => ({
@@ -79,6 +81,17 @@ vi.mock("@/services/feedback-context-service", () => ({
   }),
 }));
 
+vi.mock("@/services/feedback-intensity-service", () => ({
+  buildFeedbackRouting: mocks.routing,
+}));
+
+vi.mock("@/services/feedback-sections-service", () => ({
+  buildFeedbackSections: vi.fn().mockReturnValue(new Map([
+    ["student-1", { currentFact: { content: "学习测验 4 分", evidence: [] } }],
+    ["student-2", { currentFact: { content: "学习测验无记录", evidence: [] } }],
+  ])),
+}));
+
 import { POST } from "@/app/api/report/feedback-batch/route";
 
 const lessonMaterial = {
@@ -109,12 +122,34 @@ const assessmentEvidence = {
 
 describe("feedback batch NDJSON stream", () => {
   beforeEach(() => {
+    mocks.routing.mockReset().mockResolvedValue([
+      { studentId: "student-1", baseline: "priority", intensity: "priority", reasons: ["dashboard-warning"] },
+      { studentId: "student-2", baseline: "priority", intensity: "priority", reasons: ["dashboard-warning"] },
+    ]);
     mocks.historyCreate.mockReset().mockResolvedValue({ id: "history-1" });
     mocks.completionCreate.mockReset()
       .mockResolvedValueOnce({ choices: [{ message: { content: "甲反馈" } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: "乙反馈" } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "甲反馈", issues: [] }) } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "乙反馈", issues: [] }) } }] });
+  });
+
+  it("returns safe field hints when a saved feedback request is incomplete", async () => {
+    const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        saveState: true,
+        lessonMaterial: { version: 1 },
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("lessonMaterial"),
+      code: "invalid_request",
+    });
   });
 
   it("streams progress by studentId, persists final cards, and returns full cached data", async () => {
@@ -150,17 +185,10 @@ describe("feedback batch NDJSON stream", () => {
     expect(mocks.historyCreate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ module: "feedback", key: "VITEST-STREAM" }),
     }));
-    expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
-      max_tokens: 2048,
-      messages: [expect.objectContaining({
-        content: expect.stringContaining("近期家校沟通"),
-      })],
-    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
-      messages: [expect.objectContaining({
-        content: expect.stringContaining("#稳定"),
-      })],
-    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    const promptContents = mocks.completionCreate.mock.calls.map((call) => call[0].messages[0].content);
+    expect(promptContents.some((content) => content.includes("【本次已确认事实】学习测验 4 分"))).toBe(true);
+    expect(promptContents.some((content) => content.includes("近期家校沟通"))).toBe(false);
+    expect(promptContents.some((content) => content.includes("#稳定"))).toBe(false);
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       messages: [expect.objectContaining({
         content: expect.stringContaining("示例出门测"),
@@ -285,10 +313,41 @@ describe("feedback batch NDJSON stream", () => {
     expect(events[1]).toMatchObject({ studentId: "student-1", feedback: "", draftFeedback: "甲重试反馈" });
     expect(events[2]).toMatchObject({ studentId: "student-2", feedback: "" });
     expect(events[3]).toMatchObject({ studentId: "student-1", reviewStatus: "passed" });
-    expect(events[4]).toMatchObject({ studentId: "student-2", reviewStatus: "needs_review" });
+    expect(events[2]).toMatchObject({ studentId: "student-2", reviewStatus: "needs_review" });
+    expect(events[4]).toMatchObject({ type: "done" });
+    expect(events[4].students).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "student-2", reviewStatus: "needs_review" }),
+    ]));
     expect(mocks.completionCreate).toHaveBeenCalledWith(expect.objectContaining({
       max_tokens: 2048,
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
+  it("creates teacher-only structured cards without invoking the model", async () => {
+    mocks.completionCreate.mockReset();
+    const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        bypassCache: true,
+        outputStrategy: {
+          flaggedIssue: true,
+          trendChange: true,
+          backgroundBaseline: true,
+          strategySuggestion: true,
+          suggestedFeedback: false,
+        },
+      }),
+    }));
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(events.at(-1).students[0]).toMatchObject({
+      id: "student-1",
+      feedback: "",
+      sections: { currentFact: { content: "学习测验 4 分" } },
+    });
+    expect(mocks.completionCreate).not.toHaveBeenCalled();
   });
 
   it("stops in-flight model work and does not persist an aborted batch", async () => {
@@ -314,7 +373,7 @@ describe("feedback batch NDJSON stream", () => {
 
     expect(response.headers.get("content-type")).toContain("application/x-ndjson");
     const body = response.text();
-    await vi.waitFor(() => expect(mocks.completionCreate).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mocks.completionCreate).toHaveBeenCalled());
     controller.abort();
 
     await expect(body).resolves.toContain("\"type\":\"init\"");

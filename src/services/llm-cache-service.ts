@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -33,6 +33,7 @@ interface LLMCacheContext {
   pendingWrites: Set<Promise<void>>;
   cacheWarning: boolean;
   incomplete: boolean;
+  replayIndex: Map<string, string>;
 }
 
 export interface LLMCacheSummary extends LLMCacheManifest {
@@ -46,8 +47,14 @@ export interface LLMCacheOverview {
   operations: LLMCacheSummary[];
 }
 
+export interface LLMCacheReplayHit {
+  response: Response;
+  source: { directory: string; callNumber: string; startedAt: string; taskType: LLMTaskType };
+}
+
 const DEFAULT_CACHE_LIMIT_BYTES = 256 * 1024 * 1024;
 const manifestName = "manifest.json";
+const replayIndexName = "replay-index.json";
 const storage = new AsyncLocalStorage<LLMCacheContext>();
 const activeDirectories = new Set<string>();
 
@@ -58,6 +65,34 @@ function cacheRoot() {
 function cacheLimitBytes() {
   const configured = Number(process.env.LLM_CACHE_MAX_BYTES);
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_CACHE_LIMIT_BYTES;
+}
+
+function replayEnabled() {
+  const configured = process.env.LLM_CACHE_REPLAY;
+  return /^(1|true|on|enabled)$/i.test(configured || "");
+}
+
+// 复用的"指纹"：同模型 + 同消息 + 同参数 + 同响应格式，认定可以安全复用历史响应。
+function computeReplayKey(payload: unknown): string {
+  let canonical: string;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    // 只有完整请求完全一致才可复用。简化 schema/reasoning 等字段会让“重新生成”
+    // 或协议降级错误地命中旧响应。
+    canonical = stableStringify(record);
+  } else {
+    canonical = stableStringify(payload ?? null);
+  }
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 32);
+}
+
+// 对任意 JSON 值生成稳定字符串：对象 key 按字典序排序，数组保持原顺序。
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
 }
 
 function shanghaiDate(date = new Date()) {
@@ -190,12 +225,15 @@ async function prepareCacheArea() {
 }
 
 async function clearOlderSuccessfulGeneration(current: LLMCacheContext) {
+  // 当前操作一旦成功完成，它自己就是同任务类型下"最新一次成功"。
+  // 把其它更早的成功操作清掉，给后续批次留一份干净的可复用基线。
+  // 失败 / 中断的同类型操作不删（它们对排障仍然有用）。
   for (const directory of await operationDirectories()) {
     if (directory === current.directory || activeDirectories.has(directory)) continue;
     const manifest = await readManifest(directory);
-    if (manifest?.taskType === current.manifest.taskType) {
-      await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-    }
+    if (manifest?.taskType !== current.manifest.taskType) continue;
+    if (manifest.status !== "succeeded") continue;
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -212,6 +250,75 @@ async function writeForContext(context: LLMCacheContext, filePath: string, value
   }
 }
 
+async function writeReplayIndex(context: LLMCacheContext) {
+  if (context.replayIndex.size === 0) return;
+  const entries: Record<string, { callNumber: string; capturedAt: string }> = {};
+  const capturedAt = new Date().toISOString();
+  for (const [key, callNumber] of context.replayIndex) {
+    entries[key] = { callNumber, capturedAt };
+  }
+  await writePrivateJson(path.join(context.directory, replayIndexName), {
+    version: 1,
+    taskType: context.manifest.taskType,
+    entries,
+  });
+}
+
+async function findReplayResponse(
+  taskType: LLMTaskType,
+  replayKey: string,
+  currentDirectory: string,
+): Promise<LLMCacheReplayHit | null> {
+  // 在"同任务类型、非当前/活跃目录"里挑最近一次仍然有索引的（成功或中断都算，只要那次调用的响应完整）。
+  const candidates: Array<{ directory: string; startedAt: string; indexPath: string }> = [];
+  for (const directory of await operationDirectories()) {
+    if (directory === currentDirectory || activeDirectories.has(directory)) continue;
+    const manifest = await readManifest(directory);
+    if (manifest?.taskType !== taskType) continue;
+    candidates.push({ directory, startedAt: manifest.startedAt, indexPath: path.join(directory, replayIndexName) });
+  }
+  candidates.sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+
+  for (const candidate of candidates) {
+    const indexRaw = await readFile(candidate.indexPath, "utf8").catch(() => null);
+    if (!indexRaw) continue;
+    let index: { entries?: Record<string, { callNumber: string }> };
+    try { index = JSON.parse(indexRaw) as typeof index; } catch { continue; }
+    const entry = index.entries?.[replayKey];
+    if (!entry) continue;
+    const responsePath = path.join(candidate.directory, "calls", entry.callNumber, "response.json");
+    const responseRaw = await readFile(responsePath, "utf8").catch(() => null);
+    if (!responseRaw) continue;
+    let responseFile: { status?: number; content?: string; reasoningContent?: string; finishReason?: string | null; usage?: unknown };
+    try { responseFile = JSON.parse(responseRaw) as typeof responseFile; } catch { continue; }
+    if (responseFile.status && responseFile.status >= 400) continue;
+    if (typeof responseFile.content !== "string") continue;
+    const message: Record<string, unknown> = { content: responseFile.content };
+    if (responseFile.reasoningContent) message.reasoning_content = responseFile.reasoningContent;
+    const body = JSON.stringify({
+      choices: [{ finish_reason: responseFile.finishReason ?? "stop", message }],
+      ...(responseFile.usage ? { usage: responseFile.usage } : {}),
+    });
+    return {
+      response: new Response(body, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "X-LLM-Cache-Replay": "1",
+          "X-LLM-Cache-Source": path.basename(path.dirname(path.dirname(candidate.directory))),
+        },
+      }),
+      source: {
+        directory: candidate.directory,
+        callNumber: entry.callNumber,
+        startedAt: candidate.startedAt,
+        taskType,
+      },
+    };
+  }
+  return null;
+}
+
 async function completeOperation(context: LLMCacheContext, status: "succeeded" | "failed") {
   await Promise.allSettled([...context.pendingWrites]);
   context.manifest = {
@@ -223,6 +330,8 @@ async function completeOperation(context: LLMCacheContext, status: "succeeded" |
       : context.incomplete ? "任务包含待人工处理结果，缓存已保留" : null,
   };
   await writePrivateJson(path.join(context.directory, manifestName), context.manifest).catch(() => undefined);
+  // 把内存中的 replay 索引落盘，给后续批次复用。
+  await writeReplayIndex(context).catch(() => undefined);
   activeDirectories.delete(context.directory);
   if (status === "succeeded" && !context.incomplete) await clearOlderSuccessfulGeneration(context);
   await enforceCapacity();
@@ -252,6 +361,7 @@ export async function withLLMCacheOperation<T>(
     pendingWrites: new Set(),
     cacheWarning: false,
     incomplete: false,
+    replayIndex: new Map(),
   };
   activeDirectories.add(directory);
   await writeForContext(context, path.join(directory, manifestName), context.manifest);
@@ -330,12 +440,45 @@ export async function llmCacheFetch(
     try { requestPayload = JSON.parse(init.body); }
     catch { requestPayload = { body: init.body }; }
   }
+  const replayKey = computeReplayKey(requestPayload);
   await writeForContext(context, path.join(callDirectory, "request.json"), {
     createdAt: new Date().toISOString(),
     role,
+    replayKey,
     request: requestPayload,
   });
   await writeForContext(context, path.join(context.directory, manifestName), context.manifest);
+
+  // 命中历史缓存就直接复用，避免再次付费调用 LLM；
+  // 流式响应暂时不参与复用（实现复杂，且现有场景里很少出现）。
+  if (replayEnabled() && !isStreamingRequest(requestPayload)) {
+    try {
+      const replay = await findReplayResponse(context.manifest.taskType, replayKey, context.directory);
+      if (replay) {
+        const snapshot = await snapshotReplayResponse(replay.response.clone());
+        await writeForContext(context, path.join(callDirectory, "replay.json"), {
+          replayedAt: new Date().toISOString(),
+          source: {
+            directory: replay.source.directory,
+            callNumber: replay.source.callNumber,
+            startedAt: replay.source.startedAt,
+            taskType: replay.source.taskType,
+          },
+          // 把复用到的正文也留底，便于排障 / 复现。
+          responseSnapshot: snapshot,
+        });
+        await writeForContext(context, path.join(callDirectory, "response.json"), {
+          completedAt: new Date().toISOString(),
+          ...parseResponseBody(snapshot.body),
+          status: snapshot.status,
+        });
+        context.replayIndex.set(replayKey, String(callNumber).padStart(3, "0"));
+        return replay.response;
+      }
+    } catch {
+      // 复用失败不影响主流程，继续走真实 LLM 请求。
+    }
+  }
 
   let response: Response;
   try {
@@ -385,14 +528,33 @@ export async function llmCacheFetch(
       return;
     }
     const request = requestPayload && typeof requestPayload === "object" ? requestPayload as Record<string, unknown> : {};
+    const parsed = request.stream === true ? parseStreamBody(body) : parseResponseBody(body);
     await writeForContext(context, path.join(callDirectory, "response.json"), {
       completedAt: new Date().toISOString(),
       status: response.status,
-      ...(request.stream === true ? parseStreamBody(body) : parseResponseBody(body)),
+      ...parsed,
     });
+    // 只把"非流式 + 成功 + 有正文"的响应纳入复用索引。
+    if (request.stream !== true && parsed.content) {
+      context.replayIndex.set(replayKey, String(callNumber).padStart(3, "0"));
+    }
   }).catch(() => { context.cacheWarning = true; });
   addPending(context, cacheWrite);
   return cachedResponse;
+}
+
+function isStreamingRequest(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as Record<string, unknown>).stream === true;
+}
+
+async function snapshotReplayResponse(response: Response): Promise<{ status: number; body: string }> {
+  try {
+    const body = await response.text();
+    return { status: response.status, body };
+  } catch {
+    return { status: response.status, body: "" };
+  }
 }
 
 export async function getLLMCacheOverview(): Promise<LLMCacheOverview> {

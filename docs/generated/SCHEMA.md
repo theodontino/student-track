@@ -55,9 +55,55 @@ erDiagram
     TEXT rawText
     DATETIME createdAt
   }
+  GenerationRecord {
+    TEXT id PK
+    TEXT taskType
+    TEXT stage
+    TEXT lifecycle
+    TEXT semesterId
+    TEXT classId
+    TEXT sessionId
+    TEXT studentId
+    TEXT operationKey
+    TEXT sourceRefs
+    TEXT sourceFingerprint
+    TEXT promptVersion
+    TEXT modelName
+    TEXT modelRole
+    TEXT modelSettings
+    TEXT inputSnapshot
+    TEXT outputSnapshot
+    TEXT finalText
+    TEXT warmSnapshot
+    DATETIME generatedAt
+    DATETIME adoptedAt
+    DATETIME compactedAt
+    DATETIME purgedAt
+    DATETIME staleAt
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
   Label {
     TEXT id PK
     TEXT name UK
+  }
+  MemoryCompactionRun {
+    TEXT id PK
+    TEXT classId
+    TEXT semesterId
+    TEXT fromSessionId
+    TEXT toSessionId
+    TEXT phase
+    TEXT status
+    TEXT sourceFingerprint
+    INTEGER affectedCount
+    TEXT resultJson
+    TEXT rollbackPayload
+    DATETIME undoUntil
+    TEXT failureCode
+    DATETIME createdAt
+    DATETIME completedAt
+    DATETIME updatedAt
   }
   Semester {
     TEXT id PK
@@ -134,6 +180,23 @@ erDiagram
     TEXT communicationId PK,FK
     TEXT relatedSessionId FK
     DATETIME createdAt
+  }
+  TeachingMemory {
+    TEXT id PK
+    TEXT scopeType
+    TEXT scopeId
+    TEXT semesterKey
+    TEXT semesterId
+    TEXT memoryTier
+    TEXT status
+    TEXT content
+    TEXT sourceRefs
+    TEXT sourceFingerprint
+    TEXT effectiveThrough
+    DATETIME generatedAt
+    DATETIME confirmedAt
+    DATETIME createdAt
+    DATETIME updatedAt
   }
   TeachingSummaryCache {
     TEXT id PK
@@ -318,6 +381,7 @@ erDiagram
 | `sourceKey` | `TEXT` | 否 | unique |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
+复合唯一约束：`studentId + sessionId + summary`。
 
 ### DraftRecord
 
@@ -347,6 +411,38 @@ erDiagram
 
 复合唯一约束：`studentId + sessionId + description`。
 
+### GenerationRecord
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `taskType` | `TEXT` | 是 |  |
+| `stage` | `TEXT` | 是 |  |
+| `lifecycle` | `TEXT` | 是 | default: 'hot' |
+| `semesterId` | `TEXT` | 否 |  |
+| `classId` | `TEXT` | 否 |  |
+| `sessionId` | `TEXT` | 否 |  |
+| `studentId` | `TEXT` | 否 |  |
+| `operationKey` | `TEXT` | 否 |  |
+| `sourceRefs` | `TEXT` | 是 | default: '[]' |
+| `sourceFingerprint` | `TEXT` | 是 |  |
+| `promptVersion` | `TEXT` | 是 |  |
+| `modelName` | `TEXT` | 是 |  |
+| `modelRole` | `TEXT` | 否 |  |
+| `modelSettings` | `TEXT` | 是 | default: '{}' |
+| `inputSnapshot` | `TEXT` | 否 |  |
+| `outputSnapshot` | `TEXT` | 否 |  |
+| `finalText` | `TEXT` | 否 |  |
+| `warmSnapshot` | `TEXT` | 否 |  |
+| `generatedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `adoptedAt` | `DATETIME` | 否 |  |
+| `compactedAt` | `DATETIME` | 否 |  |
+| `purgedAt` | `DATETIME` | 否 |  |
+| `staleAt` | `DATETIME` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+
 ### Label
 
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
@@ -354,6 +450,29 @@ erDiagram
 | `id` | `TEXT` | 是 | PK |
 | `name` | `TEXT` | 是 | unique |
 
+
+### MemoryCompactionRun
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `classId` | `TEXT` | 是 |  |
+| `semesterId` | `TEXT` | 否 |  |
+| `fromSessionId` | `TEXT` | 否 |  |
+| `toSessionId` | `TEXT` | 否 |  |
+| `phase` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 | default: 'pending' |
+| `sourceFingerprint` | `TEXT` | 是 |  |
+| `affectedCount` | `INTEGER` | 是 | default: 0 |
+| `resultJson` | `TEXT` | 否 |  |
+| `rollbackPayload` | `TEXT` | 否 |  |
+| `undoUntil` | `DATETIME` | 否 |  |
+| `failureCode` | `TEXT` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `completedAt` | `DATETIME` | 否 |  |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`classId + phase + sourceFingerprint`。
 
 ### Semester
 
@@ -466,6 +585,28 @@ erDiagram
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 复合唯一约束：`observationId + communicationId`。
+
+### TeachingMemory
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `scopeType` | `TEXT` | 是 |  |
+| `scopeId` | `TEXT` | 是 |  |
+| `semesterKey` | `TEXT` | 是 |  |
+| `semesterId` | `TEXT` | 否 |  |
+| `memoryTier` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 | default: 'confirmed' |
+| `content` | `TEXT` | 是 |  |
+| `sourceRefs` | `TEXT` | 是 | default: '[]' |
+| `sourceFingerprint` | `TEXT` | 是 |  |
+| `effectiveThrough` | `TEXT` | 否 |  |
+| `generatedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `confirmedAt` | `DATETIME` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`scopeType + scopeId + semesterKey + memoryTier`。
 
 ### TeachingSummaryCache
 
