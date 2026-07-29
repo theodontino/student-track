@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createClient } from "@libsql/client";
 import { createHash } from "node:crypto";
-import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -186,27 +186,40 @@ async function main() {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "student-track-upgrade-"));
   const copiedDatabase = path.join(temporaryDirectory, "upgrade.db");
   try {
-    await copyFile(liveDatabase, copiedDatabase);
-    const before = await inspect(copiedDatabase);
-    const prismaCli = path.join(projectRoot, "node_modules", "prisma", "build", "index.js");
-    const migration = spawnSync(process.execPath, [prismaCli, "migrate", "deploy"], {
-      cwd: projectRoot,
-      env: { ...process.env, DATABASE_URL: `file:${copiedDatabase}` },
-      stdio: "pipe",
-      encoding: "utf8",
-    });
-    if (migration.status !== 0) {
-      const details = [migration.stdout, migration.stderr]
-        .map((value) => value.trim())
-        .filter(Boolean)
-        .join("\n");
-      throw new Error(`数据库副本迁移失败${details ? `：\n${details}` : ""}`);
+    const verifiedLiveCopy = await access(liveDatabase).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      },
+    );
+    if (verifiedLiveCopy) {
+      await copyFile(liveDatabase, copiedDatabase);
+      const before = await inspect(copiedDatabase);
+      const prismaCli = path.join(projectRoot, "node_modules", "prisma", "build", "index.js");
+      const migration = spawnSync(process.execPath, [prismaCli, "migrate", "deploy"], {
+        cwd: projectRoot,
+        env: { ...process.env, DATABASE_URL: `file:${copiedDatabase}` },
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      if (migration.status !== 0) {
+        const details = [migration.stdout, migration.stderr]
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .join("\n");
+        throw new Error(`数据库副本迁移失败${details ? `：\n${details}` : ""}`);
+      }
+      const after = await inspect(copiedDatabase, before.columns);
+      assertPreserved(before, after, "真实数据库副本");
+      await assertV11Schema(copiedDatabase);
     }
-    const after = await inspect(copiedDatabase, before.columns);
-    assertPreserved(before, after, "真实数据库副本");
-    await assertV11Schema(copiedDatabase);
     await verifySyntheticUpgrade(projectRoot, temporaryDirectory);
-    console.log("数据库升级验证通过：全新迁移链、固定合成旧库和真实库副本均正常；既有业务表行数与原字段内容指纹未改变，1.1 账本表完整。");
+    console.log(
+      verifiedLiveCopy
+        ? "数据库升级验证通过：全新迁移链、固定合成旧库和真实库副本均正常；既有业务表行数与原字段内容指纹未改变，1.1 账本表完整。"
+        : "数据库升级验证通过：全新迁移链和固定合成旧库均正常；未发现可读取的真实数据库，已跳过真实库副本验证。",
+    );
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
