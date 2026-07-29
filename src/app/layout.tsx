@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 import AppShell from "@/components/AppShell";
 import { PaletteProvider } from "@/features/appearance";
@@ -17,8 +18,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" className="h-full antialiased" suppressHydrationWarning>
-      <head><script dangerouslySetInnerHTML={{ __html: paletteBootstrap }} /></head>
-      <body><PaletteProvider><AppShell>{children}</AppShell></PaletteProvider></body>
+      <body>
+        <Script id="palette-bootstrap" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: paletteBootstrap }} />
+        <PaletteProvider><AppShell>{children}</AppShell></PaletteProvider>
+      </body>
     </html>
   );
 }

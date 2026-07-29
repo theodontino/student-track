@@ -1,4 +1,4 @@
-import { DIM_CONFIG, SCORE_COLORS } from "@/lib/constants";
+import { DIM_CONFIG } from "@/lib/constants";
 import type { CardScore } from "@/lib/types";
 
 interface Props {
@@ -30,7 +30,15 @@ export default function StudentScoreGrid({ cards, genders, onScore, onPresent, o
                   <div key={dimension.key} className="quick-score-card__dimension">
                     <span>{dimension.label}</span>
                     <div>{[0, 1, 2, 3, 4, 5].map((value) => (
-                      <button key={value} type="button" onClick={() => onScore(index, dimension.key, value)} className={`quick-score-card__value ${value === score ? `${SCORE_COLORS[value]} scale-110 is-selected` : ""}`}>{value}</button>
+                      <button
+                        key={value}
+                        type="button"
+                        data-score={value}
+                        onClick={() => onScore(index, dimension.key, value)}
+                        className={`quick-score-card__value ${value === score ? "scale-110 is-selected" : ""}`}
+                      >
+                        {value}
+                      </button>
                     ))}</div>
                   </div>
                 );
