@@ -92,7 +92,7 @@ vi.mock("@/services/feedback-sections-service", () => ({
   ])),
 }));
 
-import { POST } from "@/app/api/report/feedback-batch/route";
+import { GET, POST } from "@/app/api/report/feedback-batch/route";
 
 const lessonMaterial = {
   version: 1,
@@ -172,6 +172,7 @@ describe("feedback batch NDJSON stream", () => {
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
     expect(events.map((event) => event.type)).toEqual(["init", "draft", "draft", "review", "review", "done"]);
+    expect(events[0].inputRevision).toMatch(/^[a-f0-9]{16}$/);
     expect(events[0].students[0]).toMatchObject({
       id: "student-1",
       contextPreview: expect.objectContaining({
@@ -185,6 +186,11 @@ describe("feedback batch NDJSON stream", () => {
       expect.objectContaining({ id: "student-1", feedback: "甲反馈", reviewStatus: "passed" }),
       expect.objectContaining({ id: "student-2", feedback: "乙反馈", reviewStatus: "passed" }),
     ]);
+    expect(events[5]).toMatchObject({
+      batchStatus: "completed",
+      batchPhase: "completed",
+      completedStudentIds: ["student-1", "student-2"],
+    });
     expect(mocks.historyCreate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ module: "feedback", key: "VITEST-STREAM" }),
     }));
@@ -300,6 +306,106 @@ describe("feedback batch NDJSON stream", () => {
         expect.objectContaining({ id: "student-2", feedback: "乙手动编辑反馈" }),
       ],
     });
+  });
+
+  it("preflights input revisions, saves partial results explicitly, and never exports or caches them as complete", async () => {
+    const revisionResponse = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        revisionOnly: true,
+        lessonMaterial,
+        assessmentEvidence,
+      }),
+    }));
+    const revision = await revisionResponse.json();
+    expect(revision).toMatchObject({ inputRevision: expect.stringMatching(/^[a-f0-9]{16}$/), total: 2 });
+    expect(mocks.completionCreate).not.toHaveBeenCalled();
+
+    const changedRevisionResponse = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        revisionOnly: true,
+        lessonMaterial: { ...lessonMaterial, lessonTitle: "输入已变化" },
+        assessmentEvidence,
+      }),
+    }));
+    const changedRevision = await changedRevisionResponse.json();
+    expect(changedRevision.inputRevision).not.toBe(revision.inputRevision);
+
+    const partialResponse = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        saveState: true,
+        savePartial: true,
+        inputRevision: revision.inputRevision,
+        completedStudentIds: ["student-1", "student-1"],
+        failedStudentIds: [],
+        interruptionReason: "合成断网",
+        lessonMaterial,
+        assessmentEvidence,
+        students: [
+          { id: "student-1", feedback: "甲已完成", reviewStatus: "passed" },
+          { id: "student-2", feedback: "" },
+        ],
+      }),
+    }));
+    expect(partialResponse.status).toBe(200);
+    await expect(partialResponse.json()).resolves.toMatchObject({
+      saved: true,
+      batchStatus: "incomplete",
+      total: 2,
+      completedStudentIds: ["student-1"],
+      interruptionReason: "合成断网",
+    });
+    const partialState = JSON.parse(mocks.historyCreate.mock.calls.at(-1)![0].data.state);
+    expect(partialState).toMatchObject({ batchStatus: "incomplete", total: 2 });
+
+    const blockedExport = await GET(new NextRequest("http://localhost:3000/api/report/feedback-batch?sessionCode=VITEST-STREAM&module=feedback"));
+    expect(blockedExport.status).toBe(409);
+    await expect(blockedExport.json()).resolves.toMatchObject({ error: expect.stringContaining("尚未完成") });
+
+    const historyWrites = mocks.historyCreate.mock.calls.length;
+    const stalePartial = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        saveState: true,
+        savePartial: true,
+        inputRevision: "stale-revision",
+        completedStudentIds: ["student-1"],
+        lessonMaterial,
+        assessmentEvidence,
+        students: [{ id: "student-1", feedback: "不应保存" }],
+      }),
+    }));
+    expect(stalePartial.status).toBe(409);
+    await expect(stalePartial.json()).resolves.toMatchObject({ error: expect.stringContaining("输入已经变化") });
+    expect(mocks.historyCreate).toHaveBeenCalledTimes(historyWrites);
+
+    const generationAfterPartial = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionCode: "VITEST-STREAM",
+        historyModule: "feedback",
+        lessonMaterial,
+        assessmentEvidence,
+      }),
+    }));
+    expect(generationAfterPartial.headers.get("content-type")).toContain("application/x-ndjson");
+    await generationAfterPartial.text();
+    expect(mocks.completionCreate).toHaveBeenCalled();
   });
 
   it("retries empty internal analysis without exposing it as parent feedback", async () => {

@@ -27,6 +27,7 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
     return total;
   }, { routine: 0, attention: 0, priority: 0, manual: 0 });
   const activePreset = feedbackOutputPresetFor(workspace.outputStrategy);
+  const completedStudentIds = new Set(workspace.feedbackBatch.completedStudentIds);
   const strategyLabels: Array<{ key: FeedbackOutputSectionKey; label: string }> = [
     { key: "flaggedIssue", label: "挂牌问题" },
     { key: "trendChange", label: "趋势变化" },
@@ -35,8 +36,24 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
     { key: "suggestedFeedback", label: "建议反馈文本（调用模型）" },
   ];
   return (
-    <Section title={mode === "generate" ? "生成班级反馈" : "编辑与导出"} description={mode === "generate" ? "先生成可追溯的教师研判；只有勾选建议反馈文本时才调用模型成文。" : "逐条检查和修改；待人工确认项处理完后才能导出。导出工作簿含“课后反馈”和仅教师使用的“教师内部研判”两张表。"} actions={<>{mode === "generate" && <>{workspace.generating && <Button variant="warning" onClick={workspace.cancelGeneration}>停止生成</Button>}<Button onClick={() => void workspace.generate()} disabled={!workspace.canGenerate}>{workspace.generating ? `${workspace.feedbackPhase === "review" ? "成稿与审核" : "生成"}中 ${workspace.feedbackDone}/${workspace.feedbackTotal}` : workspace.outputStrategy.suggestedFeedback ? "生成班级反馈" : "生成教师研判"}</Button></>}{mode === "export" && <><Button variant="secondary" onClick={workspace.prepareRegeneration}>重新生成</Button><Button onClick={() => void workspace.exportFeedback()} disabled={workspace.exporting || !workspace.feedbackCards.length || workspace.feedbackReviewBlockerCount > 0 || !workspace.outputStrategy.suggestedFeedback}>{workspace.exporting ? "导出中…" : "导出课后反馈表"}</Button></>}</>}>
+    <Section title={mode === "generate" ? "生成班级反馈" : "编辑与导出"} description={mode === "generate" ? "先生成可追溯的教师研判；只有勾选建议反馈文本时才调用模型成文。" : "逐条检查和修改；待人工确认项处理完后才能导出。导出工作簿含“课后反馈”和仅教师使用的“教师内部研判”两张表。"} actions={<>{mode === "generate" && <>{workspace.generating && <Button variant="warning" onClick={workspace.cancelGeneration}>停止生成</Button>}<Button onClick={() => void workspace.generate()} disabled={!workspace.canGenerate}>{workspace.generating ? `${workspace.feedbackPhase === "review" ? "成稿与审核" : "生成"}中 ${workspace.feedbackDone}/${workspace.feedbackTotal}` : workspace.outputStrategy.suggestedFeedback ? "生成班级反馈" : "生成教师研判"}</Button></>}{mode === "export" && <><Button variant="secondary" onClick={workspace.prepareRegeneration}>重新生成</Button><Button onClick={() => void workspace.exportFeedback()} disabled={workspace.exporting || !workspace.feedbackCards.length || workspace.feedbackReviewBlockerCount > 0 || !workspace.outputStrategy.suggestedFeedback || !workspace.canExportFeedback}>{workspace.exporting ? "导出中…" : "导出课后反馈表"}</Button></>}</>}>
       <div className="feedback-generation">
+        {mode === "export" && workspace.feedbackBatch.status === "incomplete" && <StatusBanner tone="warning">
+          <div className="feedback-incomplete-batch">
+            <div><strong>批次未完成</strong><span>已保留 {workspace.feedbackBatch.completedStudentIds.length}/{workspace.feedbackBatch.total} 名学生的可用结果。{workspace.feedbackBatch.interruptionReason}</span></div>
+            <div>
+              <Button uiSize="sm" onClick={() => void workspace.continueIncompleteBatch()} disabled={workspace.generating}>{workspace.generating ? "继续处理中…" : "继续未完成/失败学生"}</Button>
+              <Button uiSize="sm" variant="secondary" onClick={() => void workspace.savePartialFeedbackState()} disabled={!workspace.feedbackBatch.completedStudentIds.length || workspace.generating}>保存当前部分结果</Button>
+              <Button uiSize="sm" variant="warning" onClick={workspace.abandonIncompleteBatch} disabled={workspace.generating}>放弃本批次</Button>
+            </div>
+          </div>
+        </StatusBanner>}
+        {mode === "export" && workspace.feedbackBatch.status === "stale" && <StatusBanner tone="danger">
+          <div className="feedback-incomplete-batch">
+            <div><strong>旧结果已失效</strong><span>{workspace.feedbackBatch.interruptionReason}。旧卡片仅供核对，不能继续处理或导出。</span></div>
+            <Button uiSize="sm" variant="warning" onClick={workspace.abandonIncompleteBatch}>放弃旧批次并重新开始</Button>
+          </div>
+        </StatusBanner>}
         {mode === "generate" && <section className="feedback-output-strategy" aria-label="本次输出策略">
           <div><strong>本次输出策略</strong><p>续班告警始终只在教师内部显示，不会进入模型请求、家长文本或导出文件。</p></div>
           <div className="feedback-output-strategy__presets">{Object.entries(FEEDBACK_OUTPUT_PRESETS).map(([key, preset]) => <Button key={key} uiSize="sm" variant={activePreset === key ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy(preset.strategy)}>{preset.label}</Button>)}</div>
@@ -61,8 +78,10 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
           const labels = context?.labels.length ? context.labels : card.labels;
           const review = card.reviewStatus ? reviewLabels[card.reviewStatus] : null;
           const sections = card.sections;
+          const unfinished = (workspace.feedbackBatch.status === "incomplete" || workspace.feedbackBatch.status === "stale")
+            && !completedStudentIds.has(card.id);
           return <article key={card.id} className="feedback-card">
-            <header><strong>{card.name}</strong><div>{card.feedbackIntensity && <Badge tone={card.feedbackIntensity === "priority" ? "warning" : card.feedbackIntensity === "attention" ? "info" : "neutral"}>{FEEDBACK_INTENSITY_LABELS[card.feedbackIntensity]}</Badge>}{workspace.confirmedAssessmentEvidence[card.id] && <Badge tone="info">出门测证据</Badge>}{review && <Badge tone={review.tone}>{review.label}</Badge>}{labels.map((label) => <Badge key={label} tone="info">{label}</Badge>)}</div></header>
+            <header><strong>{card.name}</strong><div>{unfinished && <Badge tone="warning">未完成</Badge>}{card.feedbackIntensity && <Badge tone={card.feedbackIntensity === "priority" ? "warning" : card.feedbackIntensity === "attention" ? "info" : "neutral"}>{FEEDBACK_INTENSITY_LABELS[card.feedbackIntensity]}</Badge>}{workspace.confirmedAssessmentEvidence[card.id] && <Badge tone="info">出门测证据</Badge>}{review && <Badge tone={review.tone}>{review.label}</Badge>}{labels.map((label) => <Badge key={label} tone="info">{label}</Badge>)}</div></header>
             {context && <p className="feedback-card__context">{context.preview.today.slice(0, 2).join("；")}{context.preview.communications.length ? `；${context.preview.communications[0]}` : ""}</p>}
             {sections && <details className="feedback-card__sections" open={mode === "export"}>
               <summary>查看本次结构化研判</summary>
@@ -77,7 +96,7 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
             </details>}
             {card.reviewIssues?.length ? <ul className="feedback-card__review-issues">{card.reviewIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
             {card.draftFeedback && card.draftFeedback !== card.feedback && <details className="feedback-card__draft"><summary>查看内部分析草稿</summary><p>{card.draftFeedback}</p></details>}
-            {workspace.outputStrategy.suggestedFeedback ? <><Textarea aria-label={`${card.name}反馈`} value={card.feedback} onChange={(event) => workspace.updateFeedback(card.id, event.target.value)} rows={5} /><footer><Button variant="ghost" uiSize="sm" onClick={() => void navigator.clipboard?.writeText(card.feedback)}>复制</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateOne(card.id)} disabled={workspace.regeneratingId === card.id}>{workspace.regeneratingId === card.id ? "生成中…" : "单独重写"}</Button></footer></> : <StatusBanner tone="info">教师研判模式未生成家长文本；如需导出，请重新生成并勾选“建议反馈文本”。</StatusBanner>}
+            {workspace.outputStrategy.suggestedFeedback ? <><Textarea aria-label={`${card.name}反馈`} value={card.feedback} onChange={(event) => workspace.updateFeedback(card.id, event.target.value)} rows={5} disabled={workspace.feedbackBatch.status === "stale"} /><footer><Button variant="ghost" uiSize="sm" onClick={() => void navigator.clipboard?.writeText(card.feedback)}>复制</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateOne(card.id)} disabled={workspace.regeneratingId === card.id || workspace.feedbackBatch.status === "stale"}>{workspace.regeneratingId === card.id ? "生成中…" : "单独重写"}</Button></footer></> : <StatusBanner tone="info">教师研判模式未生成家长文本；如需导出，请重新生成并勾选“建议反馈文本”。</StatusBanner>}
           </article>;
         })}
       </div>

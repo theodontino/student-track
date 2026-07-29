@@ -24,6 +24,7 @@ test.describe("v0.19.0 workflow UX", () => {
     } }));
     await page.setViewportSize({ width: 1180, height: 900 });
     await page.goto("/wecom");
+    await page.getByLabel("查看").selectOption("review");
     const output = page.locator("code", { hasText: longPackageId });
     await expect(output).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

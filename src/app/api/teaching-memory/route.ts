@@ -15,6 +15,7 @@ const QuerySchema = z.object({
   studentId: z.string().trim().min(1).optional(),
   classId: z.string().trim().min(1).optional(),
   semesterId: z.string().trim().min(1).optional(),
+  operations: z.literal("1").optional(),
 });
 
 const ActionSchema = z.discriminatedUnion("action", [
@@ -32,6 +33,7 @@ export async function GET(request: NextRequest) {
       studentId: url.searchParams.get("studentId") || undefined,
       classId: url.searchParams.get("classId") || undefined,
       semesterId: url.searchParams.get("semesterId") || undefined,
+      operations: url.searchParams.get("operations") || undefined,
     });
     if (!parsed.success) return NextResponse.json({ error: "查询参数不完整" }, { status: 400 });
     const scopeWhere = parsed.data.studentId
@@ -39,19 +41,37 @@ export async function GET(request: NextRequest) {
       : parsed.data.classId
         ? { scopeType: "class", scopeId: parsed.data.classId }
         : {};
-    const [memories, history, drafts] = await Promise.all([
+    const [memories, history, drafts, classes, undoableRuns] = await Promise.all([
       getConfirmedTeachingMemory(parsed.data, prisma),
       listGenerationHistory(parsed.data, prisma),
       prisma.teachingMemory.findMany({ where: { ...scopeWhere, memoryTier: "long-term", status: "draft" }, orderBy: { generatedAt: "desc" }, take: 100 }),
+      parsed.data.operations
+        ? prisma.class.findMany({ orderBy: [{ name: "asc" }, { code: "asc" }], select: { id: true, name: true, code: true } })
+        : Promise.resolve([]),
+      parsed.data.operations ? prisma.memoryCompactionRun.findMany({
+        where: {
+          phase: "hot-to-warm",
+          status: "succeeded",
+          rollbackPayload: { not: null },
+          undoUntil: { gte: new Date() },
+        },
+        orderBy: { completedAt: "desc" },
+        take: 100,
+      }) : Promise.resolve([]),
     ]);
     const studentIds = drafts.filter((item) => item.scopeType === "student").map((item) => item.scopeId);
-    const classIds = drafts.filter((item) => item.scopeType === "class").map((item) => item.scopeId);
-    const [students, classes] = await Promise.all([
-      prisma.student.findMany({ where: { id: { in: studentIds } }, select: { id: true, name: true } }),
-      prisma.class.findMany({ where: { id: { in: classIds } }, select: { id: true, name: true, code: true } }),
+    const students = await prisma.student.findMany({ where: { id: { in: studentIds } }, select: { id: true, name: true } });
+    const names = new Map([
+      ...students.map((item) => [item.id, item.name] as const),
+      ...classes.map((item) => [item.id, item.name ?? item.code] as const),
     ]);
-    const names = new Map([...students.map((item) => [item.id, item.name] as const), ...classes.map((item) => [item.id, item.name ?? item.code] as const)]);
-    return NextResponse.json({ memories, history, drafts: drafts.map((item) => ({ ...item, scopeName: names.get(item.scopeId) ?? "已删除对象" })) });
+    return NextResponse.json({
+      memories,
+      history,
+      classes,
+      drafts: drafts.map((item) => ({ ...item, scopeName: names.get(item.scopeId) ?? "已删除对象" })),
+      undoableRuns: undoableRuns.map((run) => ({ ...run, className: names.get(run.classId) ?? "已删除班级" })),
+    });
   } catch (error) {
     const safe = safeApiError(error, "读取教学记忆失败");
     return NextResponse.json(apiErrorBody(safe), { status: safe.status });

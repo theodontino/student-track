@@ -51,13 +51,17 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
   });
 
   await page.goto("/wecom");
-  await page.getByRole("tab", { name: "中转仓库" }).click();
-  await expect(page.getByRole("heading", { name: "WCC 中转仓库" })).toBeVisible();
+  await page.getByRole("tab", { name: "接收与诊断" }).click();
+  await expect(page.getByRole("heading", { name: "接收与诊断" })).toBeVisible();
   await page.getByRole("button", { name: "扫描并接收新包" }).click();
   await expect(page.getByText(/已检查 1 个文件包/)).toBeVisible();
   await page.getByLabel("匹配学生").selectOption("student-test");
   await page.getByRole("button", { name: "确认匹配并处理" }).click();
+  await expect(page.getByText("处理完成", { exact: true })).toBeVisible();
+  await page.getByLabel("查看").selectOption("review");
   await expect(page.getByText("已进入教师复核")).toBeVisible();
+  await expect(page.getByText("合成学生", { exact: true })).toBeVisible();
+  await expect(page.locator("code", { hasText: "pkg-test-1" })).toBeVisible();
 });
 
 test("handoff receipt repair requires a read-only preflight and explicit confirmation", async ({ page }) => {

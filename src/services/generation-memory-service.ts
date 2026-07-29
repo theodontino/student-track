@@ -48,10 +48,11 @@ interface SemesterMemoryContent {
   items: StoredWarmItem[];
 }
 
-interface LongTermDraft {
-  scopeType: MemoryScopeType;
-  scopeId: string;
-  text: string;
+interface LongTermSemesterEvidence {
+  semesterMemoryId: string;
+  semesterId: string | null;
+  effectiveThrough: string | null;
+  items: StoredWarmItem[];
   sourceRefs: GenerationSourceRef[];
 }
 
@@ -127,6 +128,7 @@ export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerati
     where: {
       taskType: input.taskType,
       stage: input.stage,
+      lifecycle: "hot",
       semesterId: input.semesterId ?? null,
       classId: input.classId ?? null,
       sessionId: input.sessionId ?? null,
@@ -373,13 +375,40 @@ export async function clearExpiredCompactionRollbacks(db: PrismaClient = prisma)
   });
 }
 
-function warmDetails(record: { warmSnapshot: string | null; sourceRefs: string; taskType: string; stage: string }) {
-  return {
-    taskType: record.taskType,
-    stage: record.stage,
-    snapshot: safeJsonParse(record.warmSnapshot),
-    sourceRefs: safeJsonParse(record.sourceRefs),
-  };
+function hasReliableSummary(value: unknown): boolean {
+  if (typeof value === "string") return Boolean(value.trim());
+  if (Array.isArray(value)) return value.some(hasReliableSummary);
+  if (!value || typeof value !== "object") return false;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => key !== "generated" && key !== "reviewStatus");
+  return entries.some(([, item]) => hasReliableSummary(item));
+}
+
+function semesterEvidenceForRecords(input: {
+  rows: Array<{ id: string; semesterId: string | null }>;
+  memories: Array<{
+    id: string;
+    semesterId: string | null;
+    content: string;
+    sourceRefs: string;
+    effectiveThrough: string | null;
+  }>;
+}): LongTermSemesterEvidence[] {
+  const generationIds = new Set(input.rows.map((row) => row.id));
+  const semesterIds = new Set(input.rows.flatMap((row) => row.semesterId ? [row.semesterId] : []));
+  return input.memories.flatMap((memory) => {
+    if (!memory.semesterId || !semesterIds.has(memory.semesterId)) return [];
+    const items = parseMemory(memory.content).items
+      .filter((item) => generationIds.has(item.generationId) && hasReliableSummary(item.summary));
+    if (!items.length) return [];
+    return [{
+      semesterMemoryId: memory.id,
+      semesterId: memory.semesterId,
+      effectiveThrough: memory.effectiveThrough,
+      items,
+      sourceRefs: parseSourceRefs(memory.sourceRefs),
+    }];
+  });
 }
 
 /** Generates one constrained class batch of long-term memory drafts when warm records become six months old. */
@@ -388,70 +417,158 @@ export async function generateLongTermMemoryDraftsForClass(classId: string, db: 
   const cutoff = new Date(Date.now() - LONG_TERM_AFTER_DAYS * 86400000).toISOString().slice(0, 10);
   const sessions = await db.classSession.findMany({ where: { classId, date: { lte: cutoff } }, select: { id: true, semesterId: true, code: true } });
   const sessionIds = sessions.map((session) => session.id);
-  if (!sessionIds.length) return { drafts: 0, skipped: true };
-  const records = await db.generationRecord.findMany({ where: { classId, lifecycle: "warm", sessionId: { in: sessionIds } }, orderBy: { generatedAt: "asc" } });
-  if (!records.length) return { drafts: 0, skipped: true };
+  if (!sessionIds.length) return { drafts: 0, skipped: true, reason: "no_eligible_sessions", runId: null as string | null, skippedScopes: 0 };
+  const records = await db.generationRecord.findMany({
+    where: { classId, lifecycle: "warm", sessionId: { in: sessionIds } },
+    orderBy: [{ generatedAt: "asc" }, { id: "asc" }],
+  });
+  if (!records.length) return { drafts: 0, skipped: true, reason: "no_eligible_warm_records", runId: null as string | null, skippedScopes: 0 };
   const grouped = new Map<string, typeof records>();
   for (const record of records) {
-    const key = record.studentId ?? `class:${record.semesterId ?? "unknown"}`;
+    const key = record.studentId ?? `class:${classId}`;
     grouped.set(key, [...(grouped.get(key) ?? []), record]);
   }
-  const payload = [...grouped.entries()].map(([scopeId, rows]) => ({
-    ref: `M${String(payloadIndex(scopeId, grouped)).padStart(3, "0")}`,
-    scopeType: scopeId.startsWith("class:") ? "class" : "student",
-    scopeId: scopeId.startsWith("class:") ? classId : scopeId,
-    evidence: rows.map(warmDetails),
-    generationIds: rows.map((record) => record.id),
-  }));
-  const sourceFingerprint = fingerprint(payload);
-  const existing = await db.teachingMemory.findMany({ where: { scopeType: { in: ["student", "class"] }, scopeId: { in: payload.map((item) => item.scopeId) }, semesterKey: "long-term", memoryTier: "long-term", sourceFingerprint } });
-  if (existing.length === payload.length) return { drafts: 0, skipped: true };
-  const client = createLLMClient();
-  const model = getLLMModel();
-  const response = await client.chat.completions.create({
-    model,
-    temperature: 0,
-    ...getLLMCompletionOptions(undefined, 2048),
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: "你是教师内部教学档案助手。只根据输入的已压缩事实，写极短、可长期保留的背景。不得评价人格、不得写续班或内部风险、不得补充未给出的事实。每项最多 120 字。只返回 JSON。" },
-      { role: "user", content: `返回 {"items":[{"ref":"M001","text":"..."}]}。每个 ref 必须来自输入，不能遗漏或新增。\n${JSON.stringify(payload)}` },
-    ],
+  const studentScopeIds = [...grouped.keys()].filter((scopeId) => !scopeId.startsWith("class:"));
+  const semesterMemories = await db.teachingMemory.findMany({
+    where: {
+      memoryTier: "semester",
+      status: "confirmed",
+      OR: [
+        { scopeType: "class", scopeId: classId },
+        ...(studentScopeIds.length ? [{ scopeType: "student", scopeId: { in: studentScopeIds } }] : []),
+      ],
+    },
+    select: { id: true, scopeType: true, scopeId: true, semesterId: true, content: true, sourceRefs: true, effectiveThrough: true },
+    orderBy: { id: "asc" },
   });
-  const raw = response.choices[0]?.message?.content ?? "";
-  let parsed: { items?: Array<{ ref?: string; text?: string }> } = {};
-  try { parsed = JSON.parse(raw) as typeof parsed; } catch { throw new Error("long_term_memory_invalid"); }
-  const result = new Map((parsed.items ?? []).flatMap((item) => typeof item.ref === "string" && typeof item.text === "string" ? [[item.ref, item.text.trim()]] : []));
-  if (result.size !== payload.length || payload.some((item) => !result.get(item.ref))) throw new Error("long_term_memory_invalid");
-  const now = new Date();
-  await db.$transaction(payload.map((item) => {
-    const text = result.get(item.ref) ?? "";
-    const refs = uniqueRefs([
-      ...item.evidence.flatMap((entry) => Array.isArray(entry.sourceRefs) ? entry.sourceRefs as GenerationSourceRef[] : []),
-      ...item.generationIds.map((id) => ({ type: "generation" as const, id })),
-    ]);
-    return db.teachingMemory.upsert({
-      where: { scopeType_scopeId_semesterKey_memoryTier: { scopeType: item.scopeType, scopeId: item.scopeId, semesterKey: "long-term", memoryTier: "long-term" } },
-      create: { scopeType: item.scopeType, scopeId: item.scopeId, semesterKey: "long-term", memoryTier: "long-term", status: "draft", content: text, sourceRefs: sourceRefJson(refs), sourceFingerprint, generatedAt: now },
-      update: { status: "draft", content: text, sourceRefs: sourceRefJson(refs), sourceFingerprint, generatedAt: now, confirmedAt: null },
+  const existingLongTerm = await db.teachingMemory.findMany({
+    where: {
+      memoryTier: "long-term",
+      semesterKey: "long-term",
+      OR: [
+        { scopeType: "class", scopeId: classId },
+        ...(studentScopeIds.length ? [{ scopeType: "student", scopeId: { in: studentScopeIds } }] : []),
+      ],
+    },
+  });
+  const previousByScope = new Map(existingLongTerm.map((memory) => [`${memory.scopeType}:${memory.scopeId}`, memory]));
+  const candidates = [...grouped.entries()].map(([groupKey, rows]) => {
+    const scopeType: MemoryScopeType = groupKey.startsWith("class:") ? "class" : "student";
+    const scopeId = scopeType === "class" ? classId : groupKey;
+    const evidence = semesterEvidenceForRecords({
+      rows,
+      memories: semesterMemories.filter((memory) => memory.scopeType === scopeType && memory.scopeId === scopeId),
     });
+    const generationIds = uniqueRefs(evidence.flatMap((entry) => entry.items.map((item) => ({ type: "generation" as const, id: item.generationId }))))
+      .map((item) => item.id);
+    const previous = previousByScope.get(`${scopeType}:${scopeId}`);
+    return {
+      scopeType,
+      scopeId,
+      evidence,
+      generationIds,
+      previousConfirmedBackground: previous?.status === "confirmed" ? previous.content : null,
+    };
+  });
+  const eligible = candidates.filter((item) => item.evidence.length && item.generationIds.length);
+  const payload = eligible.map((item, index) => ({
+    ref: `M${String(index + 1).padStart(3, "0")}`,
+    scopeType: item.scopeType,
+    scopeId: item.scopeId,
+    semesterSummaries: item.evidence,
+    previousConfirmedBackground: item.previousConfirmedBackground,
+    generationIds: item.generationIds,
   }));
-  return { drafts: payload.length, skipped: false };
-}
-
-function payloadIndex(key: string, groups: Map<string, unknown>) {
-  return [...groups.keys()].indexOf(key) + 1;
+  const skippedScopes = candidates.length - payload.length;
+  if (!payload.length) {
+    return { drafts: 0, skipped: true, reason: "no_reliable_semester_summary", runId: null as string | null, skippedScopes };
+  }
+  const sourceFingerprint = fingerprint(payload);
+  const previousRun = await db.memoryCompactionRun.findUnique({
+    where: { classId_phase_sourceFingerprint: { classId, phase: "warm-to-long", sourceFingerprint } },
+  });
+  if (previousRun?.status === "succeeded") {
+    return { drafts: 0, skipped: true, reason: "already_processed", runId: previousRun.id, skippedScopes };
+  }
+  const run = previousRun ?? await db.memoryCompactionRun.create({
+    data: {
+      classId,
+      semesterId: sessions.at(-1)?.semesterId ?? null,
+      fromSessionId: sessions[0]?.id ?? null,
+      toSessionId: sessions.at(-1)?.id ?? null,
+      phase: "warm-to-long",
+      sourceFingerprint,
+      affectedCount: payload.reduce((count, item) => count + item.generationIds.length, 0),
+      status: "running",
+    },
+  });
+  if (previousRun) {
+    await db.memoryCompactionRun.update({
+      where: { id: run.id },
+      data: { status: "running", failureCode: null, completedAt: null },
+    });
+  }
+  try {
+    const client = createLLMClient();
+    const model = getLLMModel();
+    const response = await client.chat.completions.create({
+      model,
+      temperature: 0,
+      ...getLLMCompletionOptions(undefined, 2048),
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "你是教师内部教学档案助手。只根据输入的受控学期摘要和教师此前确认的背景，写极短、可长期保留的背景。不得评价人格、不得写续班或内部风险、不得补充未给出的事实。每项最多 120 字。只返回 JSON。" },
+        { role: "user", content: `返回 {"items":[{"ref":"M001","text":"..."}]}。每个 ref 必须来自输入，不能遗漏或新增。semesterSummaries.items.summary 是唯一可采用的新事实证据；不要把 ID、计数或压缩元数据改写成教学结论。\n${JSON.stringify(payload)}` },
+      ],
+    });
+    const raw = response.choices[0]?.message?.content ?? "";
+    let parsed: { items?: Array<{ ref?: string; text?: string }> } = {};
+    try { parsed = JSON.parse(raw) as typeof parsed; } catch { throw new Error("long_term_memory_invalid"); }
+    const result = new Map((parsed.items ?? []).flatMap((item) => typeof item.ref === "string" && typeof item.text === "string" ? [[item.ref, item.text.trim()]] : []));
+    if (result.size !== payload.length || payload.some((item) => !result.get(item.ref))) throw new Error("long_term_memory_invalid");
+    const now = new Date();
+    const resultJson = JSON.stringify({ drafts: payload.length, skippedScopes });
+    await db.$transaction([
+      ...payload.map((item) => {
+        const text = result.get(item.ref) ?? "";
+        const previous = previousByScope.get(`${item.scopeType}:${item.scopeId}`);
+        const refs = uniqueRefs([
+          ...parseSourceRefs(previous?.sourceRefs),
+          ...item.semesterSummaries.flatMap((entry) => entry.sourceRefs),
+          ...item.generationIds.map((id) => ({ type: "generation" as const, id })),
+        ]);
+        return db.teachingMemory.upsert({
+          where: { scopeType_scopeId_semesterKey_memoryTier: { scopeType: item.scopeType, scopeId: item.scopeId, semesterKey: "long-term", memoryTier: "long-term" } },
+          create: { scopeType: item.scopeType, scopeId: item.scopeId, semesterKey: "long-term", memoryTier: "long-term", status: "draft", content: text, sourceRefs: sourceRefJson(refs), sourceFingerprint, generatedAt: now },
+          update: { status: "draft", content: text, sourceRefs: sourceRefJson(refs), sourceFingerprint, generatedAt: now, confirmedAt: null },
+        });
+      }),
+      db.memoryCompactionRun.update({
+        where: { id: run.id },
+        data: { status: "succeeded", completedAt: now, resultJson },
+      }),
+    ]);
+    return { drafts: payload.length, skipped: false, reason: null, runId: run.id, skippedScopes };
+  } catch (error) {
+    await db.memoryCompactionRun.update({
+      where: { id: run.id },
+      data: { status: "failed", failureCode: error instanceof Error ? error.message.slice(0, 120) : "long_term_memory_failed", completedAt: new Date() },
+    }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function confirmLongTermMemory(id: string, content: string, db: PrismaClient = prisma) {
   const memory = await db.teachingMemory.findUnique({ where: { id } });
   if (!memory || memory.memoryTier !== "long-term") throw new Error("长期背景不存在");
+  const confirmedContent = content.trim();
+  if (!confirmedContent) throw new Error("长期背景不能为空");
   const generationIds = parseSourceRefs(memory.sourceRefs)
     .filter((item) => item.type === "generation")
     .map((item) => item.id);
   const now = new Date();
   const [confirmed] = await db.$transaction([
-    db.teachingMemory.update({ where: { id }, data: { content: content.trim(), status: "confirmed", confirmedAt: now } }),
+    db.teachingMemory.update({ where: { id }, data: { content: confirmedContent, status: "confirmed", confirmedAt: now } }),
     ...(generationIds.length ? [db.generationRecord.updateMany({
       where: { id: { in: generationIds }, lifecycle: "warm" },
       data: { lifecycle: "purged", warmSnapshot: null, purgedAt: now },

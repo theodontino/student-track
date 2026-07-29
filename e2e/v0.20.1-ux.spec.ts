@@ -61,6 +61,49 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     await expect(page.getByText("WeComCatch 手动同步")).toHaveCount(0);
   });
 
+  test("AI generation history exposes controlled long-term generation and undo", async ({ page }) => {
+    const actions: Array<Record<string, unknown>> = [];
+    await page.route("**/api/teaching-memory*", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({ json: {
+          memories: [],
+          history: [],
+          drafts: [],
+          classes: [{ id: TEST_FIXTURE.class.id, code: TEST_FIXTURE.class.code, name: TEST_FIXTURE.class.name }],
+          undoableRuns: [{
+            id: "test-compaction-run",
+            classId: TEST_FIXTURE.class.id,
+            className: TEST_FIXTURE.class.name,
+            affectedCount: 2,
+            completedAt: "2026-07-29T08:00:00.000Z",
+            undoUntil: "2099-08-05T08:00:00.000Z",
+          }],
+        } });
+        return;
+      }
+      actions.push(route.request().postDataJSON() as Record<string, unknown>);
+      const action = actions.at(-1)?.action;
+      await route.fulfill({ json: action === "long-term-drafts"
+        ? { drafts: 0, skipped: true, reason: "no_reliable_semester_summary", runId: null, skippedScopes: 1 }
+        : { success: true } });
+    });
+
+    await page.goto("/history?view=ai");
+    await expect(page.getByRole("heading", { name: "长期背景草案" })).toBeVisible();
+    await expect(page.getByText("确认后的内容仅在教师工作区展示，不进入家长反馈 prompt、预览或导出。")).toBeVisible();
+    await expect(page.getByRole("button", { name: "撤销压缩" })).toBeVisible();
+    await page.getByRole("button", { name: "生成到期长期背景草案" }).click();
+    await expect(page.getByText("到期记录没有可用的受控学期摘要，已安全跳过且未调用模型。")).toBeVisible();
+    expect(actions[0]).toEqual({ action: "long-term-drafts", classId: TEST_FIXTURE.class.id });
+
+    await page.getByRole("button", { name: "撤销压缩" }).click();
+    const dialog = page.getByRole("dialog", { name: "撤销学期快照压缩" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "撤销并恢复" }).click();
+    await expect(page.getByText("学期快照压缩已撤销，窗口内的完整生成记录已恢复。")).toBeVisible();
+    expect(actions[1]).toEqual({ action: "undo", runId: "test-compaction-run" });
+  });
+
   test("third-party notice gates the handoff workspace and navigation entry", async ({ page }) => {
     await page.goto("/wecom");
     await expect(page.getByText("该工作区尚未在本机启用")).toBeVisible();
@@ -79,8 +122,8 @@ test.describe.serial("v0.20.1 interaction polish", () => {
 
     await expect(page).toHaveURL(/\/wecom$/);
     await expect(page.getByRole("link", { name: "企微家校", exact: true })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "中转仓库" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "教师复核" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "接收与诊断" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "教师复核与入库" })).toBeVisible();
     await page.reload();
     await expect(page.getByRole("link", { name: "企微家校", exact: true })).toBeVisible();
   });

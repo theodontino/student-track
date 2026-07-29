@@ -71,6 +71,11 @@ interface FeedbackState {
   students: FeedbackCard[];
   total: number;
   inputRevision?: string;
+  batchStatus?: "completed" | "incomplete";
+  batchPhase?: "draft" | "review" | "completed";
+  completedStudentIds?: string[];
+  failedStudentIds?: string[];
+  interruptionReason?: string;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
   routingOverrides?: Record<string, FeedbackIntensity>;
@@ -267,6 +272,13 @@ export async function buildFeedbackBatchExport(
     state = history ? parseHistoryState(history.state) : null;
   }
   if (!state) throw new ApiError("尚未生成反馈", 404, "not_found", false);
+  if (
+    state.batchStatus === "incomplete"
+    || state.students.length < state.total
+    || (state.completedStudentIds && state.completedStudentIds.length < state.total)
+  ) {
+    throw new ApiError("当前批次尚未完成，不能导出", 409, "conflict", false);
+  }
   if (state.outputStrategy && !state.outputStrategy.suggestedFeedback) {
     throw new ApiError("本批次仅生成教师研判，未生成家长反馈文本", 409, "conflict", false);
   }
@@ -358,7 +370,7 @@ function createGenerationStream(input: {
                 signal,
               })
             : lessonMaterial;
-          controller.enqueue(encoder.encode(`${JSON.stringify({ type: "init", students: cards, total })}\n`));
+          controller.enqueue(encoder.encode(`${JSON.stringify({ type: "init", students: cards, total, inputRevision: revision })}\n`));
 
           const concurrency = feedbackBatchConcurrency();
           for (const window of feedbackBatchWindows(cards, concurrency)) {
@@ -501,6 +513,10 @@ function createGenerationStream(input: {
             students: cards,
             total,
             inputRevision: revision,
+            batchStatus: "completed",
+            batchPhase: "completed",
+            completedStudentIds: cards.map((card) => card.id),
+            failedStudentIds: cards.filter((card) => card.reviewStatus === "needs_review").map((card) => card.id),
             lessonMaterial: resolvedLessonMaterial,
             assessmentEvidence,
             routingOverrides: Object.fromEntries(routing
@@ -598,14 +614,6 @@ export async function executeFeedbackBatch(
   const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence, routing, outputStrategy);
   const key = cacheKey(historyModule, input.sessionCode);
   const cached = cache.get(key);
-  if (
-    input.saveState !== true
-    && input.bypassCache !== true
-    && cached
-    && cached.inputRevision === revision
-  ) {
-    return { kind: "json", body: { cached: true, ...cached } };
-  }
   const foreignEvidenceStudent = Object.keys(normalized.assessmentEvidence)
     .find((studentId) => !contextByStudent.has(studentId));
   if (foreignEvidenceStudent) {
@@ -616,17 +624,82 @@ export async function executeFeedbackBatch(
       false,
     );
   }
+  if (input.revisionOnly === true) {
+    return { kind: "json", body: { inputRevision: revision, total: feedbackContext.total } };
+  }
+  if (
+    input.saveState !== true
+    && input.bypassCache !== true
+    && cached
+    && cached.inputRevision === revision
+    && cached.batchStatus !== "incomplete"
+  ) {
+    return { kind: "json", body: { cached: true, ...cached } };
+  }
 
   if (input.saveState === true) {
+    if (input.inputRevision && input.inputRevision !== revision) {
+      throw new ApiError(
+        "反馈输入已经变化，旧部分结果不能与当前批次合并",
+        409,
+        "conflict",
+        false,
+      );
+    }
     const cards = submittedCardsFrom(input.students ?? [], contextByStudent);
+    const submittedIds = new Set(cards.map((card) => card.id));
+    const completedStudentIds = [...new Set(input.completedStudentIds ?? [])];
+    const failedStudentIds = [...new Set(input.failedStudentIds ?? [])];
+    if (submittedIds.size !== cards.length) {
+      throw new ApiError("反馈卡片包含重复学生，未保存任何内容", 400, "invalid_request", false);
+    }
+    if (input.savePartial === true) {
+      if (!input.inputRevision) {
+        throw new ApiError("部分批次缺少输入版本，未保存任何内容", 400, "invalid_request", false);
+      }
+      const invalidCompletedId = completedStudentIds.find((studentId) => !submittedIds.has(studentId));
+      const invalidFailedId = failedStudentIds.find((studentId) => !submittedIds.has(studentId));
+      if (invalidCompletedId || invalidFailedId) {
+        throw new ApiError("部分批次状态引用了未知学生，未保存任何内容", 400, "invalid_request", false);
+      }
+      if (!completedStudentIds.length) {
+        throw new ApiError("当前没有可保存的已处理学生结果", 400, "invalid_request", false);
+      }
+      if (completedStudentIds.some((studentId) => failedStudentIds.includes(studentId))) {
+        throw new ApiError("同一学生不能同时标记为已完成和失败", 400, "invalid_request", false);
+      }
+      if (outputStrategy.suggestedFeedback && completedStudentIds.some((studentId) => {
+        const card = cards.find((item) => item.id === studentId);
+        return !card?.feedback.trim() || card.reviewStatus === "needs_review";
+      })) {
+        throw new ApiError("部分批次包含尚未完成的学生文本，未保存任何内容", 400, "invalid_request", false);
+      }
+    } else {
+      const contextIds = new Set(feedbackContext.students.map((student) => student.id));
+      if (cards.length !== feedbackContext.total || cards.some((card) => !contextIds.has(card.id))) {
+        throw new ApiError("完整批次缺少学生结果，未保存任何内容", 400, "invalid_request", false);
+      }
+      if (outputStrategy.suggestedFeedback && cards.some((card) => !card.feedback.trim())) {
+        throw new ApiError("完整批次仍有空白学生反馈，未保存任何内容", 400, "invalid_request", false);
+      }
+    }
     const state: FeedbackState = {
       kind: "batch",
       semesterId: feedbackContext.session.semesterId,
       sessionCode: input.sessionCode,
       className: feedbackContext.className,
       students: cards,
-      total: cards.length,
+      total: feedbackContext.total,
       inputRevision: revision,
+      batchStatus: input.savePartial === true ? "incomplete" : "completed",
+      batchPhase: input.savePartial === true ? "review" : "completed",
+      completedStudentIds: input.savePartial === true
+        ? completedStudentIds
+        : cards.map((card) => card.id),
+      failedStudentIds,
+      interruptionReason: input.savePartial === true
+        ? input.interruptionReason || "教师保存了未完成批次"
+        : undefined,
       lessonMaterial: normalized.lessonMaterial,
       assessmentEvidence: normalized.assessmentEvidence,
       routingOverrides: input.routingOverrides,

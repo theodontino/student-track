@@ -235,9 +235,102 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     const stopButton = page.getByRole("button", { name: "停止生成" });
     await expect(stopButton).toHaveClass(/ui-button--warning/);
     await stopButton.click();
-    await expect(page.getByText("已取消本次反馈生成；未完成的结果不会保存。", { exact: true })).toBeVisible();
+    await expect(page.getByText("已取消本次反馈生成。", { exact: true })).toBeVisible();
     await expect(page.getByText("批量生成失败", { exact: true })).toHaveCount(0);
     releaseRequest();
+  });
+
+  test("an interrupted feedback batch restores safely, saves partially, and resumes only unfinished students", async ({ page }) => {
+    const partialSaves: Array<Record<string, unknown>> = [];
+    const resumedStudents: string[] = [];
+    await page.route("**/api/report/feedback-batch", async (route) => {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      if (body.revisionOnly) {
+        await route.fulfill({ json: { inputRevision: "safe-revision-1", total: 2 } });
+        return;
+      }
+      if (body.saveState) {
+        partialSaves.push(body);
+        await route.fulfill({ json: { saved: true } });
+        return;
+      }
+      const cards = TEST_FIXTURE.students.map((student, index) => ({
+        id: student.id,
+        name: student.name,
+        labels: [],
+        feedback: "",
+        feedbackIntensity: index === 0 ? "routine" : "priority",
+      }));
+      const lines = [
+        { type: "init", students: cards, total: 2, inputRevision: "safe-revision-1" },
+        {
+          type: "draft",
+          studentId: TEST_FIXTURE.students[0].id,
+          name: TEST_FIXTURE.students[0].name,
+          feedback: "已收到的合成反馈",
+          draftFeedback: "已收到的合成反馈",
+          reviewStatus: "passed",
+          reviewIssues: [],
+          completed: 1,
+          total: 2,
+        },
+      ];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/x-ndjson",
+        body: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+      });
+    });
+    await page.route("**/api/report/feedback", async (route) => {
+      const body = route.request().postDataJSON() as { studentId: string };
+      resumedStudents.push(body.studentId);
+      await route.fulfill({ json: {
+        feedback: "补齐后的合成反馈",
+        draftFeedback: "补齐后的合成反馈",
+        reviewStatus: "passed",
+        reviewIssues: [],
+      } });
+    });
+
+    await page.goto("/feedback");
+    await page.locator("select").nth(0).selectOption(TEST_FIXTURE.semester.id);
+    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
+    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
+    await page.getByRole("button", { name: "生成班级反馈" }).click();
+    await expect(page.getByText("批次未完成", { exact: true })).toBeVisible();
+    await expect(page.getByText("已收到的合成反馈", { exact: true })).toBeVisible();
+    await expect(page.getByText("未完成", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "导出课后反馈表" })).toBeDisabled();
+
+    await page.reload();
+    await expect(page.getByText("批次未完成", { exact: true })).toBeVisible();
+    await expect(page.getByText("已收到的合成反馈", { exact: true })).toBeVisible();
+    await expect(page.getByText("未完成", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "保存当前部分结果" }).click();
+    await expect(page.getByText("已显式保存 1/2 名学生的部分结果；该记录仍不能导出。", { exact: true })).toBeVisible();
+    expect(partialSaves).toHaveLength(1);
+    expect(partialSaves[0]).toMatchObject({
+      saveState: true,
+      savePartial: true,
+      inputRevision: "safe-revision-1",
+      completedStudentIds: [TEST_FIXTURE.students[0].id],
+    });
+
+    await page.getByRole("button", { name: "继续未完成/失败学生" }).click();
+    await expect(page.getByText("补齐后的合成反馈", { exact: true })).toBeVisible();
+    expect(resumedStudents).toEqual([TEST_FIXTURE.students[1].id]);
+    await expect(page.getByRole("button", { name: "导出课后反馈表" })).toBeEnabled();
+
+    await page.getByRole("button", { name: "1 准备 选择课次与准备材料" }).click();
+    await page.getByLabel("群反馈原文").fill("输入版本已经变化");
+    await page.getByRole("button", { name: "5 导出 编辑与导出" }).click();
+    await expect(page.getByText("旧结果已失效", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "导出课后反馈表" })).toBeDisabled();
+    await page.getByRole("button", { name: "放弃旧批次并重新开始" }).click();
+    await expect(page.getByText("未完成批次已放弃；旧部分结果不会进入下一批次。", { exact: true })).toBeVisible();
+    await expect(page.getByText("已收到的合成反馈", { exact: true })).toHaveCount(0);
   });
 
   test("system UI exposes the WeCom extraction role and safe LLM cache maintenance", async ({ page }) => {

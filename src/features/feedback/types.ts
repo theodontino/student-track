@@ -43,6 +43,12 @@ export interface BatchFeedbackHistoryState {
   className: string;
   students: FeedbackCard[];
   total: number;
+  inputRevision?: string;
+  batchStatus?: "completed" | "incomplete";
+  batchPhase?: "draft" | "review" | "completed";
+  completedStudentIds?: string[];
+  failedStudentIds?: string[];
+  interruptionReason?: string;
   lessonMaterial?: LessonFeedbackMaterial;
   assessmentEvidence?: Record<string, StudentAssessmentEvidence>;
   routingOverrides?: Record<string, FeedbackIntensity>;
@@ -82,6 +88,7 @@ export interface FeedbackWorkspaceState {
   feedbackDone: number;
   feedbackDirty: boolean;
   forceRegenerate: boolean;
+  feedbackBatch?: FeedbackBatchProgress;
   singleStudentId: string;
   singleDays: number;
   singleFeedback: string;
@@ -95,6 +102,16 @@ export interface FeedbackWorkspaceState {
   assessmentImports?: AssessmentImportItem[];
   routingOverrides?: Record<string, FeedbackIntensity>;
   outputStrategy?: FeedbackOutputStrategy;
+}
+
+export interface FeedbackBatchProgress {
+  status: "idle" | "running" | "incomplete" | "completed" | "stale";
+  phase: "idle" | "draft" | "review" | "completed";
+  inputRevision: string;
+  total: number;
+  completedStudentIds: string[];
+  failedStudentIds: string[];
+  interruptionReason: string;
 }
 
 export interface FeedbackStudentOption {

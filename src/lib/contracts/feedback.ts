@@ -124,6 +124,12 @@ export const FeedbackBatchHistoryStateSchema = z.object({
   className: requiredText(200),
   students: z.array(historyCard).max(200),
   total: count,
+  inputRevision: text(64).optional(),
+  batchStatus: z.enum(["completed", "incomplete"]).optional(),
+  batchPhase: z.enum(["draft", "review", "completed"]).optional(),
+  completedStudentIds: z.array(requiredText(200)).max(200).optional(),
+  failedStudentIds: z.array(requiredText(200)).max(200).optional(),
+  interruptionReason: text(2000).optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentEvidence: assessmentEvidenceRecord.optional(),
   outputStrategy: FeedbackOutputStrategySchema.optional(),
@@ -188,6 +194,15 @@ export const FeedbackWorkspaceSchema: z.ZodType<FeedbackWorkspaceState> = z.obje
   feedbackDone: count,
   feedbackDirty: z.boolean(),
   forceRegenerate: z.boolean(),
+  feedbackBatch: z.object({
+    status: z.enum(["idle", "running", "incomplete", "completed", "stale"]),
+    phase: z.enum(["idle", "draft", "review", "completed"]),
+    inputRevision: text(64),
+    total: count,
+    completedStudentIds: z.array(requiredText(200)).max(200),
+    failedStudentIds: z.array(requiredText(200)).max(200),
+    interruptionReason: text(2000),
+  }).optional(),
   singleStudentId: text(200),
   singleDays: z.number().int().min(1).max(365),
   singleFeedback: text(10000),
@@ -211,6 +226,12 @@ export const FeedbackBatchPostSchema = z.object({
   historyModule: z.enum(["feedback", "report"]).optional(),
   bypassCache: z.boolean().optional(),
   saveState: z.boolean().optional(),
+  savePartial: z.boolean().optional(),
+  revisionOnly: z.boolean().optional(),
+  inputRevision: text(64).optional(),
+  completedStudentIds: z.array(requiredText(200)).max(200).optional(),
+  failedStudentIds: z.array(requiredText(200)).max(200).optional(),
+  interruptionReason: text(2000).optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentEvidence: assessmentEvidenceRecord.optional(),
   routingOverrides: z.record(z.string().max(200), z.enum(FEEDBACK_INTENSITIES)).optional(),
@@ -228,13 +249,20 @@ export const FeedbackBatchPostSchema = z.object({
     feedbackRoutingReasons: z.array(z.enum(["dashboard-warning", "dashboard-attention", "recent-teacher-observation"])).max(3).optional(),
     sections: FeedbackSectionsSchema.optional(),
   })).max(200).optional(),
-}).passthrough();
+}).passthrough().superRefine((value, context) => {
+  if (value.savePartial && !value.saveState) {
+    context.addIssue({ code: "custom", message: "savePartial requires saveState", path: ["savePartial"] });
+  }
+  if (value.revisionOnly && value.saveState) {
+    context.addIssue({ code: "custom", message: "revisionOnly cannot save state", path: ["revisionOnly"] });
+  }
+});
 
 export const FeedbackBatchStreamEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("init"), students: z.array(FeedbackCardSchema).max(200), total: count }),
+  z.object({ type: z.literal("init"), students: z.array(FeedbackCardSchema).max(200), total: count, inputRevision: requiredText(64) }),
   z.object({ type: z.literal("draft"), studentId: requiredText(200), name: requiredText(100), feedback: text(10000), draftFeedback: text(10000).optional(), reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(), reviewIssues: z.array(text(1000)).max(50).optional(), completed: count, total: count }),
   z.object({ type: z.literal("review"), studentId: requiredText(200), name: requiredText(100), feedback: text(10000), draftFeedback: text(10000).optional(), reviewStatus: z.enum(["passed", "revised", "needs_review", "edited"]).optional(), reviewIssues: z.array(text(1000)).max(50).optional(), completed: count, total: count }),
-  z.object({ type: z.literal("done"), students: z.array(FeedbackCardSchema).max(200), total: count, lessonMaterial: LessonFeedbackMaterialSchema.optional() }).passthrough(),
+  FeedbackBatchHistoryStateSchema.extend({ type: z.literal("done") }),
   z.object({ type: z.literal("error"), message: requiredText(2000), code: text(80).optional(), retryable: z.boolean().optional(), diagnosticId: text(100).optional() }),
 ]);
 
