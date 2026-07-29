@@ -11,6 +11,9 @@ const semesterName = "VITEST-FEEDBACK-SEMESTER";
 afterEach(async () => {
   await prisma.workHistory.deleteMany({ where: { module: "feedback", key: sessionCode } });
   await prisma.student.deleteMany({ where: { studentId: studentNumber } });
+  await prisma.generationRecord.deleteMany({
+    where: { sourceFingerprint: "feedback-export-selected" },
+  });
   await prisma.classSession.deleteMany({ where: { code: sessionCode } });
   await prisma.semester.deleteMany({ where: { name: semesterName } });
   await prisma.class.deleteMany({ where: { code: classCode } });
@@ -77,8 +80,45 @@ describe("/api/report/feedback-batch", () => {
           sessionCode,
           className: "测试班",
           total: 1,
-          students: [{ id: student.id, name: "张三", labels: [], feedback: "本节课表现稳定。" }],
+          inputRevision: "feedback-export-revision",
+          outputStrategy: {
+            flaggedIssue: true,
+            trendChange: false,
+            backgroundBaseline: false,
+            strategySuggestion: false,
+            suggestedFeedback: true,
+            style: "balanced",
+            length: "standard",
+          },
+          students: [{ id: student.id, name: "张三", labels: [], feedback: "学".repeat(90), reviewStatus: "edited" }],
         }),
+      },
+    });
+    const selectedGeneration = await prisma.generationRecord.create({
+      data: {
+        taskType: "feedback",
+        stage: "routine",
+        sessionId: session.id,
+        studentId: student.id,
+        sourceRefs: "[]",
+        sourceFingerprint: "feedback-export-selected",
+        promptVersion: "feedback-composable-v2",
+        modelName: "synthetic",
+        modelSettings: "{}",
+        inputRevision: "feedback-export-revision",
+        outputSnapshot: JSON.stringify({
+          reviewStatus: "needs_review",
+          reviewIssues: ["模型原文曾经越界"],
+          modelRawFinalText: "短",
+        }),
+        finalText: "学".repeat(90),
+      },
+    });
+    await prisma.feedbackGenerationSelection.create({
+      data: {
+        sessionId: session.id,
+        studentId: student.id,
+        selectedGenerationId: selectedGeneration.id,
       },
     });
 

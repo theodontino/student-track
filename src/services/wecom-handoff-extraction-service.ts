@@ -601,7 +601,7 @@ export async function generateWeComBridgeJson(
   }>;
   if (candidateStudentIds.length > 0) {
     const students = await prisma.student.findMany({
-      where: { id: { in: candidateStudentIds } },
+      where: { id: { in: candidateStudentIds }, rosterStatus: "ACTIVE" },
       select: {
         id: true,
         name: true,
@@ -624,6 +624,7 @@ export async function generateWeComBridgeJson(
     }));
   } else {
     const students = await prisma.student.findMany({
+      where: { rosterStatus: "ACTIVE" },
       select: {
         id: true,
         name: true,

@@ -9,7 +9,15 @@ import {
   type LessonFeedbackMaterial,
   type StudentAssessmentEvidence,
 } from "@/lib/feedback-materials";
-import type { FeedbackOutputStrategy, FeedbackSections } from "@/lib/feedback-sections";
+import {
+  feedbackLengthIssue,
+  feedbackLengthRequirement,
+  feedbackStyleInstruction,
+  type FeedbackLength,
+  type FeedbackOutputStrategy,
+  type FeedbackSections,
+  type FeedbackStyle,
+} from "@/lib/feedback-sections";
 import {
   containsRecipientPlaceholder,
   sanitizeFeedbackPromptText,
@@ -41,7 +49,9 @@ export interface ReviewedFeedback {
 export interface FeedbackDraftInput {
   studentName: string;
   promptContext: string;
-  lengthRequirement: string;
+  style: FeedbackStyle;
+  length: FeedbackLength;
+  profileId?: string;
   client: LLMClient;
   model: string;
   signal?: AbortSignal;
@@ -56,7 +66,9 @@ export interface GenerateReviewedFeedbackInput {
   studentName: string;
   promptContext: string;
   forbiddenStudentNames?: string[];
-  lengthRequirement: string;
+  style: FeedbackStyle;
+  length: FeedbackLength;
+  profileId?: string;
   draftClient: LLMClient;
   draftModel: string;
   reviewClient: LLMClient;
@@ -68,6 +80,9 @@ export interface GenerateRoutineFeedbackInput {
   studentName: string;
   promptContext: string;
   forbiddenStudentNames?: string[];
+  style: FeedbackStyle;
+  length: FeedbackLength;
+  profileId?: string;
   client: LLMClient;
   model: string;
   signal?: AbortSignal;
@@ -179,12 +194,12 @@ async function createReviewCompletion(
   model: string,
   prompt: string,
   signal?: AbortSignal,
-  options: { disableReasoning?: boolean } = {},
+  options: { disableReasoning?: boolean; profileId?: string } = {},
 ) {
   throwIfAborted(signal);
   // Review 阶段需要更大 token 预算：推理模型（如 deepseek-v4-pro）的 reasoning_content
   // 会占用 max_tokens 配额，2048 不够写出完整 JSON，导致 finish_reason=length 被截断。
-  const configured = getLLMCompletionOptions("feedbackReview", FEEDBACK_REVIEW_MAX_TOKENS, true);
+  const configured = getLLMCompletionOptions("feedbackReview", FEEDBACK_REVIEW_MAX_TOKENS, true, options.profileId);
   // “不传 reasoning_effort”并不等于关闭推理：部分 OpenAI 兼容模型
   // （例如 Qwen）会回到原生 thinking 默认值。重试时必须显式传 none。
   const reasoningEffort = options.disableReasoning ? "none" as const : configured.reasoning_effort;
@@ -219,8 +234,9 @@ async function createRoutineCompletion(
   prompt: string,
   maxTokens: number,
   signal?: AbortSignal,
+  profileId?: string,
 ) {
-  const configured = getLLMCompletionOptions("feedbackReview", maxTokens);
+  const configured = getLLMCompletionOptions("feedbackReview", maxTokens, false, profileId);
   const baseBody = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
@@ -244,13 +260,13 @@ async function createRoutineCompletion(
   }
 }
 
-async function generateDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
+async function generateDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal, profileId?: string) {
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
     throwIfAborted(signal);
     const requestedMaxTokens = attempt === 1
       ? FEEDBACK_DRAFT_INITIAL_MAX_TOKENS
       : FEEDBACK_DRAFT_RETRY_MAX_TOKENS;
-    const configured = getLLMCompletionOptions("feedbackDraft", requestedMaxTokens);
+    const configured = getLLMCompletionOptions("feedbackDraft", requestedMaxTokens, false, profileId);
     const reasoningEffort = attempt > 1
       ? "none" as const
       : configured.reasoning_effort ?? "none" as const;
@@ -403,7 +419,7 @@ ${JSON.stringify(source)}`);
   };
 }
 
-async function reviewDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
+async function reviewDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal, profileId?: string) {
   // 第 1 次：reasoning_effort=low + json_object，max_tokens=4096
   // 第 2 次：若第 1 次因 length 截断或 JSON 解析失败，禁用推理（reasoning_effort=none）
   //          以彻底消除 reasoning_content 对 max_tokens 的占用
@@ -412,7 +428,7 @@ async function reviewDraft(client: LLMClient, model: string, prompt: string, sig
     try {
       const response = await createReviewCompletion(
         client, model, prompt, signal,
-        { disableReasoning: attempt > 1 },
+        { disableReasoning: attempt > 1, profileId },
       );
       if (isLengthTruncated(response)) {
         // 截断意味着推理吃光了 token 预算；下一次禁用推理。
@@ -434,7 +450,9 @@ export async function generateReviewedFeedback(
   const draftFeedback = await generateFeedbackDraft({
     studentName: input.studentName,
     promptContext: input.promptContext,
-    lengthRequirement: input.lengthRequirement,
+    style: input.style,
+    length: input.length,
+    profileId: input.profileId,
     client: input.draftClient,
     model: input.draftModel,
     signal: input.signal,
@@ -443,7 +461,9 @@ export async function generateReviewedFeedback(
     studentName: input.studentName,
     promptContext: input.promptContext,
     forbiddenStudentNames: input.forbiddenStudentNames,
-    lengthRequirement: input.lengthRequirement,
+    style: input.style,
+    length: input.length,
+    profileId: input.profileId,
     draftFeedback,
     client: input.reviewClient,
     model: input.reviewModel,
@@ -461,13 +481,14 @@ export async function generateRoutineFeedback(input: GenerateRoutineFeedbackInpu
 ${input.promptContext}
 
 规则：
-1. 90—140字，写成2—3个自然、连贯的微信短句；只围绕本次最值得说的一件表现，带上具体依据，并用一句有边界的解释说明它为什么值得家长知道。
+1. ${feedbackLengthRequirement(input.length)}，写成自然、连贯的微信短句；只围绕本次最值得说的一件表现，带上具体依据，并用一句有边界的解释说明它为什么值得家长知道。
 2. 语气要像老师认真看过孩子当堂表现后亲自发出的简短消息：事实之后可以自然表达一次具体的肯定、关照或稳妥的收束，让家长感到孩子被看见；不得用空泛夸奖代替事实，也不得写成冷冰冰的评分结论。
-3. 默认不布置建议或任务。只有背景明确要求家长配合时，才加一句最小必要提醒；没有明确前后证据，不得写“越来越好、明显提升、习惯形成、从不会到会”。
-4. 家校沟通只用于确定表达重点，不能替代本课事实；不要提及内部标签、风险、观察、班均或其他学生。
-5. 公共课程材料只可说明本节主题，不可当作学生个人掌握证据。不要套用“整体表现优异、值得肯定、继续保持、订正巩固”等空泛模板；具体表现得到的真诚肯定可以保留。
-6. 不使用任何家长称呼、寒暄或模板占位符，例如“XX妈妈”“某某家长”“家长您好”；直接从该生本次表现开始。
-7. 只返回合法 JSON：{"verdict":"pass|needs_review","feedback":"最终文本","issues":["简短原因"]}。证据不足时返回 needs_review，不要补写。`;
+3. 本次表达风格：${feedbackStyleInstruction(input.style)}风格只改变表达，不得改变事实、证据、问题强度、教师内部研判或安全规则。
+4. 默认不布置建议或任务。只有背景明确要求家长配合时，才加一句最小必要提醒；没有明确前后证据，不得写“越来越好、明显提升、习惯形成、从不会到会”。
+5. 家校沟通只用于确定表达重点，不能替代本课事实；不要提及内部标签、风险、观察、班均或其他学生。
+6. 公共课程材料只可说明本节主题，不可当作学生个人掌握证据。不要套用“整体表现优异、值得肯定、继续保持、订正巩固”等空泛模板；具体表现得到的真诚肯定可以保留。
+7. 不使用任何家长称呼、寒暄或模板占位符，例如“XX妈妈”“某某家长”“家长您好”；直接从该生本次表现开始。
+8. 只返回合法 JSON：{"verdict":"pass|needs_review","feedback":"最终文本","issues":["简短原因"]}。证据不足时返回 needs_review，不要补写。`;
   let payload: ReviewPayload | null = null;
   let failureReason = "";
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
@@ -475,7 +496,7 @@ ${input.promptContext}
       const maxTokens = attempt === 1
         ? FEEDBACK_ROUTINE_INITIAL_MAX_TOKENS
         : FEEDBACK_ROUTINE_RETRY_MAX_TOKENS;
-      const response = await createRoutineCompletion(input.client, input.model, prompt, maxTokens, input.signal);
+      const response = await createRoutineCompletion(input.client, input.model, prompt, maxTokens, input.signal, input.profileId);
       if (isLengthTruncated(response)) {
         failureReason = attempt < FEEDBACK_MAX_ATTEMPTS
           ? "常规反馈模型的推理输出达到长度上限，已自动提高输出预算重试"
@@ -523,6 +544,11 @@ ${input.promptContext}
     reviewStatus = "needs_review";
     reviewIssues.push("反馈中出现了家长称呼占位符");
   }
+  const lengthIssue = feedback ? feedbackLengthIssue(feedback, input.length) : null;
+  if (lengthIssue) {
+    reviewStatus = "needs_review";
+    reviewIssues.push(lengthIssue);
+  }
   return {
     draftFeedback: "",
     feedback,
@@ -546,8 +572,8 @@ ${input.promptContext}
 7. 所有背景都要区分“事实”“有边界的成长解读”和“建议”。成长解读要帮助家长理解孩子正在吸收什么、哪种方法正在建立，但不能拔高或许诺结果。
 8. 默认不写课后动作。只有背景明确需要家长配合或已有具体教师承诺时，才写一项可执行动作；不要只写“订正巩固”“加强复习”。
 9. 只分析该生本人，不比较、不提其他学生姓名，不补充背景中不存在的成绩、考勤、事件或家校结论。
-10. 控制在 100–180 字，可分点；不要使用家长称呼、寒暄或可直接发送的结尾。最终家长话术将由下一阶段生成，目标长度为${input.lengthRequirement}。`;
-  return generateDraft(input.client, input.model, draftPrompt, input.signal);
+10. 控制在 100–180 字，可分点；不要使用家长称呼、寒暄或可直接发送的结尾。最终家长话术将由下一阶段生成，目标长度为${feedbackLengthRequirement(input.length)}，表达风格为：${feedbackStyleInstruction(input.style)}`;
+  return generateDraft(input.client, input.model, draftPrompt, input.signal, input.profileId);
 }
 
 export async function reviewFeedbackDraft(input: FeedbackReviewInput): Promise<ReviewedFeedback> {
@@ -575,11 +601,11 @@ ${draftFeedback}
 9. 只有明确的前后证据才可写“从不会到会”“已经掌握”“越来越”“明显提升”“习惯已经形成”。若证据只是本次答题和重复出现的积极事件，应写“这次已经能……”“最近几节课都……”“这种做法正在慢慢稳定下来”。
 10. 家校沟通按实际发生时间由近到远提供。优先回应最近且仍有效的学习关切或教师承诺；旧内容与新内容冲突时以新内容为准。可用本次证据自然回应，例如“您之前提到他觉得开始变难，这次……”。与学习无关的收悉、请假、排课和寒暄不得进入反馈。
 11. 只有背景明确需要补救且给出题号或材料时，才写一项具体任务；不得凭空编造题目内容。普通情况可直接结束，不强行布置作业。
-12. 最终 feedback 应满足${input.lengthRequirement}，语气温和、具体、连贯，适合直接发送；不要标题、项目符号或内部分析措辞。不得使用任何家长称呼、寒暄或模板占位符，例如“XX妈妈”“某某家长”“家长您好”，直接从该生表现开始。
+12. 最终 feedback 应满足${feedbackLengthRequirement(input.length)}；本次表达风格为：${feedbackStyleInstruction(input.style)}风格只改变表达，不得改变事实、证据、问题强度、内部研判或安全规则。文本应具体、连贯，适合直接发送；不要标题、项目符号或内部分析措辞。不得使用任何家长称呼、寒暄或模板占位符，例如“XX妈妈”“某某家长”“家长您好”，直接从该生表现开始。
 13. 分析可靠且已成功成稿时 verdict="pass"；需要删改分析中的不可靠内容但仍能安全成稿时 verdict="revise"；无法可靠成稿时 verdict="needs_review"。
 14. 无论 pass 还是 revise 都必须返回完整最终 feedback；needs_review 可返回一份供教师修改的保守文本，并在 issues 中说明原因。
 15. 只返回合法 JSON：{"verdict":"pass|revise|needs_review","feedback":"最终文本","issues":["简短原因"]}。`;
-  const reviewed = await reviewDraft(input.client, input.model, reviewPrompt, input.signal);
+  const reviewed = await reviewDraft(input.client, input.model, reviewPrompt, input.signal, input.profileId);
   if (!reviewed) {
     return {
       draftFeedback,
@@ -610,6 +636,11 @@ ${draftFeedback}
     reviewStatus = "needs_review";
     reviewIssues.push("反馈中出现了家长称呼占位符");
     feedback = "";
+  }
+  const lengthIssue = feedback ? feedbackLengthIssue(feedback, input.length) : null;
+  if (lengthIssue) {
+    reviewStatus = "needs_review";
+    reviewIssues.push(lengthIssue);
   }
 
   return {

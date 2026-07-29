@@ -70,6 +70,40 @@ describe("teaching summary facts", () => {
     ]));
   });
 
+  it("excludes inactive roster-only students but preserves inactive historical participants", async () => {
+    const inactiveRosterOnlyId = "test-summary-inactive-roster-only";
+    await prisma.student.create({
+      data: {
+        id: inactiveRosterOnlyId,
+        name: "非活跃无历史",
+        studentId: "TEST-INACTIVE-NO-HISTORY",
+        gender: "女",
+        classId: TEST_FIXTURE.class.id,
+        rosterStatus: "INACTIVE",
+        statusEffectiveAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    });
+    await prisma.student.update({
+      where: { id: TEST_FIXTURE.students[0].id },
+      data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date("2026-06-01T00:00:00.000Z") },
+    });
+    try {
+      const context = await buildTeachingSummaryContext(TeachingSummaryRequestSchema.parse({
+        scope: { type: "session", sessionCode: TEST_FIXTURE.sessions[0].code },
+        includeCommunications: true,
+      }));
+      const names = [...context.references.students.values()].map((student) => student.name);
+      expect(names).toContain(TEST_FIXTURE.students[0].name);
+      expect(names).not.toContain("非活跃无历史");
+    } finally {
+      await prisma.student.update({
+        where: { id: TEST_FIXTURE.students[0].id },
+        data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() },
+      });
+      await prisma.student.delete({ where: { id: inactiveRosterOnlyId } });
+    }
+  });
+
   it("uses one structured request, validates references and reuses the cache", async () => {
     const request = TeachingSummaryRequestSchema.parse({
       scope: { type: "session", sessionCode: TEST_FIXTURE.sessions[0].code },

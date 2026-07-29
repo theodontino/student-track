@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
 
     // Name matching and absence completion must stay inside the selected class.
     const students = await prisma.student.findMany({
-      where: { classId: session.classId },
+      where: { classId: session.classId, rosterStatus: "ACTIVE" },
       select: { id: true, name: true },
       orderBy: { studentId: "asc" },
     });

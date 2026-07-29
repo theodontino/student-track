@@ -149,7 +149,7 @@ export async function getAlertDashboard(
   const studentIds = [...studentSessionIds.keys()];
   if (studentIds.length === 0) return emptyDashboard(semester);
   const students = await db.student.findMany({
-    where: { id: { in: studentIds } },
+    where: { id: { in: studentIds }, rosterStatus: "ACTIVE" },
     select: {
       id: true,
       name: true,

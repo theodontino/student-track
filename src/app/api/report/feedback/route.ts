@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
@@ -14,7 +15,13 @@ import {
   summarizeLessonMaterial,
 } from "@/services/feedback-generation-service";
 import { FEEDBACK_INTENSITIES, type FeedbackIntensity } from "@/lib/feedback-intensity";
-import { normalizeFeedbackOutputStrategy } from "@/lib/feedback-sections";
+import {
+  normalizeFeedbackOutputStrategy,
+  type FeedbackLength,
+  type FeedbackOutputStrategy,
+  type FeedbackStyle,
+} from "@/lib/feedback-sections";
+import { FeedbackOutputStrategySchema } from "@/lib/contracts/feedback";
 import { buildFeedbackSections } from "@/services/feedback-sections-service";
 import {
   markCurrentLLMCacheOperationIncomplete,
@@ -22,11 +29,14 @@ import {
 } from "@/services/llm-cache-service";
 import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 import { apiErrorBody, ApiError } from "@/lib/api-errors";
+import { getEffectiveLLMSettings, resolveLLMProfileId } from "@/lib/llm-settings";
+import { FEEDBACK_REPLAY_SNAPSHOT_VERSION, feedbackContextFingerprint } from "@/services/feedback-version-service";
 
 async function reviewedFeedback(
   studentName: string,
   promptContext: string,
-  lengthRequirement: string,
+  style: FeedbackStyle,
+  length: FeedbackLength,
   forbiddenStudentNames: string[] = [],
   signal?: AbortSignal,
 ) {
@@ -34,7 +44,8 @@ async function reviewedFeedback(
     studentName,
     promptContext,
     forbiddenStudentNames,
-    lengthRequirement,
+    style,
+    length,
     draftClient: createLLMClient("feedbackDraft"),
     draftModel: getLLMModel("feedbackDraft"),
     reviewClient: createLLMClient("feedbackReview"),
@@ -50,12 +61,17 @@ export async function POST(request: NextRequest) {
     const studentId = typeof body.studentId === "string" ? body.studentId : "";
     const sessionCode = typeof body.sessionCode === "string" ? body.sessionCode : "";
     const days = typeof body.days === "number" ? body.days : undefined;
+    const submittedInputRevision = typeof body.inputRevision === "string" ? body.inputRevision.trim() : "";
     const requestedIntensity = typeof body.feedbackIntensity === "string" && FEEDBACK_INTENSITIES.includes(body.feedbackIntensity as FeedbackIntensity)
       ? body.feedbackIntensity as FeedbackIntensity
       : undefined;
-    const outputStrategy = normalizeFeedbackOutputStrategy(
-      body.outputStrategy && typeof body.outputStrategy === "object" ? body.outputStrategy as Record<string, boolean> : undefined,
-    );
+    const parsedOutputStrategy = body.outputStrategy === undefined
+      ? undefined
+      : FeedbackOutputStrategySchema.safeParse(body.outputStrategy);
+    if (parsedOutputStrategy && !parsedOutputStrategy.success) {
+      return NextResponse.json({ error: "反馈输出策略参数无效", code: "invalid_request", retryable: false }, { status: 400 });
+    }
+    const outputStrategy = normalizeFeedbackOutputStrategy(parsedOutputStrategy?.data as FeedbackOutputStrategy | undefined);
     const submittedLessonMaterial = body.lessonMaterial === undefined ? undefined : isLessonFeedbackMaterial(body.lessonMaterial) ? body.lessonMaterial : null;
     const submittedAssessmentEvidence = body.assessmentEvidence === undefined ? undefined : isStudentAssessmentEvidence(body.assessmentEvidence) ? body.assessmentEvidence : null;
     if (submittedLessonMaterial === null || submittedAssessmentEvidence === null) {
@@ -132,6 +148,8 @@ export async function POST(request: NextRequest) {
                   studentName: studentContext.name,
                   promptContext,
                   forbiddenStudentNames,
+                  style: outputStrategy.style,
+                  length: outputStrategy.length,
                   client: createLLMClient("feedbackReview"),
                   model: getLLMModel("feedbackReview"),
                   signal: process.env.NODE_ENV === "test" ? undefined : request.signal,
@@ -139,20 +157,55 @@ export async function POST(request: NextRequest) {
               : await reviewedFeedback(
                   studentContext.name,
                   promptContext,
-                  intensity === "priority" ? "110-160字" : "80-120字",
+                  outputStrategy.style,
+                  outputStrategy.length,
                   forbiddenStudentNames,
                   process.env.NODE_ENV === "test" ? undefined : request.signal,
             );
             if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
             if (result.feedback || result.draftFeedback) {
+              const profileId = resolveLLMProfileId("feedbackReview");
+              const settings = getEffectiveLLMSettings("feedbackReview", profileId ?? undefined);
+              const replaySnapshot = {
+                version: FEEDBACK_REPLAY_SNAPSHOT_VERSION,
+                studentName: studentContext.name,
+                promptContext,
+                forbiddenStudentNames,
+                style: outputStrategy.style,
+                length: outputStrategy.length,
+                intensity,
+                contextFingerprint: feedbackContextFingerprint(studentContext.promptContext),
+              };
+              const effectiveInputRevision = submittedInputRevision || createHash("sha256")
+                .update(JSON.stringify(replaySnapshot))
+                .digest("hex")
+                .slice(0, 16);
+              const stage = intensity === "routine" ? "routine" : "review";
+              const variantKey = createHash("sha256").update(JSON.stringify({
+                source: "initial",
+                sessionId: feedbackContext.session.id,
+                studentId,
+                stage,
+                inputRevision: effectiveInputRevision,
+                promptVersion: "feedback-composable-v2",
+                modelProfileId: profileId,
+                model: settings.model,
+                maxTokens: settings.maxTokens ?? null,
+                reasoningEnabled: settings.reasoningEnabled ?? false,
+                reasoningEffort: settings.reasoningEffort ?? null,
+                profileUpdatedAt: settings.updatedAt ?? null,
+              })).digest("hex");
               await recordSuccessfulGeneration({
-                taskType: "feedback", stage: intensity === "routine" ? "routine" : "review",
+                taskType: "feedback", stage,
                 semesterId: feedbackContext.session.semesterId, classId: feedbackContext.session.classId,
                 sessionId: feedbackContext.session.id, studentId,
                 sourceRefs: [{ type: "session", id: feedbackContext.session.id }, { type: "student", id: studentId }],
                 promptVersion: "feedback-composable-v2", modelRole: "feedbackReview",
-                inputSnapshot: { sections, outputStrategy, intensity },
-                outputSnapshot: { sections, reviewStatus: result.reviewStatus, draftFeedback: result.draftFeedback },
+                modelProfileId: profileId,
+                inputRevision: effectiveInputRevision,
+                variantKey,
+                inputSnapshot: replaySnapshot,
+                outputSnapshot: { sections, reviewStatus: result.reviewStatus, reviewIssues: result.reviewIssues, draftFeedback: result.draftFeedback, modelRawFinalText: result.feedback },
                 finalText: result.feedback || null,
               }).catch(() => undefined);
               await compactHotGenerationRecordsForClass(feedbackContext.session.classId).catch(() => undefined);
@@ -198,7 +251,14 @@ export async function POST(request: NextRequest) {
       "feedback",
       "生成单人近期反馈",
       async () => {
-        const result = await reviewedFeedback(student.name, context, "120-180字", [], process.env.NODE_ENV === "test" ? undefined : request.signal);
+        const result = await reviewedFeedback(
+          student.name,
+          context,
+          outputStrategy.style,
+          outputStrategy.length,
+          [],
+          process.env.NODE_ENV === "test" ? undefined : request.signal,
+        );
         if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
         await recordSuccessfulGeneration({
           taskType: "feedback", stage: "review", classId: student.classId, studentId,

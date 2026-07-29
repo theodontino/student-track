@@ -19,6 +19,16 @@ export interface LLMProfile extends LLMSettings {
   updatedAt: string;
 }
 
+export interface SafeLLMProfileSummary {
+  id: string;
+  name: string;
+  model: string;
+  maxTokens: number | null;
+  reasoningEnabled: boolean;
+  reasoningEffort: "low" | "medium" | "high";
+  updatedAt: string;
+}
+
 export type LLMProfileRole = "feedbackDraft" | "feedbackReview" | "wecomExtraction";
 
 export interface LLMRoleAssignments {
@@ -152,8 +162,8 @@ export function getLLMSettingsStore(): LLMSettingsStore {
   return readStore();
 }
 
-/** Returns role-specific settings, falling back to the active Web UI profile and then .env. */
-export function getEffectiveLLMSettings(role?: LLMProfileRole): LLMSettings {
+/** Returns role-specific settings, or an explicit profile without mutating assignments. */
+export function getEffectiveLLMSettings(role?: LLMProfileRole, profileId?: string): LLMSettings {
   const store = readStore();
   const assignedProfileId = role === "feedbackDraft"
     ? store.roleAssignments.feedbackDraftProfileId
@@ -162,7 +172,12 @@ export function getEffectiveLLMSettings(role?: LLMProfileRole): LLMSettings {
       : role === "wecomExtraction"
         ? store.roleAssignments.wecomExtractionProfileId
         : null;
-  const activeProfile = store.profiles.find((profile) => profile.id === assignedProfileId)
+  const explicitProfile = profileId
+    ? store.profiles.find((profile) => profile.id === profileId)
+    : undefined;
+  if (profileId && !explicitProfile) throw new Error("指定的 LLM 配置不存在");
+  const activeProfile = explicitProfile
+    ?? store.profiles.find((profile) => profile.id === assignedProfileId)
     ?? store.profiles.find((profile) => profile.id === store.activeProfileId);
   return {
     apiBaseUrl: activeProfile?.apiBaseUrl || process.env.LLM_API_BASE_URL || DEFAULT_API_BASE_URL,
@@ -173,6 +188,42 @@ export function getEffectiveLLMSettings(role?: LLMProfileRole): LLMSettings {
     reasoningEffort: activeProfile?.reasoningEffort,
     updatedAt: activeProfile?.updatedAt,
   };
+}
+
+export function getSafeLLMProfileSummaries(): SafeLLMProfileSummary[] {
+  return readStore().profiles.map((profile) => ({
+    id: profile.id,
+    name: profile.name,
+    model: profile.model,
+    maxTokens: profile.maxTokens ?? null,
+    reasoningEnabled: profile.reasoningEnabled ?? false,
+    reasoningEffort: profile.reasoningEffort ?? "low",
+    updatedAt: profile.updatedAt,
+  }));
+}
+
+export function getSafeLLMProfileSummary(profileId: string): SafeLLMProfileSummary {
+  const profile = getSafeLLMProfileSummaries().find((item) => item.id === profileId);
+  if (!profile) throw new Error("指定的 LLM 配置不存在");
+  return profile;
+}
+
+export function resolveLLMProfileId(role?: LLMProfileRole, profileId?: string): string | null {
+  const store = readStore();
+  if (profileId) {
+    if (!store.profiles.some((profile) => profile.id === profileId)) {
+      throw new Error("指定的 LLM 配置不存在");
+    }
+    return profileId;
+  }
+  const assignedProfileId = role === "feedbackDraft"
+    ? store.roleAssignments.feedbackDraftProfileId
+    : role === "feedbackReview"
+      ? store.roleAssignments.feedbackReviewProfileId
+      : role === "wecomExtraction"
+        ? store.roleAssignments.wecomExtractionProfileId
+        : null;
+  return assignedProfileId ?? store.activeProfileId ?? null;
 }
 
 export function validateLLMSettings(input: Partial<LLMSettings>): LLMSettings {

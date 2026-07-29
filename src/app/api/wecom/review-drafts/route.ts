@@ -65,6 +65,9 @@ export async function GET(request: NextRequest) {
     const suggestion = readPreReviewSuggestion(draft.reviewResult);
     const row = {
       id: draft.id,
+      kind: draft.kind,
+      supersedesDraftId: draft.supersedesDraftId,
+      communicationId: draft.communicationId,
       sessionCode: draft.sessionCode,
       student,
       parsedResult: result,

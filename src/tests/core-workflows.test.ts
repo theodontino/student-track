@@ -206,4 +206,28 @@ describe("core transactional workflows", () => {
       where: { metricId: metric.id },
     })).resolves.toMatchObject({ changeType: "delete" });
   });
+
+  it("excludes inactive students from a newly created attendance roster without changing history", async () => {
+    await prisma.student.update({
+      where: { id: studentIds[1] },
+      data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date() },
+    });
+    const historicalAttendance = await prisma.attendance.count({
+      where: { studentId: studentIds[1], sessionId },
+    });
+    const created = await createClassSession({
+      semesterId,
+      classCode,
+      date: "2098-02-02",
+    });
+    expect(created.studentCount).toBe(1);
+    expect(await prisma.attendance.findMany({
+      where: { sessionId: created.id },
+      select: { studentId: true },
+    })).toEqual([{ studentId: studentIds[0] }]);
+    expect(await prisma.attendance.count({
+      where: { studentId: studentIds[1], sessionId },
+    })).toBe(historicalAttendance);
+    await deleteClassSession({ semesterId, code: created.code });
+  });
 });

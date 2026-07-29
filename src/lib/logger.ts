@@ -4,6 +4,7 @@ export type LogAction =
   | "score.updated"
   | "alert.triggered"
   | "student.deleted"
+  | "student.roster-status.updated"
   | "session.created"
   | "session.deleted"
   | "data.exported";

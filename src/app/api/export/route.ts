@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 
 export async function POST(request: NextRequest) {
   try {
-    const { startDate, endDate } = await request.json();
+    const { startDate, endDate, includeInactive = false } = await request.json();
 
     if (!startDate || !endDate) {
       return NextResponse.json({ error: "请选择时间范围" }, { status: 400 });
@@ -23,6 +23,7 @@ export async function POST(request: NextRequest) {
 
     while (hasMore) {
       const batch = await prisma.student.findMany({
+        where: includeInactive === true ? undefined : { rosterStatus: "ACTIVE" },
         skip: page * BATCH_SIZE,
         take: BATCH_SIZE,
         include: {
@@ -58,6 +59,8 @@ export async function POST(request: NextRequest) {
           "班级": s.class.name ?? s.class.code,
           "学号": s.studentId,
           "性别": s.gender,
+          "花名册状态": s.rosterStatus === "ACTIVE" ? "在读" : "非活跃",
+          "状态生效时间": s.statusEffectiveAt.toISOString(),
           "标签": (s.studentLabels || []).map((sl) => sl.label.name).join(", "),
           "当前状态": s.sessionMetrics.length > 0
             ? `A:${s.sessionMetrics[0].scoreA} B:${s.sessionMetrics[0].scoreB} C:${s.sessionMetrics[0].scoreC} D:${s.sessionMetrics[0].scoreD}`

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
-import { getEffectiveLLMSettings, type LLMProfileRole } from "@/lib/llm-settings";
+import { getEffectiveLLMSettings, resolveLLMProfileId, type LLMProfileRole } from "@/lib/llm-settings";
 import { prisma } from "@/lib/prisma";
 
 export const HOT_SESSION_WINDOW = 5;
@@ -28,6 +28,11 @@ export interface RecordSuccessfulGenerationInput {
   sourceRefs: GenerationSourceRef[];
   promptVersion: string;
   modelRole?: LLMProfileRole | null;
+  modelProfileId?: string | null;
+  inputRevision?: string | null;
+  parentGenerationId?: string | null;
+  variantKey?: string | null;
+  selectIfFirst?: boolean;
   inputSnapshot?: unknown;
   outputSnapshot: unknown;
   finalText?: string | null;
@@ -76,8 +81,8 @@ function sourceRefJson(refs: GenerationSourceRef[]) {
   return JSON.stringify(refs.filter((item) => item.id));
 }
 
-function modelSnapshot(role?: LLMProfileRole | null) {
-  const settings = getEffectiveLLMSettings(role ?? undefined);
+function modelSnapshot(role?: LLMProfileRole | null, profileId?: string | null) {
+  const settings = getEffectiveLLMSettings(role ?? undefined, profileId ?? undefined);
   return {
     maxTokens: settings.maxTokens ?? null,
     reasoningEnabled: settings.reasoningEnabled ?? false,
@@ -119,11 +124,57 @@ function isoDay(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
+async function selectPrimaryFeedbackGeneration(
+  record: { id: string; finalText: string | null; sessionId: string | null; studentId: string | null },
+  input: RecordSuccessfulGenerationInput,
+  db: PrismaClient,
+) {
+  if (
+    input.taskType !== "feedback"
+    || input.selectIfFirst === false
+    || !record.finalText?.trim()
+    || !record.sessionId
+    || !record.studentId
+  ) return;
+  const selectedAt = new Date();
+  await db.feedbackGenerationSelection.upsert({
+    where: {
+      sessionId_studentId: {
+        sessionId: record.sessionId,
+        studentId: record.studentId,
+      },
+    },
+    create: {
+      sessionId: record.sessionId,
+      studentId: record.studentId,
+      selectedGenerationId: record.id,
+      selectedAt,
+    },
+    update: {
+      selectedGenerationId: record.id,
+      selectedAt,
+    },
+  });
+}
+
 export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerationInput, db: PrismaClient = prisma) {
-  const settings = modelSnapshot(input.modelRole);
+  const resolvedProfileId = resolveLLMProfileId(
+    input.modelRole ?? undefined,
+    input.modelProfileId ?? undefined,
+  );
+  const settings = modelSnapshot(input.modelRole, resolvedProfileId);
   const inputSnapshot = input.inputSnapshot === undefined ? null : JSON.stringify(input.inputSnapshot);
   const outputSnapshot = JSON.stringify(input.outputSnapshot);
   const sourceFingerprint = fingerprint({ input: input.inputSnapshot ?? null, output: input.outputSnapshot, refs: input.sourceRefs });
+  if (input.variantKey) {
+    const existingVariant = await db.generationRecord.findUnique({
+      where: { variantKey: input.variantKey },
+    });
+    if (existingVariant) {
+      await selectPrimaryFeedbackGeneration(existingVariant, input, db);
+      return existingVariant;
+    }
+  }
   const existing = await db.generationRecord.findFirst({
     where: {
       taskType: input.taskType,
@@ -148,21 +199,26 @@ export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerati
     sourceRefs: sourceRefJson(input.sourceRefs),
     sourceFingerprint,
     promptVersion: input.promptVersion,
-    modelName: getLLMModel(input.modelRole ?? undefined),
+    modelName: getLLMModel(input.modelRole ?? undefined, resolvedProfileId ?? undefined),
     modelRole: input.modelRole ?? null,
+    modelProfileId: resolvedProfileId,
     modelSettings: JSON.stringify(settings),
+    inputRevision: input.inputRevision ?? null,
+    parentGenerationId: input.parentGenerationId ?? null,
+    variantKey: input.variantKey ?? null,
     inputSnapshot,
     outputSnapshot,
     finalText: input.finalText ?? null,
   };
-  if (existing) {
-    return db.generationRecord.update({ where: { id: existing.id }, data });
-  }
-  return db.generationRecord.create({
-    data: {
-      ...data,
-    },
-  });
+  const record = existing && !input.variantKey
+    ? await db.generationRecord.update({ where: { id: existing.id }, data })
+    : await db.generationRecord.create({
+        data: {
+          ...data,
+        },
+      });
+  await selectPrimaryFeedbackGeneration(record, input, db);
+  return record;
 }
 
 export async function markGenerationAdopted(
@@ -182,11 +238,21 @@ export async function adoptFeedbackGenerationRecords(input: {
 }, db: PrismaClient = prisma) {
   const now = new Date();
   await Promise.all(input.students.filter((student) => student.feedback.trim()).map(async (student) => {
-    const latest = await db.generationRecord.findFirst({
-      where: { taskType: "feedback", sessionId: input.sessionId, studentId: student.id, lifecycle: "hot", stage: { in: ["routine", "review", "draft"] } },
-      orderBy: { generatedAt: "desc" },
+    const selection = await db.feedbackGenerationSelection.findUnique({
+      where: { sessionId_studentId: { sessionId: input.sessionId, studentId: student.id } },
+      select: { selectedGenerationId: true },
     });
-    if (latest) await db.generationRecord.update({ where: { id: latest.id }, data: { finalText: student.feedback.trim(), adoptedAt: now } });
+    const selectedId = selection?.selectedGenerationId ?? (await db.generationRecord.findFirst({
+      where: { taskType: "feedback", sessionId: input.sessionId, studentId: student.id, lifecycle: "hot", stage: { in: ["routine", "review"] } },
+      orderBy: { generatedAt: "desc" },
+      select: { id: true },
+    }))?.id;
+    if (selectedId) {
+      await db.generationRecord.update({
+        where: { id: selectedId },
+        data: { finalText: student.feedback.trim(), adoptedAt: now },
+      });
+    }
   }));
 }
 

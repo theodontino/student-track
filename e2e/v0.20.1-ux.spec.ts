@@ -40,6 +40,29 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     await expect(page).toHaveURL(new RegExp(`/students/${TEST_FIXTURE.students[0].id}\\?semesterId=${TEST_FIXTURE.semester.id}`));
   });
 
+  test("student roster status can be filtered, deactivated, and restored without hiding history", async ({ page }) => {
+    await page.goto(`/students?semesterId=${TEST_FIXTURE.semester.id}`);
+    const studentRow = page.getByRole("button", {
+      name: `打开${TEST_FIXTURE.students[0].name}的学生档案`,
+    }).locator("xpath=ancestor::article[1]");
+    await studentRow.getByRole("button", { name: "设为非活跃" }).click();
+    await expect(studentRow.getByText("非活跃", { exact: true })).toBeVisible();
+
+    await page.getByLabel("学生花名册状态").selectOption("inactive");
+    await expect(page.getByRole("button", {
+      name: `打开${TEST_FIXTURE.students[0].name}的学生档案`,
+    })).toBeVisible();
+    await studentRow.getByRole("button", { name: "恢复在读" }).click();
+    await expect(page.getByRole("button", {
+      name: `打开${TEST_FIXTURE.students[0].name}的学生档案`,
+    })).toHaveCount(0);
+
+    await page.getByLabel("学生花名册状态").selectOption("all");
+    await expect(page.getByRole("button", {
+      name: `打开${TEST_FIXTURE.students[0].name}的学生档案`,
+    })).toBeVisible();
+  });
+
   test("feedback is the single entry workbench and links to the dedicated WeCom workspace", async ({ context, page }) => {
     await page.goto("/entry?step=input");
     await expect(page).toHaveURL(/\/feedback\?.*step=extract/);

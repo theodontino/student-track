@@ -53,7 +53,20 @@ export async function GET(request: NextRequest) {
     }
 
     const students = await prisma.student.findMany({
-      where: { classId },
+      where: {
+        classId,
+        OR: [
+          { rosterStatus: "ACTIVE" },
+          ...(targetSession
+            ? [
+                { sessionMetrics: { some: { sessionId: targetSession.id } } },
+                { attendances: { some: { sessionId: targetSession.id } } },
+              ]
+            : [
+                { sessionMetrics: { some: { date: targetDate, sessionId: null } } },
+              ]),
+        ],
+      },
       select: { id: true, name: true },
     });
 

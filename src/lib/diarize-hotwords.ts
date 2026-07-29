@@ -43,6 +43,7 @@ export function normalizeHotwordText(text: string) {
 
 async function getStudentNameHotwords() {
   const students = await prisma.student.findMany({
+    where: { rosterStatus: "ACTIVE" },
     select: { name: true },
     orderBy: { studentId: "asc" },
   });

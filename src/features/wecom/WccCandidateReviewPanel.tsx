@@ -19,6 +19,9 @@ type SessionOption = { code: string; date: string; semesterNumber: number };
 
 type Candidate = {
   id: string;
+  kind: "standard" | "replacement" | "correction";
+  supersedesDraftId?: string | null;
+  communicationId?: string | null;
   sessionCode: string | null;
   student: { id: string; name: string; studentId: string } | null;
   parsedResult: {
@@ -439,6 +442,7 @@ export default function WccCandidateReviewPanel() {
                 <td className="px-3 py-2">
                   <div className="font-medium text-slate-800">{item.student?.name || "学生已失效"}</div>
                   <div className="text-xs text-slate-500">{item.student?.studentId || item.id}</div>
+                  {item.kind !== "standard" && <span className={`mt-1 inline-flex rounded border px-1.5 py-0.5 text-[10px] ${item.kind === "correction" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-blue-200 bg-blue-50 text-blue-700"}`}>{item.kind === "correction" ? "沟通纠错" : "替代草案"}</span>}
                 </td>
                 <td className="px-3 py-2">
                   <div className="text-slate-700">{item.source.conversation?.title || "未命名会话"}</div>

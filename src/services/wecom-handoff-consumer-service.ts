@@ -32,11 +32,17 @@ export async function consumeWccHandoffPackage(
   prisma: PrismaClient,
   payload: WccStudentTrackFileV1,
   selectedStudentId: string,
+  lineage?: {
+    handoffPackageId: string;
+    kind: "standard" | "replacement" | "correction";
+    supersedesDraftId?: string;
+    communicationId?: string;
+  },
 ) {
   const uniqueMessageIds = [...new Set(payload.messages.map((message) => message.id).filter(Boolean))];
   if (uniqueMessageIds.length !== payload.messages.length) throw new Error("duplicate_message_ids");
   const students = await prisma.student.findMany({
-    where: { id: selectedStudentId },
+    where: { id: selectedStudentId, rosterStatus: "ACTIVE" },
     select: { id: true, name: true, studentId: true, classId: true },
   });
   if (students.length !== 1) throw new Error("directory_conflict");
@@ -147,13 +153,17 @@ export async function consumeWccHandoffPackage(
         }),
         parsedResult: JSON.stringify(parsedResult),
         status: "pending",
+        kind: lineage?.kind ?? "standard",
         studentId: student.id,
         sessionCode,
+        supersedesDraftId: lineage?.supersedesDraftId,
+        communicationId: lineage?.communicationId,
+        handoffPackageId: lineage?.handoffPackageId,
       },
       // 重复交付只能幂等返回，不能改写已确认草稿的历史课次。
       update: {},
     });
-    drafts.push({ id: draft.id, status: draft.status, studentId: student.id, studentName: student.name });
+    drafts.push({ id: draft.id, status: draft.status, kind: draft.kind, studentId: student.id, studentName: student.name });
   }
   return {
     packageId: payload.packageId,

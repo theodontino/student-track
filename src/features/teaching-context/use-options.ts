@@ -11,7 +11,7 @@ export function useSemesters(refreshKey = 0) {
 }
 export function useClasses() {
   const [items, setItems] = useState<string[]>([]);
-  useEffect(() => { requestJson<StudentSummary[]>("/api/students?summary=true").then((students) => setItems([...new Set(students.map((student) => student.class).filter(Boolean))])).catch(() => setItems([])); }, []);
+  useEffect(() => { requestJson<StudentSummary[]>("/api/students?summary=true&scope=active").then((students) => setItems([...new Set(students.map((student) => student.class).filter(Boolean))])).catch(() => setItems([])); }, []);
   return items;
 }
 export function useSessions(semesterId: string, className: string, refreshKey = 0) {

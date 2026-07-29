@@ -3,8 +3,8 @@ import { filterStudents, groupStudentsByClass, sortStudents, studentSummaryHint 
 import type { StudentListItem } from "@/features/students/types";
 
 const students = [
-  { id: "1", name: "测试甲", class: "一班", classCode: "C1", studentId: "S001", gender: "男", labels: [{ id: "l1", name: "#主动" }], createdAt: "", updatedAt: "" },
-  { id: "2", name: "测试乙", class: "二班", classCode: "C2", studentId: "S002", gender: "女", labels: [], createdAt: "", updatedAt: "" },
+  { id: "1", name: "测试甲", class: "一班", classCode: "C1", studentId: "S001", gender: "男", rosterStatus: "ACTIVE", statusEffectiveAt: "2026-07-29T00:00:00.000Z", labels: [{ id: "l1", name: "#主动" }], createdAt: "", updatedAt: "" },
+  { id: "2", name: "测试乙", class: "二班", classCode: "C2", studentId: "S002", gender: "女", rosterStatus: "ACTIVE", statusEffectiveAt: "2026-07-29T00:00:00.000Z", labels: [], createdAt: "", updatedAt: "" },
 ] satisfies StudentListItem[];
 
 describe("student list utilities", () => {

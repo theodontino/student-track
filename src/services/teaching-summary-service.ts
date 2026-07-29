@@ -194,7 +194,10 @@ export async function buildTeachingSummaryContext(
       select: { key: true },
     }),
     db.student.findMany({
-      where: hasSchoolSession ? {} : { classId: { in: classIds } },
+      where: {
+        rosterStatus: "ACTIVE",
+        ...(hasSchoolSession ? {} : { classId: { in: classIds } }),
+      },
       select: { id: true, name: true, classId: true, class: { select: { code: true, name: true } } },
     }),
   ]);

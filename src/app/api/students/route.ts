@@ -15,8 +15,13 @@ export async function GET(request: NextRequest) {
     const summary = new URL(request.url).searchParams.get("summary") === "true";
     const semesterSummary = new URL(request.url).searchParams.get("semesterSummary") === "true";
     const semesterId = new URL(request.url).searchParams.get("semesterId") || undefined;
+    const scope = new URL(request.url).searchParams.get("scope") || "all";
+    if (!["active", "all"].includes(scope)) {
+      return NextResponse.json({ error: "学生范围无效" }, { status: 400 });
+    }
 
     const students = await prisma.student.findMany({
+      where: scope === "active" ? { rosterStatus: "ACTIVE" } : undefined,
       orderBy: { createdAt: "desc" },
       include: studentInclude,
     });

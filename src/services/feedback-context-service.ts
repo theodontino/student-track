@@ -249,7 +249,7 @@ export async function buildFeedbackContext(
   if (!className) throw new Error("该课次未关联班级");
 
   const students = await prisma.student.findMany({
-    where: { classId: session.classId },
+    where: { classId: session.classId, rosterStatus: "ACTIVE" },
     select: {
       id: true,
       name: true,

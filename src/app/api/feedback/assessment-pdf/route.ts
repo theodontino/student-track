@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "课次不存在或未关联班级" }, { status: 404 });
     }
     const students = await prisma.student.findMany({
-      where: { classId: session.classId },
+      where: { classId: session.classId, rosterStatus: "ACTIVE" },
       select: { id: true, name: true, studentId: true },
       orderBy: { studentId: "asc" },
     });

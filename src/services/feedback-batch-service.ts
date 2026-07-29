@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
+import { getEffectiveLLMSettings, resolveLLMProfileId } from "@/lib/llm-settings";
 import { ApiError, apiStreamErrorBody, safeApiError } from "@/lib/api-errors";
 import { TtlLruCache } from "@/lib/ttl-lru-cache";
 import {
@@ -39,12 +40,14 @@ import type {
   FeedbackRoutingDecision,
 } from "@/lib/feedback-intensity";
 import {
+  feedbackLengthIssue,
   normalizeFeedbackOutputStrategy,
   type FeedbackOutputStrategy,
   type FeedbackSections,
 } from "@/lib/feedback-sections";
 import { buildFeedbackSections } from "@/services/feedback-sections-service";
 import { adoptFeedbackGenerationRecords, compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
+import { FEEDBACK_REPLAY_SNAPSHOT_VERSION, feedbackContextFingerprint } from "@/services/feedback-version-service";
 
 export type FeedbackBatchInput = z.infer<typeof FeedbackBatchPostSchema>;
 export type FeedbackHistoryModule = "feedback" | "report";
@@ -163,6 +166,7 @@ function inputRevision(
   assessmentEvidence: Record<string, StudentAssessmentEvidence>,
   routing: FeedbackRoutingDecision[],
   outputStrategy: FeedbackOutputStrategy,
+  contextStudents: FeedbackContextStudent[],
 ) {
   const {
     lessonSummary: _lessonSummary,
@@ -186,6 +190,9 @@ function inputRevision(
       assessmentEvidence: sortedEvidence,
       routing: routing.map(({ studentId, baseline, intensity, reasons }) => ({ studentId, baseline, intensity, reasons })),
       outputStrategy,
+      studentContext: contextStudents
+        .map((student) => ({ id: student.id, promptContext: student.promptContext }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
     }))
     .digest("hex")
     .slice(0, 16);
@@ -195,7 +202,10 @@ function parseHistoryState(value: string): FeedbackState | null {
   try {
     const parsed = FeedbackHistoryStateSchema.safeParse(JSON.parse(value));
     if (!parsed.success || parsed.data.kind !== "batch") return null;
-    return parsed.data as FeedbackState;
+    return {
+      ...parsed.data,
+      outputStrategy: normalizeFeedbackOutputStrategy(parsed.data.outputStrategy),
+    } as FeedbackState;
   } catch {
     return null;
   }
@@ -204,6 +214,7 @@ function parseHistoryState(value: string): FeedbackState | null {
 function submittedCardsFrom(
   submitted: NonNullable<FeedbackBatchInput["students"]>,
   contextByStudent: Map<string, FeedbackContextStudent>,
+  outputStrategy: FeedbackOutputStrategy,
 ): FeedbackCard[] {
   const unknownStudent = submitted.find((item) => !contextByStudent.has(item.id));
   if (unknownStudent) {
@@ -223,14 +234,18 @@ function submittedCardsFrom(
     if (!student) {
       throw new ApiError("反馈卡片学生校验失败", 400, "invalid_request", false);
     }
+    const feedback = item.feedback.trim();
+    const lengthIssue = feedback ? feedbackLengthIssue(feedback, outputStrategy.length) : null;
     return {
       id: student.id,
       name: student.name,
       labels: student.labels,
-      feedback: item.feedback.trim(),
+      feedback,
       draftFeedback: item.draftFeedback?.trim(),
-      reviewStatus: item.reviewStatus,
-      reviewIssues: item.reviewIssues?.slice(0, 8),
+      reviewStatus: lengthIssue ? "needs_review" : item.reviewStatus,
+      reviewIssues: lengthIssue
+        ? [...new Set([...(item.reviewIssues ?? []), lengthIssue])].slice(0, 8)
+        : item.reviewIssues?.slice(0, 8),
       feedbackIntensity: item.feedbackIntensity,
       feedbackRoutingReasons: item.feedbackRoutingReasons,
       sections: item.sections,
@@ -279,13 +294,50 @@ export async function buildFeedbackBatchExport(
   ) {
     throw new ApiError("当前批次尚未完成，不能导出", 409, "conflict", false);
   }
-  if (state.outputStrategy && !state.outputStrategy.suggestedFeedback) {
+  const outputStrategy = normalizeFeedbackOutputStrategy(state.outputStrategy);
+  if (!outputStrategy.suggestedFeedback) {
     throw new ApiError("本批次仅生成教师研判，未生成家长反馈文本", 409, "conflict", false);
   }
 
-  const reviewBlockerCount = state.students.filter(
-    (card) => card.reviewStatus === "needs_review",
-  ).length;
+  const session = await prisma.classSession.findUnique({ where: { code: sessionCode }, select: { id: true } });
+  const selectedVersions = session ? await prisma.feedbackGenerationSelection.findMany({
+    where: { sessionId: session.id },
+    include: { selectedGeneration: true },
+  }) : [];
+  const selectedByStudent = new Map(selectedVersions.map((selection) => [
+    selection.studentId,
+    selection.selectedGeneration,
+  ]));
+  const exportStudents = state.students.map((card) => {
+    const selected = selectedByStudent.get(card.id);
+    if (!selected?.finalText?.trim()) return card;
+    let reviewStatus = card.reviewStatus;
+    let reviewIssues = card.reviewIssues;
+    const teacherEditedSelected = card.reviewStatus === "edited"
+      && card.feedback.trim() === selected.finalText.trim();
+    if (!teacherEditedSelected) {
+      try {
+        const output = selected.outputSnapshot ? JSON.parse(selected.outputSnapshot) as {
+          reviewStatus?: FeedbackReviewStatus;
+          reviewIssues?: string[];
+        } : null;
+        reviewStatus = output?.reviewStatus ?? reviewStatus;
+        reviewIssues = output?.reviewIssues ?? reviewIssues;
+      } catch {
+        // Keep the persisted card review state if an old output snapshot is unreadable.
+      }
+    }
+    if (state.inputRevision && selected.inputRevision !== state.inputRevision) {
+      reviewStatus = "needs_review";
+      reviewIssues = ["当前采用版本的输入已变化"];
+    }
+    return { ...card, feedback: selected.finalText.trim(), reviewStatus, reviewIssues };
+  });
+
+  const reviewBlockerCount = exportStudents.filter((card) => (
+    card.reviewStatus === "needs_review"
+    || Boolean(feedbackLengthIssue(card.feedback, outputStrategy.length))
+  )).length;
   if (reviewBlockerCount > 0) {
     throw new ApiError(
       `还有 ${reviewBlockerCount} 条反馈需要人工确认，暂不能导出`,
@@ -294,13 +346,12 @@ export async function buildFeedbackBatchExport(
       false,
     );
   }
-  const session = await prisma.classSession.findUnique({ where: { code: sessionCode }, select: { id: true } });
-  if (session) await adoptFeedbackGenerationRecords({ sessionId: session.id, students: state.students.map((card) => ({ id: card.id, feedback: card.feedback })) }).catch(() => undefined);
+  if (session) await adoptFeedbackGenerationRecords({ sessionId: session.id, students: exportStudents.map((card) => ({ id: card.id, feedback: card.feedback })) }).catch(() => undefined);
   const dashboard = await getAlertDashboard({ semesterId: state.semesterId });
   return buildFeedbackExportWorkbook(
     prisma,
     sessionCode,
-    state.students,
+    exportStudents,
     dashboard.studentRisks,
   );
 }
@@ -402,6 +453,8 @@ function createGenerationStream(input: {
                     studentName: card.name,
                     promptContext,
                     forbiddenStudentNames: cards.filter((item) => item.id !== card.id).map((item) => item.name),
+                    style: outputStrategy.style,
+                    length: outputStrategy.length,
                     client: reviewClient,
                     model: reviewModel,
                     signal,
@@ -410,7 +463,8 @@ function createGenerationStream(input: {
                   card.draftFeedback = await generateFeedbackDraft({
                     studentName: card.name,
                     promptContext,
-                    lengthRequirement: card.feedbackIntensity === "priority" ? "110-160字" : "80-120字",
+                    style: outputStrategy.style,
+                    length: outputStrategy.length,
                     client: draftClient ?? reviewClient,
                     model: draftModel,
                     signal,
@@ -471,7 +525,8 @@ function createGenerationStream(input: {
                   forbiddenStudentNames: cards
                     .filter((item) => item.id !== card.id)
                     .map((item) => item.name),
-                  lengthRequirement: card.feedbackIntensity === "priority" ? "110-160字" : "80-120字",
+                  style: outputStrategy.style,
+                  length: outputStrategy.length,
                   draftFeedback: card.draftFeedback,
                   client: reviewClient,
                   model: reviewModel,
@@ -532,6 +587,27 @@ function createGenerationStream(input: {
                 { type: "session" as const, id: feedbackContext.session.id },
                 { type: "student" as const, id: card.id },
               ];
+              const promptContext = composeFeedbackPromptContext({
+                studentContext: contextByStudent.get(card.id)?.promptContext ?? card.name,
+                sessionCode,
+                studentId: card.id,
+                lessonMaterial: resolvedLessonMaterial,
+                assessmentEvidence: assessmentEvidence[card.id],
+                sections: card.sections,
+                outputStrategy,
+              });
+              const replaySnapshot = {
+                version: FEEDBACK_REPLAY_SNAPSHOT_VERSION,
+                studentName: card.name,
+                promptContext,
+                forbiddenStudentNames: cards.filter((item) => item.id !== card.id).map((item) => item.name),
+                style: outputStrategy.style,
+                length: outputStrategy.length,
+                intensity: card.feedbackIntensity ?? "routine",
+                contextFingerprint: feedbackContextFingerprint(
+                  contextByStudent.get(card.id)?.promptContext ?? card.name,
+                ),
+              };
               const shared = {
                 taskType: "feedback" as const,
                 semesterId: feedbackContext.session.semesterId,
@@ -540,14 +616,49 @@ function createGenerationStream(input: {
                 studentId: card.id,
                 sourceRefs,
                 promptVersion: "feedback-composable-v2",
-                inputSnapshot: { sections: card.sections, outputStrategy, intensity: card.feedbackIntensity },
+                inputRevision: revision,
+                inputSnapshot: replaySnapshot,
               };
               if (card.feedbackIntensity === "routine" && card.feedback) {
-                return [recordSuccessfulGeneration({ ...shared, stage: "routine", modelRole: "feedbackReview", outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus }, finalText: card.feedback })];
+                const profileId = resolveLLMProfileId("feedbackReview");
+                const settings = getEffectiveLLMSettings("feedbackReview", profileId ?? undefined);
+                const variantKey = createHash("sha256").update(JSON.stringify({
+                  source: "initial",
+                  sessionId: feedbackContext.session.id,
+                  studentId: card.id,
+                  stage: "routine",
+                  inputRevision: revision,
+                  promptVersion: shared.promptVersion,
+                  modelProfileId: profileId,
+                  model: settings.model,
+                  maxTokens: settings.maxTokens ?? null,
+                  reasoningEnabled: settings.reasoningEnabled ?? false,
+                  reasoningEffort: settings.reasoningEffort ?? null,
+                  profileUpdatedAt: settings.updatedAt ?? null,
+                })).digest("hex");
+                return [recordSuccessfulGeneration({ ...shared, stage: "routine", modelRole: "feedbackReview", modelProfileId: profileId, variantKey, outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus, reviewIssues: card.reviewIssues, modelRawFinalText: card.feedback }, finalText: card.feedback })];
               }
               const records = [];
-              if (card.draftFeedback) records.push(recordSuccessfulGeneration({ ...shared, stage: "draft", modelRole: "feedbackDraft", outputSnapshot: { sections: card.sections, draftFeedback: card.draftFeedback } }));
-              if (card.feedback) records.push(recordSuccessfulGeneration({ ...shared, stage: "review", modelRole: "feedbackReview", outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus }, finalText: card.feedback }));
+              if (card.draftFeedback) records.push(recordSuccessfulGeneration({ ...shared, stage: "draft", modelRole: "feedbackDraft", selectIfFirst: false, outputSnapshot: { sections: card.sections, draftFeedback: card.draftFeedback } }));
+              if (card.feedback) {
+                const profileId = resolveLLMProfileId("feedbackReview");
+                const settings = getEffectiveLLMSettings("feedbackReview", profileId ?? undefined);
+                const variantKey = createHash("sha256").update(JSON.stringify({
+                  source: "initial",
+                  sessionId: feedbackContext.session.id,
+                  studentId: card.id,
+                  stage: "review",
+                  inputRevision: revision,
+                  promptVersion: shared.promptVersion,
+                  modelProfileId: profileId,
+                  model: settings.model,
+                  maxTokens: settings.maxTokens ?? null,
+                  reasoningEnabled: settings.reasoningEnabled ?? false,
+                  reasoningEffort: settings.reasoningEffort ?? null,
+                  profileUpdatedAt: settings.updatedAt ?? null,
+                })).digest("hex");
+                records.push(recordSuccessfulGeneration({ ...shared, stage: "review", modelRole: "feedbackReview", modelProfileId: profileId, variantKey, outputSnapshot: { sections: card.sections, reviewStatus: card.reviewStatus, reviewIssues: card.reviewIssues, draftFeedback: card.draftFeedback, modelRawFinalText: card.feedback }, finalText: card.feedback }));
+              }
               return records;
             })).catch(() => undefined);
             // This scan is deterministic and does not call the model. A history failure must not invalidate feedback.
@@ -611,7 +722,13 @@ export async function executeFeedbackBatch(
       ? input.outputStrategy as Partial<FeedbackOutputStrategy>
       : undefined,
   );
-  const revision = inputRevision(normalized.lessonMaterial, normalized.assessmentEvidence, routing, outputStrategy);
+  const revision = inputRevision(
+    normalized.lessonMaterial,
+    normalized.assessmentEvidence,
+    routing,
+    outputStrategy,
+    feedbackContext.students,
+  );
   const key = cacheKey(historyModule, input.sessionCode);
   const cached = cache.get(key);
   const foreignEvidenceStudent = Object.keys(normalized.assessmentEvidence)
@@ -646,7 +763,7 @@ export async function executeFeedbackBatch(
         false,
       );
     }
-    const cards = submittedCardsFrom(input.students ?? [], contextByStudent);
+    const cards = submittedCardsFrom(input.students ?? [], contextByStudent, outputStrategy);
     const submittedIds = new Set(cards.map((card) => card.id));
     const completedStudentIds = [...new Set(input.completedStudentIds ?? [])];
     const failedStudentIds = [...new Set(input.failedStudentIds ?? [])];

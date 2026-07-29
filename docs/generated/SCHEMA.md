@@ -36,14 +36,32 @@ erDiagram
     TEXT sourceKey UK
     DATETIME createdAt
   }
+  CommunicationRevision {
+    TEXT id PK
+    TEXT communicationId FK
+    TEXT draftId FK
+    TEXT handoffPackageId FK
+    TEXT previousTarget
+    TEXT nextTarget
+    TEXT previousSummary
+    TEXT nextSummary
+    TEXT previousSessionId
+    TEXT nextSessionId
+    DATETIME confirmedAt
+    DATETIME createdAt
+  }
   DraftRecord {
     TEXT id PK
     TEXT rawText
     TEXT parsedResult
     TEXT reviewResult
     TEXT status
+    TEXT kind
     TEXT sessionCode
     TEXT studentId
+    TEXT supersedesDraftId FK
+    TEXT communicationId FK
+    TEXT handoffPackageId FK
     DATETIME createdAt
   }
   Event {
@@ -54,6 +72,15 @@ erDiagram
     TEXT description
     TEXT rawText
     DATETIME createdAt
+  }
+  FeedbackGenerationSelection {
+    TEXT id PK
+    TEXT sessionId FK
+    TEXT studentId FK
+    TEXT selectedGenerationId FK
+    DATETIME selectedAt
+    DATETIME createdAt
+    DATETIME updatedAt
   }
   GenerationRecord {
     TEXT id PK
@@ -70,7 +97,11 @@ erDiagram
     TEXT promptVersion
     TEXT modelName
     TEXT modelRole
+    TEXT modelProfileId
     TEXT modelSettings
+    TEXT inputRevision
+    TEXT parentGenerationId FK
+    TEXT variantKey UK
     TEXT inputSnapshot
     TEXT outputSnapshot
     TEXT finalText
@@ -144,6 +175,8 @@ erDiagram
     TEXT classId FK
     TEXT studentId UK
     TEXT gender
+    TEXT rosterStatus
+    DATETIME statusEffectiveAt
     DATETIME createdAt
     DATETIME updatedAt
   }
@@ -221,6 +254,9 @@ erDiagram
     TEXT code
     INTEGER messageCount
     TEXT selectedStudentId FK
+    TEXT rootPackageId
+    TEXT parentPackageId
+    INTEGER revisionNumber
     TEXT receiptId
     DATETIME producedAt
     DATETIME firstSeenAt
@@ -317,17 +353,27 @@ erDiagram
   ClassSession ||--o{ Attendance : "sessionId"
   ClassSession ||--o{ Communication : "sessionId"
   ClassSession ||--o{ Event : "sessionId"
+  ClassSession ||--o{ FeedbackGenerationSelection : "sessionId"
+  Communication o|--o{ DraftRecord : "communicationId"
+  Communication ||--o{ CommunicationRevision : "communicationId"
   Communication ||--o{ TeacherObservationSource : "communicationId"
+  DraftRecord o|--o{ CommunicationRevision : "draftId"
+  DraftRecord o|--o{ DraftRecord : "supersedesDraftId"
+  GenerationRecord o|--o{ GenerationRecord : "parentGenerationId"
+  GenerationRecord ||--o{ FeedbackGenerationSelection : "selectedGenerationId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ ClassSession : "semesterId"
   Student o|--o{ WeComHandoffPackage : "selectedStudentId"
   Student ||--o{ Attendance : "studentId"
   Student ||--o{ Communication : "studentId"
   Student ||--o{ Event : "studentId"
+  Student ||--o{ FeedbackGenerationSelection : "studentId"
   Student ||--o{ SessionMetric : "studentId"
   Student ||--o{ StudentLabel : "studentId"
   Student ||--o{ TeacherObservation : "studentId"
   TeacherObservation ||--o{ TeacherObservationSource : "observationId"
+  WeComHandoffPackage o|--o{ CommunicationRevision : "handoffPackageId"
+  WeComHandoffPackage o|--o{ DraftRecord : "handoffPackageId"
   WeComImportOperation o|--o{ WeComMessageReceipt : "operationId"
   WeComImportOperation ||--o{ WeComImportChange : "operationId"
   WeComImportRun ||--o{ WeComImportOperation : "runId"
@@ -383,6 +429,25 @@ erDiagram
 
 复合唯一约束：`studentId + sessionId + summary`。
 
+### CommunicationRevision
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `communicationId` | `TEXT` | 是 | FK |
+| `draftId` | `TEXT` | 否 | FK |
+| `handoffPackageId` | `TEXT` | 否 | FK |
+| `previousTarget` | `TEXT` | 是 |  |
+| `nextTarget` | `TEXT` | 是 |  |
+| `previousSummary` | `TEXT` | 是 |  |
+| `nextSummary` | `TEXT` | 是 |  |
+| `previousSessionId` | `TEXT` | 是 |  |
+| `nextSessionId` | `TEXT` | 是 |  |
+| `confirmedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+复合唯一约束：`communicationId + draftId`。
+
 ### DraftRecord
 
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
@@ -392,8 +457,12 @@ erDiagram
 | `parsedResult` | `TEXT` | 是 |  |
 | `reviewResult` | `TEXT` | 否 |  |
 | `status` | `TEXT` | 是 | default: 'pending' |
+| `kind` | `TEXT` | 是 | default: 'standard' |
 | `sessionCode` | `TEXT` | 否 |  |
 | `studentId` | `TEXT` | 否 |  |
+| `supersedesDraftId` | `TEXT` | 否 | FK |
+| `communicationId` | `TEXT` | 否 | FK |
+| `handoffPackageId` | `TEXT` | 否 | FK |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
@@ -410,6 +479,20 @@ erDiagram
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 复合唯一约束：`studentId + sessionId + description`。
+
+### FeedbackGenerationSelection
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `sessionId` | `TEXT` | 是 | FK |
+| `studentId` | `TEXT` | 是 | FK |
+| `selectedGenerationId` | `TEXT` | 是 | FK |
+| `selectedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`sessionId + studentId`。
 
 ### GenerationRecord
 
@@ -429,7 +512,11 @@ erDiagram
 | `promptVersion` | `TEXT` | 是 |  |
 | `modelName` | `TEXT` | 是 |  |
 | `modelRole` | `TEXT` | 否 |  |
+| `modelProfileId` | `TEXT` | 否 |  |
 | `modelSettings` | `TEXT` | 是 | default: '{}' |
+| `inputRevision` | `TEXT` | 否 |  |
+| `parentGenerationId` | `TEXT` | 否 | FK |
+| `variantKey` | `TEXT` | 否 | unique |
 | `inputSnapshot` | `TEXT` | 否 |  |
 | `outputSnapshot` | `TEXT` | 否 |  |
 | `finalText` | `TEXT` | 否 |  |
@@ -529,6 +616,8 @@ erDiagram
 | `classId` | `TEXT` | 是 | FK |
 | `studentId` | `TEXT` | 是 | unique |
 | `gender` | `TEXT` | 是 |  |
+| `rosterStatus` | `TEXT` | 是 | default: 'ACTIVE' |
+| `statusEffectiveAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `updatedAt` | `DATETIME` | 是 |  |
 
@@ -639,6 +728,9 @@ erDiagram
 | `code` | `TEXT` | 否 |  |
 | `messageCount` | `INTEGER` | 是 |  |
 | `selectedStudentId` | `TEXT` | 否 | FK |
+| `rootPackageId` | `TEXT` | 否 |  |
+| `parentPackageId` | `TEXT` | 否 |  |
+| `revisionNumber` | `INTEGER` | 是 | default: 1 |
 | `receiptId` | `TEXT` | 否 |  |
 | `producedAt` | `DATETIME` | 是 |  |
 | `firstSeenAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |

@@ -36,7 +36,7 @@ export function StudentClassGroups({ workspace }: { workspace: Workspace }) {
             <span className={`student-list-row__avatar ${student.gender === "男" ? "is-male" : "is-female"}`} aria-hidden="true">{student.name[0]}</span>
             <span className="student-list-row__identity">
               <span><strong>{student.name}</strong><small>{student.studentId}</small></span>
-              <span>{student.labels.map((label) => <Badge key={label.id}>{label.name}</Badge>)}</span>
+              <span>{student.rosterStatus === "INACTIVE" && <Badge tone="warning">非活跃</Badge>}{student.labels.map((label) => <Badge key={label.id}>{label.name}</Badge>)}</span>
             </span>
             <span data-testid={`student-semester-score-${student.id}`} className="student-list-row__score">
               <span>本学期综合分</span>
@@ -47,6 +47,17 @@ export function StudentClassGroups({ workspace }: { workspace: Workspace }) {
               <span>{studentSummaryHint(student.semesterSummary)}</span>
             </span>
           </button>
+          <div className="student-list-row__actions">
+            <small>生效：{new Date(student.statusEffectiveAt).toLocaleString("zh-CN")}</small>
+            <Button
+              uiSize="sm"
+              variant={student.rosterStatus === "ACTIVE" ? "warning" : "secondary"}
+              disabled={workspace.statusUpdatingId === student.id}
+              onClick={() => void workspace.setRosterStatus(student, student.rosterStatus === "ACTIVE" ? "inactive" : "active")}
+            >
+              {workspace.statusUpdatingId === student.id ? "更新中…" : student.rosterStatus === "ACTIVE" ? "设为非活跃" : "恢复在读"}
+            </Button>
+          </div>
         </article>
       ))}</div>}
     </section>;

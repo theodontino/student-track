@@ -119,6 +119,14 @@ const assessmentEvidence = {
     similarPracticeCount: 1,
   },
 };
+const feedbackA = "甲".repeat(90);
+const feedbackB = "乙".repeat(90);
+const refreshedFeedbackA = "新甲".repeat(45);
+const refreshedFeedbackB = "新乙".repeat(45);
+const editedFeedbackA = "改甲".repeat(45);
+const editedFeedbackB = "改乙".repeat(45);
+const partialFeedbackA = "完甲".repeat(45);
+const retryFeedbackA = "重甲".repeat(45);
 
 describe("feedback batch NDJSON stream", () => {
   beforeEach(() => {
@@ -131,10 +139,10 @@ describe("feedback batch NDJSON stream", () => {
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
         summary: "本课围绕示例内容和示例重点展开，并用出门测检查示例概念。",
       }) } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: "甲反馈" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: "乙反馈" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "甲反馈", issues: [] }) } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "乙反馈", issues: [] }) } }] });
+      .mockResolvedValueOnce({ choices: [{ message: { content: feedbackA } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: feedbackB } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: feedbackA, issues: [] }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: feedbackB, issues: [] }) } }] });
   });
 
   it("returns safe field hints when a saved feedback request is incomplete", async () => {
@@ -180,11 +188,11 @@ describe("feedback batch NDJSON stream", () => {
         communications: ["与母亲：希望多强调进步"],
       }),
     });
-    expect(events[1]).toMatchObject({ type: "draft", studentId: "student-1", name: "学生甲", feedback: "", draftFeedback: "甲反馈" });
-    expect(events[3]).toMatchObject({ type: "review", studentId: "student-1", feedback: "甲反馈", reviewStatus: "passed" });
+    expect(events[1]).toMatchObject({ type: "draft", studentId: "student-1", name: "学生甲", feedback: "", draftFeedback: feedbackA });
+    expect(events[3]).toMatchObject({ type: "review", studentId: "student-1", feedback: feedbackA, reviewStatus: "passed" });
     expect(events[5].students).toEqual([
-      expect.objectContaining({ id: "student-1", feedback: "甲反馈", reviewStatus: "passed" }),
-      expect.objectContaining({ id: "student-2", feedback: "乙反馈", reviewStatus: "passed" }),
+      expect.objectContaining({ id: "student-1", feedback: feedbackA, reviewStatus: "passed" }),
+      expect.objectContaining({ id: "student-2", feedback: feedbackB, reviewStatus: "passed" }),
     ]);
     expect(events[5]).toMatchObject({
       batchStatus: "completed",
@@ -225,17 +233,17 @@ describe("feedback batch NDJSON stream", () => {
       cached: true,
       total: 2,
       students: [
-        expect.objectContaining({ id: "student-1", feedback: "甲反馈" }),
-        expect.objectContaining({ id: "student-2", feedback: "乙反馈" }),
+        expect.objectContaining({ id: "student-1", feedback: feedbackA }),
+        expect.objectContaining({ id: "student-2", feedback: feedbackB }),
       ],
     });
     expect(mocks.completionCreate).toHaveBeenCalledTimes(5);
 
     mocks.completionCreate
-      .mockResolvedValueOnce({ choices: [{ message: { content: "甲新反馈" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: "乙新反馈" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "甲新反馈", issues: [] }) } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "乙新反馈", issues: [] }) } }] });
+      .mockResolvedValueOnce({ choices: [{ message: { content: refreshedFeedbackA } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: refreshedFeedbackB } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: refreshedFeedbackA, issues: [] }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: refreshedFeedbackB, issues: [] }) } }] });
     const refreshed = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -243,8 +251,8 @@ describe("feedback batch NDJSON stream", () => {
     }));
     const refreshedEvents = (await refreshed.text()).trim().split("\n").map((line) => JSON.parse(line));
     expect(refreshedEvents[5].students).toEqual([
-      expect.objectContaining({ id: "student-1", feedback: "甲新反馈" }),
-      expect.objectContaining({ id: "student-2", feedback: "乙新反馈" }),
+      expect.objectContaining({ id: "student-1", feedback: refreshedFeedbackA }),
+      expect.objectContaining({ id: "student-2", feedback: refreshedFeedbackB }),
     ]);
     expect(mocks.completionCreate).toHaveBeenCalledTimes(9);
 
@@ -259,8 +267,8 @@ describe("feedback batch NDJSON stream", () => {
         lessonMaterial,
         assessmentEvidence,
         students: [
-          { id: "student-1", feedback: "甲手动编辑反馈" },
-          { id: "student-2", feedback: "乙手动编辑反馈" },
+          { id: "student-1", feedback: editedFeedbackA },
+          { id: "student-2", feedback: editedFeedbackB },
           { id: "unknown-student", feedback: "不应保存" },
         ],
       }),
@@ -283,8 +291,8 @@ describe("feedback batch NDJSON stream", () => {
         lessonMaterial,
         assessmentEvidence,
         students: [
-          { id: "student-1", feedback: "甲手动编辑反馈" },
-          { id: "student-2", feedback: "乙手动编辑反馈" },
+          { id: "student-1", feedback: editedFeedbackA },
+          { id: "student-2", feedback: editedFeedbackB },
         ],
       }),
     }));
@@ -292,8 +300,8 @@ describe("feedback batch NDJSON stream", () => {
       saved: true,
       total: 2,
       students: [
-        expect.objectContaining({ id: "student-1", feedback: "甲手动编辑反馈" }),
-        expect.objectContaining({ id: "student-2", feedback: "乙手动编辑反馈" }),
+        expect.objectContaining({ id: "student-1", feedback: editedFeedbackA }),
+        expect.objectContaining({ id: "student-2", feedback: editedFeedbackB }),
       ],
     });
     expect(mocks.completionCreate).toHaveBeenCalledTimes(9);
@@ -302,8 +310,8 @@ describe("feedback batch NDJSON stream", () => {
     await expect(cachedAfterSave.json()).resolves.toMatchObject({
       cached: true,
       students: [
-        expect.objectContaining({ id: "student-1", feedback: "甲手动编辑反馈" }),
-        expect.objectContaining({ id: "student-2", feedback: "乙手动编辑反馈" }),
+        expect.objectContaining({ id: "student-1", feedback: editedFeedbackA }),
+        expect.objectContaining({ id: "student-2", feedback: editedFeedbackB }),
       ],
     });
   });
@@ -353,7 +361,7 @@ describe("feedback batch NDJSON stream", () => {
         lessonMaterial,
         assessmentEvidence,
         students: [
-          { id: "student-1", feedback: "甲已完成", reviewStatus: "passed" },
+          { id: "student-1", feedback: partialFeedbackA, reviewStatus: "passed" },
           { id: "student-2", feedback: "" },
         ],
       }),
@@ -411,10 +419,10 @@ describe("feedback batch NDJSON stream", () => {
   it("retries empty internal analysis without exposing it as parent feedback", async () => {
     mocks.completionCreate.mockReset()
       .mockResolvedValueOnce({ choices: [{ message: { content: "" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: "甲重试反馈" } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: retryFeedbackA } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: "" } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: "" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "甲重试反馈", issues: [] }) } }] });
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: retryFeedbackA, issues: [] }) } }] });
 
     const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback-batch", {
       method: "POST",
@@ -423,7 +431,7 @@ describe("feedback batch NDJSON stream", () => {
     }));
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(events[1]).toMatchObject({ studentId: "student-1", feedback: "", draftFeedback: "甲重试反馈" });
+    expect(events[1]).toMatchObject({ studentId: "student-1", feedback: "", draftFeedback: retryFeedbackA });
     expect(events[2]).toMatchObject({ studentId: "student-2", feedback: "" });
     expect(events[3]).toMatchObject({ studentId: "student-1", reviewStatus: "passed" });
     expect(events[2]).toMatchObject({ studentId: "student-2", reviewStatus: "needs_review" });

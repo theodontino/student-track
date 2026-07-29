@@ -161,6 +161,26 @@ function safeHandoffIdentifier(value: string) {
   return value;
 }
 
+export function parseHandoffPackageLineage(packageId: string) {
+  const match = /^(.*)\.r([2-9][0-9]*)$/.exec(packageId);
+  if (!match) {
+    return {
+      rootPackageId: packageId,
+      parentPackageId: null,
+      revisionNumber: 1,
+    };
+  }
+  const revisionNumber = Number(match[2]);
+  const rootPackageId = match[1];
+  return {
+    rootPackageId,
+    parentPackageId: revisionNumber === 2
+      ? rootPackageId
+      : `${rootPackageId}.r${revisionNumber - 1}`,
+    revisionNumber,
+  };
+}
+
 export async function readWccHandoffPackage(sourceId: string, packageId: string) {
   const marker = path.join(
     packageDirectory(),
@@ -230,6 +250,7 @@ async function consumeValidatedPackage(
   selectedStudentId?: string,
   force = false,
 ) {
+  const lineage = parseHandoffPackageLineage(payload.packageId);
   const existingIdentity = await prisma.weComHandoffPackage.findMany({
     where: { sourceId: payload.source.id, packageId: payload.packageId },
     orderBy: { createdAt: "asc" },
@@ -268,6 +289,9 @@ async function consumeValidatedPackage(
         status: "rejected",
         code: "package_conflict",
         messageCount: payload.messages.length,
+        rootPackageId: lineage.rootPackageId,
+        parentPackageId: lineage.parentPackageId,
+        revisionNumber: lineage.revisionNumber,
         producedAt: new Date(payload.producedAt),
         processedAt: new Date(),
       },
@@ -284,13 +308,107 @@ async function consumeValidatedPackage(
       sourceId: payload.source.id,
       packageId: payload.packageId,
       packageSha256: sha256,
+      rootPackageId: lineage.rootPackageId,
+      parentPackageId: lineage.parentPackageId,
+      revisionNumber: lineage.revisionNumber,
       status: "discovered",
       messageCount: payload.messages.length,
       producedAt: new Date(payload.producedAt),
     },
   });
 
+  let matchedStudentId = selectedStudentId;
+  let lineageDraft: {
+    id: string;
+    status: string;
+    studentId: string | null;
+    communicationId: string | null;
+  } | null = null;
+  let revisionKind: "standard" | "replacement" | "correction" = "standard";
+  if (lineage.revisionNumber > 1) {
+    const [rootLedger, parentLedger] = await Promise.all([
+      prisma.weComHandoffPackage.findFirst({
+        where: { sourceId: payload.source.id, packageId: lineage.rootPackageId },
+        orderBy: { createdAt: "asc" },
+      }),
+      prisma.weComHandoffPackage.findFirst({
+        where: { sourceId: payload.source.id, packageId: lineage.parentPackageId! },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+    if (rootLedger && parentLedger) {
+      lineageDraft = await prisma.draftRecord.findFirst({
+        where: {
+          OR: [
+            { handoffPackageId: parentLedger.id },
+            { rawText: { contains: `"packageId":"${lineage.parentPackageId}"` } },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, status: true, studentId: true, communicationId: true },
+      });
+      matchedStudentId = matchedStudentId || parentLedger.selectedStudentId || undefined;
+      if (lineageDraft?.status === "confirmed" && !lineageDraft.communicationId && lineageDraft.studentId) {
+        const communication = await prisma.communication.findUnique({
+          where: { sourceKey: `draft:${lineageDraft.id}:${lineageDraft.studentId}` },
+          select: { id: true },
+        });
+        if (communication) lineageDraft.communicationId = communication.id;
+      }
+      revisionKind = lineageDraft?.status === "confirmed" ? "correction" : "replacement";
+    }
+    if (
+      !rootLedger
+      || !parentLedger
+      || !lineageDraft
+      || (lineageDraft.status === "confirmed" && !lineageDraft.communicationId)
+      || !matchedStudentId
+    ) {
+      const pendingLineage = await prisma.weComHandoffPackage.update({
+        where: { id: ledger.id },
+        data: {
+          status: "pending_lineage",
+          outcome: "pending_review",
+          receiptId: null,
+          lastAttemptAt: new Date(),
+        },
+      });
+      await attachReceiptAfterFinalization(
+        prisma, pendingLineage.id, payload.source.id, payload.packageId, sha256,
+        "accepted", "pending_review",
+      );
+      return {
+        id: pendingLineage.id,
+        status: pendingLineage.status,
+        outcome: pendingLineage.outcome,
+      };
+    }
+  }
+
   if (!payload.classification.worthProcessing) {
+    if (lineage.revisionNumber > 1) {
+      // A revision that retracts the original classification can invalidate a
+      // confirmed communication. Keep it in the explicit lineage queue rather
+      // than silently treating it as an unrelated no-value package.
+      const pendingLineage = await prisma.weComHandoffPackage.update({
+        where: { id: ledger.id },
+        data: {
+          status: "pending_lineage",
+          outcome: "pending_review",
+          receiptId: null,
+          lastAttemptAt: new Date(),
+        },
+      });
+      await attachReceiptAfterFinalization(
+        prisma, pendingLineage.id, payload.source.id, payload.packageId, sha256,
+        "accepted", "pending_review",
+      );
+      return {
+        id: pendingLineage.id,
+        status: pendingLineage.status,
+        outcome: pendingLineage.outcome,
+      };
+    }
     const updated = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
       data: {
@@ -307,9 +425,9 @@ async function consumeValidatedPackage(
     return { id: updated.id, status: updated.status, outcome: updated.outcome };
   }
 
-  let matchedStudentId = selectedStudentId;
   if (!matchedStudentId) {
     const students = await prisma.student.findMany({
+      where: { rosterStatus: "ACTIVE" },
       select: { id: true, name: true, studentId: true, classId: true },
     });
     const matches = exactTitleMatches(payload.conversation.title, students);
@@ -336,7 +454,22 @@ async function consumeValidatedPackage(
     data: { status: "processing", selectedStudentId: matchedStudentId, lastAttemptAt: new Date() },
   });
   try {
-    const result = await consumeWccHandoffPackage(prisma, payload, matchedStudentId);
+    const result = await consumeWccHandoffPackage(prisma, payload, matchedStudentId, {
+      handoffPackageId: ledger.id,
+      kind: revisionKind,
+      supersedesDraftId: lineageDraft?.id,
+      communicationId: revisionKind === "correction" ? lineageDraft?.communicationId ?? undefined : undefined,
+    });
+    if (
+      lineage.revisionNumber > 1
+      && lineageDraft?.status === "pending"
+      && result.drafts.length > 0
+    ) {
+      await prisma.draftRecord.updateMany({
+        where: { id: lineageDraft.id, status: "pending" },
+        data: { status: "superseded" },
+      });
+    }
     const outcome = result.status === "pending_review" ? "pending_review" : "no_value";
     const updated = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
@@ -462,6 +595,7 @@ export async function listWccHandoffPackages(prisma: PrismaClient) {
       },
     }),
     prisma.student.findMany({
+      where: { rosterStatus: "ACTIVE" },
       orderBy: { name: "asc" },
       select: { id: true, name: true, studentId: true },
     }),
@@ -470,6 +604,9 @@ export async function listWccHandoffPackages(prisma: PrismaClient) {
     items: items.map((item) => ({
       id: item.id,
       packageId: item.packageId,
+      rootPackageId: item.rootPackageId,
+      parentPackageId: item.parentPackageId,
+      revisionNumber: item.revisionNumber,
       sourceId: item.sourceId,
       status: item.status,
       outcome: item.outcome,

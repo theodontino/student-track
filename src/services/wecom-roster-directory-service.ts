@@ -14,13 +14,17 @@ export async function buildWccRosterSnapshot(
       orderBy: { startDate: "desc" },
     }),
     prisma.student.findMany({
-      where: classId ? { classId } : undefined,
+      where: {
+        rosterStatus: "ACTIVE",
+        ...(classId ? { classId } : {}),
+      },
       select: { id: true, name: true, studentId: true, classId: true },
       orderBy: { studentId: "asc" },
     }),
   ]);
   const body = {
     source: "student-track-api",
+    capabilities: ["handoff-revisions-v1"],
     scope: { semesterId: semesterId || null, classId: classId || null },
     classes,
     semesters,

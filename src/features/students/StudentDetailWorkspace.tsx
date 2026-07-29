@@ -46,7 +46,8 @@ export default function StudentDetailWorkspace() {
           <span>{student.class} · {student.studentId}</span>
         </div>
         <div className="student-profile-header__meta">
-          <div>{student.labels.length ? student.labels.map((label) => <Badge key={label.id}>{label.name}</Badge>) : <span>暂无标签</span>}</div>
+          <div>{student.rosterStatus === "INACTIVE" && <Badge tone="warning">非活跃</Badge>}{student.labels.length ? student.labels.map((label) => <Badge key={label.id}>{label.name}</Badge>) : <span>暂无标签</span>}</div>
+          <p>花名册状态生效：{new Date(student.statusEffectiveAt).toLocaleString("zh-CN")}</p>
           <p>{summary?.semester.name ?? "暂无学期"} · 出勤 {presentCount}/{totalSessions} · D={summary?.attendanceScore ?? "—"}</p>
         </div>
       </header>

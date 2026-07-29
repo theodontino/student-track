@@ -3,7 +3,16 @@
 import { Badge, Button, EmptyState, Section, StatusBanner, Textarea } from "@/components/ui";
 import type { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 import { FEEDBACK_INTENSITY_LABELS, FEEDBACK_ROUTING_REASON_LABELS, type FeedbackIntensity } from "@/lib/feedback-intensity";
-import { FEEDBACK_OUTPUT_PRESETS, feedbackOutputPresetFor, type FeedbackOutputSectionKey } from "@/lib/feedback-sections";
+import {
+  FEEDBACK_LENGTH_OPTIONS,
+  FEEDBACK_LENGTHS,
+  FEEDBACK_OUTPUT_PRESETS,
+  FEEDBACK_STYLE_OPTIONS,
+  FEEDBACK_STYLES,
+  feedbackOutputPresetFor,
+  visibleFeedbackLength,
+  type FeedbackOutputSectionKey,
+} from "@/lib/feedback-sections";
 import type { FeedbackSection } from "@/lib/feedback-sections";
 
 type Workspace = ReturnType<typeof useFeedbackWorkspace>;
@@ -56,8 +65,12 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
         </StatusBanner>}
         {mode === "generate" && <section className="feedback-output-strategy" aria-label="本次输出策略">
           <div><strong>本次输出策略</strong><p>续班告警始终只在教师内部显示，不会进入模型请求、家长文本或导出文件。</p></div>
-          <div className="feedback-output-strategy__presets">{Object.entries(FEEDBACK_OUTPUT_PRESETS).map(([key, preset]) => <Button key={key} uiSize="sm" variant={activePreset === key ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy(preset.strategy)}>{preset.label}</Button>)}</div>
+          <div className="feedback-output-strategy__presets">{Object.entries(FEEDBACK_OUTPUT_PRESETS).map(([key, preset]) => <Button key={key} uiSize="sm" variant={activePreset === key ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...preset.strategy, style: workspace.outputStrategy.style, length: workspace.outputStrategy.length })}>{preset.label}</Button>)}</div>
           <div className="feedback-output-strategy__toggles">{strategyLabels.map((item) => <label key={item.key}><input type="checkbox" checked={workspace.outputStrategy[item.key]} onChange={(event) => workspace.setOutputStrategy({ ...workspace.outputStrategy, [item.key]: event.target.checked })} />{item.label}</label>)}</div>
+          <div className="feedback-output-strategy__expression">
+            <div><strong>表达风格</strong>{FEEDBACK_STYLES.map((style) => <Button key={style} uiSize="sm" variant={workspace.outputStrategy.style === style ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...workspace.outputStrategy, style })}>{FEEDBACK_STYLE_OPTIONS[style].label}</Button>)}</div>
+            <div><strong>文本长度</strong>{FEEDBACK_LENGTHS.map((length) => <Button key={length} uiSize="sm" variant={workspace.outputStrategy.length === length ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...workspace.outputStrategy, length })}>{FEEDBACK_LENGTH_OPTIONS[length].label}</Button>)}</div>
+          </div>
         </section>}
         {mode === "generate" && workspace.contextStudents.length > 0 && <details className="feedback-routing" open>
           <summary>本次反馈分流：常规 {counts.routine} · 轻关注 {counts.attention} · 重点关注 {counts.priority} · 人工确认 {counts.manual}</summary>
@@ -72,12 +85,22 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
             </div>;
           })}</div>
         </details>}
+        {mode === "export" && workspace.feedbackVersions.length > 0 && <section className="feedback-version-toolbar" aria-label="换模型生成设置">
+          <div><strong>反馈版本</strong><p>选择一个不含 API Key 的本机配置摘要生成派生版本；新版本不会自动替换当前采用文本。</p></div>
+          <label>生成模型
+            <select value={workspace.feedbackVersionProfileId} onChange={(event) => workspace.setFeedbackVersionProfileId(event.target.value)}>
+              {!workspace.feedbackVersionProfiles.length && <option value="">暂无可用配置</option>}
+              {workspace.feedbackVersionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} / {profile.model}</option>)}
+            </select>
+          </label>
+        </section>}
         {workspace.feedbackReviewBlockerCount > 0 && <StatusBanner tone="warning">有 {workspace.feedbackReviewBlockerCount} 条反馈需要人工确认；编辑对应文本后即可解除导出限制。</StatusBanner>}
         {!workspace.feedbackCards.length ? <EmptyState title={workspace.generating ? "正在生成反馈" : "尚未生成反馈"} description={workspace.generating ? `${workspace.feedbackPhase === "review" ? "成稿与审核" : "分析"} ${workspace.feedbackDone}/${workspace.feedbackTotal || "…"}，完成后会自动进入编辑与导出。` : "选择课次并生成后，每名学生的反馈会显示在这里。"} /> : workspace.feedbackCards.map((card) => {
           const context = workspace.contextByStudent.get(card.id);
           const labels = context?.labels.length ? context.labels : card.labels;
           const review = card.reviewStatus ? reviewLabels[card.reviewStatus] : null;
           const sections = card.sections;
+          const versions = workspace.feedbackVersions.filter((version) => version.studentId === card.id);
           const unfinished = (workspace.feedbackBatch.status === "incomplete" || workspace.feedbackBatch.status === "stale")
             && !completedStudentIds.has(card.id);
           return <article key={card.id} className="feedback-card">
@@ -96,7 +119,15 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
             </details>}
             {card.reviewIssues?.length ? <ul className="feedback-card__review-issues">{card.reviewIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
             {card.draftFeedback && card.draftFeedback !== card.feedback && <details className="feedback-card__draft"><summary>查看内部分析草稿</summary><p>{card.draftFeedback}</p></details>}
-            {workspace.outputStrategy.suggestedFeedback ? <><Textarea aria-label={`${card.name}反馈`} value={card.feedback} onChange={(event) => workspace.updateFeedback(card.id, event.target.value)} rows={5} disabled={workspace.feedbackBatch.status === "stale"} /><footer><Button variant="ghost" uiSize="sm" onClick={() => void navigator.clipboard?.writeText(card.feedback)}>复制</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateOne(card.id)} disabled={workspace.regeneratingId === card.id || workspace.feedbackBatch.status === "stale"}>{workspace.regeneratingId === card.id ? "生成中…" : "单独重写"}</Button></footer></> : <StatusBanner tone="info">教师研判模式未生成家长文本；如需导出，请重新生成并勾选“建议反馈文本”。</StatusBanner>}
+            {versions.length > 0 && <details className="feedback-card__versions">
+              <summary>生成版本（{versions.length}）</summary>
+              <div>{versions.map((version) => <article key={version.id}>
+                <header><strong>{version.modelProfileName || version.modelName}</strong><span>{new Date(version.generatedAt).toLocaleString("zh-CN")}</span>{version.selected && <Badge tone="success">当前采用</Badge>}</header>
+                <p>{version.finalText || "该版本没有最终文本"}</p>
+                <footer><span>{version.replayState}</span><Button uiSize="sm" variant={version.selected ? "ghost" : "secondary"} disabled={version.selected || version.stale || !version.replayable || !version.finalText || workspace.feedbackVersionBusyId === card.id} onClick={() => void workspace.selectFeedbackVersion(card.id, version.id)}>{version.selected ? "已采用" : "采用此版本"}</Button></footer>
+              </article>)}</div>
+            </details>}
+            {workspace.outputStrategy.suggestedFeedback ? <><Textarea aria-label={`${card.name}反馈`} value={card.feedback} onChange={(event) => workspace.updateFeedback(card.id, event.target.value)} rows={5} disabled={workspace.feedbackBatch.status === "stale"} /><footer><span>{visibleFeedbackLength(card.feedback)} 个可见字符 · {FEEDBACK_LENGTH_OPTIONS[workspace.outputStrategy.length].label}</span><Button variant="ghost" uiSize="sm" onClick={() => void navigator.clipboard?.writeText(card.feedback)}>复制</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateFeedbackVersion(card.id)} disabled={!versions.some((version) => version.replayable && !version.stale) || !workspace.feedbackVersionProfileId || workspace.feedbackVersionBusyId === card.id}>{workspace.feedbackVersionBusyId === card.id ? "生成中…" : "换模型生成"}</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateOne(card.id)} disabled={workspace.regeneratingId === card.id || workspace.feedbackBatch.status === "stale"}>{workspace.regeneratingId === card.id ? "生成中…" : "按当前配置重写"}</Button></footer></> : <StatusBanner tone="info">教师研判模式未生成家长文本；如需导出，请重新生成并勾选“建议反馈文本”。</StatusBanner>}
           </article>;
         })}
       </div>

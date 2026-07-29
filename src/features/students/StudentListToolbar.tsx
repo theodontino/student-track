@@ -24,6 +24,14 @@ export function StudentListToolbar({ workspace }: { workspace: Workspace }) {
           aria-label="搜索学生"
         />
         <label className="student-list-sort">
+          <span>花名册状态</span>
+          <Select value={workspace.rosterFilter} onChange={(event) => workspace.setRosterFilter(event.target.value as typeof workspace.rosterFilter)} aria-label="学生花名册状态">
+            <option value="all">全部学生</option>
+            <option value="active">只看在读</option>
+            <option value="inactive">只看非活跃</option>
+          </Select>
+        </label>
+        <label className="student-list-sort">
           <span>班级内排序</span>
           <Select value={workspace.sort} onChange={(event) => workspace.setSort(event.target.value as typeof workspace.sort)} aria-label="学生排序方式">
             <option value="score-desc">综合分：高到低</option>

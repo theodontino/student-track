@@ -91,7 +91,8 @@ function inferEventType(description: string): string {
 
 /**
  * Confirms or rejects a pending NL draft. Confirming is atomic across all
- * business records and cannot be repeated after the draft leaves pending.
+ * business records. A confirmed correction accepts repeated confirmation as a
+ * no-op so retries cannot apply the same communication revision twice.
  */
 export async function processDraftReview(input: ProcessDraftInput) {
   if (!input.draftId) throw new ServiceError("draftId 和 action 为必填项", 400);
@@ -102,6 +103,17 @@ export async function processDraftReview(input: ProcessDraftInput) {
   const result = await prisma.$transaction(async (tx) => {
     const draft = await tx.draftRecord.findUnique({ where: { id: input.draftId } });
     if (!draft) throw new ServiceError("草稿不存在", 404);
+    if (
+      draft.kind === "correction"
+      && draft.status === "confirmed"
+      && input.action === "confirm"
+    ) {
+      return {
+        status: "confirmed" as const,
+        warnings: ["纠错草案已经确认，本次重复请求未再次更新沟通"],
+        logs: [],
+      };
+    }
     if (draft.status !== "pending") throw new ServiceError("草稿已经处理，不能重复提交", 409);
 
     if (input.action === "reject") {
@@ -157,6 +169,68 @@ export async function processDraftReview(input: ProcessDraftInput) {
       throw new ServiceError("WCC 草案必须只包含一名已绑定学生", 422);
     }
 
+    if (draft.kind === "correction") {
+      if (!draft.communicationId || !draft.studentId || !session) {
+        throw new ServiceError("纠错草案缺少原沟通、学生或课次谱系", 409);
+      }
+      const parsedStudent = parsedData.students[0];
+      if (!parsedStudent?.communication) {
+        throw new ServiceError("纠错草案缺少可确认的沟通内容", 422);
+      }
+      const communication = await tx.communication.findUnique({
+        where: { id: draft.communicationId },
+      });
+      if (!communication || communication.studentId !== draft.studentId) {
+        throw new ServiceError("纠错草案关联的原沟通不存在或学生不一致", 409);
+      }
+      const nextTarget = parsedStudent.communication.type.includes("家长")
+        ? "家长"
+        : parsedStudent.communication.type;
+      const nextSummary = parsedStudent.communication.summary;
+      await tx.communicationRevision.create({
+        data: {
+          communicationId: communication.id,
+          draftId: draft.id,
+          handoffPackageId: draft.handoffPackageId,
+          previousTarget: communication.target,
+          nextTarget,
+          previousSummary: communication.summary,
+          nextSummary,
+          previousSessionId: communication.sessionId,
+          nextSessionId: session.id,
+        },
+      });
+      await tx.communication.update({
+        where: { id: communication.id },
+        data: {
+          target: nextTarget,
+          summary: nextSummary,
+          sessionId: session.id,
+          // sourceKey intentionally remains the original communication identity.
+        },
+      });
+      const observationSources = await tx.teacherObservationSource.findMany({
+        where: { communicationId: communication.id },
+        select: { observationId: true },
+      });
+      await tx.teacherObservationSource.updateMany({
+        where: { communicationId: communication.id },
+        data: { relatedSessionId: session.id },
+      });
+      if (observationSources.length > 0) {
+        const now = new Date();
+        await tx.teacherObservation.updateMany({
+          where: { id: { in: [...new Set(observationSources.map((item) => item.observationId))] } },
+          data: { status: "new", lastDetectedAt: now, statusChangedAt: now },
+        });
+      }
+      await tx.draftRecord.update({
+        where: { id: draft.id },
+        data: { status: "confirmed", parsedResult: JSON.stringify(parsedData) },
+      });
+      return { status: "confirmed" as const, warnings: [], logs: [] };
+    }
+
     const names = Array.from(new Set(parsedData.students.map((student) => student.name)));
     const matchingStudents = await tx.student.findMany({
       where: {
@@ -173,6 +247,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
     const warnings: string[] = [];
     const affectedStudentIds: string[] = [];
     const logs: Array<{ studentId: string; studentName: string; scores: ParsedStudent["scores"] }> = [];
+    let confirmedCommunicationId: string | null = null;
 
     for (const parsedStudent of parsedData.students) {
       const matches = isWccDraft && boundWccStudent
@@ -300,8 +375,9 @@ export async function processDraftReview(input: ProcessDraftInput) {
           });
           if (existing) {
             warnings.push(`${student.name} 的家校沟通记录已存在，跳过重复写入`);
+            confirmedCommunicationId = existing.id;
           } else {
-            await tx.communication.create({
+            const communication = await tx.communication.create({
               data: {
                 studentId: student.id,
                 sessionId: session.id,
@@ -310,6 +386,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
                 sourceKey,
               },
             });
+            confirmedCommunicationId = communication.id;
           }
         }
       }
@@ -328,7 +405,11 @@ export async function processDraftReview(input: ProcessDraftInput) {
 
     await tx.draftRecord.update({
       where: { id: draft.id },
-      data: { status: "confirmed", parsedResult: JSON.stringify(parsedData) },
+      data: {
+        status: "confirmed",
+        parsedResult: JSON.stringify(parsedData),
+        ...(confirmedCommunicationId ? { communicationId: confirmedCommunicationId } : {}),
+      },
     });
 
     return { status: "confirmed" as const, warnings, logs };

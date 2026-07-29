@@ -7,6 +7,8 @@ export interface StudentListItem {
   classCode: string;
   studentId: string;
   gender: string;
+  rosterStatus: "ACTIVE" | "INACTIVE";
+  statusEffectiveAt: string;
   labels: { id: string; name: string }[];
   scores?: { scoreA: number; scoreB: number; scoreC: number; scoreD: number } | null;
   semesterSummary?: StudentSemesterSummary | null;
@@ -58,6 +60,8 @@ export interface StudentDetail {
   class: string;
   studentId: string;
   gender: string;
+  rosterStatus: "ACTIVE" | "INACTIVE";
+  statusEffectiveAt: string;
   labels: { id: string; name: string }[];
   sessionMetrics: { id: string; date: string; scoreA: number; scoreB: number; scoreC: number; scoreD: number }[];
   events: StudentEvent[];

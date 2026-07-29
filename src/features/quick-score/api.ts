@@ -29,7 +29,7 @@ export interface QuickScoreSavePayload {
 
 export async function loadQuickScoreReferenceData() {
   const [students, semesters] = await Promise.all([
-    requestJson<QuickScoreStudent[]>("/api/students"),
+    requestJson<QuickScoreStudent[]>("/api/students?scope=active"),
     requestJson<QuickScoreSemester[]>("/api/semesters"),
   ]);
   return { students, semesters };

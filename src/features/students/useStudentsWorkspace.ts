@@ -45,6 +45,8 @@ export function useStudentsWorkspace() {
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [previewPhase, setPreviewPhase] = useState<"idle" | "entering" | "visible" | "exiting">("idle");
   const [sort, setSort] = useState<StudentSort>("score-desc");
+  const [rosterFilter, setRosterFilter] = useState<"all" | "active" | "inactive">("all");
+  const [statusUpdatingId, setStatusUpdatingId] = useState("");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeGraceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -71,8 +73,12 @@ export function useStudentsWorkspace() {
   }, [fetchStudents, hydrated]);
 
   const filteredStudents = useMemo(
-    () => sortStudents(filterStudents(students, search), sort),
-    [search, sort, students],
+    () => sortStudents(filterStudents(students.filter((student) => (
+      rosterFilter === "all"
+      || (rosterFilter === "active" && student.rosterStatus === "ACTIVE")
+      || (rosterFilter === "inactive" && student.rosterStatus === "INACTIVE")
+    )), search), sort),
+    [rosterFilter, search, sort, students],
   );
   const classGroups = useMemo(
     () => groupStudentsByClass(filteredStudents),
@@ -244,6 +250,23 @@ export function useStudentsWorkspace() {
     }
   }
 
+  async function setRosterStatus(student: StudentListItem, status: "active" | "inactive") {
+    setStatusUpdatingId(student.id);
+    setLoadError("");
+    try {
+      await requestJson(`/api/students/${student.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      await fetchStudents();
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : "更新学生状态失败");
+    } finally {
+      setStatusUpdatingId("");
+    }
+  }
+
   function openImport() {
     setImportFile(null);
     setImportResult(null);
@@ -319,8 +342,12 @@ export function useStudentsWorkspace() {
     openImport,
     openStudent,
     removeLabel,
+    rosterFilter,
     search,
+    setRosterFilter,
+    setRosterStatus,
     sort,
+    statusUpdatingId,
     setSort,
     selectedStudent,
     previewPhase,

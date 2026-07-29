@@ -83,7 +83,10 @@ export async function createClassSession(input: {
     });
 
     const students = await tx.student.findMany({
-      where: classId ? { classId } : {},
+      where: {
+        rosterStatus: "ACTIVE",
+        ...(classId ? { classId } : {}),
+      },
       select: { id: true },
     });
     if (students.length > 0) {

@@ -1,6 +1,6 @@
 # WCG → Student Track 本地转交文件协议 v1
 
-本协议当前由 WCG（WeComCatch GUI）v0.4.0 与 Student Track v1.0.0 共同维护；v1 字段、目录结构和原子写顺序保持不变。WCG
+本协议稳定配对由 WCG（WeComCatch GUI）v0.4.0 与 Student Track v1.0.0 共同维护；1.1.0-beta.1 / 0.5.0-beta.1 在完全保留 v1 字段、目录结构和原子写顺序的前提下增加不可变修订。WCG
 负责发布完成包，Student Track 负责扫描、校验、业务提取并写回安全回执。
 旧候选 HTTP、CLI 和手工 JSON 集成已移除；业务交接只有本文件协议。
 
@@ -19,6 +19,21 @@
 - WCG 只创建 `packages`；ST 只创建不可变 `receipts`。
 - ST 不移动、覆盖或删除 WCG 包。
 - 两端不得把交换目录纳入 Git。
+
+## 不可变修订
+
+修订包仍是 handoff v1，ID 只在原包 ID 后追加 `.r2`、`.r3`。WCG 使用
+`handoff-evidence-v1` 对规范化消息证据、会话、时间范围和分类计算指纹；生成时间、
+生产者版本和包 ID 不参与指纹。已发布包和 receipt 永不覆盖或删除。
+
+WCG 首次升级只为既有已发布包建立谱系基线。后续证据变化形成一个待确认候选；
+候选再次变化时更新候选并要求重新确认，发布前指纹变化则拒绝。只有 Student Track
+最近 24 小时目录快照声明 `handoff-revisions-v1` 时，WCG 才允许显式发布修订。
+
+Student Track 按 root/parent/revision 解析谱系：待处理草案被 replacement 取代，
+已拒绝草案得到关联 replacement，已确认沟通得到 correction。correction 只有在教师
+确认事务中才保存 `CommunicationRevision` 并更新原沟通；拒绝或谱系不完整时原沟通
+完全不变。`sourceKey` 始终保持原始沟通身份。
 
 ## 写入与完整性
 

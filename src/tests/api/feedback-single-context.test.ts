@@ -36,6 +36,9 @@ vi.mock("@/lib/llm", () => ({
 
 import { POST } from "@/app/api/report/feedback/route";
 
+const singleFeedback = "单".repeat(90);
+const retryFeedback = "重".repeat(90);
+
 describe("/api/report/feedback", () => {
   beforeEach(() => {
     mocks.routing.mockReset().mockResolvedValue([
@@ -69,11 +72,11 @@ describe("/api/report/feedback", () => {
       ],
     });
     mocks.completionCreate.mockReset().mockResolvedValue({
-      choices: [{ message: { content: "单人重写反馈" } }],
+      choices: [{ message: { content: singleFeedback } }],
     }).mockResolvedValueOnce({
-      choices: [{ message: { content: "单人重写反馈" } }],
+      choices: [{ message: { content: singleFeedback } }],
     }).mockResolvedValueOnce({
-      choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "单人重写反馈", issues: [] }) } }],
+      choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: singleFeedback, issues: [] }) } }],
     });
   });
 
@@ -85,8 +88,8 @@ describe("/api/report/feedback", () => {
     }));
 
     await expect(response.json()).resolves.toMatchObject({
-      draftFeedback: "单人重写反馈",
-      feedback: "单人重写反馈",
+      draftFeedback: singleFeedback,
+      feedback: singleFeedback,
       reviewStatus: "passed",
       reviewIssues: [],
     });
@@ -105,8 +108,8 @@ describe("/api/report/feedback", () => {
   it("retries once when the LLM returns empty content", async () => {
     mocks.completionCreate.mockReset()
       .mockResolvedValueOnce({ choices: [{ message: { content: "" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: "重试后反馈" } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: "重试后反馈", issues: [] }) } }] });
+      .mockResolvedValueOnce({ choices: [{ message: { content: retryFeedback } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: retryFeedback, issues: [] }) } }] });
 
     const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback", {
       method: "POST",
@@ -114,7 +117,7 @@ describe("/api/report/feedback", () => {
       body: JSON.stringify({ studentId: "student-1", sessionCode: "VITEST-SINGLE" }),
     }));
 
-    await expect(response.json()).resolves.toMatchObject({ feedback: "重试后反馈", reviewStatus: "passed" });
+    await expect(response.json()).resolves.toMatchObject({ feedback: retryFeedback, reviewStatus: "passed" });
     expect(mocks.completionCreate).toHaveBeenCalledTimes(3);
   });
 

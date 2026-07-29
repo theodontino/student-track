@@ -19,6 +19,10 @@
 | `/api/report/daily` | `POST` |
 | `/api/report/feedback-batch` | `GET`, `POST` |
 | `/api/report/feedback-context` | `GET` |
+| `/api/report/feedback-versions/profiles` | `GET` |
+| `/api/report/feedback-versions/regenerate` | `POST` |
+| `/api/report/feedback-versions` | `GET` |
+| `/api/report/feedback-versions/selection` | `PUT` |
 | `/api/report/feedback` | `POST` |
 | `/api/report/teaching-summary` | `GET`, `POST` |
 | `/api/review` | `GET`, `POST` |
@@ -29,6 +33,7 @@
 | `/api/settings/llm` | `DELETE`, `GET`, `PATCH`, `POST`, `PUT` |
 | `/api/students/[id]/history` | `GET` |
 | `/api/students/[id]` | `DELETE`, `GET`, `PUT` |
+| `/api/students/[id]/status` | `PATCH` |
 | `/api/students/import` | `POST` |
 | `/api/students` | `GET`, `POST` |
 | `/api/system/archive` | `POST` |

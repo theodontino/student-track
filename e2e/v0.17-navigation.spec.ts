@@ -86,7 +86,8 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("quick score uses recoverable errors and an accessible delete confirmation", async ({ page }) => {
-    await page.route("**/api/students", (route) => route.fulfill({
+    const studentsApi = /\/api\/students(?:\?.*)?$/;
+    await page.route(studentsApi, (route) => route.fulfill({
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({ error: "E2E 学生加载失败" }),
@@ -94,7 +95,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await page.goto("/quick-score");
     await expect(page.getByText("E2E 学生加载失败")).toBeVisible();
 
-    await page.unroute("**/api/students");
+    await page.unroute(studentsApi);
     await page.reload();
     await page.getByLabel("学期", { exact: true }).selectOption(TEST_FIXTURE.semester.id);
     await page.getByLabel("班级", { exact: true }).selectOption({ label: TEST_FIXTURE.class.name });

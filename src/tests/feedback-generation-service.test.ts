@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { lessonMaterialPrompt, parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import {
+  FEEDBACK_LENGTH_OPTIONS,
+  FEEDBACK_LENGTHS,
+  FEEDBACK_STYLES,
+  visibleFeedbackLength,
+} from "@/lib/feedback-sections";
+import {
   composeFeedbackPromptContext,
   generateFeedbackDraft,
   generateRoutineFeedback,
@@ -21,22 +27,24 @@ describe("feedback generation review", () => {
   it("uses one short final pass for routine feedback without inventing advice", async () => {
     const routine = clientWith(JSON.stringify({
       verdict: "pass",
-      feedback: "今天课堂跟得比较稳，电离方程式的基础书写完成得顺利。",
+      feedback: "今天课堂跟得比较稳，电离方程式的基础书写完成得顺利，能够按照条件逐步核对符号和配平；遇到不确定的地方也愿意停下来检查，这种处理方式比较扎实。",
       issues: [],
     }));
     const result = await generateRoutineFeedback({
       studentName: "学生甲",
       promptContext: "学生甲本节课完成电离方程式基础书写。",
+      style: "balanced",
+      length: "short",
       client: routine.client,
       model: "routine-model",
     });
     expect(result).toMatchObject({
-      feedback: "今天课堂跟得比较稳，电离方程式的基础书写完成得顺利。",
+      feedback: "今天课堂跟得比较稳，电离方程式的基础书写完成得顺利，能够按照条件逐步核对符号和配平；遇到不确定的地方也愿意停下来检查，这种处理方式比较扎实。",
       reviewStatus: "passed",
       draftFeedback: "",
     });
     expect(routine.create).toHaveBeenCalledTimes(1);
-    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("90—140字");
+    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("60–89 个可见字符");
     expect(routine.create.mock.calls[0][0].messages[0].content).toContain("孩子被看见");
     expect(routine.create.mock.calls[0][0].messages[0].content).toContain("不得用空泛夸奖代替事实");
     expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 2048 });
@@ -48,12 +56,14 @@ describe("feedback generation review", () => {
       .mockResolvedValueOnce({ choices: [{ finish_reason: "length", message: { content: "" } }] })
       .mockResolvedValueOnce({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
         verdict: "pass",
-        feedback: "今天能够结合课堂步骤完成基础判断，关键概念的对应关系比较清楚。",
+        feedback: "今天能够结合课堂步骤完成基础判断，关键概念的对应关系比较清楚；遇到不确定的条件时也能回到题目逐项核对，并根据提示完成修正，处理过程比较稳。",
         issues: [],
       }) } }] });
     const result = await generateRoutineFeedback({
       studentName: "学生甲",
       promptContext: "学生甲本节课完成基础判断。",
+      style: "balanced",
+      length: "short",
       client: { chat: { completions: { create } } } as any,
       model: "routine-model",
     });
@@ -62,6 +72,46 @@ describe("feedback generation review", () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(create.mock.calls[0][0]).toMatchObject({ max_tokens: 2048 });
     expect(create.mock.calls[1][0]).toMatchObject({ max_tokens: 4096 });
+  });
+
+  it("supports all six style and length combinations with deterministic boundaries", async () => {
+    for (const style of FEEDBACK_STYLES) {
+      for (const length of FEEDBACK_LENGTHS) {
+        const feedback = "学".repeat(FEEDBACK_LENGTH_OPTIONS[length].min);
+        const routine = clientWith(JSON.stringify({ verdict: "pass", feedback, issues: [] }));
+        const result = await generateRoutineFeedback({
+          studentName: "学生甲",
+          promptContext: "学生甲本节课完成了已确认的课堂任务。",
+          style,
+          length,
+          client: routine.client,
+          model: "routine-model",
+        });
+        expect(result.reviewStatus, `${style}/${length}`).toBe("passed");
+        expect(result.feedback).toBe(feedback);
+        expect(routine.create.mock.calls[0][0].messages[0].content)
+          .toContain(FEEDBACK_LENGTH_OPTIONS[length].label.includes("60") ? "60–89" : "90–140");
+      }
+    }
+  });
+
+  it("counts punctuation but ignores whitespace and blocks an out-of-range result", async () => {
+    expect(visibleFeedbackLength("甲 乙\n，。")).toBe(4);
+    const routine = clientWith(JSON.stringify({
+      verdict: "pass",
+      feedback: "学".repeat(FEEDBACK_LENGTH_OPTIONS.short.min - 1),
+      issues: [],
+    }));
+    const result = await generateRoutineFeedback({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成了已确认的课堂任务。",
+      style: "concise_objective",
+      length: "short",
+      client: routine.client,
+      model: "routine-model",
+    });
+    expect(result.reviewStatus).toBe("needs_review");
+    expect(result.reviewIssues[0]).toContain("应为 60–89");
   });
   it("keeps class copy separate from individual student evidence", () => {
     const context = composeFeedbackPromptContext({
@@ -176,7 +226,7 @@ describe("feedback generation review", () => {
         flaggedIssue: { content: "本次有一道概念题需要留意。", evidence: [] },
         renewalAlert: { content: "续班风险警告：家长仍在犹豫。", evidence: [] },
       },
-      outputStrategy: { flaggedIssue: true, trendChange: false, backgroundBaseline: false, strategySuggestion: false, suggestedFeedback: true },
+      outputStrategy: { flaggedIssue: true, trendChange: false, backgroundBaseline: false, strategySuggestion: false, suggestedFeedback: true, style: "balanced", length: "standard" },
     });
     expect(context).toContain("本次有一道概念题需要留意");
     expect(context).not.toContain("续班风险警告");
@@ -185,12 +235,13 @@ describe("feedback generation review", () => {
 
   it("turns an internal analysis into a separately reviewed parent message", async () => {
     const draft = clientWith("本次主动订正错题；近期记录显示学习投入较稳定，可建议继续复盘。 ");
-    const review = clientWith(JSON.stringify({ verdict: "pass", feedback: "今天孩子能够主动订正错题，近期学习投入也比较稳定。建议继续保持课后复盘的习惯，把订正过程中的思路及时整理下来。", issues: [] }));
+    const review = clientWith(JSON.stringify({ verdict: "pass", feedback: "今天孩子能够主动订正错题，近期学习投入也比较稳定。建议继续保持课后复盘的习惯，把订正过程中的思路及时整理下来，下次遇到相近问题时再按同样步骤核对。", issues: [] }));
 
     const result = await generateReviewedFeedback({
       studentName: "学生甲",
       promptContext: "学生甲本节课主动订正错题。",
-      lengthRequirement: "90-140字",
+      style: "balanced",
+      length: "short",
       draftClient: draft.client,
       draftModel: "draft-model",
       reviewClient: review.client,
@@ -199,7 +250,7 @@ describe("feedback generation review", () => {
 
     expect(result).toMatchObject({
       draftFeedback: "本次主动订正错题；近期记录显示学习投入较稳定，可建议继续复盘。",
-      feedback: "今天孩子能够主动订正错题，近期学习投入也比较稳定。建议继续保持课后复盘的习惯，把订正过程中的思路及时整理下来。",
+      feedback: "今天孩子能够主动订正错题，近期学习投入也比较稳定。建议继续保持课后复盘的习惯，把订正过程中的思路及时整理下来，下次遇到相近问题时再按同样步骤核对。",
       reviewStatus: "passed",
       reviewIssues: [],
     });
@@ -231,7 +282,8 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackDraft({
       studentName: "学生甲",
       promptContext: "学生甲本节课完成概念判断。",
-      lengthRequirement: "90-140字",
+      style: "balanced",
+      length: "short",
       client: { chat: { completions: { create } } } as any,
       model: "draft-model",
     });
@@ -252,11 +304,12 @@ describe("feedback generation review", () => {
     const result = await reviewFeedbackDraft({
       studentName: "学生甲",
       promptContext: "学生甲本节课主动订正错题。",
-      lengthRequirement: "90-140字",
+      style: "balanced",
+      length: "short",
       draftFeedback: "学生甲成绩已经大幅提升。",
       client: clientWith(JSON.stringify({
         verdict: "revise",
-        feedback: "本节课能够主动订正错题，建议继续保持认真复盘的习惯。",
+        feedback: "本节课能够主动订正错题，建议继续保持认真复盘的习惯，并把修正前后的思路简要记录下来；下次遇到相近题型时可以按照同样步骤先核对条件，再完成判断。",
         issues: ["原稿包含背景未支持的成绩结论"],
       })).client,
       model: "review-model",
@@ -264,7 +317,7 @@ describe("feedback generation review", () => {
 
     expect(result).toMatchObject({
       draftFeedback: "学生甲成绩已经大幅提升。",
-      feedback: "本节课能够主动订正错题，建议继续保持认真复盘的习惯。",
+      feedback: "本节课能够主动订正错题，建议继续保持认真复盘的习惯，并把修正前后的思路简要记录下来；下次遇到相近题型时可以按照同样步骤先核对条件，再完成判断。",
       reviewStatus: "revised",
       reviewIssues: ["原稿包含背景未支持的成绩结论"],
     });
@@ -275,7 +328,8 @@ describe("feedback generation review", () => {
     const result = await reviewFeedbackDraft({
       studentName: "学生甲",
       promptContext: "本节课无明确表现记录。",
-      lengthRequirement: "90-140字",
+      style: "balanced",
+      length: "short",
       draftFeedback: "今天表现很好。",
       client: review.client,
       model: "review-model",
@@ -295,7 +349,8 @@ describe("feedback generation review", () => {
       studentName: "学生甲",
       promptContext: "学生甲本节课完成练习。",
       forbiddenStudentNames: ["学生乙"],
-      lengthRequirement: "90-140字",
+      style: "balanced",
+      length: "short",
       draftFeedback: "学生甲比学生乙完成得更好。",
       client: review.client,
       model: "review-model",
@@ -315,6 +370,8 @@ describe("feedback generation review", () => {
     const result = await generateRoutineFeedback({
       studentName: "学生甲",
       promptContext: "学生甲本节课完成基础概念判断。",
+      style: "balanced",
+      length: "short",
       client: routine.client,
       model: "routine-model",
     });
@@ -328,7 +385,8 @@ describe("feedback generation review", () => {
     const result = await reviewFeedbackDraft({
       studentName: "学生甲",
       promptContext: "学生甲本节课完成练习。",
-      lengthRequirement: "90-140字",
+      style: "balanced",
+      length: "short",
       draftFeedback: "本次完成练习。",
       client: clientWith(JSON.stringify({
         verdict: "pass",

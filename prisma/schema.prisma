@@ -14,6 +14,17 @@ enum Operator {
   system
 }
 
+enum StudentRosterStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum DraftRecordKind {
+  standard
+  replacement
+  correction
+}
+
 // 0. 班级（v0.10: 独立表，替换 Student.class / ClassSession.class 自由字符串）
 model Class {
   id    String @id @default(cuid())
@@ -46,13 +57,15 @@ model StudentLabel {
 
 // 1. 学生基础档案
 model Student {
-  id         String   @id @default(cuid())
-  name       String
-  classId    String
-  studentId  String   @unique
-  gender     String   // "男" | "女"
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                String              @id @default(cuid())
+  name              String
+  classId           String
+  studentId         String              @unique
+  gender            String              // "男" | "女"
+  rosterStatus      StudentRosterStatus @default(ACTIVE)
+  statusEffectiveAt DateTime            @default(now())
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
 
   class           Class             @relation(fields: [classId], references: [id])
   studentLabels   StudentLabel[]
@@ -62,6 +75,9 @@ model Student {
   attendances     Attendance[]
   teacherObservations TeacherObservation[]
   weComHandoffPackages WeComHandoffPackage[]
+  feedbackGenerationSelections FeedbackGenerationSelection[]
+
+  @@index([rosterStatus, classId])
 }
 
 // 2. 课次四维评分（每课次独立评分，sessionId 可空用于无课次场景）
@@ -131,6 +147,8 @@ model Communication {
   student Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   observationSources TeacherObservationSource[]
+  drafts DraftRecord[]
+  revisions CommunicationRevision[]
 
   @@unique([studentId, sessionId, summary])
 }
@@ -245,10 +263,24 @@ model DraftRecord {
   rawText      String
   parsedResult String   // JSON
   reviewResult String?  // JSON
-  status       String   @default("pending") // "pending" | "confirmed" | "rejected"
+  status       String   @default("pending") // "pending" | "confirmed" | "rejected" | "superseded"
+  kind         DraftRecordKind @default(standard)
   sessionCode  String?  // v0.7: 关联课次编码（可选）
   studentId    String?  // v0.10: 解析时匹配到的 studentId
+  supersedesDraftId String?
+  communicationId String?
+  handoffPackageId String?
   createdAt    DateTime @default(now())
+
+  supersedesDraft DraftRecord? @relation("DraftSupersession", fields: [supersedesDraftId], references: [id], onDelete: SetNull)
+  replacementDrafts DraftRecord[] @relation("DraftSupersession")
+  communication Communication? @relation(fields: [communicationId], references: [id], onDelete: SetNull)
+  handoffPackage WeComHandoffPackage? @relation(fields: [handoffPackageId], references: [id], onDelete: SetNull)
+  communicationRevisions CommunicationRevision[]
+
+  @@index([supersedesDraftId])
+  @@index([communicationId])
+  @@index([handoffPackageId])
 }
 
 // 6. 学期
@@ -279,6 +311,7 @@ model ClassSession {
   events         Event[]
   communications  Communication[]
   observationSources TeacherObservationSource[]
+  feedbackGenerationSelections FeedbackGenerationSelection[]
 }
 
 // 9. 系统操作日志（v0.11）
@@ -393,7 +426,11 @@ model GenerationRecord {
   promptVersion     String
   modelName         String
   modelRole         String?
+  modelProfileId    String?
   modelSettings     String   @default("{}") // JSON；不保存 endpoint 或凭据
+  inputRevision     String?
+  parentGenerationId String?
+  variantKey        String?  @unique
   inputSnapshot     String?  // JSON；仅热数据
   outputSnapshot    String?  // JSON；仅热数据
   finalText         String?  // 仅热数据；教师采纳后更新
@@ -406,13 +443,37 @@ model GenerationRecord {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  parentGeneration  GenerationRecord?  @relation("GenerationVariants", fields: [parentGenerationId], references: [id], onDelete: SetNull)
+  derivedGenerations GenerationRecord[] @relation("GenerationVariants")
+  feedbackSelections FeedbackGenerationSelection[]
+
   @@index([lifecycle, generatedAt])
   @@index([semesterId, classId, sessionId])
   @@index([studentId, lifecycle])
   @@index([taskType, generatedAt])
+  @@index([parentGenerationId])
+  @@index([inputRevision])
 }
 
-// 12c. 面向后续教学的受控记忆。semesterKey 为学期 ID 或 "long-term"，避免 nullable 唯一键歧义。
+// 12c. 当前采用的反馈版本。派生版本只有教师显式选择后才进入导出。
+model FeedbackGenerationSelection {
+  id                   String   @id @default(cuid())
+  sessionId            String
+  studentId            String
+  selectedGenerationId String
+  selectedAt           DateTime @default(now())
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  session            ClassSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student            Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  selectedGeneration GenerationRecord @relation(fields: [selectedGenerationId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, studentId])
+  @@index([selectedGenerationId])
+}
+
+// 12d. 面向后续教学的受控记忆。semesterKey 为学期 ID 或 "long-term"，避免 nullable 唯一键歧义。
 model TeachingMemory {
   id                String   @id @default(cuid())
   scopeType         String   // "student" | "class"
@@ -435,7 +496,7 @@ model TeachingMemory {
   @@index([semesterId, memoryTier])
 }
 
-// 12d. 热/温/长期记忆压缩账本。回滚数据只在短期撤销窗口内存在。
+// 12e. 热/温/长期记忆压缩账本。回滚数据只在短期撤销窗口内存在。
 model MemoryCompactionRun {
   id              String   @id @default(cuid())
   classId         String
@@ -470,6 +531,9 @@ model WeComHandoffPackage {
   code              String?
   messageCount      Int
   selectedStudentId String?
+  rootPackageId     String?
+  parentPackageId   String?
+  revisionNumber    Int      @default(1)
   receiptId         String?
   producedAt        DateTime
   firstSeenAt       DateTime @default(now())
@@ -479,9 +543,36 @@ model WeComHandoffPackage {
   updatedAt         DateTime @updatedAt
 
   selectedStudent Student? @relation(fields: [selectedStudentId], references: [id], onDelete: SetNull)
+  drafts DraftRecord[]
+  communicationRevisions CommunicationRevision[]
 
   @@unique([sourceId, packageId, packageSha256])
   @@index([sourceId, packageId])
   @@index([status, updatedAt])
   @@index([selectedStudentId])
+  @@index([rootPackageId, revisionNumber])
+  @@index([parentPackageId])
+}
+
+model CommunicationRevision {
+  id                   String   @id @default(cuid())
+  communicationId      String
+  draftId              String?
+  handoffPackageId     String?
+  previousTarget       String
+  nextTarget           String
+  previousSummary      String
+  nextSummary          String
+  previousSessionId    String
+  nextSessionId        String
+  confirmedAt          DateTime @default(now())
+  createdAt            DateTime @default(now())
+
+  communication  Communication       @relation(fields: [communicationId], references: [id], onDelete: Cascade)
+  draft          DraftRecord?         @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  handoffPackage WeComHandoffPackage? @relation(fields: [handoffPackageId], references: [id], onDelete: SetNull)
+
+  @@unique([communicationId, draftId])
+  @@index([communicationId, confirmedAt])
+  @@index([handoffPackageId])
 }

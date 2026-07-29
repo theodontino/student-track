@@ -170,7 +170,18 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await expect(page.getByText("已采用 1 份报告", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
+    await page.getByRole("button", { name: "鼓励型" }).click();
+    await page.getByRole("button", { name: "短（60–89 字符）" }).click();
+    await page.getByRole("button", { name: "轻量反馈" }).click();
     await page.getByRole("button", { name: "生成班级反馈" }).click();
+    await expect.poll(() => feedbackRequests.length).toBe(1);
+    expect(feedbackRequests[0]).toMatchObject({
+      outputStrategy: {
+        style: "encouraging",
+        length: "short",
+        suggestedFeedback: true,
+      },
+    });
     await expect(page.getByText("已按本次反馈强度生成家长话术，请逐条检查后再导出。", { exact: true })).toBeVisible();
     await expect(page.getByText(`模拟反馈：${TEST_FIXTURE.students[0].name}本节课表现稳定。`, { exact: true })).toBeVisible();
 

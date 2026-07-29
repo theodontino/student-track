@@ -23,7 +23,7 @@ import {
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
 import type { FeedbackIntensity, FeedbackRoutingDecision } from "@/lib/feedback-intensity";
-import { DEFAULT_FEEDBACK_OUTPUT_STRATEGY, normalizeFeedbackOutputStrategy, type FeedbackOutputStrategy } from "@/lib/feedback-sections";
+import { DEFAULT_FEEDBACK_OUTPUT_STRATEGY, feedbackLengthIssue, normalizeFeedbackOutputStrategy, type FeedbackOutputStrategy } from "@/lib/feedback-sections";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import type { FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
 import { isInputHistoryState } from "./history-adapters";
@@ -43,6 +43,28 @@ import {
 } from "./feedback-batch-progress";
 
 function errorMessage(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
+
+export interface FeedbackVersionSummary {
+  id: string;
+  studentId: string | null;
+  parentGenerationId: string | null;
+  modelProfileId: string | null;
+  modelProfileName: string | null;
+  modelName: string;
+  generatedAt: string;
+  selected: boolean;
+  finalText: string;
+  reviewStatus: FeedbackReviewStatus | null;
+  replayable: boolean;
+  stale: boolean;
+  replayState: string;
+}
+
+export interface FeedbackVersionProfile {
+  id: string;
+  name: string;
+  model: string;
+}
 
 export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   const { context, hydrated: contextHydrated, setContext, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
@@ -117,6 +139,10 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   const [feedbackRouting, setFeedbackRouting] = useState<FeedbackRoutingDecision[]>([]);
   const [routingOverrides, setRoutingOverrides] = useState<Record<string, FeedbackIntensity>>({});
   const [outputStrategy, setOutputStrategyState] = useState<FeedbackOutputStrategy>(DEFAULT_FEEDBACK_OUTPUT_STRATEGY);
+  const [feedbackVersions, setFeedbackVersions] = useState<FeedbackVersionSummary[]>([]);
+  const [feedbackVersionProfiles, setFeedbackVersionProfiles] = useState<FeedbackVersionProfile[]>([]);
+  const [feedbackVersionProfileId, setFeedbackVersionProfileId] = useState("");
+  const [feedbackVersionBusyId, setFeedbackVersionBusyId] = useState("");
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
   const [contextReloadKey, setContextReloadKey] = useState(0);
@@ -140,6 +166,31 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setError,
     setStatus,
   });
+
+  async function refreshFeedbackVersions() {
+    if (!sessionCode) {
+      setFeedbackVersions([]);
+      return;
+    }
+    const [versionsResult, profilesResult] = await Promise.all([
+      requestJson<{ versions: FeedbackVersionSummary[] }>(`/api/report/feedback-versions?sessionCode=${encodeURIComponent(sessionCode)}`),
+      requestJson<{ profiles: FeedbackVersionProfile[] }>("/api/report/feedback-versions/profiles"),
+    ]);
+    setFeedbackVersions(versionsResult.versions);
+    setFeedbackVersionProfiles(profilesResult.profiles);
+    setFeedbackVersionProfileId((current) => (
+      profilesResult.profiles.some((profile) => profile.id === current)
+        ? current
+        : profilesResult.profiles[0]?.id ?? ""
+    ));
+  }
+
+  useEffect(() => {
+    if (!sessionCode || feedbackBatch.status !== "completed") return;
+    void refreshFeedbackVersions().catch(() => undefined);
+  // Refresh once when a completed batch/revision becomes current.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionCode, feedbackBatch.status, feedbackBatch.inputRevision]);
 
   const workspaceValue = useMemo<FeedbackWorkspaceState>(() => ({
     activeStep, context, newSessionDate, rawText, parseStatus, streamContent, draftId, parsedResult,
@@ -194,7 +245,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
 
   const contextByStudent = useMemo(() => new Map(contextStudents.map((student) => [student.id, student])), [contextStudents]);
   const confirmedAssessmentEvidence = assessmentPdfs.evidenceByStudent;
-  useEffect(() => { requestJson<FeedbackStudentOption[]>("/api/students").then(setStudents).catch(() => setStudents([])); }, []);
+  useEffect(() => { requestJson<FeedbackStudentOption[]>("/api/students?scope=active").then(setStudents).catch(() => setStudents([])); }, []);
   useEffect(() => {
     if (!workspace.hydrated) return;
     const draft = sessionStorage.getItem("student-track:feedback-draft")
@@ -719,7 +770,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setRegeneratingId(studentId); setError("");
     try {
       const card = feedbackCards.find((item) => item.id === studentId);
-      const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy }) });
+      const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, inputRevision: feedbackBatch.inputRevision, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy }) });
       adoptLessonMaterial(data.lessonMaterial);
       dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } });
       dispatchFeedback({ type: "dirty", value: true });
@@ -734,10 +785,91 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     catch (reason) { setError(errorMessage(reason, "重新生成失败")); }
     finally { setRegeneratingId(""); }
   }
+  async function regenerateFeedbackVersion(studentId: string) {
+    if (!feedbackVersionProfileId) {
+      setError("请先在系统中心保存至少一个 LLM 配置。");
+      return;
+    }
+    const source = feedbackVersions.find((version) => (
+      version.studentId === studentId && version.selected && version.replayable && !version.stale
+    )) ?? feedbackVersions.find((version) => (
+      version.studentId === studentId && version.replayable && !version.stale
+    ));
+    if (!source) {
+      setError("该学生没有可重放的当前输入版本。");
+      return;
+    }
+    setFeedbackVersionBusyId(studentId);
+    setError("");
+    try {
+      const result = await requestJson<{ results: Array<{ status: string; error?: string }> }>(
+        "/api/report/feedback-versions/regenerate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profileId: feedbackVersionProfileId,
+            items: [{ studentId, sourceGenerationId: source.id }],
+          }),
+        },
+      );
+      const item = result.results[0];
+      if (item?.status === "error") throw new Error(item.error || "生成派生版本失败");
+      await refreshFeedbackVersions();
+      setStatus(item?.status === "existing" ? "相同输入与模型的版本已存在。" : "已生成新版本；请核对后显式采用。");
+    } catch (reason) {
+      setError(errorMessage(reason, "生成派生版本失败"));
+    } finally {
+      setFeedbackVersionBusyId("");
+    }
+  }
+  async function selectFeedbackVersion(studentId: string, generationId: string) {
+    setFeedbackVersionBusyId(studentId);
+    setError("");
+    try {
+      const selected = await requestJson<{
+        finalText: string;
+        reviewStatus: FeedbackReviewStatus | null;
+      }>("/api/report/feedback-versions/selection", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionCode, studentId, generationId }),
+      });
+      dispatchFeedback({
+        type: "patch",
+        studentId,
+        patch: {
+          feedback: selected.finalText,
+          reviewStatus: selected.reviewStatus ?? "edited",
+          reviewIssues: selected.reviewStatus === "needs_review"
+            ? ["所选版本仍需人工确认"]
+            : ["教师已显式采用此生成版本"],
+        },
+      });
+      dispatchFeedback({ type: "dirty", value: true });
+      await refreshFeedbackVersions();
+      setStatus("已切换当前采用版本；导出将使用该版本。");
+    } catch (reason) {
+      setError(errorMessage(reason, "选择反馈版本失败"));
+    } finally {
+      setFeedbackVersionBusyId("");
+    }
+  }
   function updateFeedback(studentId: string, feedback: string) {
-    dispatchFeedback({ type: "patch", studentId, patch: { feedback, reviewStatus: "edited", reviewIssues: ["教师已人工修改，导出以当前文本为准"] } });
+    const lengthIssue = feedbackLengthIssue(feedback, outputStrategy.length);
+    dispatchFeedback({
+      type: "patch",
+      studentId,
+      patch: {
+        feedback,
+        reviewStatus: lengthIssue ? "needs_review" : "edited",
+        reviewIssues: lengthIssue
+          ? [lengthIssue, "请继续人工修改；达到所选长度后即可解除导出限制"]
+          : ["教师已人工修改，导出以当前文本为准"],
+      },
+    });
     dispatchFeedback({ type: "dirty", value: true });
-    if (feedback.trim() && feedbackBatch.status === "incomplete") {
+    if (feedback.trim() && !lengthIssue && feedbackBatch.status === "incomplete") {
       setFeedbackBatch((current) => {
         const next = updateStudentProgress(current, studentId, "completed");
         const complete = next.completedStudentIds.length >= next.total && next.failedStudentIds.length === 0;
@@ -886,6 +1018,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     assessmentImports: assessmentPdfs.items, assessmentBatchBusy: assessmentPdfs.busy,
     assessmentFolderPlan: assessmentPdfs.folderPlan, assessmentStudents,
     confirmedAssessmentEvidence, feedbackRouting, routingOverrides, outputStrategy,
+    feedbackVersions, feedbackVersionProfiles, feedbackVersionProfileId, setFeedbackVersionProfileId, feedbackVersionBusyId,
     assessmentConfirmedCount: assessmentPdfs.confirmedCount,
     assessmentReadyCount: assessmentPdfs.readyCount,
     assessmentAttentionCount: assessmentPdfs.attentionCount,
@@ -903,6 +1036,6 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     singleLoading, contextByStudent, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming), canGenerate: Boolean(sessionCode && !generating),
     onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, cancelGeneration, prepareRegeneration,
     continueIncompleteBatch, savePartialFeedbackState, abandonIncompleteBatch,
-    regenerateOne, updateFeedback, setFeedbackIntensity, setOutputStrategy, exportFeedback, restoreHistory, generateSingleFeedback,
+    regenerateOne, regenerateFeedbackVersion, selectFeedbackVersion, updateFeedback, setFeedbackIntensity, setOutputStrategy, exportFeedback, restoreHistory, generateSingleFeedback,
   };
 }

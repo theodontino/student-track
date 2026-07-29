@@ -11,6 +11,7 @@ import {
   NameCorrectionSchema,
 } from "@/lib/contracts/classroom-parse";
 import { FEEDBACK_INTENSITIES } from "@/lib/feedback-intensity";
+import { FEEDBACK_LENGTHS, FEEDBACK_STYLES } from "@/lib/feedback-sections";
 
 const text = (max: number) => z.string().max(max);
 const requiredText = (max: number) => text(max).trim().min(1);
@@ -108,12 +109,16 @@ export const FeedbackCardSchema: z.ZodType<FeedbackCard> = z.object({
   sections: FeedbackSectionsSchema.optional(),
 });
 
-const FeedbackOutputStrategySchema = z.object({
+export const FeedbackOutputStrategySchema = z.object({
   flaggedIssue: z.boolean(),
   trendChange: z.boolean(),
   backgroundBaseline: z.boolean(),
   strategySuggestion: z.boolean(),
   suggestedFeedback: z.boolean(),
+  // Optional for 1.0 WorkHistory/workspace records. All server and UI callers
+  // normalize missing values to balanced + standard before use.
+  style: z.enum(FEEDBACK_STYLES).default("balanced"),
+  length: z.enum(FEEDBACK_LENGTHS).default("standard"),
 }).strict();
 
 const historyCard = FeedbackCardSchema;
@@ -235,6 +240,7 @@ export const FeedbackBatchPostSchema = z.object({
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   assessmentEvidence: assessmentEvidenceRecord.optional(),
   routingOverrides: z.record(z.string().max(200), z.enum(FEEDBACK_INTENSITIES)).optional(),
+  outputStrategy: FeedbackOutputStrategySchema.optional(),
   // 前端 saveFeedbackState 直接传入 feedbackCards，包含 name/labels 等展示字段；
   // name/labels 都设为可选，且不使用 strict 模式，避免拒绝前端展示字段。
   students: z.array(z.object({

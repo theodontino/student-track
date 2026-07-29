@@ -359,4 +359,177 @@ describe("WCC file handoff consumer", () => {
     await expect(prisma.draftRecord.findUniqueOrThrow({ where: { id: draft.id } }))
       .resolves.toMatchObject({ status: "pending" });
   });
+
+  it("applies a confirmed .r2 correction once and leaves rejected corrections unchanged", async () => {
+    const student = await prisma.student.findFirstOrThrow({
+      where: { rosterStatus: "ACTIVE" },
+      select: { id: true, name: true, classId: true },
+    });
+    const session = await prisma.classSession.findFirstOrThrow({
+      where: { classId: student.classId },
+      select: { id: true, code: true, date: true },
+    });
+    extraction.generate
+      .mockResolvedValueOnce({
+        bridgeJson: {
+          records: [{
+            matchedStudent: { id: student.id, confidence: "high" },
+            messageIds: ["message-original"],
+            factualSummary: "家长反馈学生做题时容易着急。",
+            feedbackUse: { relevant: true, category: "parent-concern", priority: "high" },
+            evidence: [{ messageId: "message-original", quote: "做题时容易着急" }],
+          }],
+        },
+        diagnostics: { modelName: "synthetic-model" },
+      })
+      .mockResolvedValueOnce({
+        bridgeJson: {
+          records: [{
+            matchedStudent: { id: student.id, confidence: "high" },
+            messageIds: ["message-revised"],
+            factualSummary: "家长澄清学生只是在限时练习时容易着急。",
+            feedbackUse: { relevant: true, category: "parent-concern", priority: "high" },
+            evidence: [{ messageId: "message-revised", quote: "只在限时练习时着急" }],
+          }],
+        },
+        diagnostics: { modelName: "synthetic-model" },
+      });
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-correction",
+      conversation: { id: "conversation-correction", title: student.name },
+      classification: {
+        worthProcessing: true,
+        decision: "student_related",
+        reasons: ["parent_concern"],
+        classifier: "synthetic-triage",
+      },
+      messages: [{
+        id: "message-original",
+        sentAt: `${session.date}T10:00:00+08:00`,
+        content: "做题时容易着急",
+      }],
+    }));
+    await scanAndConsumeWccPackages(prisma);
+    const originalDraft = await prisma.draftRecord.findFirstOrThrow({
+      where: { handoffPackage: { packageId: "pkg-correction" } },
+    });
+    if (!originalDraft.sessionCode) {
+      await assignWccDraftSession(prisma, originalDraft.id, session.code);
+    }
+    await processDraftReview({ draftId: originalDraft.id, action: "confirm" });
+    const originalCommunication = await prisma.communication.findUniqueOrThrow({
+      where: { sourceKey: `draft:${originalDraft.id}:${student.id}` },
+    });
+    const originalSourceKey = originalCommunication.sourceKey;
+
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-correction.r2",
+      conversation: { id: "conversation-correction", title: student.name },
+      classification: {
+        worthProcessing: true,
+        decision: "student_related",
+        reasons: ["parent_concern"],
+        classifier: "synthetic-triage",
+      },
+      messages: [{
+        id: "message-revised",
+        sentAt: `${session.date}T10:05:00+08:00`,
+        content: "只在限时练习时着急",
+      }],
+    }));
+    await scanAndConsumeWccPackages(prisma);
+    const correction = await prisma.draftRecord.findFirstOrThrow({
+      where: { handoffPackage: { packageId: "pkg-correction.r2" } },
+    });
+    expect(correction).toMatchObject({
+      kind: "correction",
+      supersedesDraftId: originalDraft.id,
+      communicationId: originalCommunication.id,
+      status: "pending",
+    });
+    expect(await prisma.communication.findUniqueOrThrow({
+      where: { id: originalCommunication.id },
+    })).toMatchObject({ summary: originalCommunication.summary, sourceKey: originalSourceKey });
+
+    if (!correction.sessionCode) await assignWccDraftSession(prisma, correction.id, session.code);
+    await prisma.student.update({
+      where: { id: student.id },
+      data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date() },
+    });
+    await processDraftReview({ draftId: correction.id, action: "confirm" });
+    await prisma.student.update({
+      where: { id: student.id },
+      data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() },
+    });
+    const revisedCommunication = await prisma.communication.findUniqueOrThrow({
+      where: { id: originalCommunication.id },
+    });
+    expect(revisedCommunication.summary).toContain("只是在限时练习时容易着急");
+    expect(revisedCommunication.sourceKey).toBe(originalSourceKey);
+    expect(await prisma.communicationRevision.findMany({
+      where: { communicationId: originalCommunication.id },
+    })).toHaveLength(1);
+    await expect(processDraftReview({ draftId: correction.id, action: "confirm" }))
+      .resolves.toMatchObject({
+        status: "confirmed",
+        warnings: [expect.stringContaining("重复请求未再次更新")],
+      });
+    expect(await prisma.communicationRevision.findMany({
+      where: { communicationId: originalCommunication.id },
+    })).toHaveLength(1);
+
+    const rejected = await prisma.draftRecord.create({
+      data: {
+        id: "wcc-rejected-correction",
+        rawText: "{}",
+        parsedResult: JSON.stringify({
+          students: [{
+            name: student.name,
+            scores: { A: null, B: null, C: null },
+            events: [],
+            communication: { type: "家长", summary: "不应写入的再次修订" },
+          }],
+        }),
+        status: "pending",
+        kind: "correction",
+        studentId: student.id,
+        sessionCode: session.code,
+        supersedesDraftId: correction.id,
+        communicationId: originalCommunication.id,
+      },
+    });
+    await processDraftReview({ draftId: rejected.id, action: "reject" });
+    expect(await prisma.communication.findUniqueOrThrow({
+      where: { id: originalCommunication.id },
+    })).toMatchObject({ summary: revisedCommunication.summary, sourceKey: originalSourceKey });
+    expect(await prisma.communicationRevision.findMany({
+      where: { communicationId: originalCommunication.id },
+    })).toHaveLength(1);
+
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-correction.r3",
+      conversation: { id: "conversation-correction", title: student.name },
+      classification: {
+        worthProcessing: false,
+        decision: "irrelevant",
+        reasons: ["retracted"],
+        classifier: "synthetic-triage",
+      },
+      messages: [{
+        id: "message-retracted",
+        sentAt: `${session.date}T10:10:00+08:00`,
+        content: "该消息与学生反馈无关",
+      }],
+    }));
+    await scanAndConsumeWccPackages(prisma);
+    expect(await prisma.weComHandoffPackage.findFirstOrThrow({
+      where: { packageId: "pkg-correction.r3" },
+    })).toMatchObject({ status: "pending_lineage", outcome: "pending_review" });
+    expect(await prisma.draftRecord.findMany({
+      where: { handoffPackage: { packageId: "pkg-correction.r3" } },
+    })).toHaveLength(0);
+    expect(await prisma.communication.findUniqueOrThrow({
+      where: { id: originalCommunication.id },
+    })).toMatchObject({ summary: revisedCommunication.summary, sourceKey: originalSourceKey });
+  });
 });

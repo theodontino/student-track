@@ -28,7 +28,7 @@ describe("quick score API boundary", () => {
       students: [{ id: "student-1" }],
       semesters: [{ id: "semester-1" }],
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/students", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/students?scope=active", undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/semesters", undefined);
   });
 
