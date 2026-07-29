@@ -376,7 +376,7 @@ type ChatCompletionPayload = {
   messages: ChatMessage[];
   temperature: number;
   max_tokens: number;
-  reasoning_effort?: "low" | "medium" | "high";
+  reasoning_effort?: "none" | "low" | "medium" | "high";
   response_format?: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } } | { type: "json_object" };
 };
 

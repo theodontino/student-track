@@ -6,6 +6,7 @@ import {
   EMPTY_LLM_PROFILE,
   type LLMProfile,
   type LLMProfileForm,
+  type LLMReasoningMode,
   type LLMRoleAssignments,
   type LLMSettingsResponse,
 } from "./llm-types";
@@ -117,6 +118,16 @@ export function useLLMConfiguration() {
     value: number | boolean | "low" | "medium" | "high",
   ) {
     setForm((current) => ({ ...current, [field]: value }));
+    setStatus("");
+    setError("");
+  }
+
+  function updateReasoningMode(mode: LLMReasoningMode) {
+    setForm((current) => {
+      if (mode === "default") return { ...current, reasoningEnabled: undefined };
+      if (mode === "none") return { ...current, reasoningEnabled: false };
+      return { ...current, reasoningEnabled: true, reasoningEffort: mode };
+    });
     setStatus("");
     setError("");
   }
@@ -256,6 +267,7 @@ export function useLLMConfiguration() {
     testing,
     updateField,
     updateGenerationField,
+    updateReasoningMode,
     updateRole,
   };
 }

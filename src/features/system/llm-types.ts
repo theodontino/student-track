@@ -42,12 +42,14 @@ export type LLMProfileForm = Partial<LLMProfile> & {
   reasoningEffort?: "low" | "medium" | "high";
 };
 
+export type LLMReasoningMode = "default" | "none" | "low" | "medium" | "high";
+
 export const EMPTY_LLM_PROFILE: LLMProfileForm = {
   name: "LM Studio",
   apiBaseUrl: "http://localhost:1234/v1",
   apiKey: "lm-studio",
   model: "",
   maxTokens: 4096,
-  reasoningEnabled: false,
+  reasoningEnabled: undefined,
   reasoningEffort: "low",
 };

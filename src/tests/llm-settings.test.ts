@@ -12,6 +12,7 @@ import {
   saveLLMRoleAssignments,
   validateLLMSettings,
 } from "@/lib/llm-settings";
+import { getLLMCompletionOptions } from "@/lib/llm";
 
 let tempDir = "";
 const originalEnv = {
@@ -71,6 +72,33 @@ describe("llm-settings", () => {
     expect(() => validateLLMSettings({
       apiBaseUrl: "http://localhost:1234/v1", apiKey: "x", model: "m", maxTokens: 12,
     })).toThrow("Max tokens");
+  });
+
+  it("distinguishes model-default, disabled, and enabled reasoning modes", () => {
+    const base = {
+      name: "Local",
+      apiBaseUrl: "http://localhost:1234/v1",
+      apiKey: "lm-studio",
+      model: "local-model",
+    };
+    let store = saveLLMProfile(base);
+    expect(getLLMCompletionOptions("feedbackDraft", 2048)).not.toHaveProperty("reasoning_effort");
+
+    store = saveLLMProfile({
+      ...store.profiles[0],
+      reasoningEnabled: false,
+    });
+    expect(getLLMCompletionOptions("feedbackDraft", 2048))
+      .toMatchObject({ reasoning_effort: "none" });
+    expect(getLLMCompletionOptions(undefined, 2048)).not.toHaveProperty("reasoning_effort");
+
+    saveLLMProfile({
+      ...store.profiles[0],
+      reasoningEnabled: true,
+      reasoningEffort: "high",
+    });
+    expect(getLLMCompletionOptions("feedbackDraft", 2048))
+      .toMatchObject({ reasoning_effort: "high" });
   });
 
   it("falls back to environment values after clearing saved settings", () => {

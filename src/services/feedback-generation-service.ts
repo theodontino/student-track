@@ -15,7 +15,8 @@ import {
   sanitizeFeedbackPromptText,
 } from "@/lib/feedback-text-safety";
 
-const FEEDBACK_MAX_TOKENS = 2048;
+const FEEDBACK_DRAFT_INITIAL_MAX_TOKENS = 2048;
+const FEEDBACK_DRAFT_RETRY_MAX_TOKENS = 4096;
 const FEEDBACK_REVIEW_MAX_TOKENS = 4096;
 // 常规反馈同样会经过推理模型。先给出够用的预算；若服务端明确返回
 // finish_reason=length，再用和审核阶段相同的上限重试一次，避免把一段
@@ -184,7 +185,9 @@ async function createReviewCompletion(
   // Review 阶段需要更大 token 预算：推理模型（如 deepseek-v4-pro）的 reasoning_content
   // 会占用 max_tokens 配额，2048 不够写出完整 JSON，导致 finish_reason=length 被截断。
   const configured = getLLMCompletionOptions("feedbackReview", FEEDBACK_REVIEW_MAX_TOKENS, true);
-  const reasoningEffort = options.disableReasoning ? undefined : configured.reasoning_effort;
+  // “不传 reasoning_effort”并不等于关闭推理：部分 OpenAI 兼容模型
+  // （例如 Qwen）会回到原生 thinking 默认值。重试时必须显式传 none。
+  const reasoningEffort = options.disableReasoning ? "none" as const : configured.reasoning_effort;
   const baseBody = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
@@ -242,14 +245,21 @@ async function createRoutineCompletion(
 }
 
 async function generateDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal) {
-  const configured = getLLMCompletionOptions("feedbackDraft", FEEDBACK_MAX_TOKENS);
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
     throwIfAborted(signal);
+    const requestedMaxTokens = attempt === 1
+      ? FEEDBACK_DRAFT_INITIAL_MAX_TOKENS
+      : FEEDBACK_DRAFT_RETRY_MAX_TOKENS;
+    const configured = getLLMCompletionOptions("feedbackDraft", requestedMaxTokens);
+    const reasoningEffort = attempt > 1
+      ? "none" as const
+      : configured.reasoning_effort ?? "none" as const;
     const body = {
       model,
       messages: [{ role: "user" as const, content: prompt }],
       temperature: 0.5,
-      ...configured,
+      max_tokens: Math.max(configured.max_tokens, requestedMaxTokens),
+      reasoning_effort: reasoningEffort,
     };
     let response;
     try {
@@ -263,6 +273,7 @@ async function generateDraft(client: LLMClient, model: string, prompt: string, s
         ? await client.chat.completions.create(fallbackBody, { signal })
         : await client.chat.completions.create(fallbackBody);
     }
+    if (isLengthTruncated(response)) continue;
     const content = response.choices[0]?.message?.content?.trim();
     if (content) return content;
   }

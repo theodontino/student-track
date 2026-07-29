@@ -2,6 +2,8 @@ import OpenAI from "openai";
 import { getEffectiveLLMSettings, type LLMProfileRole } from "./llm-settings";
 import { llmCacheFetch } from "@/services/llm-cache-service";
 
+export type LLMReasoningEffort = "none" | "low" | "medium" | "high";
+
 /** Creates the configured OpenAI-compatible client and fails fast without a key. */
 export function createLLMClient(role?: LLMProfileRole) {
   const { apiKey, apiBaseUrl } = getEffectiveLLMSettings(role);
@@ -27,11 +29,15 @@ export function getLLMCompletionOptions(
   role: LLMProfileRole | undefined,
   fallbackMaxTokens: number,
   defaultReasoning = false,
-) {
+): { max_tokens: number; reasoning_effort?: LLMReasoningEffort } {
   const settings = getEffectiveLLMSettings(role);
-  const reasoningEnabled = settings.reasoningEnabled ?? defaultReasoning;
+  const reasoningEffort: LLMReasoningEffort | undefined = settings.reasoningEnabled === false && role
+    ? "none"
+    : (settings.reasoningEnabled ?? defaultReasoning)
+      ? settings.reasoningEffort ?? "low"
+      : undefined;
   return {
     max_tokens: settings.maxTokens ?? fallbackMaxTokens,
-    ...(reasoningEnabled ? { reasoning_effort: settings.reasoningEffort ?? "low" } : {}),
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   };
 }

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { lessonMaterialPrompt, parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import {
   composeFeedbackPromptContext,
+  generateFeedbackDraft,
   generateRoutineFeedback,
   generateReviewedFeedback,
   reviewFeedbackDraft,
@@ -205,6 +206,10 @@ describe("feedback generation review", () => {
     expect(draft.create).toHaveBeenCalledWith(expect.objectContaining({ model: "draft-model", temperature: 0.5 }));
     expect(review.create).toHaveBeenCalledWith(expect.objectContaining({ model: "review-model", temperature: 0 }));
     expect(draft.create.mock.calls[0][0].messages[0].content).toContain("内部分析草稿");
+    expect(draft.create.mock.calls[0][0]).toMatchObject({
+      max_tokens: 2048,
+      reasoning_effort: "none",
+    });
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("内部分析只是辅助材料");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("三种真实感受");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("只突出一个核心结论");
@@ -212,6 +217,35 @@ describe("feedback generation review", () => {
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("不得将全学期常态对照改写");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("普通情况可直接结束");
     expect(review.create.mock.calls[0][0].messages[0].content).toContain("整体表现优异");
+  });
+
+  it("retries a truncated analysis draft without reasoning and with a larger budget", async () => {
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        choices: [{ finish_reason: "length", message: { content: "" } }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ finish_reason: "stop", message: { content: "本次能够完成概念判断，错题需要继续核对条件。" } }],
+      });
+
+    const result = await generateFeedbackDraft({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成概念判断。",
+      lengthRequirement: "90-140字",
+      client: { chat: { completions: { create } } } as any,
+      model: "draft-model",
+    });
+
+    expect(result).toBe("本次能够完成概念判断，错题需要继续核对条件。");
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[0][0]).toMatchObject({
+      max_tokens: 2048,
+      reasoning_effort: "none",
+    });
+    expect(create.mock.calls[1][0]).toMatchObject({
+      max_tokens: 4096,
+      reasoning_effort: "none",
+    });
   });
 
   it("uses a supported revision and retains the original draft", async () => {
@@ -252,6 +286,7 @@ describe("feedback generation review", () => {
     expect(result.draftFeedback).toBe("今天表现很好。");
     expect(result.reviewIssues[0]).toContain("连续两次");
     expect(review.create).toHaveBeenCalledTimes(2);
+    expect(review.create.mock.calls[1][0]).toMatchObject({ reasoning_effort: "none" });
   });
 
   it("does not approve text mentioning another student", async () => {
