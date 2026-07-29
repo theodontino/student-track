@@ -20,8 +20,21 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     await page.waitForTimeout(140);
     const preview = page.getByLabel(`${TEST_FIXTURE.students[0].name}档案预览`);
     await expect(preview).toBeVisible();
+    await preview.evaluate((element) => {
+      const recordExit = () => {
+        if (!element.classList.contains("is-exiting")) return false;
+        document.documentElement.dataset.studentPreviewExitObserved = "true";
+        return true;
+      };
+      if (recordExit()) return;
+      const observer = new MutationObserver(() => {
+        if (!recordExit()) return;
+        observer.disconnect();
+      });
+      observer.observe(element, { attributeFilter: ["class"] });
+    });
     await page.mouse.move(0, 0);
-    await expect(preview).toHaveClass(/is-exiting/, { timeout: 500 });
+    await expect(page.locator("html")).toHaveAttribute("data-student-preview-exit-observed", "true");
     await expect(preview).toHaveCount(0, { timeout: 700 });
     await row.click();
     await expect(page).toHaveURL(new RegExp(`/students/${TEST_FIXTURE.students[0].id}\\?semesterId=${TEST_FIXTURE.semester.id}`));
