@@ -1,6 +1,6 @@
 # WCG → Student Track 本地转交文件协议 v1
 
-本协议当前由 WCG（WeComCatch GUI）v0.4.0 与 Student Track v1.0.0-beta.3 共同维护；v1 字段、目录结构和原子写顺序保持不变。WCG
+本协议当前由 WCG（WeComCatch GUI）v0.4.0 与 Student Track v1.0.0 共同维护；v1 字段、目录结构和原子写顺序保持不变。WCG
 负责发布完成包，Student Track 负责扫描、校验、业务提取并写回安全回执。
 旧候选 HTTP、CLI 和手工 JSON 集成已移除；业务交接只有本文件协议。
 
