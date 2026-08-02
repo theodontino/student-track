@@ -1,0 +1,27 @@
+import { createHash } from "node:crypto";
+import {
+  validateCompositionForBundle,
+  type FeedbackAuditSnapshot,
+  type FeedbackCompositionPlan,
+  type FeedbackEvidenceBundle,
+} from "@/lib/feedback-plan";
+
+export function sha256(value: string) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+export function createAuditSnapshot(
+  composition: FeedbackCompositionPlan,
+  bundle: FeedbackEvidenceBundle,
+  taskIds?: Set<string>,
+  identity?: { studentName?: string; otherStudentNames?: string[] },
+): FeedbackAuditSnapshot {
+  const result = validateCompositionForBundle(composition, bundle, taskIds, identity);
+  return {
+    version: 1,
+    status: result.status,
+    items: result.issues,
+    textHash: sha256(composition.draftFeedback),
+    semanticReviewRequired: result.status !== "pass",
+  };
+}

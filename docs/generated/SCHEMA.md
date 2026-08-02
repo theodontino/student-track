@@ -36,6 +36,26 @@ erDiagram
     TEXT sourceKey UK
     DATETIME createdAt
   }
+  CommunicationPreference {
+    TEXT id PK
+    TEXT studentId UK,FK
+    TEXT preferenceSnapshot
+    TEXT sourceCandidateId UK,FK
+    DATETIME confirmedAt
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
+  CommunicationPreferenceCandidate {
+    TEXT id PK
+    TEXT studentId FK
+    TEXT sourceType
+    TEXT sourceId
+    TEXT preferenceSnapshot
+    TEXT evidenceSnapshot
+    TEXT status
+    DATETIME createdAt
+    DATETIME reviewedAt
+  }
   CommunicationRevision {
     TEXT id PK
     TEXT communicationId FK
@@ -73,6 +93,28 @@ erDiagram
     TEXT rawText
     DATETIME createdAt
   }
+  FeedbackAttachment {
+    TEXT id PK
+    TEXT planId FK
+    TEXT planItemId FK
+    TEXT displayName
+    TEXT mimeType
+    INTEGER sizeBytes
+    TEXT sha256
+    TEXT relativeLocator
+    TEXT status
+    DATETIME createdAt
+    DATETIME deletedAt
+  }
+  FeedbackExportRun {
+    TEXT id PK
+    TEXT planId FK
+    TEXT mode
+    TEXT itemManifest
+    TEXT manifestHash
+    BOOLEAN isRepeat
+    DATETIME createdAt
+  }
   FeedbackGenerationSelection {
     TEXT id PK
     TEXT sessionId FK
@@ -81,6 +123,41 @@ erDiagram
     DATETIME selectedAt
     DATETIME createdAt
     DATETIME updatedAt
+  }
+  FeedbackPlan {
+    TEXT id PK
+    TEXT type
+    TEXT purpose
+    TEXT status
+    TEXT semesterId FK
+    TEXT classId FK
+    TEXT sessionId FK
+    TEXT rangeStartSessionId FK
+    TEXT rangeEndSessionId FK
+    TEXT inputFingerprint
+    INTEGER planRevision
+    DATETIME createdAt
+    DATETIME updatedAt
+    DATETIME approvedAt
+    DATETIME exportedAt
+  }
+  FeedbackPlanItem {
+    TEXT id PK
+    TEXT planId FK
+    TEXT studentId FK
+    TEXT status
+    TEXT evidenceSnapshot
+    TEXT compositionSnapshot
+    TEXT auditSnapshot
+    TEXT finalText
+    TEXT finalTextHash
+    TEXT selectedGenerationId FK
+    TEXT reviewMode
+    INTEGER itemRevision
+    DATETIME createdAt
+    DATETIME updatedAt
+    DATETIME approvedAt
+    DATETIME exportedAt
   }
   GenerationRecord {
     TEXT id PK
@@ -101,6 +178,7 @@ erDiagram
     TEXT modelSettings
     TEXT inputRevision
     TEXT parentGenerationId FK
+    TEXT feedbackPlanItemId FK
     TEXT variantKey UK
     TEXT inputSnapshot
     TEXT outputSnapshot
@@ -213,6 +291,25 @@ erDiagram
     TEXT communicationId PK,FK
     TEXT relatedSessionId FK
     DATETIME createdAt
+  }
+  TeacherTask {
+    TEXT id PK
+    TEXT planId FK
+    TEXT planItemId FK
+    TEXT studentId FK
+    TEXT classId FK
+    TEXT action
+    TEXT promiseExcerpt
+    TEXT dueType
+    TEXT dueDate
+    TEXT dueSessionId FK
+    INTEGER estimatedMinutes
+    TEXT status
+    TEXT sourceHash
+    DATETIME createdAt
+    DATETIME approvedAt
+    DATETIME completedAt
+    DATETIME updatedAt
   }
   TeachingMemory {
     TEXT id PK
@@ -347,9 +444,15 @@ erDiagram
     DATETIME createdAt
   }
   Class o|--o{ ClassSession : "classId"
+  Class ||--o{ FeedbackPlan : "classId"
   Class ||--o{ Student : "classId"
+  Class ||--o{ TeacherTask : "classId"
+  ClassSession o|--o{ FeedbackPlan : "rangeEndSessionId"
+  ClassSession o|--o{ FeedbackPlan : "rangeStartSessionId"
+  ClassSession o|--o{ FeedbackPlan : "sessionId"
   ClassSession o|--o{ SessionMetric : "sessionId"
   ClassSession o|--o{ TeacherObservationSource : "relatedSessionId"
+  ClassSession o|--o{ TeacherTask : "dueSessionId"
   ClassSession ||--o{ Attendance : "sessionId"
   ClassSession ||--o{ Communication : "sessionId"
   ClassSession ||--o{ Event : "sessionId"
@@ -357,20 +460,34 @@ erDiagram
   Communication o|--o{ DraftRecord : "communicationId"
   Communication ||--o{ CommunicationRevision : "communicationId"
   Communication ||--o{ TeacherObservationSource : "communicationId"
+  CommunicationPreferenceCandidate o|--o| CommunicationPreference : "sourceCandidateId"
   DraftRecord o|--o{ CommunicationRevision : "draftId"
   DraftRecord o|--o{ DraftRecord : "supersedesDraftId"
+  FeedbackPlan ||--o{ FeedbackAttachment : "planId"
+  FeedbackPlan ||--o{ FeedbackExportRun : "planId"
+  FeedbackPlan ||--o{ FeedbackPlanItem : "planId"
+  FeedbackPlan ||--o{ TeacherTask : "planId"
+  FeedbackPlanItem o|--o{ FeedbackAttachment : "planItemId"
+  FeedbackPlanItem o|--o{ GenerationRecord : "feedbackPlanItemId"
+  FeedbackPlanItem o|--o{ TeacherTask : "planItemId"
+  GenerationRecord o|--o{ FeedbackPlanItem : "selectedGenerationId"
   GenerationRecord o|--o{ GenerationRecord : "parentGenerationId"
   GenerationRecord ||--o{ FeedbackGenerationSelection : "selectedGenerationId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ ClassSession : "semesterId"
+  Semester ||--o{ FeedbackPlan : "semesterId"
+  Student o|--o{ FeedbackPlanItem : "studentId"
+  Student o|--o{ TeacherTask : "studentId"
   Student o|--o{ WeComHandoffPackage : "selectedStudentId"
   Student ||--o{ Attendance : "studentId"
   Student ||--o{ Communication : "studentId"
+  Student ||--o{ CommunicationPreferenceCandidate : "studentId"
   Student ||--o{ Event : "studentId"
   Student ||--o{ FeedbackGenerationSelection : "studentId"
   Student ||--o{ SessionMetric : "studentId"
   Student ||--o{ StudentLabel : "studentId"
   Student ||--o{ TeacherObservation : "studentId"
+  Student ||--o| CommunicationPreference : "studentId"
   TeacherObservation ||--o{ TeacherObservationSource : "observationId"
   WeComHandoffPackage o|--o{ CommunicationRevision : "handoffPackageId"
   WeComHandoffPackage o|--o{ DraftRecord : "handoffPackageId"
@@ -429,6 +546,34 @@ erDiagram
 
 复合唯一约束：`studentId + sessionId + summary`。
 
+### CommunicationPreference
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `studentId` | `TEXT` | 是 | unique, FK |
+| `preferenceSnapshot` | `TEXT` | 是 | default: '{}' |
+| `sourceCandidateId` | `TEXT` | 否 | unique, FK |
+| `confirmedAt` | `DATETIME` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+
+### CommunicationPreferenceCandidate
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `studentId` | `TEXT` | 是 | FK |
+| `sourceType` | `TEXT` | 是 |  |
+| `sourceId` | `TEXT` | 否 |  |
+| `preferenceSnapshot` | `TEXT` | 是 | default: '{}' |
+| `evidenceSnapshot` | `TEXT` | 是 | default: '{}' |
+| `status` | `TEXT` | 是 | default: 'pending' |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `reviewedAt` | `DATETIME` | 否 |  |
+
+
 ### CommunicationRevision
 
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
@@ -480,6 +625,36 @@ erDiagram
 
 复合唯一约束：`studentId + sessionId + description`。
 
+### FeedbackAttachment
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `planId` | `TEXT` | 是 | FK |
+| `planItemId` | `TEXT` | 否 | FK |
+| `displayName` | `TEXT` | 是 |  |
+| `mimeType` | `TEXT` | 是 |  |
+| `sizeBytes` | `INTEGER` | 是 |  |
+| `sha256` | `TEXT` | 是 |  |
+| `relativeLocator` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 | default: 'available' |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `deletedAt` | `DATETIME` | 否 |  |
+
+
+### FeedbackExportRun
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `planId` | `TEXT` | 是 | FK |
+| `mode` | `TEXT` | 是 |  |
+| `itemManifest` | `TEXT` | 是 | default: '[]' |
+| `manifestHash` | `TEXT` | 是 |  |
+| `isRepeat` | `BOOLEAN` | 是 | default: false |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+
 ### FeedbackGenerationSelection
 
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
@@ -493,6 +668,50 @@ erDiagram
 | `updatedAt` | `DATETIME` | 是 |  |
 
 复合唯一约束：`sessionId + studentId`。
+
+### FeedbackPlan
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `type` | `TEXT` | 是 |  |
+| `purpose` | `TEXT` | 是 |  |
+| `status` | `TEXT` | 是 | default: 'draft' |
+| `semesterId` | `TEXT` | 是 | FK |
+| `classId` | `TEXT` | 是 | FK |
+| `sessionId` | `TEXT` | 否 | FK |
+| `rangeStartSessionId` | `TEXT` | 否 | FK |
+| `rangeEndSessionId` | `TEXT` | 否 | FK |
+| `inputFingerprint` | `TEXT` | 是 |  |
+| `planRevision` | `INTEGER` | 是 | default: 1 |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+| `approvedAt` | `DATETIME` | 否 |  |
+| `exportedAt` | `DATETIME` | 否 |  |
+
+
+### FeedbackPlanItem
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `planId` | `TEXT` | 是 | FK |
+| `studentId` | `TEXT` | 否 | FK |
+| `status` | `TEXT` | 是 | default: 'evidence_ready' |
+| `evidenceSnapshot` | `TEXT` | 是 | default: '{}' |
+| `compositionSnapshot` | `TEXT` | 是 | default: '{}' |
+| `auditSnapshot` | `TEXT` | 是 | default: '{}' |
+| `finalText` | `TEXT` | 否 |  |
+| `finalTextHash` | `TEXT` | 否 |  |
+| `selectedGenerationId` | `TEXT` | 否 | FK |
+| `reviewMode` | `TEXT` | 是 | default: 'model' |
+| `itemRevision` | `INTEGER` | 是 | default: 1 |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+| `approvedAt` | `DATETIME` | 否 |  |
+| `exportedAt` | `DATETIME` | 否 |  |
+
+复合唯一约束：`planId + studentId`。
 
 ### GenerationRecord
 
@@ -516,6 +735,7 @@ erDiagram
 | `modelSettings` | `TEXT` | 是 | default: '{}' |
 | `inputRevision` | `TEXT` | 否 |  |
 | `parentGenerationId` | `TEXT` | 否 | FK |
+| `feedbackPlanItemId` | `TEXT` | 否 | FK |
 | `variantKey` | `TEXT` | 否 | unique |
 | `inputSnapshot` | `TEXT` | 否 |  |
 | `outputSnapshot` | `TEXT` | 否 |  |
@@ -674,6 +894,29 @@ erDiagram
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 复合唯一约束：`observationId + communicationId`。
+
+### TeacherTask
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `planId` | `TEXT` | 是 | FK |
+| `planItemId` | `TEXT` | 否 | FK |
+| `studentId` | `TEXT` | 否 | FK |
+| `classId` | `TEXT` | 是 | FK |
+| `action` | `TEXT` | 是 |  |
+| `promiseExcerpt` | `TEXT` | 否 |  |
+| `dueType` | `TEXT` | 是 |  |
+| `dueDate` | `TEXT` | 否 |  |
+| `dueSessionId` | `TEXT` | 否 | FK |
+| `estimatedMinutes` | `INTEGER` | 否 |  |
+| `status` | `TEXT` | 是 | default: 'pending' |
+| `sourceHash` | `TEXT` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `approvedAt` | `DATETIME` | 否 |  |
+| `completedAt` | `DATETIME` | 否 |  |
+| `updatedAt` | `DATETIME` | 是 |  |
+
 
 ### TeachingMemory
 

@@ -143,12 +143,29 @@ describe("feedback version service", () => {
         sourceGenerationId,
       }],
     });
+    const changedExpression = await regenerateFeedbackVersions({
+      profileId: secondProfileId,
+      items: [{
+        studentId: TEST_FIXTURE.students[0].id,
+        sourceGenerationId,
+        style: "professional",
+        length: "short",
+      }],
+    });
     expect(first.results[0]).toMatchObject({ status: "created" });
     expect(second.results[0]).toMatchObject({
       status: "existing",
       generationId: first.results[0]?.generationId,
     });
-    expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
+    expect(changedExpression.results[0]).toMatchObject({ status: "created" });
+    const changedRecord = await prisma.generationRecord.findUniqueOrThrow({
+      where: { id: String(changedExpression.results[0]?.generationId) },
+    });
+    expect(JSON.parse(changedRecord.inputSnapshot ?? "{}")).toMatchObject({
+      style: "professional",
+      length: "short",
+    });
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(2);
     expect(getLLMSettingsStore().activeProfileId).toBe(firstProfileId);
 
     const newerSingleHistory = await prisma.workHistory.create({

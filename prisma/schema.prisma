@@ -33,6 +33,8 @@ model Class {
 
   students Student[]
   sessions ClassSession[]
+  feedbackPlans FeedbackPlan[]
+  teacherTasks TeacherTask[]
 }
 
 // 0b. 标签表（v0.13: 从 JSON 迁移为关联表）
@@ -76,6 +78,10 @@ model Student {
   teacherObservations TeacherObservation[]
   weComHandoffPackages WeComHandoffPackage[]
   feedbackGenerationSelections FeedbackGenerationSelection[]
+  feedbackPlanItems FeedbackPlanItem[]
+  teacherTasks TeacherTask[]
+  communicationPreference CommunicationPreference?
+  communicationPreferenceCandidates CommunicationPreferenceCandidate[]
 
   @@index([rosterStatus, classId])
 }
@@ -292,6 +298,7 @@ model Semester {
   createdAt DateTime @default(now())
 
   sessions ClassSession[]
+  feedbackPlans FeedbackPlan[]
 }
 
 // 7. 课次记录（v0.2 重构：编码体系 + 班级 + 学期序号）
@@ -312,6 +319,10 @@ model ClassSession {
   communications  Communication[]
   observationSources TeacherObservationSource[]
   feedbackGenerationSelections FeedbackGenerationSelection[]
+  feedbackPlans FeedbackPlan[] @relation("FeedbackPlanSession")
+  feedbackPlanRangeStarts FeedbackPlan[] @relation("FeedbackPlanRangeStart")
+  feedbackPlanRangeEnds FeedbackPlan[] @relation("FeedbackPlanRangeEnd")
+  teacherTasks TeacherTask[] @relation("TeacherTaskDueSession")
 }
 
 // 9. 系统操作日志（v0.11）
@@ -430,6 +441,7 @@ model GenerationRecord {
   modelSettings     String   @default("{}") // JSON；不保存 endpoint 或凭据
   inputRevision     String?
   parentGenerationId String?
+  feedbackPlanItemId String?
   variantKey        String?  @unique
   inputSnapshot     String?  // JSON；仅热数据
   outputSnapshot    String?  // JSON；仅热数据
@@ -446,6 +458,8 @@ model GenerationRecord {
   parentGeneration  GenerationRecord?  @relation("GenerationVariants", fields: [parentGenerationId], references: [id], onDelete: SetNull)
   derivedGenerations GenerationRecord[] @relation("GenerationVariants")
   feedbackSelections FeedbackGenerationSelection[]
+  feedbackPlanItem   FeedbackPlanItem? @relation("FeedbackPlanItemGenerations", fields: [feedbackPlanItemId], references: [id], onDelete: SetNull)
+  selectedPlanItems  FeedbackPlanItem[] @relation("FeedbackPlanItemSelectedGeneration")
 
   @@index([lifecycle, generatedAt])
   @@index([semesterId, classId, sessionId])
@@ -453,6 +467,7 @@ model GenerationRecord {
   @@index([taskType, generatedAt])
   @@index([parentGenerationId])
   @@index([inputRevision])
+  @@index([feedbackPlanItemId])
 }
 
 // 12c. 当前采用的反馈版本。派生版本只有教师显式选择后才进入导出。
@@ -473,7 +488,166 @@ model FeedbackGenerationSelection {
   @@index([selectedGenerationId])
 }
 
-// 12d. 面向后续教学的受控记忆。semesterKey 为学期 ID 或 "long-term"，避免 nullable 唯一键歧义。
+// 12d. 反馈计划：统一承载班级公共、事件微反馈、阶段趋势和结课教学总结。
+// 业务快照使用版本化 JSON，最终批准文本和导出状态独立于模型原始输出。
+model FeedbackPlan {
+  id                  String   @id @default(cuid())
+  type                String   // "class_update" | "event_micro" | "stage_trend" | "course_end"
+  purpose             String
+  status              String   @default("draft")
+  semesterId          String
+  classId             String
+  sessionId           String?
+  rangeStartSessionId String?
+  rangeEndSessionId   String?
+  inputFingerprint    String
+  planRevision        Int      @default(1)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  approvedAt          DateTime?
+  exportedAt          DateTime?
+
+  semester          Semester      @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  class             Class          @relation(fields: [classId], references: [id], onDelete: Cascade)
+  session           ClassSession? @relation("FeedbackPlanSession", fields: [sessionId], references: [id], onDelete: SetNull)
+  rangeStartSession ClassSession? @relation("FeedbackPlanRangeStart", fields: [rangeStartSessionId], references: [id], onDelete: SetNull)
+  rangeEndSession   ClassSession? @relation("FeedbackPlanRangeEnd", fields: [rangeEndSessionId], references: [id], onDelete: SetNull)
+  items             FeedbackPlanItem[]
+  tasks             TeacherTask[]
+  attachments       FeedbackAttachment[]
+  exportRuns        FeedbackExportRun[]
+
+  @@index([classId, semesterId, type, createdAt])
+  @@index([status, updatedAt])
+}
+
+model FeedbackPlanItem {
+  id                   String   @id @default(cuid())
+  planId               String
+  studentId            String?
+  status               String   @default("evidence_ready")
+  evidenceSnapshot     String   @default("{}")
+  compositionSnapshot  String   @default("{}")
+  auditSnapshot        String   @default("{}")
+  finalText            String?
+  finalTextHash        String?
+  selectedGenerationId String?
+  reviewMode           String   @default("model") // "model" | "teacher_edited"
+  itemRevision         Int      @default(1)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  approvedAt           DateTime?
+  exportedAt           DateTime?
+
+  plan              FeedbackPlan       @relation(fields: [planId], references: [id], onDelete: Cascade)
+  student           Student?           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  selectedGeneration GenerationRecord? @relation("FeedbackPlanItemSelectedGeneration", fields: [selectedGenerationId], references: [id], onDelete: SetNull)
+  generations       GenerationRecord[] @relation("FeedbackPlanItemGenerations")
+  tasks             TeacherTask[]
+  attachments       FeedbackAttachment[]
+
+  @@unique([planId, studentId])
+  @@index([studentId, status])
+  @@index([selectedGenerationId])
+}
+
+model TeacherTask {
+  id               String   @id @default(cuid())
+  planId           String
+  planItemId       String?
+  studentId        String?
+  classId          String
+  action           String
+  promiseExcerpt   String?
+  dueType          String   // "date" | "session"
+  dueDate          String?
+  dueSessionId     String?
+  estimatedMinutes Int?
+  status           String   @default("pending")
+  sourceHash       String?
+  createdAt        DateTime @default(now())
+  approvedAt       DateTime?
+  completedAt      DateTime?
+  updatedAt        DateTime @updatedAt
+
+  plan       FeedbackPlan       @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planItem   FeedbackPlanItem?  @relation(fields: [planItemId], references: [id], onDelete: SetNull)
+  student    Student?           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  class      Class              @relation(fields: [classId], references: [id], onDelete: Cascade)
+  dueSession ClassSession?      @relation("TeacherTaskDueSession", fields: [dueSessionId], references: [id], onDelete: SetNull)
+
+  @@index([status, dueDate])
+  @@index([status, dueSessionId])
+  @@index([studentId, status])
+}
+
+model CommunicationPreference {
+  id                 String   @id @default(cuid())
+  studentId          String   @unique
+  preferenceSnapshot String   @default("{}")
+  sourceCandidateId  String?  @unique
+  confirmedAt        DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  student         Student                           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sourceCandidate CommunicationPreferenceCandidate? @relation("PreferenceSourceCandidate", fields: [sourceCandidateId], references: [id], onDelete: SetNull)
+
+  @@index([updatedAt])
+}
+
+model CommunicationPreferenceCandidate {
+  id                 String   @id @default(cuid())
+  studentId          String
+  sourceType         String   // "communication" | "teacher"
+  sourceId           String?
+  preferenceSnapshot String   @default("{}")
+  evidenceSnapshot   String   @default("{}")
+  status             String   @default("pending")
+  createdAt          DateTime @default(now())
+  reviewedAt         DateTime?
+
+  student          Student                   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  activePreference CommunicationPreference? @relation("PreferenceSourceCandidate")
+
+  @@index([studentId, status, createdAt])
+}
+
+model FeedbackAttachment {
+  id              String   @id @default(cuid())
+  planId          String
+  planItemId      String?
+  displayName     String
+  mimeType        String
+  sizeBytes       Int
+  sha256          String
+  relativeLocator String
+  status          String   @default("available") // "available" | "missing" | "deleted"
+  createdAt       DateTime @default(now())
+  deletedAt       DateTime?
+
+  plan     FeedbackPlan       @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planItem FeedbackPlanItem?  @relation(fields: [planItemId], references: [id], onDelete: SetNull)
+
+  @@index([planId, status])
+  @@index([sha256])
+}
+
+model FeedbackExportRun {
+  id           String   @id @default(cuid())
+  planId       String
+  mode         String   // "complete" | "approved_only"
+  itemManifest String   @default("[]")
+  manifestHash String
+  isRepeat     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  plan FeedbackPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId, createdAt])
+}
+
+// 12e. 面向后续教学的受控记忆。semesterKey 为学期 ID 或 "long-term"，避免 nullable 唯一键歧义。
 model TeachingMemory {
   id                String   @id @default(cuid())
   scopeType         String   // "student" | "class"

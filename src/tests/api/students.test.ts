@@ -33,7 +33,8 @@ describe("/api/students", () => {
     const res = await GET(req);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body[0].semesterSummary).toMatchObject({
+    const fixtureStudent = body.find((student: { id: string }) => student.id === TEST_FIXTURE.students[0].id);
+    expect(fixtureStudent?.semesterSummary).toMatchObject({
       semester: { id: "test-semester-1" },
       averageA: 3,
       averageB: 3,

@@ -2,7 +2,7 @@
 
 import { Badge, Button, EmptyState, Select, StatusBanner } from "@/components/ui";
 import { DIM_LABEL } from "@/lib/constants";
-import type { DraftReviewResult, DraftStudent, DraftStructuredResult, ScoreDimension } from "@/lib/types";
+import type { DraftReviewResult, DraftStudent, DraftStructuredResult, ScoreDimension, TeacherIntervention } from "@/lib/types";
 
 const DIMENSIONS: ScoreDimension[] = ["A", "B", "C"];
 
@@ -52,10 +52,30 @@ interface DraftStudentCardProps {
   onAttendanceChange?: (present: boolean) => void;
   onScoreChange?: (dimension: ScoreDimension, value: number | null) => void;
   onRemoveEvent?: (index: number) => void;
+  onInterventionsChange?: (interventions: TeacherIntervention[]) => void;
 }
 
-export function DraftStudentCard({ student, review, onAttendanceChange, onScoreChange, onRemoveEvent }: DraftStudentCardProps) {
-  const editable = Boolean(onAttendanceChange || onScoreChange || onRemoveEvent);
+function InterventionEditor({ intervention, editable, onChange, onRemove }: {
+  intervention: TeacherIntervention;
+  editable: boolean;
+  onChange?: (value: TeacherIntervention) => void;
+  onRemove?: () => void;
+}) {
+  if (!editable || !onChange) {
+    return <div className="entry-intervention"><strong>教师处理</strong><span>发现：{intervention.observedProblem}</span><span>处理：{intervention.teacherAction}</span>{intervention.outcome && <span>结果：{intervention.outcome}</span>}<small>证据：{intervention.evidenceText}</small></div>;
+  }
+  return <div className="entry-intervention entry-intervention--editable">
+    <label>发现的问题<input value={intervention.observedProblem} onChange={(event) => onChange({ ...intervention, observedProblem: event.target.value })} /></label>
+    <label>教师处理<input value={intervention.teacherAction} onChange={(event) => onChange({ ...intervention, teacherAction: event.target.value })} /></label>
+    <label>处理结果<input value={intervention.outcome ?? ""} onChange={(event) => onChange({ ...intervention, outcome: event.target.value })} /></label>
+    <label>原文证据<textarea value={intervention.evidenceText} onChange={(event) => onChange({ ...intervention, evidenceText: event.target.value })} /></label>
+    {onRemove && <Button variant="secondary" uiSize="sm" onClick={onRemove}>删除教师处理</Button>}
+  </div>;
+}
+
+export function DraftStudentCard({ student, review, onAttendanceChange, onScoreChange, onRemoveEvent, onInterventionsChange }: DraftStudentCardProps) {
+  const editable = Boolean(onAttendanceChange || onScoreChange || onRemoveEvent || onInterventionsChange);
+  const interventions = student.teacherInterventions ?? [];
   return (
     <article className={`entry-draft-student ${review ? "has-review" : ""}`}>
       <header>
@@ -71,6 +91,8 @@ export function DraftStudentCard({ student, review, onAttendanceChange, onScoreC
       </div>
       {student.events.length > 0 && <div className="entry-events"><span>事件</span><div>{student.events.map((event, index) => <Badge key={`${event}-${index}`} tone="info">{event}{editable && onRemoveEvent ? <button type="button" aria-label={`删除事件 ${event}`} onClick={() => onRemoveEvent(index)}>×</button> : null}</Badge>)}</div></div>}
       {student.communication && <div className="entry-communication"><strong>家校沟通 · {student.communication.type}</strong><p>{student.communication.summary}</p></div>}
+      {interventions.length > 0 && <div className="entry-interventions"><strong>已识别的教师处理（请确认）</strong>{interventions.map((intervention, index) => <InterventionEditor key={`${intervention.evidenceText}-${index}`} intervention={intervention} editable={editable} onChange={onInterventionsChange ? (value) => onInterventionsChange(interventions.map((item, itemIndex) => itemIndex === index ? value : item)) : undefined} onRemove={onInterventionsChange ? () => onInterventionsChange(interventions.filter((_, itemIndex) => itemIndex !== index)) : undefined} />)}</div>}
+      {editable && onInterventionsChange && <Button variant="secondary" uiSize="sm" onClick={() => onInterventionsChange([...interventions, { observedProblem: "", teacherAction: "", outcome: "", evidenceText: "" }])}>+ 补充教师处理证据</Button>}
     </article>
   );
 }
@@ -84,13 +106,14 @@ export function ParseResultPreview({ result }: { result: DraftStructuredResult }
   );
 }
 
-export function DraftReviewEditor({ result, review, processing, onScoreChange, onAttendanceChange, onRemoveEvent, onReject, onConfirm }: {
+export function DraftReviewEditor({ result, review, processing, onScoreChange, onAttendanceChange, onRemoveEvent, onInterventionsChange, onReject, onConfirm }: {
   result: DraftStructuredResult;
   review: DraftReviewResult | null;
   processing: boolean;
   onScoreChange: (studentIndex: number, dimension: ScoreDimension, value: number | null) => void;
   onAttendanceChange: (studentIndex: number, present: boolean) => void;
   onRemoveEvent: (studentIndex: number, eventIndex: number) => void;
+  onInterventionsChange?: (studentIndex: number, interventions: TeacherIntervention[]) => void;
   onReject: () => void;
   onConfirm: () => void;
 }) {
@@ -101,7 +124,7 @@ export function DraftReviewEditor({ result, review, processing, onScoreChange, o
         const revisedScores = review?.revised_scores?.[student.name];
         const revisedEvents = review?.revised_events?.[student.name];
         const suggestion = revisedScores || revisedEvents ? { revisedScores, revisedEvents } : null;
-        return <DraftStudentCard key={`${student.name}-${studentIndex}`} student={student} review={suggestion} onAttendanceChange={(present) => onAttendanceChange(studentIndex, present)} onScoreChange={(dimension, value) => onScoreChange(studentIndex, dimension, value)} onRemoveEvent={(eventIndex) => onRemoveEvent(studentIndex, eventIndex)} />;
+        return <DraftStudentCard key={`${student.name}-${studentIndex}`} student={student} review={suggestion} onAttendanceChange={(present) => onAttendanceChange(studentIndex, present)} onScoreChange={(dimension, value) => onScoreChange(studentIndex, dimension, value)} onRemoveEvent={(eventIndex) => onRemoveEvent(studentIndex, eventIndex)} onInterventionsChange={onInterventionsChange ? (interventions) => onInterventionsChange(studentIndex, interventions) : undefined} />;
       })}
       {result.alert_suggestion && <StatusBanner tone="danger"><strong>关注建议：</strong>{result.alert_suggestion}</StatusBanner>}
       <div className="entry-review-actions">

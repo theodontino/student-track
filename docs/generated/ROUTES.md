@@ -19,6 +19,10 @@
 | `/api/report/daily` | `POST` |
 | `/api/report/feedback-batch` | `GET`, `POST` |
 | `/api/report/feedback-context` | `GET` |
+| `/api/report/feedback-plans/[id]/attachments` | `DELETE`, `POST` |
+| `/api/report/feedback-plans/[id]` | `DELETE`, `GET`, `PATCH`, `POST` |
+| `/api/report/feedback-plans` | `GET`, `POST` |
+| `/api/report/feedback-plans/task/[id]` | `PATCH` |
 | `/api/report/feedback-versions/profiles` | `GET` |
 | `/api/report/feedback-versions/regenerate` | `POST` |
 | `/api/report/feedback-versions` | `GET` |
@@ -31,6 +35,8 @@
 | `/api/semesters` | `GET`, `POST` |
 | `/api/sessions` | `GET` |
 | `/api/settings/llm` | `DELETE`, `GET`, `PATCH`, `POST`, `PUT` |
+| `/api/students/[id]/communication-preference/candidates/[candidateId]` | `PATCH` |
+| `/api/students/[id]/communication-preference` | `GET`, `POST` |
 | `/api/students/[id]/history` | `GET` |
 | `/api/students/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/students/[id]/status` | `PATCH` |
@@ -42,6 +48,7 @@
 | `/api/system/logs` | `GET` |
 | `/api/teacher-observations/[id]` | `PATCH` |
 | `/api/teacher-observations` | `GET` |
+| `/api/teacher-tasks` | `GET` |
 | `/api/teaching-memory` | `GET`, `PATCH`, `POST` |
 | `/api/wecom/handoff/[id]` | `GET`, `PATCH` |
 | `/api/wecom/handoff/batch-retry` | `POST` |

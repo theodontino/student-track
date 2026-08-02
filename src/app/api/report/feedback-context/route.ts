@@ -10,7 +10,12 @@ export async function GET(request: NextRequest) {
     const sessionCode = searchParams.get("sessionCode");
     if (!sessionCode) return NextResponse.json({ error: "缺少课次编码" }, { status: 400 });
 
-    const context = await buildFeedbackContext(prisma, sessionCode);
+    const sessionIds = (searchParams.get("sessionIds") ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 100);
+    const context = await buildFeedbackContext(prisma, sessionCode, sessionIds.length ? { sessionIds } : undefined);
     const routing = await buildFeedbackRouting(prisma, context);
     return NextResponse.json({ ...context, routing });
   } catch (error: any) {

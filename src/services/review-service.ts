@@ -1,14 +1,17 @@
 import { createHash } from "node:crypto";
 import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
 import { normalizeAttentionSignalCandidates } from "@/lib/attention-labels";
+import { inferCommunicationPreferenceCandidate } from "@/lib/communication-preference";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
 import type { ParseResult, ParsedStudent } from "@/lib/parser";
+import type { TeacherIntervention } from "@/lib/types";
 import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { addHighConfidenceAttentionLabels } from "@/services/student-label-service";
 import { adoptGenerationByOperationKey, compactHotGenerationRecordsForClass } from "@/services/generation-memory-service";
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 
 type ReviewAction = "confirm" | "reject";
 
@@ -27,6 +30,26 @@ function normalizeOptionalScore(value: unknown): number | null {
   const score = normalizeDimensionScore(value);
   if (score === null) throw new ServiceError("评分必须是有效数字", 400);
   return score;
+}
+
+function normalizeTeacherInterventions(value: unknown): TeacherIntervention[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const observedProblem = typeof item.observedProblem === "string" ? item.observedProblem.trim() : "";
+    const teacherAction = typeof item.teacherAction === "string" ? item.teacherAction.trim() : "";
+    const evidenceText = typeof item.evidenceText === "string" ? item.evidenceText.trim() : "";
+    const outcome = typeof item.outcome === "string" ? item.outcome.trim() : "";
+    if (!observedProblem || !teacherAction || !evidenceText) return [];
+    return [{ observedProblem, teacherAction, ...(outcome ? { outcome } : {}), evidenceText }];
+  });
+  const seen = new Set<string>();
+  return normalized.filter((item) => {
+    const key = `${item.observedProblem}\u0000${item.teacherAction}\u0000${item.evidenceText}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 20);
 }
 
 function normalizeStudent(value: unknown): ParsedStudent {
@@ -66,6 +89,9 @@ function normalizeStudent(value: unknown): ParsedStudent {
     events,
     communication,
     attentionSignals: normalizeAttentionSignalCandidates(value.attentionSignals),
+    ...(normalizeTeacherInterventions(value.teacherInterventions).length > 0
+      ? { teacherInterventions: normalizeTeacherInterventions(value.teacherInterventions) }
+      : {}),
     ...(typeof value.present === "boolean" ? { present: value.present } : {}),
   };
 }
@@ -350,6 +376,38 @@ export async function processDraftReview(input: ProcessDraftInput) {
         }
       }
 
+      if (parsedStudent.teacherInterventions?.length) {
+        if (!session) {
+          warnings.push(`${student.name} 的教师处理记录因无课次关联被跳过`);
+        } else {
+          for (const intervention of parsedStudent.teacherInterventions) {
+            const description = [
+              `观察问题：${intervention.observedProblem}`,
+              `教师处理：${intervention.teacherAction}`,
+              intervention.outcome ? `处理结果：${intervention.outcome}` : "",
+              `证据：${intervention.evidenceText}`,
+            ].filter(Boolean).join("；");
+            await tx.event.upsert({
+              where: {
+                studentId_sessionId_description: {
+                  studentId: student.id,
+                  sessionId: session.id,
+                  description,
+                },
+              },
+              create: {
+                studentId: student.id,
+                sessionId: session.id,
+                type: "教师处理",
+                description,
+                rawText: draft.rawText,
+              },
+              update: {},
+            });
+          }
+        }
+      }
+
       if (parsedStudent.communication) {
         if (!session) {
           warnings.push(`${student.name} 的家校沟通记录因无课次关联被跳过`);
@@ -388,6 +446,24 @@ export async function processDraftReview(input: ProcessDraftInput) {
             });
             confirmedCommunicationId = communication.id;
           }
+          const preferenceCandidate = inferCommunicationPreferenceCandidate(summary);
+          if (preferenceCandidate && confirmedCommunicationId) {
+            const existingCandidate = await tx.communicationPreferenceCandidate.findFirst({
+              where: { sourceType: "communication", sourceId: confirmedCommunicationId },
+              select: { id: true },
+            });
+            if (!existingCandidate) {
+              await tx.communicationPreferenceCandidate.create({
+                data: {
+                  studentId: student.id,
+                  sourceType: "communication",
+                  sourceId: confirmedCommunicationId,
+                  preferenceSnapshot: JSON.stringify(preferenceCandidate.preference),
+                  evidenceSnapshot: JSON.stringify({ signals: preferenceCandidate.signals }),
+                },
+              });
+            }
+          }
         }
       }
     }
@@ -400,6 +476,12 @@ export async function processDraftReview(input: ProcessDraftInput) {
         targetSessionId: session.id,
         targetDate: session.date,
         createMissingForTargetSession: false,
+      }, tx);
+      await invalidateFeedbackPlans({
+        classId: session.classId ?? undefined,
+        semesterId: session.semesterId,
+        sessionId: session.id,
+        studentIds: affectedStudentIds,
       }, tx);
     }
 

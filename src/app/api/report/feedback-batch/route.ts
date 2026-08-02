@@ -32,10 +32,13 @@ export async function GET(request: NextRequest) {
       throw new ApiError("无效的历史模块", 400, "invalid_request", false);
     }
     const buffer = await buildFeedbackBatchExport(sessionCode, historyModule);
-    return new Response(buffer as BodyInit, {
+    const body = Buffer.from(buffer);
+    return new Response(body, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="feedback_${sessionCode}.xlsx"`,
+        "Content-Length": String(body.byteLength),
+        "Cache-Control": "no-store",
       },
     });
   } catch (error) {

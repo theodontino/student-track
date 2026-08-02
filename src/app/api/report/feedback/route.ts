@@ -194,6 +194,8 @@ export async function POST(request: NextRequest) {
                 reasoningEnabled: settings.reasoningEnabled ?? false,
                 reasoningEffort: settings.reasoningEffort ?? null,
                 profileUpdatedAt: settings.updatedAt ?? null,
+                style: outputStrategy.style,
+                length: outputStrategy.length,
               })).digest("hex");
               await recordSuccessfulGeneration({
                 taskType: "feedback", stage,

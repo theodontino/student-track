@@ -46,6 +46,8 @@ export function feedbackVariantKey(input: {
   profile: SafeLLMProfileSummary;
   promptVersion: string;
   inputRevision: string;
+  style?: FeedbackStyle;
+  length?: FeedbackLength;
 }) {
   return createHash("sha256").update(stableJson(input)).digest("hex");
 }
@@ -166,7 +168,12 @@ export async function listFeedbackVersions(input: {
 
 export async function regenerateFeedbackVersions(input: {
   profileId: string;
-  items: Array<{ studentId: string; sourceGenerationId: string }>;
+  items: Array<{
+    studentId: string;
+    sourceGenerationId: string;
+    style?: FeedbackStyle;
+    length?: FeedbackLength;
+  }>;
 }, db: PrismaClient = prisma) {
   const profile = getSafeLLMProfileSummary(input.profileId);
   const results = [];
@@ -208,6 +215,8 @@ export async function regenerateFeedbackVersions(input: {
         profile,
         promptVersion: source.promptVersion,
         inputRevision: source.inputRevision,
+        style: item.style ?? replay.style,
+        length: item.length ?? replay.length,
       });
       const existing = await db.generationRecord.findUnique({ where: { variantKey } });
       if (existing) {
@@ -216,13 +225,18 @@ export async function regenerateFeedbackVersions(input: {
       }
       const client = createLLMClient("feedbackReview", input.profileId);
       const model = getLLMModel("feedbackReview", input.profileId);
+      const replayWithExpression: FeedbackReplaySnapshot = {
+        ...replay,
+        style: item.style ?? replay.style,
+        length: item.length ?? replay.length,
+      };
       const generated = source.stage === "routine"
         ? await generateRoutineFeedback({
             studentName: replay.studentName,
             promptContext: replay.promptContext,
             forbiddenStudentNames: replay.forbiddenStudentNames,
-            style: replay.style,
-            length: replay.length,
+            style: replayWithExpression.style,
+            length: replayWithExpression.length,
             profileId: input.profileId,
             client,
             model,
@@ -231,8 +245,8 @@ export async function regenerateFeedbackVersions(input: {
             studentName: replay.studentName,
             promptContext: replay.promptContext,
             forbiddenStudentNames: replay.forbiddenStudentNames,
-            style: replay.style,
-            length: replay.length,
+            style: replayWithExpression.style,
+            length: replayWithExpression.length,
             profileId: input.profileId,
             draftClient: createLLMClient("feedbackDraft", input.profileId),
             draftModel: getLLMModel("feedbackDraft", input.profileId),
@@ -257,7 +271,7 @@ export async function regenerateFeedbackVersions(input: {
         parentGenerationId: source.id,
         variantKey,
         selectIfFirst: false,
-        inputSnapshot: replay,
+        inputSnapshot: replayWithExpression,
         outputSnapshot: {
           reviewStatus: generated.reviewStatus,
           reviewIssues: generated.reviewIssues,

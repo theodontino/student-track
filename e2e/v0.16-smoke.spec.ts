@@ -170,178 +170,41 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await expect(page.getByText("已采用 1 份报告", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-    await page.getByRole("button", { name: "鼓励型" }).click();
-    await page.getByRole("button", { name: "短（60–89 字符）" }).click();
-    await page.getByRole("button", { name: "轻量反馈" }).click();
-    await page.getByRole("button", { name: "生成班级反馈" }).click();
-    await expect.poll(() => feedbackRequests.length).toBe(1);
-    expect(feedbackRequests[0]).toMatchObject({
-      outputStrategy: {
-        style: "encouraging",
-        length: "short",
-        suggestedFeedback: true,
-      },
-    });
-    await expect(page.getByText("已按本次反馈强度生成家长话术，请逐条检查后再导出。", { exact: true })).toBeVisible();
-    await expect(page.getByText(`模拟反馈：${TEST_FIXTURE.students[0].name}本节课表现稳定。`, { exact: true })).toBeVisible();
-
-    await page.getByRole("button", { name: "重新生成" }).click();
-    await expect(page.getByText("旧批次已从当前工作区移除；下一次生成将使用当前模型重新处理。", { exact: true })).toBeVisible();
-    await expect(page.getByText(`模拟反馈：${TEST_FIXTURE.students[0].name}本节课表现稳定。`, { exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "生成班级反馈" }).click();
-    await expect.poll(() => feedbackRequests.length).toBe(2);
-    expect(feedbackRequests[1]).toMatchObject({ bypassCache: true });
-    expect(feedbackRequests[1]).toMatchObject({
-      lessonMaterial: expect.objectContaining({ lessonTitle: "示例课程" }),
-      assessmentEvidence: {
-        [TEST_FIXTURE.students[0].id]: expect.objectContaining({ correctRate: 80 }),
-      },
-    });
+    await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "温和" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "历史", exact: true }).click();
     const historyRow = page.getByText(TEST_FIXTURE.feedbackHistory.title, { exact: true }).locator("..").locator("..");
     await historyRow.getByRole("button", { name: "恢复" }).click();
     await expect(page.getByText("已恢复历史反馈结果。", { exact: true })).toBeVisible();
+    await expect(page.getByText("历史兼容流程：当前内容来自旧批量反馈记录，仅用于恢复、检查和兼容导出。", { exact: true })).toBeVisible();
     await expect(page.getByText(`历史恢复反馈：${TEST_FIXTURE.students[0].name}表现稳定。`, { exact: true })).toBeVisible();
     expect(externalRequests).toEqual([]);
   });
 
-  test("feedback generation can be cancelled without showing a failure state", async ({ page }) => {
-    let releaseRequest: () => void = () => undefined;
-    const heldRequest = new Promise<void>((resolve) => {
-      releaseRequest = resolve;
-    });
-    await page.route("**/api/report/feedback-batch", async (route) => {
-      if (route.request().method() !== "POST") {
-        await route.continue();
-        return;
-      }
-      await heldRequest;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          kind: "batch",
-          semesterId: TEST_FIXTURE.semester.id,
-          sessionCode: TEST_FIXTURE.sessions[0].code,
-          className: TEST_FIXTURE.class.name,
-          total: TEST_FIXTURE.students.length,
-          cached: false,
-          students: TEST_FIXTURE.students.map((student) => ({
-            id: student.id,
-            name: student.name,
-            labels: [],
-            feedback: "",
-          })),
-        }),
-      }).catch(() => undefined);
-    });
-
+  test("new feedback plans replace the legacy batch controls in a normal workflow", async ({ page }) => {
+    const externalRequests = await blockExternalRequests(page);
     await page.goto("/feedback");
     await page.locator("select").nth(0).selectOption(TEST_FIXTURE.semester.id);
     await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
     await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
     await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-    await page.getByRole("button", { name: "生成班级反馈" }).click();
-    const stopButton = page.getByRole("button", { name: "停止生成" });
-    await expect(stopButton).toHaveClass(/ui-button--warning/);
-    await stopButton.click();
-    await expect(page.getByText("已取消本次反馈生成。", { exact: true })).toBeVisible();
-    await expect(page.getByText("批量生成失败", { exact: true })).toHaveCount(0);
-    releaseRequest();
+    await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "生成班级反馈" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
+    expect(externalRequests).toEqual([]);
   });
 
-  test("an interrupted feedback batch restores safely, saves partially, and resumes only unfinished students", async ({ page }) => {
-    const partialSaves: Array<Record<string, unknown>> = [];
-    const resumedStudents: string[] = [];
-    await page.route("**/api/report/feedback-batch", async (route) => {
-      const body = route.request().postDataJSON() as Record<string, unknown>;
-      if (body.revisionOnly) {
-        await route.fulfill({ json: { inputRevision: "safe-revision-1", total: 2 } });
-        return;
-      }
-      if (body.saveState) {
-        partialSaves.push(body);
-        await route.fulfill({ json: { saved: true } });
-        return;
-      }
-      const cards = TEST_FIXTURE.students.map((student, index) => ({
-        id: student.id,
-        name: student.name,
-        labels: [],
-        feedback: "",
-        feedbackIntensity: index === 0 ? "routine" : "priority",
-      }));
-      const lines = [
-        { type: "init", students: cards, total: 2, inputRevision: "safe-revision-1" },
-        {
-          type: "draft",
-          studentId: TEST_FIXTURE.students[0].id,
-          name: TEST_FIXTURE.students[0].name,
-          feedback: "已收到的合成反馈",
-          draftFeedback: "已收到的合成反馈",
-          reviewStatus: "passed",
-          reviewIssues: [],
-          completed: 1,
-          total: 2,
-        },
-      ];
-      await route.fulfill({
-        status: 200,
-        contentType: "application/x-ndjson",
-        body: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
-      });
-    });
-    await page.route("**/api/report/feedback", async (route) => {
-      const body = route.request().postDataJSON() as { studentId: string };
-      resumedStudents.push(body.studentId);
-      await route.fulfill({ json: {
-        feedback: "补齐后的合成反馈",
-        draftFeedback: "补齐后的合成反馈",
-        reviewStatus: "passed",
-        reviewIssues: [],
-      } });
-    });
-
+  test("legacy batch controls stay available only after restoring history", async ({ page }) => {
     await page.goto("/feedback");
     await page.locator("select").nth(0).selectOption(TEST_FIXTURE.semester.id);
     await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
     await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
-    await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-    await page.getByRole("button", { name: "生成班级反馈" }).click();
-    await expect(page.getByText("批次未完成", { exact: true })).toBeVisible();
-    await expect(page.getByText("已收到的合成反馈", { exact: true })).toBeVisible();
-    await expect(page.getByText("未完成", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "导出课后反馈表" })).toBeDisabled();
-
-    await page.reload();
-    await expect(page.getByText("批次未完成", { exact: true })).toBeVisible();
-    await expect(page.getByText("已收到的合成反馈", { exact: true })).toBeVisible();
-    await expect(page.getByText("未完成", { exact: true })).toBeVisible();
-
-    await page.getByRole("button", { name: "保存当前部分结果" }).click();
-    await expect(page.getByText("已显式保存 1/2 名学生的部分结果；该记录仍不能导出。", { exact: true })).toBeVisible();
-    expect(partialSaves).toHaveLength(1);
-    expect(partialSaves[0]).toMatchObject({
-      saveState: true,
-      savePartial: true,
-      inputRevision: "safe-revision-1",
-      completedStudentIds: [TEST_FIXTURE.students[0].id],
-    });
-
-    await page.getByRole("button", { name: "继续未完成/失败学生" }).click();
-    await expect(page.getByText("补齐后的合成反馈", { exact: true })).toBeVisible();
-    expect(resumedStudents).toEqual([TEST_FIXTURE.students[1].id]);
-    await expect(page.getByRole("button", { name: "导出课后反馈表" })).toBeEnabled();
-
-    await page.getByRole("button", { name: "1 准备 选择课次与准备材料" }).click();
-    await page.getByLabel("群反馈原文").fill("输入版本已经变化");
-    await page.getByRole("button", { name: "5 导出 编辑与导出" }).click();
-    await expect(page.getByText("旧结果已失效", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "导出课后反馈表" })).toBeDisabled();
-    await page.getByRole("button", { name: "放弃旧批次并重新开始" }).click();
-    await expect(page.getByText("未完成批次已放弃；旧部分结果不会进入下一批次。", { exact: true })).toBeVisible();
-    await expect(page.getByText("已收到的合成反馈", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "历史", exact: true }).click();
+    const historyRow = page.getByText(TEST_FIXTURE.feedbackHistory.title, { exact: true }).locator("..").locator("..");
+    await historyRow.getByRole("button", { name: "恢复" }).click();
+    await expect(page.getByText("历史兼容流程：当前内容来自旧批量反馈记录，仅用于恢复、检查和兼容导出。", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "重新生成" })).toBeVisible();
   });
 
   test("system UI exposes the WeCom extraction role and safe LLM cache maintenance", async ({ page }) => {

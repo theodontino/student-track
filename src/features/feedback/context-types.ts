@@ -11,4 +11,5 @@ export interface FeedbackContextStudent {
   studentId: string;
   labels: string[];
   preview: FeedbackContextPreview;
+  feedbackRecommendationReasons?: string[];
 }

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 
 export interface AttendanceUpdate {
   studentId: string;
@@ -50,6 +51,12 @@ export async function updateSessionAttendance(sessionId: string, updates: Attend
       targetSessionId: session.id,
       targetDate: session.date,
       createMissingForTargetSession: true,
+    }, tx);
+    await invalidateFeedbackPlans({
+      classId: session.classId ?? undefined,
+      semesterId: session.semesterId,
+      sessionId: session.id,
+      studentIds,
     }, tx);
     return { success: true };
   }, { timeout: 15_000 });

@@ -4,6 +4,7 @@ import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 
 export interface QuickScoreEntry {
   studentId: string;
@@ -179,6 +180,15 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
         targetSessionId: session.id,
         targetDate: session.date,
         createMissingForTargetSession: true,
+      }, tx);
+    }
+
+    if (session) {
+      await invalidateFeedbackPlans({
+        classId: session.classId ?? undefined,
+        semesterId: session.semesterId,
+        sessionId: session.id,
+        studentIds: submittedStudentIds,
       }, tx);
     }
 

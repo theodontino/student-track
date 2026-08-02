@@ -1,0 +1,1 @@
+ALTER TABLE "FeedbackExportRun" ADD COLUMN "isRepeat" BOOLEAN NOT NULL DEFAULT false;

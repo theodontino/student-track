@@ -40,7 +40,7 @@ import type {
   FeedbackRoutingDecision,
 } from "@/lib/feedback-intensity";
 import {
-  feedbackLengthIssue,
+  isLegacyLengthOnlyReview,
   normalizeFeedbackOutputStrategy,
   type FeedbackOutputStrategy,
   type FeedbackSections,
@@ -204,6 +204,11 @@ function parseHistoryState(value: string): FeedbackState | null {
     if (!parsed.success || parsed.data.kind !== "batch") return null;
     return {
       ...parsed.data,
+      students: parsed.data.students.map((card) => (
+        card.reviewStatus === "needs_review" && isLegacyLengthOnlyReview(card.reviewIssues)
+          ? { ...card, reviewStatus: "passed" as const, reviewIssues: [] }
+          : card
+      )),
       outputStrategy: normalizeFeedbackOutputStrategy(parsed.data.outputStrategy),
     } as FeedbackState;
   } catch {
@@ -214,7 +219,6 @@ function parseHistoryState(value: string): FeedbackState | null {
 function submittedCardsFrom(
   submitted: NonNullable<FeedbackBatchInput["students"]>,
   contextByStudent: Map<string, FeedbackContextStudent>,
-  outputStrategy: FeedbackOutputStrategy,
 ): FeedbackCard[] {
   const unknownStudent = submitted.find((item) => !contextByStudent.has(item.id));
   if (unknownStudent) {
@@ -235,17 +239,14 @@ function submittedCardsFrom(
       throw new ApiError("反馈卡片学生校验失败", 400, "invalid_request", false);
     }
     const feedback = item.feedback.trim();
-    const lengthIssue = feedback ? feedbackLengthIssue(feedback, outputStrategy.length) : null;
     return {
       id: student.id,
       name: student.name,
       labels: student.labels,
       feedback,
       draftFeedback: item.draftFeedback?.trim(),
-      reviewStatus: lengthIssue ? "needs_review" : item.reviewStatus,
-      reviewIssues: lengthIssue
-        ? [...new Set([...(item.reviewIssues ?? []), lengthIssue])].slice(0, 8)
-        : item.reviewIssues?.slice(0, 8),
+      reviewStatus: item.reviewStatus,
+      reviewIssues: item.reviewIssues?.slice(0, 8),
       feedbackIntensity: item.feedbackIntensity,
       feedbackRoutingReasons: item.feedbackRoutingReasons,
       sections: item.sections,
@@ -309,6 +310,10 @@ export async function buildFeedbackBatchExport(
     selection.selectedGeneration,
   ]));
   const exportStudents = state.students.map((card) => {
+    // WorkHistory is authoritative after a teacher edits the text. The
+    // selected generation keeps the immutable model output in outputSnapshot,
+    // but must not overwrite the teacher's explicitly saved final wording.
+    if (card.reviewStatus === "edited" && card.feedback.trim()) return card;
     const selected = selectedByStudent.get(card.id);
     if (!selected?.finalText?.trim()) return card;
     let reviewStatus = card.reviewStatus;
@@ -327,6 +332,10 @@ export async function buildFeedbackBatchExport(
         // Keep the persisted card review state if an old output snapshot is unreadable.
       }
     }
+    if (reviewStatus === "needs_review" && isLegacyLengthOnlyReview(reviewIssues)) {
+      reviewStatus = "passed";
+      reviewIssues = [];
+    }
     if (state.inputRevision && selected.inputRevision !== state.inputRevision) {
       reviewStatus = "needs_review";
       reviewIssues = ["当前采用版本的输入已变化"];
@@ -334,10 +343,7 @@ export async function buildFeedbackBatchExport(
     return { ...card, feedback: selected.finalText.trim(), reviewStatus, reviewIssues };
   });
 
-  const reviewBlockerCount = exportStudents.filter((card) => (
-    card.reviewStatus === "needs_review"
-    || Boolean(feedbackLengthIssue(card.feedback, outputStrategy.length))
-  )).length;
+  const reviewBlockerCount = exportStudents.filter((card) => card.reviewStatus === "needs_review").length;
   if (reviewBlockerCount > 0) {
     throw new ApiError(
       `还有 ${reviewBlockerCount} 条反馈需要人工确认，暂不能导出`,
@@ -763,7 +769,7 @@ export async function executeFeedbackBatch(
         false,
       );
     }
-    const cards = submittedCardsFrom(input.students ?? [], contextByStudent, outputStrategy);
+    const cards = submittedCardsFrom(input.students ?? [], contextByStudent);
     const submittedIds = new Set(cards.map((card) => card.id));
     const completedStudentIds = [...new Set(input.completedStudentIds ?? [])];
     const failedStudentIds = [...new Set(input.failedStudentIds ?? [])];

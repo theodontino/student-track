@@ -35,7 +35,8 @@ export const SYSTEM_PROMPT = `你是一名资深的高中化学教师助手。�
       "scores": { "A": 4, "B": 3, "C": null },
       "events": ["事件1", "事件2"],
       "communication": null,
-      "attentionSignals": []
+      "attentionSignals": [],
+      "teacherInterventions": []
     }
   ],
   "alert_suggestion": "关注建议或空字符串"
@@ -47,6 +48,7 @@ export const SYSTEM_PROMPT = `你是一名资深的高中化学教师助手。�
 - events: 提取的关键事件描述列表
 - communication: 仅当涉及家长沟通时填写 { "type": "电话/微信/面谈", "summary": "摘要" }，否则为 null
 - attentionSignals: 只根据文字事实提取内部关注信号。reason 只能是 academic-performance、learning-confidence、parent-concern、withdrawal-intent；每项包含 confidence=high|medium|low 和不超过120字的 evidenceSummary。明确出现成绩差/跟不上、没信心/畏难、家长担心/焦虑、退班意向时应输出；没有时为 []。多个原因分别输出，不要用分数推断。
+- teacherInterventions: 只在原文明确写出“发现了什么问题、老师采取了什么处理、处理后结果或证据”时提取。每项为 {"observedProblem":"…","teacherAction":"…","outcome":"…或空字符串","evidenceText":"原文中支持该处理的完整片段"}。不要根据一般课堂表现、评分或模型常识推测教师处理；没有明确处理时必须为 []。
 - alert_suggestion: 如果检测到异常（分数<=1、情绪低落、严重违纪等），给出简短的关注建议，否则为空字符串
 
 【注意事项】
@@ -127,9 +129,14 @@ export const REVIEW_PROMPT = `你是一名资深的高中化学教师，请对�
   },
   "revised_events": {
     "学生姓名": ["修正后的事件1"]
+  },
+  "revised_teacher_interventions": {
+    "学生姓名": [
+      {"observedProblem":"…","teacherAction":"…","outcome":"…","evidenceText":"…"}
+    ]
   }
 }
 
 如果没有姓名或事件对应问题，name_issues 为空数组 []。
-revised_scores / revised_events 无需修正时可以为空对象 {}。
+revised_scores / revised_events / revised_teacher_interventions 无需修正时可以为空对象 {}。
 只返回 JSON，不要附带任何解释性文字。`;

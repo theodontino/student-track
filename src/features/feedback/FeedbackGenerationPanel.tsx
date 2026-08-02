@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Badge, Button, EmptyState, Section, StatusBanner, Textarea } from "@/components/ui";
 import type { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 import { FEEDBACK_INTENSITY_LABELS, FEEDBACK_ROUTING_REASON_LABELS, type FeedbackIntensity } from "@/lib/feedback-intensity";
@@ -7,11 +8,13 @@ import {
   FEEDBACK_LENGTH_OPTIONS,
   FEEDBACK_LENGTHS,
   FEEDBACK_OUTPUT_PRESETS,
+  FEEDBACK_STYLE_CHOICES,
   FEEDBACK_STYLE_OPTIONS,
-  FEEDBACK_STYLES,
   feedbackOutputPresetFor,
   visibleFeedbackLength,
+  type FeedbackLength,
   type FeedbackOutputSectionKey,
+  type FeedbackStyleChoice,
 } from "@/lib/feedback-sections";
 import type { FeedbackSection } from "@/lib/feedback-sections";
 
@@ -29,6 +32,10 @@ function FeedbackSectionItem({ title, section, internal = false }: { title: stri
 }
 
 export function FeedbackGenerationPanel({ workspace, mode = "export" }: { workspace: Workspace; mode?: "generate" | "export" }) {
+  const [retryDimensions, setRetryDimensions] = useState<Record<string, {
+    style: FeedbackStyleChoice;
+    length: FeedbackLength;
+  }>>({});
   const routingByStudent = new Map(workspace.feedbackRouting.map((item) => [item.studentId, item]));
   const resolvedIntensity = (studentId: string) => workspace.routingOverrides[studentId] ?? routingByStudent.get(studentId)?.baseline ?? "routine";
   const counts = workspace.contextStudents.reduce<Record<FeedbackIntensity, number>>((total, student) => {
@@ -68,8 +75,8 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
           <div className="feedback-output-strategy__presets">{Object.entries(FEEDBACK_OUTPUT_PRESETS).map(([key, preset]) => <Button key={key} uiSize="sm" variant={activePreset === key ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...preset.strategy, style: workspace.outputStrategy.style, length: workspace.outputStrategy.length })}>{preset.label}</Button>)}</div>
           <div className="feedback-output-strategy__toggles">{strategyLabels.map((item) => <label key={item.key}><input type="checkbox" checked={workspace.outputStrategy[item.key]} onChange={(event) => workspace.setOutputStrategy({ ...workspace.outputStrategy, [item.key]: event.target.checked })} />{item.label}</label>)}</div>
           <div className="feedback-output-strategy__expression">
-            <div><strong>表达风格</strong>{FEEDBACK_STYLES.map((style) => <Button key={style} uiSize="sm" variant={workspace.outputStrategy.style === style ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...workspace.outputStrategy, style })}>{FEEDBACK_STYLE_OPTIONS[style].label}</Button>)}</div>
-            <div><strong>文本长度</strong>{FEEDBACK_LENGTHS.map((length) => <Button key={length} uiSize="sm" variant={workspace.outputStrategy.length === length ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...workspace.outputStrategy, length })}>{FEEDBACK_LENGTH_OPTIONS[length].label}</Button>)}</div>
+            <div><strong>语气</strong>{FEEDBACK_STYLE_CHOICES.map((style) => <Button key={style} uiSize="sm" variant={workspace.outputStrategy.style === style ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...workspace.outputStrategy, style })}>{FEEDBACK_STYLE_OPTIONS[style].label}</Button>)}</div>
+            <div><strong>详略</strong>{FEEDBACK_LENGTHS.map((length) => <Button key={length} uiSize="sm" variant={workspace.outputStrategy.length === length ? "secondary" : "ghost"} onClick={() => workspace.setOutputStrategy({ ...workspace.outputStrategy, length })}>{FEEDBACK_LENGTH_OPTIONS[length].label}</Button>)}</div>
           </div>
         </section>}
         {mode === "generate" && workspace.contextStudents.length > 0 && <details className="feedback-routing" open>
@@ -101,6 +108,10 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
           const review = card.reviewStatus ? reviewLabels[card.reviewStatus] : null;
           const sections = card.sections;
           const versions = workspace.feedbackVersions.filter((version) => version.studentId === card.id);
+          const retryDimension = retryDimensions[card.id] ?? {
+            style: workspace.outputStrategy.style === "professional" ? "professional" : "gentle",
+            length: workspace.outputStrategy.length,
+          };
           const unfinished = (workspace.feedbackBatch.status === "incomplete" || workspace.feedbackBatch.status === "stale")
             && !completedStudentIds.has(card.id);
           return <article key={card.id} className="feedback-card">
@@ -127,7 +138,7 @@ export function FeedbackGenerationPanel({ workspace, mode = "export" }: { worksp
                 <footer><span>{version.replayState}</span><Button uiSize="sm" variant={version.selected ? "ghost" : "secondary"} disabled={version.selected || version.stale || !version.replayable || !version.finalText || workspace.feedbackVersionBusyId === card.id} onClick={() => void workspace.selectFeedbackVersion(card.id, version.id)}>{version.selected ? "已采用" : "采用此版本"}</Button></footer>
               </article>)}</div>
             </details>}
-            {workspace.outputStrategy.suggestedFeedback ? <><Textarea aria-label={`${card.name}反馈`} value={card.feedback} onChange={(event) => workspace.updateFeedback(card.id, event.target.value)} rows={5} disabled={workspace.feedbackBatch.status === "stale"} /><footer><span>{visibleFeedbackLength(card.feedback)} 个可见字符 · {FEEDBACK_LENGTH_OPTIONS[workspace.outputStrategy.length].label}</span><Button variant="ghost" uiSize="sm" onClick={() => void navigator.clipboard?.writeText(card.feedback)}>复制</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateFeedbackVersion(card.id)} disabled={!versions.some((version) => version.replayable && !version.stale) || !workspace.feedbackVersionProfileId || workspace.feedbackVersionBusyId === card.id}>{workspace.feedbackVersionBusyId === card.id ? "生成中…" : "换模型生成"}</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateOne(card.id)} disabled={workspace.regeneratingId === card.id || workspace.feedbackBatch.status === "stale"}>{workspace.regeneratingId === card.id ? "生成中…" : "按当前配置重写"}</Button></footer></> : <StatusBanner tone="info">教师研判模式未生成家长文本；如需导出，请重新生成并勾选“建议反馈文本”。</StatusBanner>}
+            {workspace.outputStrategy.suggestedFeedback ? <><Textarea aria-label={`${card.name}反馈`} value={card.feedback} onChange={(event) => workspace.updateFeedback(card.id, event.target.value)} rows={5} disabled={workspace.feedbackBatch.status === "stale"} /><footer><span>{visibleFeedbackLength(card.feedback)} 个可见字符 · {FEEDBACK_LENGTH_OPTIONS[workspace.outputStrategy.length].label}（字符数仅供参考）</span><Button variant="ghost" uiSize="sm" onClick={() => void navigator.clipboard?.writeText(card.feedback)}>复制</Button><label>单人重试语气<select aria-label={`${card.name}重试语气`} value={retryDimension.style} onChange={(event) => setRetryDimensions((current) => ({ ...current, [card.id]: { ...retryDimension, style: event.target.value as FeedbackStyleChoice } }))}>{FEEDBACK_STYLE_CHOICES.map((style) => <option key={style} value={style}>{FEEDBACK_STYLE_OPTIONS[style].label}</option>)}</select></label><label>单人重试详略<select aria-label={`${card.name}重试详略`} value={retryDimension.length} onChange={(event) => setRetryDimensions((current) => ({ ...current, [card.id]: { ...retryDimension, length: event.target.value as FeedbackLength } }))}>{FEEDBACK_LENGTHS.map((length) => <option key={length} value={length}>{FEEDBACK_LENGTH_OPTIONS[length].label}</option>)}</select></label><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateFeedbackVersion(card.id, { ...workspace.outputStrategy, ...retryDimension })} disabled={!versions.some((version) => version.replayable && !version.stale) || !workspace.feedbackVersionProfileId || workspace.feedbackVersionBusyId === card.id}>{workspace.feedbackVersionBusyId === card.id ? "正在重试…" : "换模型并重试"}</Button><Button variant="secondary" uiSize="sm" onClick={() => void workspace.regenerateOne(card.id, { ...workspace.outputStrategy, ...retryDimension })} disabled={workspace.regeneratingId === card.id || workspace.feedbackBatch.status === "stale"}>{workspace.regeneratingId === card.id ? "正在重试…" : "按所选维度重试"}</Button></footer></> : <StatusBanner tone="info">教师研判模式未生成家长文本；如需导出，请重新生成并勾选“建议反馈文本”。</StatusBanner>}
           </article>;
         })}
       </div>

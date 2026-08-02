@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { publicStudentLabels } from "@/lib/attention-labels";
 import {
   FEEDBACK_COMMUNICATION_CATEGORY_LABELS,
@@ -6,6 +6,7 @@ import {
   parseFeedbackCommunicationSummary,
 } from "@/lib/feedback-communication";
 import { safeFeedbackCommunicationTarget } from "@/lib/feedback-text-safety";
+import { CommunicationPreferenceSchema, type CommunicationPreference } from "@/lib/feedback-plan";
 
 const RECENT_SESSION_LIMIT = 5;
 const COMMUNICATION_PREVIEW_LIMIT = 3;
@@ -21,14 +22,19 @@ export interface FeedbackContextPreview {
 
 export interface StudentRawMetrics {
   current: {
+    metricId?: string;
     scoreA: number | null;
     scoreB: number | null;
     scoreC: number | null;
     scoreD: number | null;
     present: boolean | null;
     events: string[];
+    eventRefs?: Array<{ id: string; description: string; sessionId: string | null; type?: string }>;
   };
+  recentEventRefs?: Array<{ id: string; description: string; sessionId: string | null; type?: string; date?: string }>;
   recent: Array<{
+    metricId?: string;
+    sessionId?: string | null;
     date: string;
     semesterNumber: number;
     scoreA: number;
@@ -37,6 +43,8 @@ export interface StudentRawMetrics {
     scoreD: number;
   }>;
   communications: Array<{
+    id?: string;
+    sessionId?: string | null;
     date: string;
     target: string;
     summary: string;
@@ -60,6 +68,8 @@ export interface FeedbackContextStudent {
   promptContext: string;
   preview: FeedbackContextPreview;
   rawMetrics: StudentRawMetrics;
+  communicationPreference?: CommunicationPreference;
+  feedbackRecommendationReasons: string[];
 }
 
 export interface FeedbackContextResult {
@@ -235,8 +245,9 @@ function buildBaselineText(baseline: StudentRawMetrics["performanceBaseline"]) {
  * LLM generation may consume the compact promptContext, while UI can render preview.
  */
 export async function buildFeedbackContext(
-  prisma: PrismaClient,
-  sessionCode: string
+  prisma: PrismaClient | Prisma.TransactionClient,
+  sessionCode: string,
+  options?: { sessionIds?: string[]; includeStudentIds?: string[] },
 ): Promise<FeedbackContextResult> {
   const session = await prisma.classSession.findUnique({
     where: { code: sessionCode },
@@ -248,13 +259,20 @@ export async function buildFeedbackContext(
   const className = session.class?.name ?? session.class?.code ?? "";
   if (!className) throw new Error("该课次未关联班级");
 
+  const includeStudentIds = [...new Set(options?.includeStudentIds ?? [])];
   const students = await prisma.student.findMany({
-    where: { classId: session.classId, rosterStatus: "ACTIVE" },
+    where: {
+      classId: session.classId,
+      ...(includeStudentIds.length
+        ? { OR: [{ rosterStatus: "ACTIVE" }, { id: { in: includeStudentIds } }] }
+        : { rosterStatus: "ACTIVE" }),
+    },
     select: {
       id: true,
       name: true,
       studentId: true,
       studentLabels: { include: { label: { select: { name: true } } } },
+      communicationPreference: { select: { preferenceSnapshot: true } },
     },
     orderBy: { studentId: "asc" },
   });
@@ -262,7 +280,11 @@ export async function buildFeedbackContext(
 
   const studentIds = students.map((student) => student.id);
   const recentSessions = await prisma.classSession.findMany({
-    where: {
+    where: options?.sessionIds?.length ? {
+      id: { in: [...new Set(options.sessionIds)] },
+      classId: session.classId,
+      semesterId: session.semesterId,
+    } : {
       classId: session.classId,
       semesterId: session.semesterId,
       OR: [
@@ -272,7 +294,7 @@ export async function buildFeedbackContext(
     },
     select: { id: true, code: true, date: true, semesterNumber: true, createdAt: true },
     orderBy: [{ date: "desc" }, { semesterNumber: "desc" }, { createdAt: "desc" }],
-    take: RECENT_SESSION_LIMIT,
+    ...(options?.sessionIds?.length ? {} : { take: RECENT_SESSION_LIMIT }),
   });
   const recentSessionIds = recentSessions.map((item) => item.id);
 
@@ -295,21 +317,28 @@ export async function buildFeedbackContext(
         orderBy: { createdAt: "desc" },
       }),
       prisma.communication.findMany({
-        where: { studentId: { in: studentIds } },
+        where: {
+          studentId: { in: studentIds },
+          // Stage and course plans must not pull in a family's unrelated
+          // historical chat. The legacy five-session context keeps its old
+          // all-history communication behavior for ordinary feedback.
+          ...(options?.sessionIds?.length ? { sessionId: { in: recentSessionIds } } : {}),
+        },
         include: { session: { select: { code: true, date: true, semesterNumber: true } } },
         orderBy: { createdAt: "desc" },
       }),
       prisma.sessionMetric.findMany({
         where: {
           studentId: { in: studentIds },
-          session: {
+          sessionId: options?.sessionIds?.length ? { in: recentSessionIds } : undefined,
+          ...(options?.sessionIds?.length ? {} : { session: {
             semesterId: session.semesterId,
             classId: session.classId,
             OR: [
               { date: { lt: session.date } },
               { date: session.date, semesterNumber: { lte: session.semesterNumber } },
             ],
-          },
+          } }),
         },
         select: {
           studentId: true,
@@ -395,14 +424,18 @@ export async function buildFeedbackContext(
     const present = attendanceMap.has(student.id) ? attendanceMap.get(student.id) ?? null : null;
     const rawMetrics: StudentRawMetrics = {
       current: {
+        metricId: currentMetric?.id,
         scoreA: currentMetric?.scoreA ?? null,
         scoreB: currentMetric?.scoreB ?? null,
         scoreC: currentMetric?.scoreC ?? null,
         scoreD: currentMetric?.scoreD ?? null,
         present,
         events: currentEventTexts,
+        eventRefs: (currentEventsByStudent.get(student.id) ?? []).map((event) => ({ id: event.id, description: event.description, sessionId: event.sessionId, type: event.type })),
       },
       recent: (recentMetricsByStudent.get(student.id) ?? []).map((metric) => ({
+        metricId: metric.id,
+        sessionId: metric.sessionId,
         date: metric.session?.date ?? metric.date,
         semesterNumber: metric.session?.semesterNumber ?? 0,
         scoreA: metric.scoreA,
@@ -413,13 +446,43 @@ export async function buildFeedbackContext(
       communications: feedbackCommunications
         .slice(0, COMMUNICATION_PROMPT_LIMIT)
         .map((communication) => ({
+          id: communication.id,
+          sessionId: communication.sessionId,
           date: communication.feedbackDate,
           target: communication.target,
           summary: shortSummary(communication.feedbackSummary),
         })),
+      recentEventRefs: (recentEventsByStudent.get(student.id) ?? []).map((event) => ({
+        id: event.id,
+        description: event.description,
+        sessionId: event.sessionId,
+        type: event.type,
+        date: event.session?.date,
+      })),
       performanceBaseline: baseline,
     };
 
+    const communicationPreference = student.communicationPreference
+      ? (() => {
+        try { return CommunicationPreferenceSchema.parse(JSON.parse(student.communicationPreference.preferenceSnapshot)); }
+        catch { return undefined; }
+      })()
+      : undefined;
+    const currentEventRefs = rawMetrics.current.eventRefs ?? [];
+    const recentEventRefs = rawMetrics.recentEventRefs ?? [];
+    const repeatedIssue = currentEventRefs.some((currentEvent) => recentEventRefs.some((recentEvent) => (
+      recentEvent.id !== currentEvent.id && (
+        currentEvent.type === recentEvent.type
+        || ["犯困", "睡觉", "讲话", "注意力", "订正", "拖延"].some((keyword) => currentEvent.description.includes(keyword) && recentEvent.description.includes(keyword))
+      )
+    )));
+    const feedbackRecommendationReasons = [
+      ...(currentEventRefs.length > 0 ? ["本次有明确课堂事件"] : []),
+      ...(currentEventRefs.some((event) => event.type === "教师处理") ? ["本次有已确认教师处理"] : []),
+      ...(rawMetrics.current.scoreA !== null && (rawMetrics.current.scoreA <= 2 || rawMetrics.current.scoreA >= 5) ? ["本次有显著测验结果"] : []),
+      ...(repeatedIssue ? ["近期重复出现同类问题"] : []),
+      ...(rawMetrics.communications.length > 0 && currentEventRefs.length > 0 ? ["家长关切出现了新的课堂证据"] : []),
+    ];
     return {
       id: student.id,
       name: student.name,
@@ -437,6 +500,8 @@ export async function buildFeedbackContext(
       }),
       preview,
       rawMetrics,
+      feedbackRecommendationReasons,
+      ...(communicationPreference ? { communicationPreference } : {}),
     };
   });
 

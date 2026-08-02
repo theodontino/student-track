@@ -1,37 +1,21 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import { prisma } from "@/lib/prisma";
+import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
-
-let semesterId: string;
-let className: string;
-let sessionCode: string;
-let studentId: string;
-
-beforeAll(async () => {
-  const sem = await prisma.semester.findFirst({ select: { id: true } });
-  semesterId = sem!.id;
-  const cls = await prisma.class.findFirst({ select: { name: true, code: true } });
-  className = cls!.name ?? cls!.code;
-  const ses = await prisma.classSession.findFirst({
-    where: { semesterId },
-    select: { code: true },
-  });
-  sessionCode = ses!.code;
-  const stu = await prisma.student.findFirst({ select: { id: true } });
-  studentId = stu!.id;
-});
+import { TEST_FIXTURE } from "../../../scripts/test-fixture-data";
 
 describe("/api/quick-score", () => {
   it("GET with class + sessionCode returns 200", async () => {
     const { GET } = await import("@/app/api/quick-score/route");
-    const params = new URLSearchParams({ class: className, sessionCode });
+    const params = new URLSearchParams({
+      class: TEST_FIXTURE.class.name,
+      sessionCode: TEST_FIXTURE.sessions[0].code,
+    });
     const url = `http://localhost:3000/api/quick-score?${params}`;
     const req = new NextRequest(url);
     const res = await GET(req);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveProperty("scores");
-    expect(body).toHaveProperty("className", className);
+    expect(body).toHaveProperty("className", TEST_FIXTURE.class.name);
   });
 
   it("GET without class returns 400", async () => {
@@ -59,7 +43,7 @@ describe("/api/quick-score", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionCode: "NO_SUCH_SESSION",
-        scores: [{ studentId, scoreA: 4, scoreB: 4, scoreC: 4 }],
+        scores: [{ studentId: TEST_FIXTURE.students[0].id, scoreA: 4, scoreB: 4, scoreC: 4 }],
       }),
     });
     const res = await POST(req);

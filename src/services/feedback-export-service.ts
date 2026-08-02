@@ -2,6 +2,9 @@ import * as XLSX from "xlsx";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { FeedbackSections } from "@/lib/feedback-sections";
 import type { StudentRisk } from "@/services/student-risk-service";
+import { createHash } from "node:crypto";
+import { ApiError } from "@/lib/api-errors";
+import { validateFeedbackPlanAttachments } from "@/services/feedback-plan-service";
 
 export interface FeedbackExportCard {
   id: string;
@@ -182,4 +185,124 @@ export async function buildFeedbackExportWorkbook(
   XLSX.utils.book_append_sheet(workbook, teacherWorksheet, "教师内部研判");
   XLSX.utils.book_append_sheet(workbook, overviewWorksheet, "导出概览");
   return new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
+}
+
+/** Builds the versioned FeedbackPlan workbook using only approved items. */
+export async function buildFeedbackPlanExportWorkbook(
+  prisma: PrismaClient,
+  planId: string,
+  mode: "complete" | "approved_only" = "complete",
+  options: { allowRepeat?: boolean } = {},
+) {
+  await validateFeedbackPlanAttachments(planId, prisma);
+  const plan = await prisma.feedbackPlan.findUnique({
+    where: { id: planId },
+    include: {
+      items: { include: { student: { select: { name: true, studentId: true } }, tasks: true, attachments: true } },
+      tasks: { include: { student: { select: { name: true } }, dueSession: { select: { code: true, date: true } } } },
+      attachments: true,
+      exportRuns: { orderBy: { createdAt: "desc" }, take: 20 },
+    },
+  });
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  const pendingCount = plan.items.filter((item) => item.status !== "approved" && item.status !== "exported").length;
+  if (mode === "complete" && pendingCount > 0) throw new ApiError(`还有 ${pendingCount} 条反馈未批准`, 409, "conflict", false);
+  const approvedItems = plan.items.filter((item) => (item.status === "approved" || item.status === "exported") && item.finalText?.trim());
+  let items = mode === "approved_only"
+    ? approvedItems.filter((item) => item.status === "approved")
+    : approvedItems;
+  const fallbackManifest = approvedItems.map((item) => ({ itemId: item.id, finalTextHash: item.finalTextHash ?? "" }));
+  const normalizedManifestHash = (value: string) => {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (!Array.isArray(parsed)) return "";
+      const normalized = parsed
+        .filter((entry): entry is { itemId?: unknown; finalTextHash?: unknown } => Boolean(entry && typeof entry === "object"))
+        .map((entry) => ({ itemId: String(entry.itemId ?? ""), finalTextHash: String(entry.finalTextHash ?? "") }))
+        .filter((entry) => entry.itemId);
+      return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+    } catch {
+      return "";
+    }
+  };
+  const fallbackManifestHash = createHash("sha256").update(JSON.stringify(fallbackManifest)).digest("hex");
+  if (!items.length && mode === "approved_only" && approvedItems.length > 0) {
+    const latest = plan.exportRuns[0];
+    if (latest && (latest.manifestHash === fallbackManifestHash || normalizedManifestHash(latest.itemManifest) === fallbackManifestHash) && !options.allowRepeat) {
+      throw new ApiError("这批反馈已经按相同文本导出过；如需重复下载，请确认后重试", 409, "repeat_export", false);
+    }
+    if (options.allowRepeat) items = approvedItems;
+  }
+  if (!items.length) throw new ApiError("没有新的已批准反馈可导出", 409, "conflict", false);
+  const selectedItemIds = new Set(items.map((item) => item.id));
+  const missingAttachments = plan.attachments.filter((attachment) => (
+    attachment.status === "missing"
+    && (!attachment.planItemId || selectedItemIds.has(attachment.planItemId))
+  ));
+  if (missingAttachments.length) {
+    throw new ApiError(`有 ${missingAttachments.length} 个发送附件缺失或校验失败，请移除或重新选择附件`, 409, "conflict", false);
+  }
+  const manifest = items.map((item) => ({ itemId: item.id, finalTextHash: item.finalTextHash ?? "" }));
+  const manifestHash = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const latestRun = plan.exportRuns[0];
+  if (latestRun && (latestRun.manifestHash === manifestHash || normalizedManifestHash(latestRun.itemManifest) === manifestHash) && !options.allowRepeat) {
+    throw new ApiError("这批反馈已经按相同文本导出过；如需重复下载，请确认后重试", 409, "repeat_export", false);
+  }
+  const compositions = new Map(items.map((item) => {
+    try { return [item.id, JSON.parse(item.compositionSnapshot) as { closureType?: string; needParentAction?: boolean; modules?: Array<{ key: string; content: string; status: string }> }]; }
+    catch { return [item.id, {}]; }
+  }));
+  const feedbackRows = items.map((item) => ({
+    类型: plan.type,
+    姓名: item.student?.name ?? "班级公共反馈",
+    学号: item.student?.studentId ?? "",
+    反馈状态: item.status,
+    结尾类型: compositions.get(item.id)?.closureType ?? "",
+    家长动作: compositions.get(item.id)?.needParentAction ? "需要" : "不需要",
+    最终反馈: item.finalText,
+  }));
+  const teacherRows = items.map((item) => {
+    const composition = compositions.get(item.id);
+    const evidence = (() => { try { return JSON.parse(item.evidenceSnapshot) as { teachingEvidence?: Array<{ content: string }> }; } catch { return {}; } })();
+    return {
+      姓名: item.student?.name ?? "班级公共反馈",
+      证据: evidence.teachingEvidence?.map((entry) => entry.content).join("；") ?? "",
+      采用模块: composition?.modules?.filter((module) => module.status === "included").map((module) => module.key).join("、") ?? "",
+      审核: item.auditSnapshot,
+      最终反馈: item.finalText,
+    };
+  });
+  const taskRows = plan.tasks.filter((task) => !task.planItemId || selectedItemIds.has(task.planItemId)).map((task) => ({
+    学生: task.student?.name ?? "班级",
+    任务: task.action,
+    截止: task.dueSession ? `${task.dueSession.date} ${task.dueSession.code}` : task.dueDate ?? "",
+    预计分钟: task.estimatedMinutes ?? "",
+    状态: task.status,
+  }));
+  const attachmentRows = plan.attachments.filter((attachment) => !attachment.planItemId || selectedItemIds.has(attachment.planItemId)).map((attachment) => ({
+    文件名: attachment.displayName,
+    类型: attachment.mimeType,
+    大小: attachment.sizeBytes,
+    SHA256: attachment.sha256,
+    定位符: attachment.relativeLocator,
+    状态: attachment.status,
+  }));
+  const workbook = XLSX.utils.book_new();
+  const feedbackWorksheet = XLSX.utils.json_to_sheet(feedbackRows);
+  feedbackWorksheet["!cols"] = [{ wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 70 }];
+  feedbackWorksheet["!freeze"] = { xSplit: 1, ySplit: 1 };
+  const teacherWorksheet = XLSX.utils.json_to_sheet(teacherRows);
+  teacherWorksheet["!cols"] = [{ wch: 16 }, { wch: 70 }, { wch: 36 }, { wch: 60 }, { wch: 70 }];
+  XLSX.utils.book_append_sheet(workbook, feedbackWorksheet, "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, teacherWorksheet, "教师内部研判");
+  if (taskRows.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(taskRows), "教师待办");
+  if (attachmentRows.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(attachmentRows), "附件清单");
+  const buffer = new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
+  await prisma.$transaction(async (tx) => {
+    await tx.feedbackExportRun.create({ data: { planId, mode, itemManifest: JSON.stringify(manifest), manifestHash, isRepeat: options.allowRepeat === true } });
+    await tx.feedbackPlanItem.updateMany({ where: { id: { in: items.map((item) => item.id) } }, data: { status: "exported", exportedAt: new Date() } });
+    const allExported = plan.items.every((item) => items.some((selected) => selected.id === item.id) || item.status === "exported");
+    await tx.feedbackPlan.update({ where: { id: planId }, data: { status: allExported ? "exported" : "partially_exported", exportedAt: new Date() } });
+  });
+  return buffer;
 }

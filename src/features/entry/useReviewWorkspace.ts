@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { requestJson } from "@/lib/api-client";
 import type { AiWorkflowController } from "@/features/ai-workflow";
-import type { DraftRecordView, DraftStructuredResult, ScoreDimension } from "@/lib/types";
+import type { DraftRecordView, DraftStructuredResult, ScoreDimension, TeacherIntervention } from "@/lib/types";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import { isReviewWorkspaceState, type ReviewFilterStatus, type ReviewWorkspaceState } from "./workspace-state";
 
@@ -87,6 +87,10 @@ export function useReviewWorkspace(workflow: AiWorkflowController) {
     updateStudent(draftId, studentIndex, (student) => ({ ...student, events: student.events.filter((_, index) => index !== eventIndex) }));
   }
 
+  function updateTeacherInterventions(draftId: string, studentIndex: number, interventions: TeacherIntervention[]) {
+    updateStudent(draftId, studentIndex, (student) => ({ ...student, teacherInterventions: interventions }));
+  }
+
   async function handleAction(draftId: string, action: "confirm" | "reject") {
     setProcessingId(draftId);
     setActionMessage(null);
@@ -133,6 +137,7 @@ export function useReviewWorkspace(workflow: AiWorkflowController) {
     updateScore,
     updateAttendance,
     removeEvent,
+    updateTeacherInterventions,
     handleAction,
   };
 }

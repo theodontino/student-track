@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   buildFeedbackContext: vi.fn(),
   completionCreate: vi.fn(),
+  recordSuccessfulGeneration: vi.fn(),
   routing: vi.fn(),
 }));
 
@@ -24,7 +25,7 @@ vi.mock("@/services/feedback-sections-service", () => ({
 }));
 
 vi.mock("@/services/generation-memory-service", () => ({
-  recordSuccessfulGeneration: vi.fn().mockResolvedValue(undefined),
+  recordSuccessfulGeneration: mocks.recordSuccessfulGeneration,
   compactHotGenerationRecordsForClass: vi.fn().mockResolvedValue({ compacted: 0, runId: null }),
 }));
 
@@ -41,6 +42,7 @@ const retryFeedback = "重".repeat(90);
 
 describe("/api/report/feedback", () => {
   beforeEach(() => {
+    mocks.recordSuccessfulGeneration.mockReset().mockResolvedValue(undefined);
     mocks.routing.mockReset().mockResolvedValue([
       { studentId: "student-1", baseline: "priority", intensity: "priority", reasons: ["dashboard-warning"] },
     ]);
@@ -119,6 +121,52 @@ describe("/api/report/feedback", () => {
 
     await expect(response.json()).resolves.toMatchObject({ feedback: retryFeedback, reviewStatus: "passed" });
     expect(mocks.completionCreate).toHaveBeenCalledTimes(3);
+  });
+
+  it("records different versions when a same-model retry changes tone or detail", async () => {
+    mocks.routing.mockResolvedValue([
+      { studentId: "student-1", baseline: "routine", intensity: "routine", reasons: [] },
+    ]);
+    mocks.completionCreate.mockReset().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ verdict: "pass", feedback: singleFeedback, issues: [] }) } }],
+    });
+    const strategy = {
+      flaggedIssue: true,
+      trendChange: false,
+      backgroundBaseline: false,
+      strategySuggestion: false,
+      suggestedFeedback: true,
+    };
+
+    for (const outputStrategy of [
+      { ...strategy, style: "gentle", length: "short" },
+      { ...strategy, style: "professional", length: "standard" },
+    ]) {
+      const response = await POST(new NextRequest("http://localhost:3000/api/report/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentId: "student-1",
+          sessionCode: "VITEST-SINGLE",
+          inputRevision: "same-batch-revision",
+          outputStrategy,
+        }),
+      }));
+      expect(response.status).toBe(200);
+    }
+
+    expect(mocks.recordSuccessfulGeneration).toHaveBeenCalledTimes(2);
+    const first = mocks.recordSuccessfulGeneration.mock.calls[0]?.[0];
+    const second = mocks.recordSuccessfulGeneration.mock.calls[1]?.[0];
+    expect(first).toMatchObject({
+      inputRevision: "same-batch-revision",
+      inputSnapshot: { style: "gentle", length: "short" },
+    });
+    expect(second).toMatchObject({
+      inputRevision: "same-batch-revision",
+      inputSnapshot: { style: "professional", length: "standard" },
+    });
+    expect(first?.variantKey).not.toBe(second?.variantKey);
   });
 
   it("rejects one-student evidence bound to another session", async () => {

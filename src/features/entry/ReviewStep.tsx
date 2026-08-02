@@ -50,6 +50,7 @@ export default function ReviewStep({ workflow }: { workflow: AiWorkflowControlle
                   onScoreChange={(studentIndex, dimension, value) => workspace.updateScore(draft.id, studentIndex, dimension, value)}
                   onAttendanceChange={(studentIndex, present) => workspace.updateAttendance(draft.id, studentIndex, present)}
                   onRemoveEvent={(studentIndex, eventIndex) => workspace.removeEvent(draft.id, studentIndex, eventIndex)}
+                  onInterventionsChange={(studentIndex, interventions) => workspace.updateTeacherInterventions(draft.id, studentIndex, interventions)}
                   onReject={() => void workspace.handleAction(draft.id, "reject")}
                   onConfirm={() => void workspace.handleAction(draft.id, "confirm")}
                 />}

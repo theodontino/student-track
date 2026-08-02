@@ -2,6 +2,7 @@ export type ApiErrorCode =
   | "invalid_request"
   | "not_found"
   | "conflict"
+  | "repeat_export"
   | "llm_service_error"
   | "llm_schema_invalid"
   | "stream_protocol_error"

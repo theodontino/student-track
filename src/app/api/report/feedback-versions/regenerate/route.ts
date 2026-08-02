@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { apiErrorBody, safeApiError } from "@/lib/api-errors";
+import { FEEDBACK_LENGTHS, FEEDBACK_STYLES } from "@/lib/feedback-sections";
 import { regenerateFeedbackVersions } from "@/services/feedback-version-service";
 
 const RequestSchema = z.object({
@@ -8,6 +9,8 @@ const RequestSchema = z.object({
   items: z.array(z.object({
     studentId: z.string().trim().min(1).max(200),
     sourceGenerationId: z.string().trim().min(1).max(200),
+    style: z.enum(FEEDBACK_STYLES).optional(),
+    length: z.enum(FEEDBACK_LENGTHS).optional(),
   }).strict()).min(1).max(100),
 }).strict();
 

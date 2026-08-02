@@ -28,9 +28,17 @@ type PreservedColumns = Record<(typeof BUSINESS_TABLES)[number], string[]>;
 type DatabaseInspection = Awaited<ReturnType<typeof inspect>>;
 
 const FIRST_V1_1_MIGRATION = "20260729140000_add_student_roster_status";
+const V1_1_MIGRATION_COUNT = 6;
 const V1_1_TABLES = [
   "FeedbackGenerationSelection",
   "CommunicationRevision",
+  "FeedbackPlan",
+  "FeedbackPlanItem",
+  "TeacherTask",
+  "CommunicationPreference",
+  "CommunicationPreferenceCandidate",
+  "FeedbackAttachment",
+  "FeedbackExportRun",
 ] as const;
 
 function quoteIdentifier(value: string) {
@@ -90,7 +98,7 @@ function assertPreserved(before: DatabaseInspection, after: DatabaseInspection, 
   }
 }
 
-async function assertV11Schema(databasePath: string) {
+async function assertV11Schema(databasePath: string, options: { expectAllStudentsActive: boolean }) {
   const client = createClient({ url: `file:${databasePath}` });
   try {
     const expectedTables = [
@@ -106,11 +114,19 @@ async function assertV11Schema(databasePath: string) {
     if (Number(result.rows[0]?.count ?? 0) !== expectedTables.length) {
       throw new Error("集成账本、教学总结或 1.1 账本表不完整");
     }
-    const roster = await client.execute(
-      "SELECT COUNT(*) AS count FROM Student WHERE rosterStatus <> 'ACTIVE' OR statusEffectiveAt IS NULL",
+    const invalidRoster = await client.execute(
+      "SELECT COUNT(*) AS count FROM Student WHERE rosterStatus NOT IN ('ACTIVE', 'INACTIVE') OR statusEffectiveAt IS NULL",
     );
-    if (Number(roster.rows[0]?.count ?? 0) !== 0) {
-      throw new Error("既有学生没有被无损归一化为 active");
+    if (Number(invalidRoster.rows[0]?.count ?? 0) !== 0) {
+      throw new Error("学生状态存在空值或非法值");
+    }
+    if (options.expectAllStudentsActive) {
+      const inactiveRoster = await client.execute(
+        "SELECT COUNT(*) AS count FROM Student WHERE rosterStatus <> 'ACTIVE'",
+      );
+      if (Number(inactiveRoster.rows[0]?.count ?? 0) !== 0) {
+        throw new Error("固定合成旧库的既有学生没有被无损归一化为 active");
+      }
     }
   } finally {
     client.close();
@@ -145,7 +161,7 @@ async function verifySyntheticUpgrade(projectRoot: string, temporaryDirectory: s
   const names = await migrationNames(projectRoot);
   const oldNames = names.filter((name) => name < FIRST_V1_1_MIGRATION);
   const v11Names = names.filter((name) => name >= FIRST_V1_1_MIGRATION);
-  if (v11Names[0] !== FIRST_V1_1_MIGRATION || v11Names.length !== 3) {
+  if (v11Names[0] !== FIRST_V1_1_MIGRATION || v11Names.length !== V1_1_MIGRATION_COUNT) {
     throw new Error("1.1 迁移集合与固定合成旧库门禁不一致");
   }
   await applyMigrationFiles(projectRoot, databasePath, oldNames);
@@ -177,7 +193,7 @@ async function verifySyntheticUpgrade(projectRoot: string, temporaryDirectory: s
   await applyMigrationFiles(projectRoot, databasePath, v11Names);
   const after = await inspect(databasePath, before.columns);
   assertPreserved(before, after, "固定合成旧库");
-  await assertV11Schema(databasePath);
+  await assertV11Schema(databasePath, { expectAllStudentsActive: true });
 }
 
 async function main() {
@@ -212,7 +228,7 @@ async function main() {
       }
       const after = await inspect(copiedDatabase, before.columns);
       assertPreserved(before, after, "真实数据库副本");
-      await assertV11Schema(copiedDatabase);
+      await assertV11Schema(copiedDatabase, { expectAllStudentsActive: false });
     }
     await verifySyntheticUpgrade(projectRoot, temporaryDirectory);
     console.log(

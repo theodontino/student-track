@@ -10,7 +10,6 @@ import {
   type StudentAssessmentEvidence,
 } from "@/lib/feedback-materials";
 import {
-  feedbackLengthIssue,
   feedbackLengthRequirement,
   feedbackStyleInstruction,
   type FeedbackLength,
@@ -22,6 +21,17 @@ import {
   containsRecipientPlaceholder,
   sanitizeFeedbackPromptText,
 } from "@/lib/feedback-text-safety";
+import {
+  FEEDBACK_CLOSURES_BY_TYPE,
+  FEEDBACK_MODULES,
+  FeedbackCompositionPlanSchema,
+  FeedbackEvidenceBundleSchema,
+  type FeedbackCompositionPlan,
+  type FeedbackEvidenceBundle,
+  type FeedbackPlanType,
+} from "@/lib/feedback-plan";
+import { ApiError } from "@/lib/api-errors";
+import { createAuditSnapshot } from "@/services/feedback-plan-audit";
 
 const FEEDBACK_DRAFT_INITIAL_MAX_TOKENS = 2048;
 const FEEDBACK_DRAFT_RETRY_MAX_TOKENS = 4096;
@@ -260,7 +270,14 @@ async function createRoutineCompletion(
   }
 }
 
-async function generateDraft(client: LLMClient, model: string, prompt: string, signal?: AbortSignal, profileId?: string) {
+async function generateDraft(
+  client: LLMClient,
+  model: string,
+  prompt: string,
+  signal?: AbortSignal,
+  profileId?: string,
+  responseMode: "text" | "json" = "text",
+) {
   for (let attempt = 1; attempt <= FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
     throwIfAborted(signal);
     const requestedMaxTokens = attempt === 1
@@ -270,21 +287,26 @@ async function generateDraft(client: LLMClient, model: string, prompt: string, s
     const reasoningEffort = attempt > 1
       ? "none" as const
       : configured.reasoning_effort ?? "none" as const;
-    const body = {
+    const baseBody = {
       model,
       messages: [{ role: "user" as const, content: prompt }],
-      temperature: 0.5,
+      temperature: responseMode === "json" ? 0 : 0.5,
       max_tokens: Math.max(configured.max_tokens, requestedMaxTokens),
       reasoning_effort: reasoningEffort,
     };
+    const body = responseMode === "json"
+      ? { ...baseBody, response_format: { type: "json_object" as const } }
+      : baseBody;
     let response;
     try {
       response = signal
         ? await client.chat.completions.create(body, { signal })
         : await client.chat.completions.create(body);
     } catch (error) {
-      if (!isReasoningUnsupported(error)) throw error;
-      const fallbackBody = withoutReasoning(body);
+      if (!isReasoningUnsupported(error) && !isJsonModeUnsupported(error)) throw error;
+      const fallbackBody = isJsonModeUnsupported(error)
+        ? baseBody
+        : withoutReasoning(body);
       response = signal
         ? await client.chat.completions.create(fallbackBody, { signal })
         : await client.chat.completions.create(fallbackBody);
@@ -544,11 +566,6 @@ ${input.promptContext}
     reviewStatus = "needs_review";
     reviewIssues.push("反馈中出现了家长称呼占位符");
   }
-  const lengthIssue = feedback ? feedbackLengthIssue(feedback, input.length) : null;
-  if (lengthIssue) {
-    reviewStatus = "needs_review";
-    reviewIssues.push(lengthIssue);
-  }
   return {
     draftFeedback: "",
     feedback,
@@ -637,16 +654,209 @@ ${draftFeedback}
     reviewIssues.push("反馈中出现了家长称呼占位符");
     feedback = "";
   }
-  const lengthIssue = feedback ? feedbackLengthIssue(feedback, input.length) : null;
-  if (lengthIssue) {
-    reviewStatus = "needs_review";
-    reviewIssues.push(lengthIssue);
-  }
-
   return {
     draftFeedback,
     feedback,
     reviewStatus,
     reviewIssues: [...new Set(reviewIssues)],
+  };
+}
+
+export interface FeedbackPlanGenerationInput {
+  studentName: string;
+  planType: FeedbackPlanType;
+  evidenceBundle: FeedbackEvidenceBundle;
+  style: FeedbackStyle;
+  length: FeedbackLength;
+  draftClient: LLMClient;
+  draftModel: string;
+  reviewClient: LLMClient;
+  reviewModel: string;
+  profileId?: string;
+  existingTaskIds?: Set<string>;
+  signal?: AbortSignal;
+}
+
+function parseComposition(value: string, stage: "draft" | "review" | "correction") {
+  const stageLabel = stage === "draft" ? "组装" : stage === "review" ? "审核" : "纠错";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleanJsonText(value));
+  } catch {
+    throw new ApiError(`反馈${stageLabel}模型未返回合法 JSON，本条未保存；请重试`, 502, "llm_schema_invalid", true);
+  }
+  // Parent action is optional and must fail conservatively. When a compatible
+  // provider omits the nullable field or returns an incomplete action object,
+  // downgrade the proposal to "no parent action". The later review and hard
+  // gate still remove/block any action language left in the draft text; we
+  // never fabricate a family task to make the schema pass.
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const candidate = parsed as Record<string, unknown>;
+    const parentAction = FeedbackCompositionPlanSchema.shape.parentAction.safeParse(candidate.parentAction);
+    if (candidate.needParentAction !== true || !parentAction.success || parentAction.data === null) {
+      parsed = { ...candidate, needParentAction: false, parentAction: null };
+    }
+  }
+  const result = FeedbackCompositionPlanSchema.safeParse(parsed);
+  if (result.success) return result.data;
+  const fields = [...new Set(result.error.issues.map((issue) => issue.path.join(".") || "root"))].slice(0, 4);
+  throw new ApiError(`反馈${stageLabel}模型缺少或写错字段：${fields.join("、")}；本条未保存`, 502, "llm_schema_invalid", true);
+}
+
+function normalizeCompositionDependencies(composition: FeedbackCompositionPlan) {
+  if (composition.needParentAction && composition.parentAction) return composition;
+  return {
+    ...composition,
+    needParentAction: false,
+    parentAction: null,
+    closureType: composition.closureType === "home_cooperation" ? "positive_recognition" as const : composition.closureType,
+    modules: composition.modules.map((module) => module.key === "parent_action"
+      ? { ...module, status: "blocked" as const, reason: "没有合法家长动作，程序已禁用此模块" }
+      : module),
+  };
+}
+
+/**
+ * Three-layer feedback generation used by FeedbackPlan. The first layer is
+ * supplied by the deterministic evidence service; this function only performs
+ * the structured composition draft and constrained review/polish. The caller
+ * must still run the deterministic audit before approval.
+ */
+export async function generateFeedbackPlanComposition(input: FeedbackPlanGenerationInput) {
+  const evidence = FeedbackEvidenceBundleSchema.parse(input.evidenceBundle);
+  const evidenceText = JSON.stringify(evidence);
+  const allowedModules = [...FEEDBACK_MODULES[input.planType]];
+  const allowedClosures = [...FEEDBACK_CLOSURES_BY_TYPE[input.planType]];
+  const evidenceIds = evidence.teachingEvidence.concat(evidence.communicationContext)
+    .filter((item) => item.confirmed && item.kind !== "model_candidate")
+    .map((item) => item.id);
+  const protocolBoundary = `当前类型允许的 module key 只有：${allowedModules.join(", ")}。
+当前类型允许的 closureType 只有：${allowedClosures.join(", ")}。
+evidenceRefs 只能逐字使用以下证据 ID：${evidenceIds.join(", ")}。`;
+  const draftPrompt = `你是 Student Track 的反馈组装模型。请只依据确定性证据包，为${input.studentName}生成结构化反馈组装方案。不要添加证据包之外的事实、教师动作、家长动作或未来承诺。
+
+反馈类型：${input.planType}
+表达偏好：长度 ${input.length}；语气与术语按 ${input.style}，但偏好不能改变事实、风险、家长动作或教师承诺边界。
+确定性证据包：
+${evidenceText}
+
+结构协议（必须严格遵守）：
+${protocolBoundary}
+
+规则：
+1. 只能从上面明确列出的 module key 中选择两到四个有价值的模块，不得自造、翻译或使用旧版模块名；每个 included 模块至少引用一个上面列出的证据 ID。
+2. needParentAction 默认 false；家长动作只能是提醒、确认、提供条件或反馈异常。
+3. teacher_intervention、teacher_support 和 intervention_outcome 必须有证据；followup_observation 必须已有任务或固定安排。
+4. closureType 只能从上面列出的当前类型选项中选择；不得因为示例中出现其他结尾就使用越界值。
+5. 不产生续班、销售、风险标签或内部研判；不要称呼家长。
+6. draftFeedback 只是初稿，不要写标题或项目符号。
+
+只返回 JSON：{
+  "version":1,
+  "closureType":"informational|positive_recognition|teacher_resolved|home_cooperation|continued_observation",
+  "needParentAction":false,
+  "parentAction":null,
+  "modules":[{"key":"...","content":"...","evidenceRefs":["..."],"status":"included|omitted|blocked","reason":"..."}],
+  "draftFeedback":"..."
+}`;
+  const draftRaw = await generateDraft(input.draftClient, input.draftModel, draftPrompt, input.signal, input.profileId, "json");
+  let draftComposition;
+  try {
+    draftComposition = normalizeCompositionDependencies(parseComposition(draftRaw, "draft"));
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.code !== "llm_schema_invalid") throw error;
+    const repairPrompt = `你是 Student Track 的结构修复模型。下面的反馈组装输出不是合法结构，请只做 JSON 结构修复，不新增、删除或改写其中的教学事实。
+
+反馈类型：${input.planType}
+${protocolBoundary}
+
+无效输出：
+${draftRaw.slice(0, 12000)}
+
+请返回完整 JSON，必须包含 version=1、closureType、needParentAction、parentAction、modules、draftFeedback。parentAction 不需要时必须为 null；每个 module 必须包含 key、content、evidenceRefs、status、reason。`;
+    const repairedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, repairPrompt, input.signal, { disableReasoning: true, profileId: input.profileId });
+    const repairedContent = repairedResponse.choices[0]?.message?.content?.trim();
+    if (!repairedContent) throw error;
+    draftComposition = normalizeCompositionDependencies(parseComposition(repairedContent, "draft"));
+  }
+  const reviewPrompt = `你是 Student Track 的反馈审核与受限润色模型。请对照同一份确定性证据包审核组装方案，并只在证据允许的范围内润色。润色不得新增事实、家长动作、教师处理或未来承诺。
+
+确定性证据包：
+${evidenceText}
+
+组装方案：
+${JSON.stringify(draftComposition)}
+
+结构协议（优先级高于原组装方案）：
+${protocolBoundary}
+
+审核规则：
+1. 所有 included 模块必须使用当前类型允许的精确 key，并至少有一个有效 evidenceRefs；原方案中的旧版或自造 key 必须改成当前目录中的合适 key，不能原样保留。
+2. 家长动作开关、教师处理、处理结果和后续观察遵守字段依赖。
+3. 发现隐性承诺、内部信息或证据不足时，将对应模块标记 blocked 或 needs_review，不要替教师放行。
+4. closureType 必须属于当前类型允许列表；原方案越界时必须纠正。
+5. 只返回完整结构化 JSON，draftFeedback 是最终家长文本。
+
+返回字段必须包含 version、closureType、needParentAction、parentAction、modules 和 draftFeedback；modules 使用 key、content、evidenceRefs、status、reason。`;
+  const reviewedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, reviewPrompt, input.signal, { profileId: input.profileId });
+  let reviewedContent = reviewedResponse.choices[0]?.message?.content?.trim();
+  if (!reviewedContent) throw new Error("反馈审核模型返回空结果");
+  let reviewedComposition;
+  try {
+    reviewedComposition = normalizeCompositionDependencies(parseComposition(reviewedContent, "review"));
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.code !== "llm_schema_invalid") throw error;
+    const repairReviewPrompt = `你是 Student Track 的审核结果结构修复模型。上一份审核输出不是合法 JSON。请依据同一证据包修复结构并删除越界的家长动作或教师承诺，不新增事实。
+
+反馈类型：${input.planType}
+${protocolBoundary}
+
+确定性证据包：
+${evidenceText}
+
+无效审核输出：
+${reviewedContent.slice(0, 12000)}
+
+只返回完整 JSON，字段必须包含 version=1、closureType、needParentAction、parentAction、modules、draftFeedback。无需家长动作时 needParentAction=false 且 parentAction=null。`;
+    const repairedReview = await createReviewCompletion(input.reviewClient, input.reviewModel, repairReviewPrompt, input.signal, { disableReasoning: true, profileId: input.profileId });
+    const repairedContent = repairedReview.choices[0]?.message?.content?.trim();
+    if (!repairedContent) throw error;
+    reviewedContent = repairedContent;
+    reviewedComposition = normalizeCompositionDependencies(parseComposition(repairedContent, "review"));
+  }
+  let audit = createAuditSnapshot(reviewedComposition, evidence, input.existingTaskIds);
+  const blocked = audit.items.filter((issue) => issue.severity === "blocked");
+  if (blocked.length) {
+    const correctionPrompt = `你是 Student Track 的结构纠错模型。上一版反馈未通过程序门禁，请只修正结构和越界表达，不新增任何事实或动作。
+
+反馈类型：${input.planType}
+${protocolBoundary}
+
+确定性证据包：
+${evidenceText}
+
+上一版结果：
+${JSON.stringify(reviewedComposition)}
+
+必须修正的问题：
+${blocked.map((issue) => `- ${issue.message}`).join("\n")}
+
+只返回完整 JSON，字段为 version、closureType、needParentAction、parentAction、modules、draftFeedback。modules 必须选两到四个，且 key 和 evidenceRefs 只能取上面允许的精确值。`;
+    const correctedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, correctionPrompt, input.signal, { profileId: input.profileId });
+    const correctedContent = correctedResponse.choices[0]?.message?.content?.trim();
+    if (correctedContent) {
+      reviewedComposition = normalizeCompositionDependencies(parseComposition(correctedContent, "correction"));
+      audit = createAuditSnapshot(reviewedComposition, evidence, input.existingTaskIds);
+    }
+  }
+  const structuralCodes = new Set(["module_not_allowed", "evidence_ref_missing", "module_count_invalid", "closure_not_allowed"]);
+  if (audit.items.some((issue) => issue.severity === "blocked" && structuralCodes.has(issue.code))) {
+    throw new ApiError("反馈模型未遵守当前类型的模块协议，本条未保存；请重试生成", 502, "llm_schema_invalid", true);
+  }
+  return {
+    draftComposition,
+    composition: reviewedComposition,
+    audit,
+    reviewRaw: reviewedContent,
   };
 }

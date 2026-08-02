@@ -1,21 +1,11 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import { prisma } from "@/lib/prisma";
+import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
-
-let semesterId: string;
-let className: string;
-
-beforeAll(async () => {
-  const sem = await prisma.semester.findFirst({ select: { id: true } });
-  semesterId = sem!.id;
-  const cls = await prisma.class.findFirst({ select: { name: true, code: true } });
-  className = cls!.name ?? cls!.code;
-});
+import { TEST_FIXTURE } from "../../../scripts/test-fixture-data";
 
 describe("/api/sessions", () => {
   it("GET returns 200 with array for valid params", async () => {
     const { GET } = await import("@/app/api/sessions/route");
-    const url = `http://localhost:3000/api/sessions?semesterId=${semesterId}&className=${encodeURIComponent(className)}`;
+    const url = `http://localhost:3000/api/sessions?semesterId=${TEST_FIXTURE.semester.id}&className=${encodeURIComponent(TEST_FIXTURE.class.name)}`;
     const req = new NextRequest(url);
     const res = await GET(req);
     expect(res.status).toBe(200);
@@ -28,7 +18,7 @@ describe("/api/sessions", () => {
 
   it("GET without className still returns 200", async () => {
     const { GET } = await import("@/app/api/sessions/route");
-    const url = `http://localhost:3000/api/sessions?semesterId=${semesterId}`;
+    const url = `http://localhost:3000/api/sessions?semesterId=${TEST_FIXTURE.semester.id}`;
     const req = new NextRequest(url);
     const res = await GET(req);
     expect(res.status).toBe(200);

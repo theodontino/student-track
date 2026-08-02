@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
+import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { GET } from "@/app/api/report/feedback-batch/route";
 
@@ -49,6 +50,8 @@ describe("/api/report/feedback-batch", () => {
         operator: "teacher",
       },
     });
+    const teacherEditedFeedback = "教师修改后的反馈文本。";
+    const modelOriginalFeedback = "模型生成的原始反馈文本。";
     await prisma.workHistory.create({
       data: {
         module: "feedback",
@@ -73,6 +76,32 @@ describe("/api/report/feedback-batch", () => {
       data: {
         module: "feedback",
         key: sessionCode,
+        title: "legacy length-only review",
+        state: JSON.stringify({
+          kind: "batch",
+          semesterId: semester.id,
+          sessionCode,
+          className: "测试班",
+          total: 1,
+          students: [{
+            id: student.id,
+            name: "张三",
+            labels: [],
+            feedback: "短反馈。",
+            reviewStatus: "needs_review",
+            reviewIssues: ["反馈长度为 4 个可见字符，应为 90–140 个"],
+          }],
+        }),
+      },
+    });
+    const lengthOnlyResponse = await GET(new NextRequest(`http://localhost:3000/api/report/feedback-batch?sessionCode=${sessionCode}&module=feedback`));
+    expect(lengthOnlyResponse.status).toBe(200);
+    expect((await lengthOnlyResponse.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+
+    await prisma.workHistory.create({
+      data: {
+        module: "feedback",
+        key: sessionCode,
         title: "feedback test",
         state: JSON.stringify({
           kind: "batch",
@@ -90,7 +119,7 @@ describe("/api/report/feedback-batch", () => {
             style: "balanced",
             length: "standard",
           },
-          students: [{ id: student.id, name: "张三", labels: [], feedback: "学".repeat(90), reviewStatus: "edited" }],
+          students: [{ id: student.id, name: "张三", labels: [], feedback: teacherEditedFeedback, reviewStatus: "edited" }],
         }),
       },
     });
@@ -111,7 +140,7 @@ describe("/api/report/feedback-batch", () => {
           reviewIssues: ["模型原文曾经越界"],
           modelRawFinalText: "短",
         }),
-        finalText: "学".repeat(90),
+        finalText: modelOriginalFeedback,
       },
     });
     await prisma.feedbackGenerationSelection.create({
@@ -125,6 +154,17 @@ describe("/api/report/feedback-batch", () => {
     const response = await GET(new NextRequest(`http://localhost:3000/api/report/feedback-batch?sessionCode=${sessionCode}&module=feedback`));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("spreadsheetml");
-    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+    const body = await response.arrayBuffer();
+    expect(response.headers.get("content-length")).toBe(String(body.byteLength));
+    expect(body.byteLength).toBeGreaterThan(1000);
+    const workbook = XLSX.read(body, { type: "array" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"]!, {
+      defval: "",
+    });
+    expect(rows[0]).toMatchObject({ 姓名: "张三", 最终反馈: teacherEditedFeedback });
+    expect(rows[0]?.最终反馈).not.toBe(modelOriginalFeedback);
+    await expect(prisma.generationRecord.findUniqueOrThrow({
+      where: { id: selectedGeneration.id },
+    })).resolves.toMatchObject({ finalText: teacherEditedFeedback });
   });
 });

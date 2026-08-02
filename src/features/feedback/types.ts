@@ -25,6 +25,14 @@ export interface FeedbackCard {
 }
 
 export interface FeedbackContextResponse {
+  session?: {
+    id: string;
+    code: string;
+    date: string;
+    semesterId: string;
+    semesterNumber: number;
+    classId: string;
+  };
   className: string;
   total: number;
   students: FeedbackContextStudent[];

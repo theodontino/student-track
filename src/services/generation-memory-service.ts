@@ -31,6 +31,7 @@ export interface RecordSuccessfulGenerationInput {
   modelProfileId?: string | null;
   inputRevision?: string | null;
   parentGenerationId?: string | null;
+  feedbackPlanItemId?: string | null;
   variantKey?: string | null;
   selectIfFirst?: boolean;
   inputSnapshot?: unknown;
@@ -205,6 +206,7 @@ export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerati
     modelSettings: JSON.stringify(settings),
     inputRevision: input.inputRevision ?? null,
     parentGenerationId: input.parentGenerationId ?? null,
+    feedbackPlanItemId: input.feedbackPlanItemId ?? null,
     variantKey: input.variantKey ?? null,
     inputSnapshot,
     outputSnapshot,

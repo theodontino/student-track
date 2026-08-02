@@ -4,6 +4,7 @@ import { logAction } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 
 function localDate(date = new Date()) {
   const year = date.getFullYear();
@@ -136,6 +137,12 @@ export async function deleteClassSession(input: { semesterId: string; code: stri
     for (const metric of metrics) {
       await archiveMetricBeforeUpdate(metric.id, "delete", tx);
     }
+
+    await invalidateFeedbackPlans({
+      classId: session.classId ?? undefined,
+      semesterId: session.semesterId,
+      sessionId: session.id,
+    }, tx);
 
     await tx.classSession.delete({ where: { id: session.id } });
     await reorderSemesterNumbers(tx, input.semesterId, session.classId);

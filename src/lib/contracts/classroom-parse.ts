@@ -4,6 +4,7 @@ import type {
   DraftReviewResult,
   DraftStructuredResult,
   NameCorrection,
+  TeacherIntervention,
 } from "@/lib/types";
 
 const boundedText = (max: number) => z.string().trim().min(1).max(max);
@@ -16,6 +17,13 @@ export const AttentionSignalCandidateSchema = z.object({
   evidenceSummary: boundedText(240),
 });
 
+export const TeacherInterventionSchema: z.ZodType<TeacherIntervention> = z.object({
+  observedProblem: boundedText(1000),
+  teacherAction: boundedText(1000),
+  outcome: optionalBoundedText(1000),
+  evidenceText: boundedText(2000),
+});
+
 export const DraftStudentSchema = z.object({
   name: boundedText(100),
   scores: z.object({ A: score, B: score, C: score }),
@@ -26,6 +34,7 @@ export const DraftStudentSchema = z.object({
   }).nullable(),
   present: z.boolean().optional(),
   attentionSignals: z.array(AttentionSignalCandidateSchema).max(4).optional(),
+  teacherInterventions: z.array(TeacherInterventionSchema).max(20).optional(),
 });
 
 export const DraftStructuredResultSchema: z.ZodType<DraftStructuredResult> = z.object({
@@ -39,6 +48,10 @@ export const DraftReviewResultSchema: z.ZodType<DraftReviewResult> = z.object({
   suggestions: z.array(boundedText(1000)).max(50),
   revised_scores: z.record(z.string().max(100), z.record(z.string().max(10), score)).default({}),
   revised_events: z.record(z.string().max(100), z.array(boundedText(1000)).max(50)).default({}),
+  revised_teacher_interventions: z.record(
+    z.string().max(100),
+    z.array(TeacherInterventionSchema).max(20),
+  ).default({}),
 });
 
 export const NameCorrectionSchema: z.ZodType<NameCorrection> = z.object({

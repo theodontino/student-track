@@ -42,6 +42,13 @@ export interface CardScore {
   note: string;
 }
 
+export interface TeacherIntervention {
+  observedProblem: string;
+  teacherAction: string;
+  outcome?: string;
+  evidenceText: string;
+}
+
 export type ScoreDimension = "A" | "B" | "C";
 
 export interface DraftStudent {
@@ -51,6 +58,7 @@ export interface DraftStudent {
   communication: { type: string; summary: string } | null;
   present?: boolean;
   attentionSignals?: AttentionSignalCandidate[];
+  teacherInterventions?: TeacherIntervention[];
 }
 
 export interface DraftStructuredResult {
@@ -64,6 +72,7 @@ export interface DraftReviewResult {
   suggestions: string[];
   revised_scores: Record<string, Record<string, number | null>>;
   revised_events: Record<string, string[]>;
+  revised_teacher_interventions?: Record<string, TeacherIntervention[]>;
 }
 
 export interface NameCorrection {

@@ -9,11 +9,17 @@ export const FEEDBACK_OUTPUT_SECTION_KEYS = [
 export type FeedbackOutputSectionKey = typeof FEEDBACK_OUTPUT_SECTION_KEYS[number];
 
 export const FEEDBACK_STYLES = [
+  "gentle",
+  "professional",
+  // Legacy values remain readable so 1.1.0-beta.1 WorkHistory and replay
+  // snapshots do not become invalid after the expression controls change.
   "concise_objective",
   "balanced",
   "encouraging",
 ] as const;
 export type FeedbackStyle = typeof FEEDBACK_STYLES[number];
+export const FEEDBACK_STYLE_CHOICES = ["gentle", "professional"] as const;
+export type FeedbackStyleChoice = typeof FEEDBACK_STYLE_CHOICES[number];
 
 export const FEEDBACK_LENGTHS = ["short", "standard"] as const;
 export type FeedbackLength = typeof FEEDBACK_LENGTHS[number];
@@ -22,6 +28,14 @@ export const FEEDBACK_STYLE_OPTIONS: Record<FeedbackStyle, {
   label: string;
   instruction: string;
 }> = {
+  gentle: {
+    label: "温和",
+    instruction: "语气自然、有耐心，先让家长看清孩子被观察到的具体表现，再稳妥说明问题；不得虚构表扬或淡化事实。",
+  },
+  professional: {
+    label: "专业",
+    instruction: "表达清楚、克制，以事实、依据和明确判断为主，避免情绪化修饰和空泛鼓励。",
+  },
   concise_objective: {
     label: "简洁客观",
     instruction: "表达直接、克制、以事实和具体依据为主，不增加情绪性修饰。",
@@ -38,11 +52,16 @@ export const FEEDBACK_STYLE_OPTIONS: Record<FeedbackStyle, {
 
 export const FEEDBACK_LENGTH_OPTIONS: Record<FeedbackLength, {
   label: string;
-  min: number;
-  max: number;
+  instruction: string;
 }> = {
-  short: { label: "短（60–89 字符）", min: 60, max: 89 },
-  standard: { label: "标准（90–140 字符）", min: 90, max: 140 },
+  short: {
+    label: "简洁",
+    instruction: "用较少句子直接说明一个最重要的事实或问题，不追求固定字符数。",
+  },
+  standard: {
+    label: "详细",
+    instruction: "在核心事实之外补充必要依据和有边界的解释，但不堆砌材料，不追求固定字符数。",
+  },
 };
 
 export interface FeedbackOutputStrategy {
@@ -65,17 +84,17 @@ export const FEEDBACK_OUTPUT_PRESETS: Record<FeedbackOutputPreset, {
   light: {
     label: "轻量反馈",
     description: "只突出本次需要说明的问题，并生成简短家长文本。",
-    strategy: { flaggedIssue: true, trendChange: false, backgroundBaseline: false, strategySuggestion: false, suggestedFeedback: true, style: "balanced", length: "standard" },
+    strategy: { flaggedIssue: true, trendChange: false, backgroundBaseline: false, strategySuggestion: false, suggestedFeedback: true, style: "gentle", length: "standard" },
   },
   attention: {
     label: "关注学生优先",
     description: "补充趋势、基线与教师下一步，再生成家长文本。",
-    strategy: { flaggedIssue: true, trendChange: true, backgroundBaseline: true, strategySuggestion: true, suggestedFeedback: true, style: "balanced", length: "standard" },
+    strategy: { flaggedIssue: true, trendChange: true, backgroundBaseline: true, strategySuggestion: true, suggestedFeedback: true, style: "gentle", length: "standard" },
   },
   teacher: {
     label: "教师研判",
     description: "只生成内部结构化研判，不调用模型成文。",
-    strategy: { flaggedIssue: true, trendChange: true, backgroundBaseline: true, strategySuggestion: true, suggestedFeedback: false, style: "balanced", length: "standard" },
+    strategy: { flaggedIssue: true, trendChange: true, backgroundBaseline: true, strategySuggestion: true, suggestedFeedback: false, style: "gentle", length: "standard" },
   },
 };
 
@@ -112,7 +131,9 @@ export function normalizeFeedbackOutputStrategy(
     backgroundBaseline: typeof value?.backgroundBaseline === "boolean" ? value.backgroundBaseline : DEFAULT_FEEDBACK_OUTPUT_STRATEGY.backgroundBaseline,
     strategySuggestion: typeof value?.strategySuggestion === "boolean" ? value.strategySuggestion : DEFAULT_FEEDBACK_OUTPUT_STRATEGY.strategySuggestion,
     suggestedFeedback: typeof value?.suggestedFeedback === "boolean" ? value.suggestedFeedback : DEFAULT_FEEDBACK_OUTPUT_STRATEGY.suggestedFeedback,
-    style: value?.style && FEEDBACK_STYLES.includes(value.style) ? value.style : "balanced",
+    style: value?.style === "professional" || value?.style === "concise_objective"
+      ? "professional"
+      : "gentle",
     length: value?.length && FEEDBACK_LENGTHS.includes(value.length) ? value.length : "standard",
   };
 }
@@ -129,8 +150,7 @@ export function feedbackStyleInstruction(style: FeedbackStyle) {
 }
 
 export function feedbackLengthRequirement(length: FeedbackLength) {
-  const option = FEEDBACK_LENGTH_OPTIONS[length];
-  return `${option.min}–${option.max} 个可见字符（空白不计，标点计入）`;
+  return FEEDBACK_LENGTH_OPTIONS[length].instruction;
 }
 
 export function visibleFeedbackLength(value: string) {
@@ -138,8 +158,14 @@ export function visibleFeedbackLength(value: string) {
 }
 
 export function feedbackLengthIssue(value: string, length: FeedbackLength) {
-  const actual = visibleFeedbackLength(value);
-  const option = FEEDBACK_LENGTH_OPTIONS[length];
-  if (actual >= option.min && actual <= option.max) return null;
-  return `反馈长度为 ${actual} 个可见字符，应为 ${option.min}–${option.max} 个`;
+  void value;
+  void length;
+  return null;
+}
+
+export function isLegacyLengthOnlyReview(issues: string[] | undefined) {
+  return Boolean(issues?.length) && issues!.every((issue) => (
+    /反馈长度为\s*\d+\s*个可见字符，应为/.test(issue)
+    || issue.includes("达到所选长度后即可解除导出限制")
+  ));
 }

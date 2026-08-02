@@ -20,10 +20,10 @@ import {
   FeedbackBatchStreamEventSchema,
   FeedbackSingleResponseSchema,
 } from "@/lib/contracts/feedback";
-import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
+import type { DraftReviewResult, DraftStructuredResult, NameCorrection, TeacherIntervention } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
 import type { FeedbackIntensity, FeedbackRoutingDecision } from "@/lib/feedback-intensity";
-import { DEFAULT_FEEDBACK_OUTPUT_STRATEGY, feedbackLengthIssue, normalizeFeedbackOutputStrategy, type FeedbackOutputStrategy } from "@/lib/feedback-sections";
+import { DEFAULT_FEEDBACK_OUTPUT_STRATEGY, isLegacyLengthOnlyReview, normalizeFeedbackOutputStrategy, type FeedbackOutputStrategy } from "@/lib/feedback-sections";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import type { FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
 import { isInputHistoryState } from "./history-adapters";
@@ -406,6 +406,16 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   function setParsedAttendance(index: number, present: boolean) {
     dispatchCore({ type: "parsed/attendance", index, present });
   }
+  function setParsedTeacherInterventions(index: number, interventions: TeacherIntervention[]) {
+    setParsedResult(parsedResult
+      ? {
+        ...parsedResult,
+        students: parsedResult.students.map((student, studentIndex) => studentIndex === index
+          ? { ...student, teacherInterventions: interventions }
+          : student),
+      }
+      : null);
+  }
   function resetDraftResult() { setStreamContent(""); setDraftId(""); setParsedResult(null); setReviewResult(null); setCorrections([]); setConfirmed(false); }
   async function parse() {
     if (!rawText.trim()) { setError("请输入课后回顾"); return; }
@@ -761,19 +771,21 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setStatus("未完成批次已放弃；旧部分结果不会进入下一批次。");
     workflow.reset(); setActiveStep("generate");
   }
-  async function regenerateOne(studentId: string) {
+  async function regenerateOne(studentId: string, retryStrategy: FeedbackOutputStrategy = outputStrategy) {
     if (!sessionCode || !feedbackCards.some((card) => card.id === studentId)) return;
     if (feedbackBatch.status === "stale") {
       setError("反馈输入已经变化，不能把单人重写混入旧批次；请重新生成。");
       return;
     }
+    const card = feedbackCards.find((item) => item.id === studentId);
     setRegeneratingId(studentId); setError("");
+    setStatus(`${card?.name ?? "该学生"}正在重试，请稍候…`);
     try {
-      const card = feedbackCards.find((item) => item.id === studentId);
-      const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, inputRevision: feedbackBatch.inputRevision, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy }) });
+      const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, inputRevision: feedbackBatch.inputRevision, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy: normalizeFeedbackOutputStrategy(retryStrategy) }) });
       adoptLessonMaterial(data.lessonMaterial);
       dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } });
       dispatchFeedback({ type: "dirty", value: true });
+      setStatus(`${card?.name ?? "该学生"}重试完成，已使用本次选择的反馈维度。`);
       if (feedbackBatch.status === "incomplete") {
         setFeedbackBatch((current) => {
           const next = updateStudentProgress(current, studentId, data.feedback?.trim() && data.reviewStatus !== "needs_review" ? "completed" : "failed");
@@ -785,7 +797,10 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     catch (reason) { setError(errorMessage(reason, "重新生成失败")); }
     finally { setRegeneratingId(""); }
   }
-  async function regenerateFeedbackVersion(studentId: string) {
+  async function regenerateFeedbackVersion(
+    studentId: string,
+    retryStrategy: FeedbackOutputStrategy = outputStrategy,
+  ) {
     if (!feedbackVersionProfileId) {
       setError("请先在系统中心保存至少一个 LLM 配置。");
       return;
@@ -801,6 +816,8 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     }
     setFeedbackVersionBusyId(studentId);
     setError("");
+    const card = feedbackCards.find((item) => item.id === studentId);
+    setStatus(`${card?.name ?? "该学生"}正在用所选模型和反馈维度重试…`);
     try {
       const result = await requestJson<{ results: Array<{ status: string; error?: string }> }>(
         "/api/report/feedback-versions/regenerate",
@@ -809,14 +826,21 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             profileId: feedbackVersionProfileId,
-            items: [{ studentId, sourceGenerationId: source.id }],
+            items: [{
+              studentId,
+              sourceGenerationId: source.id,
+              style: retryStrategy.style,
+              length: retryStrategy.length,
+            }],
           }),
         },
       );
       const item = result.results[0];
       if (item?.status === "error") throw new Error(item.error || "生成派生版本失败");
       await refreshFeedbackVersions();
-      setStatus(item?.status === "existing" ? "相同输入与模型的版本已存在。" : "已生成新版本；请核对后显式采用。");
+      setStatus(item?.status === "existing"
+        ? "相同输入、模型和反馈维度的版本已存在。"
+        : `${card?.name ?? "该学生"}重试完成；请核对后显式采用新版本。`);
     } catch (reason) {
       setError(errorMessage(reason, "生成派生版本失败"));
     } finally {
@@ -856,20 +880,17 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     }
   }
   function updateFeedback(studentId: string, feedback: string) {
-    const lengthIssue = feedbackLengthIssue(feedback, outputStrategy.length);
     dispatchFeedback({
       type: "patch",
       studentId,
       patch: {
         feedback,
-        reviewStatus: lengthIssue ? "needs_review" : "edited",
-        reviewIssues: lengthIssue
-          ? [lengthIssue, "请继续人工修改；达到所选长度后即可解除导出限制"]
-          : ["教师已人工修改，导出以当前文本为准"],
+        reviewStatus: "edited",
+        reviewIssues: ["教师已人工修改，导出以当前文本为准"],
       },
     });
     dispatchFeedback({ type: "dirty", value: true });
-    if (feedback.trim() && !lengthIssue && feedbackBatch.status === "incomplete") {
+    if (feedback.trim() && feedbackBatch.status === "incomplete") {
       setFeedbackBatch((current) => {
         const next = updateStudentProgress(current, studentId, "completed");
         const complete = next.completedStudentIds.length >= next.total && next.failedStudentIds.length === 0;
@@ -901,14 +922,40 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         : "当前批次未完成，不能导出；请继续处理、保存部分结果或放弃本批次。");
       return;
     }
-    const blockerCount = feedbackCards.filter((card) => card.reviewStatus === "needs_review").length;
+    const blockerCount = feedbackCards.filter((card) => (
+      card.reviewStatus === "needs_review" && !isLegacyLengthOnlyReview(card.reviewIssues)
+    )).length;
     if (blockerCount > 0) {
       setError(`还有 ${blockerCount} 条反馈需要人工确认；请修改或重新生成后再导出。`);
       return;
     }
     setExporting(true); setError("");
     workflow.start("保存并导出反馈", "正在检查最终反馈文本…"); workflow.transition("saving", "正在保存修改并准备 Excel…");
-    try { if (feedbackDirty) await saveFeedbackState(); const anchor = document.createElement("a"); anchor.href = `/api/report/feedback-batch?sessionCode=${sessionCode}&module=feedback`; anchor.download = `feedback_${sessionCode}.xlsx`; document.body.appendChild(anchor); anchor.click(); anchor.remove(); setStatus("已准备导出文件。"); workflow.transition("completed", "最终反馈已保存，导出文件已准备完成。"); }
+    try {
+      if (feedbackDirty) await saveFeedbackState();
+      const response = await fetch(`/api/report/feedback-batch?sessionCode=${encodeURIComponent(sessionCode)}&module=feedback`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error || `导出请求失败（HTTP ${response.status}）`);
+      }
+      const blob = await response.blob();
+      if (
+        blob.size < 512
+        || !response.headers.get("content-type")?.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+      ) {
+        throw new Error("服务器未返回有效的 Excel 文件，请查看页面错误后重试。");
+      }
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = `feedback_${sessionCode}.xlsx`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(href);
+      setStatus(`已导出课后反馈表（${Math.ceil(blob.size / 1024)} KB）。`);
+      workflow.transition("completed", "最终反馈已保存，Excel 文件已下载。");
+    }
     catch (reason) { const message = errorMessage(reason, "导出失败"); setError(message); workflow.fail(message, "saving"); }
     finally { setExporting(false); }
   }
@@ -938,7 +985,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       total: state.total,
       legacyDone: state.batchStatus === "incomplete" ? state.completedStudentIds?.length ?? 0 : state.total,
     });
-    dispatchFeedback({ type: "init", cards: state.students, total: state.total, done: restoredBatch.completedStudentIds.length });
+    const restoredCards = state.students.map((card) => (
+      card.reviewStatus === "needs_review" && isLegacyLengthOnlyReview(card.reviewIssues)
+        ? { ...card, reviewStatus: "passed" as const, reviewIssues: [] }
+        : card
+    ));
+    dispatchFeedback({ type: "init", cards: restoredCards, total: state.total, done: restoredBatch.completedStudentIds.length });
     setFeedbackBatch(restoredBatch);
     setRoutingOverrides(state.routingOverrides ?? {});
     setOutputStrategyState(normalizeFeedbackOutputStrategy(state.outputStrategy));
@@ -1002,7 +1054,9 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setSingleReviewIssues(["教师已人工修改，当前文本可直接使用"]);
   }
 
-  const feedbackReviewBlockerCount = feedbackCards.filter((card) => card.reviewStatus === "needs_review").length;
+  const feedbackReviewBlockerCount = feedbackCards.filter((card) => (
+    card.reviewStatus === "needs_review" && !isLegacyLengthOnlyReview(card.reviewIssues)
+  )).length;
   const canExportFeedback = feedbackBatchCanExport(feedbackBatch, forceRegenerate);
   const lessonMaterialNeedsOrganization = (
     lessonMaterial.groupFeedbackRaw !== groupFeedbackRaw.trim()
@@ -1034,7 +1088,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     clearAssessmentImports: assessmentPdfs.clear,
     legacyDraftAvailable, restoreLegacyDraft,
     singleLoading, contextByStudent, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming), canGenerate: Boolean(sessionCode && !generating),
-    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, parse, importAssistantRoster, confirm, generate, cancelGeneration, prepareRegeneration,
+    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, setParsedTeacherInterventions, parse, importAssistantRoster, confirm, generate, cancelGeneration, prepareRegeneration,
     continueIncompleteBatch, savePartialFeedbackState, abandonIncompleteBatch,
     regenerateOne, regenerateFeedbackVersion, selectFeedbackVersion, updateFeedback, setFeedbackIntensity, setOutputStrategy, exportFeedback, restoreHistory, generateSingleFeedback,
   };

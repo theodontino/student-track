@@ -9,6 +9,7 @@ import {
 import {
   composeFeedbackPromptContext,
   generateFeedbackDraft,
+  generateFeedbackPlanComposition,
   generateRoutineFeedback,
   generateReviewedFeedback,
   reviewFeedbackDraft,
@@ -24,6 +25,206 @@ function clientWith(...contents: string[]) {
 }
 
 describe("feedback generation review", () => {
+  it("repairs legacy module keys before a course-end plan is saved", async () => {
+    const legacy = {
+      version: 1,
+      closureType: "informational",
+      needParentAction: false,
+      parentAction: null,
+      modules: [
+        { key: "current_performance", content: "本次完成稳定", evidenceRefs: ["legacy-current"], status: "included", reason: "旧模块" },
+        { key: "trend_summary", content: "阶段表现稳定", evidenceRefs: ["legacy-trend"], status: "included", reason: "旧模块" },
+      ],
+      draftFeedback: "本阶段学习表现比较稳定。",
+    };
+    const corrected = {
+      ...legacy,
+      closureType: "positive_recognition",
+      modules: [
+        { key: "starting_state", content: "阶段开始时完成基础题", evidenceRefs: ["event-1"], status: "included", reason: "起点" },
+        { key: "evidence_backed_change", content: "本次已能独立完成", evidenceRefs: ["event-2"], status: "included", reason: "变化" },
+      ],
+      draftFeedback: "阶段开始时能够完成基础题，这次已经能独立完成同类任务。",
+    };
+    const draft = clientWith(JSON.stringify(legacy));
+    const review = clientWith(JSON.stringify(legacy), JSON.stringify(corrected));
+
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "course_end",
+      evidenceBundle: {
+        version: 1,
+        planType: "course_end",
+        studentId: "student-1",
+        teachingEvidence: [
+          { id: "event-1", kind: "fact", content: "阶段开始时完成基础题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true },
+          { id: "event-2", kind: "fact", content: "本次已能独立完成", sourceRefs: [{ type: "event", id: "source-2" }], confirmed: true },
+        ],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-test-fingerprint",
+      },
+      style: "gentle",
+      length: "short",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: review.client,
+      reviewModel: "review-model",
+    });
+
+    expect(result.audit.status).toBe("pass");
+    expect(result.composition.closureType).toBe("positive_recognition");
+    expect(result.composition.modules.map((module) => module.key)).toEqual(["starting_state", "evidence_backed_change"]);
+    expect(review.create).toHaveBeenCalledTimes(2);
+    expect(review.create.mock.calls[1][0].messages[0].content).toContain("current_performance");
+    expect(review.create.mock.calls[1][0].messages[0].content).toContain("starting_state");
+    expect(draft.create.mock.calls[0][0]).toMatchObject({
+      temperature: 0,
+      response_format: { type: "json_object" },
+    });
+  });
+
+  it("repairs an incomplete structured draft before review", async () => {
+    const incomplete = JSON.stringify({
+      version: 1,
+      needParentAction: false,
+      parentAction: null,
+      modules: [],
+      draftFeedback: "本次已经能够独立完成。",
+    });
+    const repaired = {
+      version: 1,
+      closureType: "positive_recognition",
+      needParentAction: false,
+      parentAction: null,
+      modules: [
+        { key: "starting_state", content: "阶段开始时完成基础题", evidenceRefs: ["event-1"], status: "included", reason: "起点" },
+        { key: "evidence_backed_change", content: "本次已能独立完成", evidenceRefs: ["event-2"], status: "included", reason: "变化" },
+      ],
+      draftFeedback: "阶段开始时能够完成基础题，这次已经能独立完成同类任务。",
+    };
+    const draft = clientWith(incomplete);
+    const review = clientWith(JSON.stringify(repaired), JSON.stringify(repaired));
+
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "course_end",
+      evidenceBundle: {
+        version: 1,
+        planType: "course_end",
+        studentId: "student-1",
+        teachingEvidence: [
+          { id: "event-1", kind: "fact", content: "阶段开始时完成基础题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true },
+          { id: "event-2", kind: "fact", content: "本次已能独立完成", sourceRefs: [{ type: "event", id: "source-2" }], confirmed: true },
+        ],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-repair-fingerprint",
+      },
+      style: "gentle",
+      length: "short",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: review.client,
+      reviewModel: "review-model",
+    });
+
+    expect(result.audit.status).toBe("pass");
+    expect(review.create).toHaveBeenCalledTimes(2);
+    expect(review.create.mock.calls[0][0].messages[0].content).toContain("结构修复模型");
+    expect(review.create.mock.calls[0][0]).toMatchObject({ reasoning_effort: "none" });
+  });
+
+  it("normalizes an omitted parentAction when the model explicitly says no action is needed", async () => {
+    const compositionWithoutNullableField = {
+      version: 1,
+      closureType: "positive_recognition",
+      needParentAction: false,
+      modules: [
+        { key: "starting_state", content: "阶段开始时完成基础题", evidenceRefs: ["event-1"], status: "included", reason: "起点" },
+        { key: "evidence_backed_change", content: "本次已能独立完成", evidenceRefs: ["event-2"], status: "included", reason: "变化" },
+      ],
+      draftFeedback: "阶段开始时能够完成基础题，这次已经能独立完成同类任务。",
+    };
+    const draft = clientWith(JSON.stringify(compositionWithoutNullableField));
+    const review = clientWith(JSON.stringify(compositionWithoutNullableField));
+
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "course_end",
+      evidenceBundle: {
+        version: 1,
+        planType: "course_end",
+        studentId: "student-1",
+        teachingEvidence: [
+          { id: "event-1", kind: "fact", content: "阶段开始时完成基础题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true },
+          { id: "event-2", kind: "fact", content: "本次已能独立完成", sourceRefs: [{ type: "event", id: "source-2" }], confirmed: true },
+        ],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-normalize-fingerprint",
+      },
+      style: "gentle",
+      length: "short",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: review.client,
+      reviewModel: "review-model",
+    });
+
+    expect(result.audit.status).toBe("pass");
+    expect(result.composition).toMatchObject({ needParentAction: false, parentAction: null });
+    expect(review.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("repairs malformed review JSON with reasoning disabled", async () => {
+    const composition = {
+      version: 1,
+      closureType: "positive_recognition",
+      needParentAction: false,
+      parentAction: null,
+      modules: [
+        { key: "starting_state", content: "阶段开始时完成基础题", evidenceRefs: ["event-1"], status: "included", reason: "起点" },
+        { key: "evidence_backed_change", content: "本次已能独立完成", evidenceRefs: ["event-2"], status: "included", reason: "变化" },
+      ],
+      draftFeedback: "阶段开始时能够完成基础题，这次已经能独立完成同类任务。",
+    };
+    const draft = clientWith(JSON.stringify(composition));
+    const review = clientWith("{\"version\":1,", JSON.stringify(composition));
+
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "course_end",
+      evidenceBundle: {
+        version: 1,
+        planType: "course_end",
+        studentId: "student-1",
+        teachingEvidence: [
+          { id: "event-1", kind: "fact", content: "阶段开始时完成基础题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true },
+          { id: "event-2", kind: "fact", content: "本次已能独立完成", sourceRefs: [{ type: "event", id: "source-2" }], confirmed: true },
+        ],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-review-repair-fingerprint",
+      },
+      style: "gentle",
+      length: "short",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: review.client,
+      reviewModel: "review-model",
+    });
+
+    expect(result.audit.status).toBe("pass");
+    expect(review.create).toHaveBeenCalledTimes(2);
+    expect(review.create.mock.calls[1][0]).toMatchObject({ reasoning_effort: "none" });
+    expect(review.create.mock.calls[1][0].messages[0].content).toContain("审核结果结构修复模型");
+  });
+
   it("uses one short final pass for routine feedback without inventing advice", async () => {
     const routine = clientWith(JSON.stringify({
       verdict: "pass",
@@ -44,7 +245,7 @@ describe("feedback generation review", () => {
       draftFeedback: "",
     });
     expect(routine.create).toHaveBeenCalledTimes(1);
-    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("60–89 个可见字符");
+    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("不追求固定字符数");
     expect(routine.create.mock.calls[0][0].messages[0].content).toContain("孩子被看见");
     expect(routine.create.mock.calls[0][0].messages[0].content).toContain("不得用空泛夸奖代替事实");
     expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 2048 });
@@ -74,10 +275,10 @@ describe("feedback generation review", () => {
     expect(create.mock.calls[1][0]).toMatchObject({ max_tokens: 4096 });
   });
 
-  it("supports all six style and length combinations with deterministic boundaries", async () => {
+  it("supports every persisted style and both qualitative detail levels without character boundaries", async () => {
     for (const style of FEEDBACK_STYLES) {
       for (const length of FEEDBACK_LENGTHS) {
-        const feedback = "学".repeat(FEEDBACK_LENGTH_OPTIONS[length].min);
+        const feedback = length === "short" ? "本次步骤清楚。" : "本次步骤清楚，能够依据条件逐项核对并完成修正。";
         const routine = clientWith(JSON.stringify({ verdict: "pass", feedback, issues: [] }));
         const result = await generateRoutineFeedback({
           studentName: "学生甲",
@@ -90,16 +291,16 @@ describe("feedback generation review", () => {
         expect(result.reviewStatus, `${style}/${length}`).toBe("passed");
         expect(result.feedback).toBe(feedback);
         expect(routine.create.mock.calls[0][0].messages[0].content)
-          .toContain(FEEDBACK_LENGTH_OPTIONS[length].label.includes("60") ? "60–89" : "90–140");
+          .toContain(FEEDBACK_LENGTH_OPTIONS[length].instruction);
       }
     }
   });
 
-  it("counts punctuation but ignores whitespace and blocks an out-of-range result", async () => {
+  it("counts characters for display but never blocks a valid result by length", async () => {
     expect(visibleFeedbackLength("甲 乙\n，。")).toBe(4);
     const routine = clientWith(JSON.stringify({
       verdict: "pass",
-      feedback: "学".repeat(FEEDBACK_LENGTH_OPTIONS.short.min - 1),
+      feedback: "本次步骤清楚。",
       issues: [],
     }));
     const result = await generateRoutineFeedback({
@@ -110,8 +311,8 @@ describe("feedback generation review", () => {
       client: routine.client,
       model: "routine-model",
     });
-    expect(result.reviewStatus).toBe("needs_review");
-    expect(result.reviewIssues[0]).toContain("应为 60–89");
+    expect(result.reviewStatus).toBe("passed");
+    expect(result.reviewIssues).toEqual([]);
   });
   it("keeps class copy separate from individual student evidence", () => {
     const context = composeFeedbackPromptContext({

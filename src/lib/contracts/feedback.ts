@@ -116,8 +116,8 @@ export const FeedbackOutputStrategySchema = z.object({
   strategySuggestion: z.boolean(),
   suggestedFeedback: z.boolean(),
   // Optional for 1.0 WorkHistory/workspace records. All server and UI callers
-  // normalize missing values to balanced + standard before use.
-  style: z.enum(FEEDBACK_STYLES).default("balanced"),
+  // normalize missing and legacy values to gentle + detailed before use.
+  style: z.enum(FEEDBACK_STYLES).default("gentle"),
   length: z.enum(FEEDBACK_LENGTHS).default("standard"),
 }).strict();
 

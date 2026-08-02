@@ -1,6 +1,7 @@
 import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "./llm";
 import { SYSTEM_PROMPT, REVIEW_PROMPT, NAME_FIX_SYSTEM_PROMPT } from "./prompts";
 import type { AttentionSignalCandidate } from "./attention-labels";
+import type { TeacherIntervention } from "@/lib/types";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import {
   DraftReviewResultSchema,
@@ -15,6 +16,7 @@ export interface ParsedStudent {
   communication: { type: string; summary: string } | null;
   present?: boolean;
   attentionSignals?: AttentionSignalCandidate[];
+  teacherInterventions?: TeacherIntervention[];
 }
 
 export interface ParseResult {
@@ -28,6 +30,7 @@ interface ReviewResult {
   suggestions: string[];
   revised_scores: Record<string, Record<string, number | null>>;
   revised_events: Record<string, string[]>;
+  revised_teacher_interventions?: Record<string, TeacherIntervention[]>;
 }
 
 // v0.6: LLM call with retry (up to 2 retries on timeout/error)
