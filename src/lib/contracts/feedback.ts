@@ -22,6 +22,9 @@ const optionalRate = rate.nullable();
 export const LessonFeedbackMaterialSchema: z.ZodType<LessonFeedbackMaterial> = z.object({
   version: z.literal(1),
   sessionCode: text(128).optional(),
+  scriptLessonNumber: z.number().int().min(1).max(1000).optional(),
+  perfectPrivateTemplate: text(100000).optional(),
+  errorPrivateTemplate: text(100000).optional(),
   lessonSummary: text(2000).optional(),
   lessonSummarySourceHash: text(64).optional(),
   lessonSummaryStatus: z.enum(["model", "fallback"]).optional(),

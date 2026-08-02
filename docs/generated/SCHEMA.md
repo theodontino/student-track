@@ -220,6 +220,9 @@ erDiagram
     TEXT startDate
     TEXT endDate
     DATETIME createdAt
+    TEXT feedbackScriptLibraryName
+    TEXT feedbackScriptLibraryJson
+    DATETIME feedbackScriptLibraryUpdatedAt
   }
   SessionMetric {
     TEXT id PK
@@ -790,6 +793,9 @@ erDiagram
 | `startDate` | `TEXT` | 是 |  |
 | `endDate` | `TEXT` | 是 |  |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `feedbackScriptLibraryName` | `TEXT` | 否 |  |
+| `feedbackScriptLibraryJson` | `TEXT` | 否 |  |
+| `feedbackScriptLibraryUpdatedAt` | `DATETIME` | 否 |  |
 
 
 ### SessionMetric

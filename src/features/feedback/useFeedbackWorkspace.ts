@@ -23,6 +23,7 @@ import {
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection, TeacherIntervention } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";
 import type { FeedbackIntensity, FeedbackRoutingDecision } from "@/lib/feedback-intensity";
+import type { FeedbackScriptEntry } from "@/lib/feedback-script-library";
 import { DEFAULT_FEEDBACK_OUTPUT_STRATEGY, isLegacyLengthOnlyReview, normalizeFeedbackOutputStrategy, type FeedbackOutputStrategy } from "@/lib/feedback-sections";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import type { FeedbackContextResponse, FeedbackHistoryState, FeedbackStep, FeedbackStudentOption, FeedbackWorkspaceState, SingleFeedbackHistoryState } from "./types";
@@ -295,7 +296,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       lessonMaterial.groupFeedbackRaw === groupFeedbackRaw.trim()
       && lessonMaterial.assessmentBriefRaw === assessmentBriefRaw.trim()
     ) return { ...lessonMaterial, sessionCode };
-    return parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode);
+    return {
+      ...parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode),
+      scriptLessonNumber: lessonMaterial.scriptLessonNumber,
+      perfectPrivateTemplate: lessonMaterial.perfectPrivateTemplate,
+      errorPrivateTemplate: lessonMaterial.errorPrivateTemplate,
+    };
   }
   function withoutLessonSummary(material: LessonFeedbackMaterial): LessonFeedbackMaterial {
     const {
@@ -360,8 +366,29 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   }
   function organizeLessonMaterial() {
     const parsed = parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode);
-    setLessonMaterial(parsed);
+    setLessonMaterial({
+      ...parsed,
+      scriptLessonNumber: lessonMaterial.scriptLessonNumber,
+      perfectPrivateTemplate: lessonMaterial.perfectPrivateTemplate,
+      errorPrivateTemplate: lessonMaterial.errorPrivateTemplate,
+    });
     markFeedbackInputsChanged(feedbackCards.length ? "课程材料已重新整理，请重新生成反馈。" : "课程材料已整理，可在下方检查。");
+  }
+  function applyFeedbackScriptEntry(entry: FeedbackScriptEntry) {
+    const assessmentBrief = "";
+    const parsed = parseLessonFeedbackMaterial(entry.groupFeedback, assessmentBrief, sessionCode);
+    setGroupFeedbackRaw(entry.groupFeedback);
+    setAssessmentBriefRaw(assessmentBrief);
+    setLessonMaterial({
+      ...parsed,
+      lessonTitle: parsed.lessonTitle || entry.topic,
+      scriptLessonNumber: entry.lessonNumber,
+      perfectPrivateTemplate: entry.perfectPrivateFeedback,
+      errorPrivateTemplate: entry.errorPrivateFeedback,
+    });
+    markFeedbackInputsChanged(feedbackCards.length
+      ? `已套用第 ${entry.lessonNumber} 课话术，请重新生成反馈。`
+      : `已套用第 ${entry.lessonNumber} 课话术，可继续检查和整理。`);
   }
   function clearLessonMaterials() {
     setGroupFeedbackRaw("");
@@ -1077,7 +1104,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     assessmentReadyCount: assessmentPdfs.readyCount,
     assessmentAttentionCount: assessmentPdfs.attentionCount,
     lessonMaterialNeedsOrganization,
-    updateGroupFeedbackRaw, updateAssessmentBriefRaw, organizeLessonMaterial, clearLessonMaterials, updateLessonMaterialSection,
+    updateGroupFeedbackRaw, updateAssessmentBriefRaw, organizeLessonMaterial, clearLessonMaterials, updateLessonMaterialSection, applyFeedbackScriptEntry,
     importAssessmentPdfs: assessmentPdfs.importPdfs,
     importAssessmentFolder: assessmentPdfs.importFolder,
     matchAssessmentItem: assessmentPdfs.matchItem,

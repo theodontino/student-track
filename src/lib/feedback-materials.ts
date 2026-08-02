@@ -8,6 +8,9 @@ import { containsRecipientPlaceholder } from "@/lib/feedback-text-safety";
 export interface LessonFeedbackMaterial {
   version: 1;
   sessionCode?: string;
+  scriptLessonNumber?: number;
+  perfectPrivateTemplate?: string;
+  errorPrivateTemplate?: string;
   lessonSummary?: string;
   lessonSummarySourceHash?: string;
   lessonSummaryStatus?: "model" | "fallback";
@@ -405,6 +408,22 @@ export function lessonMaterialPrompt(material: LessonFeedbackMaterial | null | u
     material.sessionCode ? `绑定课次：${material.sessionCode}` : "",
     summary,
     "使用边界：本区只帮助理解本节课讲授内容、知识组织和统一考查结构。它不能证明该学生已经掌握、失误或完成统一任务；学生结论必须来自该生个人证据。",
+  ].filter(Boolean).join("\n");
+}
+
+export function privateFeedbackTemplatePrompt(
+  material: LessonFeedbackMaterial | null | undefined,
+  evidence: StudentAssessmentEvidence | null | undefined,
+) {
+  if (!material || !evidence || evidence.totalQuestions <= 0) return "";
+  const hasErrors = evidence.wrongItems.length > 0 || evidence.correctRate < 100;
+  const template = hasErrors ? material.errorPrivateTemplate : material.perfectPrivateTemplate;
+  if (!template?.trim()) return "";
+  return [
+    "【本课预制私反馈话术（仅作表达参考）】",
+    material.scriptLessonNumber ? `话术库课次：第 ${material.scriptLessonNumber} 课` : "",
+    template.trim(),
+    "使用边界：只能借用表达结构；其中题号、答案、知识点和完成情况必须由上方该生客观证据替换。不得照抄占位符，也不得把话术模板当作该生事实。",
   ].filter(Boolean).join("\n");
 }
 

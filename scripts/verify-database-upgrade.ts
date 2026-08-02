@@ -28,7 +28,7 @@ type PreservedColumns = Record<(typeof BUSINESS_TABLES)[number], string[]>;
 type DatabaseInspection = Awaited<ReturnType<typeof inspect>>;
 
 const FIRST_V1_1_MIGRATION = "20260729140000_add_student_roster_status";
-const V1_1_MIGRATION_COUNT = 6;
+const V1_1_MIGRATION_COUNT = 7;
 const V1_1_TABLES = [
   "FeedbackGenerationSelection",
   "CommunicationRevision",

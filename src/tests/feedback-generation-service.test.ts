@@ -350,6 +350,46 @@ describe("feedback generation review", () => {
       .toBeLessThan(context.indexOf("【本班本课课程摘要"));
   });
 
+  it("selects the matching private script only when individual assessment evidence exists", () => {
+    const material = {
+      ...parseLessonFeedbackMaterial("【课堂内容】\n函数", "考查函数定义"),
+      scriptLessonNumber: 4,
+      perfectPrivateTemplate: "全对模板：本次基础扎实。",
+      errorPrivateTemplate: "有误模板：第X题需要订正。",
+    };
+    const evidence = {
+      reportTitle: "个人出门测",
+      reportDate: "2026-08-02",
+      totalQuestions: 5,
+      correctRate: 80,
+      cohortAverageRate: null,
+      knowledgePoints: [],
+      wrongItems: [{
+        questionNumber: "2",
+        studentAnswer: "A",
+        correctAnswer: "B",
+        knowledgePoints: ["函数定义"],
+      }],
+      similarPracticeCount: 0,
+    };
+
+    const errorContext = composeFeedbackPromptContext({ studentContext: "学生甲", lessonMaterial: material, assessmentEvidence: evidence });
+    expect(errorContext).toContain("有误模板");
+    expect(errorContext).not.toContain("全对模板");
+
+    const perfectContext = composeFeedbackPromptContext({
+      studentContext: "学生甲",
+      lessonMaterial: material,
+      assessmentEvidence: { ...evidence, correctRate: 100, wrongItems: [] },
+    });
+    expect(perfectContext).toContain("全对模板");
+    expect(perfectContext).not.toContain("有误模板");
+
+    const noEvidenceContext = composeFeedbackPromptContext({ studentContext: "学生甲", lessonMaterial: material });
+    expect(noEvidenceContext).not.toContain("全对模板");
+    expect(noEvidenceContext).not.toContain("有误模板");
+  });
+
   it("builds one reusable lesson understanding from class material and an anonymized PDF structure", async () => {
     const material = parseLessonFeedbackMaterial(
       "【课堂内容】\n电解质分类\n电离方程式书写\n【课堂重点】\n强弱电解质判断",

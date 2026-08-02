@@ -10,6 +10,7 @@ import {
   Textarea,
 } from "@/components/ui";
 import type { useFeedbackWorkspace } from "./useFeedbackWorkspace";
+import { FeedbackScriptLibraryPanel } from "./FeedbackScriptLibraryPanel";
 
 type Workspace = ReturnType<typeof useFeedbackWorkspace>;
 
@@ -49,6 +50,7 @@ export function FeedbackMaterialsPanel({ workspace }: { workspace: Workspace }) 
       </div>}
     >
       <div className="feedback-materials__body">
+        <FeedbackScriptLibraryPanel workspace={workspace} />
         <div className="feedback-materials__copy">
           <div className="feedback-materials__field">
             <label htmlFor="feedback-group-material">群反馈原文</label>

@@ -152,3 +152,37 @@ test("feedback plan remains within the viewport at supported breakpoints", async
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
 });
+
+test("feedback preparation recommends and applies the current lesson script", async ({ page }) => {
+  await page.route("**/api/feedback/script-library**", async (route) => {
+    await route.fulfill({
+      json: {
+        recommendedLessonNumber: 2,
+        library: {
+          version: 1,
+          name: "E2E 学期话术库",
+          updatedAt: "2026-08-02T00:00:00.000Z",
+          warnings: [],
+          entries: [
+            { lessonNumber: 1, topic: "集合", groupFeedback: "第一课群反馈", perfectPrivateFeedback: "第一课全对", errorPrivateFeedback: "第一课有误", note: "" },
+            { lessonNumber: 2, topic: "函数", groupFeedback: "第二课群反馈", perfectPrivateFeedback: "第二课全对", errorPrivateFeedback: "第二课有误", note: "" },
+          ],
+        },
+      },
+    });
+  });
+
+  await page.goto("/feedback?step=prepare");
+  const contextSelects = page.locator(".feedback-context-section select");
+  await contextSelects.nth(0).selectOption(TEST_FIXTURE.semester.id);
+  await contextSelects.nth(1).selectOption({ label: TEST_FIXTURE.class.name });
+  await contextSelects.nth(2).selectOption(TEST_FIXTURE.sessions[1].code);
+
+  await expect(page.getByLabel("本节进度")).toHaveValue("2");
+  await page.getByRole("button", { name: "套用本节话术" }).click();
+  await expect(page.getByLabel("群反馈原文")).toHaveValue("第二课群反馈");
+  await expect(page.getByLabel("出门测统一说明")).toHaveValue("");
+  await page.getByText("查看本节私反馈话术").click();
+  await expect(page.getByText("第二课全对", { exact: true })).toBeVisible();
+  await expect(page.getByText("第二课有误", { exact: true })).toBeVisible();
+});

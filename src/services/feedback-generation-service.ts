@@ -6,6 +6,7 @@ import {
   lessonMaterialHasContent,
   lessonMaterialPrompt,
   lessonMaterialSummarySource,
+  privateFeedbackTemplatePrompt,
   type LessonFeedbackMaterial,
   type StudentAssessmentEvidence,
 } from "@/lib/feedback-materials";
@@ -134,6 +135,7 @@ export function composeFeedbackPromptContext(input: {
       : "",
     selectedSections,
     assessmentEvidencePrompt(input.assessmentEvidence),
+    privateFeedbackTemplatePrompt(input.lessonMaterial, input.assessmentEvidence),
     lessonMaterialPrompt(input.lessonMaterial),
     `【证据使用顺序】
 1. 个人出门测报告、已确认的本课评价、考勤、事件和助教备注必须同时符合上述课次与学生身份，才属于该生证据。

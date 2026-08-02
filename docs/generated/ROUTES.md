@@ -12,6 +12,7 @@
 | `/api/export` | `POST` |
 | `/api/feedback/assessment-pdf` | `POST` |
 | `/api/feedback/assistant-roster` | `POST` |
+| `/api/feedback/script-library` | `GET`, `POST` |
 | `/api/history` | `DELETE`, `GET`, `POST` |
 | `/api/input/parse` | `POST` |
 | `/api/integrations/wecomcatch/v1/directory` | `GET` |

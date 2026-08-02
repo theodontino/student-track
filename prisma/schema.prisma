@@ -296,6 +296,9 @@ model Semester {
   startDate String   // YYYY-MM-DD
   endDate   String   // YYYY-MM-DD
   createdAt DateTime @default(now())
+  feedbackScriptLibraryName      String?
+  feedbackScriptLibraryJson      String?
+  feedbackScriptLibraryUpdatedAt DateTime?
 
   sessions ClassSession[]
   feedbackPlans FeedbackPlan[]
