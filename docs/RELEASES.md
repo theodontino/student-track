@@ -13,7 +13,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.1.0-beta.1 | active/inactive、反馈表达参数、可追溯生成版本、handoff replacement/correction。 |
+| Student Track | 1.1.0-beta.2 | 学期班级与名单归属、名单预览导入、反馈表达参数、可追溯生成版本、handoff replacement/correction。 |
 | WCG | 0.5.0-beta.1 | handoff 谱系、证据指纹、显式不可变修订发布。 |
 
 beta 转稳定版前必须完成三次真实课后反馈流程和一次隔离合成修订演练，且精确提交的双仓库 CI 全绿；测试前后的真实数据库 size、mtime 和 SHA-256 必须不变。发布顺序固定为先 Student Track、刷新 `handoff-revisions-v1` 能力目录，再发布 WCG。回滚 Student Track 前必须停止 WCG 修订发布。

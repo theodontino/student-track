@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Button, Dialog, Input, StatusBanner } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
-import type { SemesterSummary } from "@/features/teaching-context";
+import type { SemesterSummary } from "@/features/teaching-context/types";
 
 export function SemesterDialog({ open, semester, onClose, onSaved }: { open: boolean; semester?: SemesterSummary | null; onClose: () => void; onSaved: (semester: SemesterSummary) => void }) {
   const [form, setForm] = useState({ name: "", startDate: "", endDate: "" }); const [error, setError] = useState(""); const [saving, setSaving] = useState(false);

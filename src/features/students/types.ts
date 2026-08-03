@@ -26,7 +26,16 @@ export interface StudentFormState {
 
 export interface StudentImportResult {
   success?: boolean;
+  mode?: "preview" | "committed";
+  semesterId?: string;
+  fingerprint?: string;
+  blocked?: boolean;
+  changes?: Array<Record<string, unknown>>;
+  rowCount?: number;
   total?: number;
+  studentsCreated?: number;
+  enrollmentsUpdated?: number;
+  classesTouched?: number;
   successCount?: number;
   errorCount?: number;
   errors?: string[];
@@ -60,8 +69,8 @@ export interface StudentDetail {
   class: string;
   studentId: string;
   gender: string;
-  rosterStatus: "ACTIVE" | "INACTIVE";
-  statusEffectiveAt: string;
+  rosterStatus: "ACTIVE" | "INACTIVE" | null;
+  statusEffectiveAt: string | null;
   labels: { id: string; name: string }[];
   sessionMetrics: { id: string; date: string; scoreA: number; scoreB: number; scoreC: number; scoreD: number }[];
   events: StudentEvent[];

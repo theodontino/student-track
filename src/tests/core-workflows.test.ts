@@ -18,10 +18,6 @@ let draftIds: string[] = [];
 beforeEach(async () => {
   const suffix = randomUUID().slice(0, 8);
   classCode = `TEST-${suffix}`;
-  const classroom = await prisma.class.create({
-    data: { code: classCode, name: `测试班-${suffix}` },
-  });
-  classId = classroom.id;
   const semester = await prisma.semester.create({
     data: {
       name: `测试学期-${suffix}`,
@@ -30,10 +26,14 @@ beforeEach(async () => {
     },
   });
   semesterId = semester.id;
+  const classroom = await prisma.class.create({
+    data: { semesterId, code: classCode, name: `测试班-${suffix}` },
+  });
+  classId = classroom.id;
   const students = await Promise.all([1, 2].map((index) => prisma.student.create({
     data: {
       name: `测试学生${index}-${suffix}`,
-      classId,
+      enrollments: { create: { semesterId, classId } },
       studentId: `TEST-${suffix}-${index}`,
       gender: index === 1 ? "男" : "女",
     },
@@ -62,9 +62,10 @@ afterEach(async () => {
     await prisma.sessionMetricHistory.deleteMany({ where: { studentId: { in: studentIds } } });
   }
   if (draftIds.length > 0) await prisma.draftRecord.deleteMany({ where: { id: { in: draftIds } } });
-  if (semesterId) await prisma.semester.deleteMany({ where: { id: semesterId } });
+  if (semesterId) await prisma.classSession.deleteMany({ where: { semesterId } });
   if (studentIds.length > 0) await prisma.student.deleteMany({ where: { id: { in: studentIds } } });
   if (classId) await prisma.class.deleteMany({ where: { id: classId } });
+  if (semesterId) await prisma.semester.deleteMany({ where: { id: semesterId } });
   await prisma.label.deleteMany({ where: { name: "AI内部关注：学习信心", students: { none: {} } } });
   classId = "";
   classCode = "";
@@ -208,8 +209,8 @@ describe("core transactional workflows", () => {
   });
 
   it("excludes inactive students from a newly created attendance roster without changing history", async () => {
-    await prisma.student.update({
-      where: { id: studentIds[1] },
+    await prisma.studentClassEnrollment.update({
+      where: { studentId_semesterId: { studentId: studentIds[1], semesterId } },
       data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date() },
     });
     const historicalAttendance = await prisma.attendance.count({

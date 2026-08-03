@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useTeachingContext } from "@/features/teaching-context";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
 import { requestJson } from "@/lib/api-client";
 import { filterStudents, groupStudentsByClass, sortStudents, type StudentSort } from "./student-list-utils";
 import type {
@@ -60,7 +60,13 @@ export function useStudentsWorkspace() {
       const data = await requestJson<StudentListItem[]>(`/api/students?${query}`);
       setStudents(data);
       const resolvedSemesterId = data.find((student) => student.semesterSummary)?.semesterSummary?.semester.id;
-      if (!selectedSemesterId && resolvedSemesterId) setSemesterId(resolvedSemesterId);
+      if (!selectedSemesterId) {
+        if (resolvedSemesterId) setSemesterId(resolvedSemesterId);
+        else {
+          const semesters = await requestJson<Array<{ id: string }>>("/api/semesters");
+          if (semesters[0]?.id) setSemesterId(semesters[0].id);
+        }
+      }
     } catch (reason) {
       setLoadError(reason instanceof Error ? reason.message : "获取学生列表失败");
     } finally {
@@ -212,14 +218,21 @@ export function useStudentsWorkspace() {
   }
 
   async function submitStudent() {
+    if (!selectedSemesterId) {
+      setFormError("请先选择学期");
+      return;
+    }
     setSubmitting(true);
     setFormError("");
     try {
       const url = editingStudent ? `/api/students/${editingStudent.id}` : "/api/students";
+      const payload = editingStudent
+        ? { name: form.name, studentId: form.studentId, gender: form.gender, labelNames: form.labelNames, semesterId: selectedSemesterId }
+        : { ...form, semesterId: selectedSemesterId };
       await requestJson<StudentListItem>(url, {
         method: editingStudent ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
       setShowStudentDialog(false);
       await fetchStudents();
@@ -257,7 +270,7 @@ export function useStudentsWorkspace() {
       await requestJson(`/api/students/${student.id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, semesterId: selectedSemesterId }),
       });
       await fetchStudents();
     } catch (reason) {
@@ -281,18 +294,27 @@ export function useStudentsWorkspace() {
   }
 
   async function importStudents() {
-    if (!importFile) return;
+    if (!importFile || !selectedSemesterId) {
+      setImportResult({ error: "请先选择学期和文件" });
+      return;
+    }
     setImporting(true);
     setImportResult(null);
     try {
       const formData = new FormData();
       formData.append("file", importFile);
+      formData.append("semesterId", selectedSemesterId);
+      if (importResult?.mode === "preview" && importResult.fingerprint) {
+        formData.append("mode", "confirm");
+        formData.append("previewFingerprint", importResult.fingerprint);
+        if (importResult.semesterId) formData.append("previewSemesterId", importResult.semesterId);
+      }
       const result = await requestJson<StudentImportResult>("/api/students/import", {
         method: "POST",
         body: formData,
       });
       setImportResult(result);
-      setImportFile(null);
+      if (result.mode === "committed") setImportFile(null);
       await fetchStudents();
     } catch (reason) {
       setImportResult({ error: reason instanceof Error ? reason.message : "导入失败" });

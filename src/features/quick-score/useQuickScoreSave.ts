@@ -11,6 +11,7 @@ export function useQuickScoreSave({
   changedCards,
   date,
   semesterId,
+  classId,
   className,
   sessionCode,
   sessions,
@@ -22,6 +23,7 @@ export function useQuickScoreSave({
   changedCards: CardScore[];
   date: string;
   semesterId: string;
+  classId: string;
   className: string;
   sessionCode: string;
   sessions: SessionInfo[];
@@ -53,6 +55,7 @@ export function useQuickScoreSave({
       try {
         await saveWorkHistory("quick-score", `${className} ${sessionCode || date} 手动评分`, {
           semesterId,
+          classId,
           className,
           sessionCode,
           date,

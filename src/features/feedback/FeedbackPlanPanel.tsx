@@ -232,12 +232,12 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
 
   const loadContextMeta = useCallback(async () => {
     if (!workspace.context.sessionCode) return;
-    const response = await fetch(`/api/report/feedback-context?sessionCode=${encodeURIComponent(workspace.context.sessionCode)}`);
+    const response = await fetch(`/api/report/feedback-context?sessionCode=${encodeURIComponent(workspace.context.sessionCode)}&semesterId=${encodeURIComponent(workspace.context.semesterId)}`);
     if (!response.ok) throw new Error("无法读取当前课次信息");
     const payload = await response.json() as { session?: { id: string; classId: string } };
     if (!payload.session) throw new Error("当前课次缺少班级信息");
     setSessionMeta({ classId: payload.session.classId, sessionId: payload.session.id });
-  }, [workspace.context.sessionCode]);
+  }, [workspace.context.semesterId, workspace.context.sessionCode]);
 
   const loadPlans = useCallback(async () => {
     if (!sessionMeta) return;
@@ -254,11 +254,12 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       setInactiveCandidates([]);
       return;
     }
-    const response = await fetch("/api/students?scope=all");
+    const query = new URLSearchParams({ scope: "all", semesterId: workspace.context.semesterId });
+    const response = await fetch(`/api/students?${query.toString()}`);
     if (!response.ok) throw new Error("无法读取停读学生名单");
     const students = await response.json() as RosterCandidate[];
     setInactiveCandidates(students.filter((student) => student.classId === sessionMeta.classId && student.rosterStatus === "INACTIVE"));
-  }, [sessionMeta, type]);
+  }, [sessionMeta, type, workspace.context.semesterId]);
 
   const loadRangeSessions = useCallback(async () => {
     if (!workspace.context.semesterId || !workspace.context.className) return;
@@ -281,12 +282,12 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       : type === "stage_trend" ? eligible.slice(-4) : eligible;
     const sessionIds = selectedRange.map((session) => session.id);
     if (!sessionIds.length) return;
-    const query = new URLSearchParams({ sessionCode: workspace.context.sessionCode, sessionIds: sessionIds.join(",") });
+    const query = new URLSearchParams({ semesterId: workspace.context.semesterId, sessionCode: workspace.context.sessionCode, sessionIds: sessionIds.join(",") });
     const response = await fetch(`/api/report/feedback-context?${query.toString()}`);
     if (!response.ok) throw new Error("无法读取阶段范围候选学生");
     const payload = await response.json() as { students?: FeedbackContextStudent[] };
     setRangeContextStudents(payload.students ?? []);
-  }, [rangeEndSessionId, rangeSessions, rangeStartSessionId, sessionMeta, type, workspace.context.sessionCode]);
+  }, [rangeEndSessionId, rangeSessions, rangeStartSessionId, sessionMeta, type, workspace.context.semesterId, workspace.context.sessionCode]);
 
   useEffect(() => {
     setSessionMeta(null);

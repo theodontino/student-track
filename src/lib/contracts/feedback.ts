@@ -231,6 +231,7 @@ export const FeedbackWorkspaceSchema: z.ZodType<FeedbackWorkspaceState> = z.obje
 
 export const FeedbackBatchPostSchema = z.object({
   sessionCode: requiredText(128),
+  semesterId: requiredText(200).optional(),
   historyModule: z.enum(["feedback", "report"]).optional(),
   bypassCache: z.boolean().optional(),
   saveState: z.boolean().optional(),

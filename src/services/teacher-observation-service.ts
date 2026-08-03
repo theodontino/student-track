@@ -112,7 +112,13 @@ export async function listTeacherObservations(
     where: {
       ...(options.observationId ? { id: options.observationId } : {}),
       ...(statuses?.length ? { status: { in: statuses } } : {}),
-      ...(options.classId ? { student: { classId: options.classId } } : {}),
+      ...(options.classId ? {
+        student: {
+          enrollments: {
+            some: { classId: options.classId, ...(options.semesterId ? { semesterId: options.semesterId } : {}) },
+          },
+        },
+      } : {}),
       ...(options.studentIds?.length ? { studentId: { in: options.studentIds } } : {}),
       sources: {
         some: options.semesterId
@@ -123,7 +129,17 @@ export async function listTeacherObservations(
     orderBy: [{ status: "asc" }, { lastDetectedAt: "desc" }],
     take: Math.max(1, Math.min(options.limit ?? 50, 1000)),
     include: {
-      student: { select: { id: true, name: true, studentId: true, class: { select: { id: true, code: true, name: true } } } },
+      student: {
+        select: {
+          id: true,
+          name: true,
+          studentId: true,
+          enrollments: {
+            where: options.semesterId ? { semesterId: options.semesterId } : undefined,
+            include: { class: { select: { id: true, code: true, name: true } } },
+          },
+        },
+      },
       sources: {
         orderBy: { createdAt: "desc" },
         include: {
@@ -161,8 +177,8 @@ export async function listTeacherObservations(
         id: row.student.id,
         name: row.student.name,
         studentId: row.student.studentId,
-        classId: row.student.class.id,
-        className: row.student.class.name ?? row.student.class.code,
+        classId: row.student.enrollments[0]?.class.id ?? null,
+        className: row.student.enrollments[0]?.class.name ?? row.student.enrollments[0]?.class.code ?? "",
         href: `/students/${encodeURIComponent(row.student.id)}`,
       },
       sources: validSources.map((source) => {

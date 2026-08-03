@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { listSemesterClasses } from "@/services/student-enrollment-service";
 
 // GET /api/semesters/[id] - semester detail with session breakdown
 export async function GET(
@@ -18,13 +19,17 @@ export async function GET(
             class: { select: { code: true, name: true } },
           },
         },
+        classes: { orderBy: { code: "asc" } },
       },
     });
     if (!semester) {
       return NextResponse.json({ error: "学期不存在" }, { status: 404 });
     }
 
-    const totalStudents = await prisma.student.count();
+    const classes = await listSemesterClasses(prisma, id);
+    const totalStudents = await prisma.studentClassEnrollment.count({
+      where: { semesterId: id, rosterStatus: "ACTIVE" },
+    });
     const totalSessions = semester.sessions.length;
     const attendances = await prisma.attendance.count({
       where: { session: { semesterId: id } },
@@ -35,6 +40,7 @@ export async function GET(
       sessionCount: totalSessions,
       totalStudents,
       attendances,
+      classes,
     });
   } catch (error) {
     console.error("[/api/semesters/[id]] error:", error);
@@ -71,6 +77,19 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
+    const [classes, enrollments, sessions, plans, memories, tasks, compactions, generations] = await Promise.all([
+      prisma.class.count({ where: { semesterId: id } }),
+      prisma.studentClassEnrollment.count({ where: { semesterId: id } }),
+      prisma.classSession.count({ where: { semesterId: id } }),
+      prisma.feedbackPlan.count({ where: { semesterId: id } }),
+      prisma.teachingMemory.count({ where: { semesterId: id } }),
+      prisma.teacherTask.count({ where: { plan: { semesterId: id } } }),
+      prisma.memoryCompactionRun.count({ where: { semesterId: id } }),
+      prisma.generationRecord.count({ where: { semesterId: id } }),
+    ]);
+    if (classes || enrollments || sessions || plans || memories || tasks || compactions || generations) {
+      return NextResponse.json({ error: "学期已有班级或业务记录，不能直接删除" }, { status: 409 });
+    }
     await prisma.semester.delete({ where: { id } });
     return NextResponse.json({ success: true });
   } catch {

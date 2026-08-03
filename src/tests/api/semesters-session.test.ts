@@ -12,7 +12,7 @@ beforeAll(async () => {
 describe("/api/semesters/[id]/session", () => {
   it("POST creates a class session for the requested date", async () => {
     const { POST, DELETE } = await import("@/app/api/semesters/[id]/session/route");
-    const classRecord = await prisma.class.findFirst({ select: { code: true } });
+    const classRecord = await prisma.class.findFirst({ where: { semesterId }, select: { code: true } });
     const req = new NextRequest(`http://localhost:3000/api/semesters/${semesterId}/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

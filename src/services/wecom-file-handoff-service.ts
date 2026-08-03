@@ -13,6 +13,7 @@ import {
 } from "@/lib/contracts/wecom-file-transfer";
 import { consumeWccHandoffPackage } from "@/services/wecom-handoff-consumer-service";
 import { WeComExtractionError } from "@/services/wecom-handoff-extraction-service";
+import { shanghaiCalendarDate } from "@/services/wecom-session-matcher";
 
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -216,7 +217,7 @@ export async function listWccHandoffReceipts(sourceId: string, packageId: string
 
 function exactTitleMatches(
   title: string | undefined,
-  students: Array<{ id: string; name: string; studentId: string; classId: string }>,
+  students: Array<{ id: string; name: string; studentId: string; classId?: string }>,
 ) {
   const normalized = (title || "").trim();
   if (!normalized) return [];
@@ -318,6 +319,19 @@ async function consumeValidatedPackage(
   });
 
   let matchedStudentId = selectedStudentId;
+  const evidenceDates = [...new Set(payload.messages.map((message) => shanghaiCalendarDate(message.sentAt)).filter((date): date is string => Boolean(date)))];
+  const evidenceSemesters = evidenceDates.length
+    ? await prisma.semester.findMany({
+      where: { OR: evidenceDates.map((date) => ({ startDate: { lte: date }, endDate: { gte: date } })) },
+      select: { id: true, startDate: true, endDate: true },
+    })
+    : [];
+  const semesterIdsByDate = evidenceDates.map((date) => [...new Set(evidenceSemesters.filter((semester) => date >= semester.startDate && date <= semester.endDate).map((semester) => semester.id))]);
+  const targetSemesterId = semesterIdsByDate.length > 0
+    && semesterIdsByDate.every((ids) => ids.length === 1)
+    && new Set(semesterIdsByDate.map((ids) => ids[0])).size === 1
+    ? semesterIdsByDate[0][0]
+    : null;
   let lineageDraft: {
     id: string;
     status: string;
@@ -425,11 +439,12 @@ async function consumeValidatedPackage(
     return { id: updated.id, status: updated.status, outcome: updated.outcome };
   }
 
-  if (!matchedStudentId) {
-    const students = await prisma.student.findMany({
-      where: { rosterStatus: "ACTIVE" },
-      select: { id: true, name: true, studentId: true, classId: true },
+  if (!matchedStudentId && targetSemesterId) {
+    const rows = await prisma.student.findMany({
+      where: { enrollments: { some: { semesterId: targetSemesterId, rosterStatus: "ACTIVE" } } },
+      include: { enrollments: { where: { semesterId: targetSemesterId, rosterStatus: "ACTIVE" }, select: { classId: true } } },
     });
+    const students = rows.map((student) => ({ id: student.id, name: student.name, studentId: student.studentId, classId: student.enrollments[0]?.classId }));
     const matches = exactTitleMatches(payload.conversation.title, students);
     if (matches.length === 1) matchedStudentId = matches[0].id;
   }
@@ -595,7 +610,7 @@ export async function listWccHandoffPackages(prisma: PrismaClient) {
       },
     }),
     prisma.student.findMany({
-      where: { rosterStatus: "ACTIVE" },
+      where: { enrollments: { some: { rosterStatus: "ACTIVE" } } },
       orderBy: { name: "asc" },
       select: { id: true, name: true, studentId: true },
     }),

@@ -30,7 +30,15 @@ export async function updateSessionAttendance(sessionId: string, updates: Attend
     const validStudentCount = await tx.student.count({
       where: {
         id: { in: studentIds },
-        ...(session.classId ? { classId: session.classId } : {}),
+        ...(session.classId ? {
+          OR: [
+            { enrollments: { some: { semesterId: session.semesterId, classId: session.classId, rosterStatus: "ACTIVE" } } },
+            { attendances: { some: { sessionId } } },
+            { sessionMetrics: { some: { sessionId } } },
+            { events: { some: { sessionId } } },
+            { communications: { some: { sessionId } } },
+          ],
+        } : {}),
       },
     });
     if (validStudentCount !== studentIds.length) {

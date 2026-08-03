@@ -1,6 +1,6 @@
 "use client";
 
-import { TeachingContextSelector } from "@/features/teaching-context";
+import { TeachingContextSelector } from "@/features/teaching-context/TeachingContextSelector";
 
 interface Props {
   semesterId: string;

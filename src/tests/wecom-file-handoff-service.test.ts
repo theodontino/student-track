@@ -261,9 +261,9 @@ describe("WCC file handoff consumer", () => {
   });
 
   it("completes publish, consume, teacher confirmation and receipt visibility", async () => {
-    const students = await prisma.student.findMany({
-      select: { id: true, name: true, classId: true },
-    });
+    const students = (await prisma.student.findMany({
+      include: { enrollments: { where: { rosterStatus: "ACTIVE" }, orderBy: { semester: { startDate: "desc" } }, select: { classId: true } } },
+    })).map((candidate) => ({ ...candidate, classId: candidate.enrollments[0]?.classId ?? null }));
     const student = students.find((candidate) => (
       candidate.classId
       && students.filter((other) => candidate.name.includes(other.name)).length === 1
@@ -361,10 +361,11 @@ describe("WCC file handoff consumer", () => {
   });
 
   it("applies a confirmed .r2 correction once and leaves rejected corrections unchanged", async () => {
-    const student = await prisma.student.findFirstOrThrow({
-      where: { rosterStatus: "ACTIVE" },
-      select: { id: true, name: true, classId: true },
+    const studentRow = await prisma.student.findFirstOrThrow({
+      where: { enrollments: { some: { rosterStatus: "ACTIVE" } } },
+      include: { enrollments: { where: { rosterStatus: "ACTIVE" }, orderBy: { semester: { startDate: "desc" } }, select: { classId: true } } },
     });
+    const student = { ...studentRow, classId: studentRow.enrollments[0]?.classId ?? null };
     const session = await prisma.classSession.findFirstOrThrow({
       where: { classId: student.classId },
       select: { id: true, code: true, date: true },
@@ -452,13 +453,13 @@ describe("WCC file handoff consumer", () => {
     })).toMatchObject({ summary: originalCommunication.summary, sourceKey: originalSourceKey });
 
     if (!correction.sessionCode) await assignWccDraftSession(prisma, correction.id, session.code);
-    await prisma.student.update({
-      where: { id: student.id },
+    await prisma.studentClassEnrollment.updateMany({
+      where: { studentId: student.id, semesterId: (await prisma.classSession.findUniqueOrThrow({ where: { id: session.id }, select: { semesterId: true } })).semesterId },
       data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date() },
     });
     await processDraftReview({ draftId: correction.id, action: "confirm" });
-    await prisma.student.update({
-      where: { id: student.id },
+    await prisma.studentClassEnrollment.updateMany({
+      where: { studentId: student.id, semesterId: (await prisma.classSession.findUniqueOrThrow({ where: { id: session.id }, select: { semesterId: true } })).semesterId },
       data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() },
     });
     const revisedCommunication = await prisma.communication.findUniqueOrThrow({

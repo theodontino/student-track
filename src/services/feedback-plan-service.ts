@@ -22,6 +22,7 @@ import { createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
 import { generateFeedbackPlanComposition } from "@/services/feedback-generation-service";
 import { recordSuccessfulGeneration } from "@/services/generation-memory-service";
+import { semesterStudentWhere } from "@/services/student-enrollment-service";
 
 function parseJson<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -128,7 +129,22 @@ async function assertPlanScope(db: FeedbackPlanDb, input: FeedbackPlanCreateInpu
   }
   if (input.studentIds?.length) {
     const studentIds = [...new Set(input.studentIds)];
-    const students = await db.student.findMany({ where: { id: { in: studentIds }, classId: input.classId }, select: { id: true } });
+    const anchor = await resolveSession(db, planAnchorSession(input));
+    const students = await db.student.findMany({
+      where: {
+        id: { in: studentIds },
+        OR: [
+          semesterStudentWhere({ semesterId: input.semesterId, classId: input.classId, studentIds }),
+          ...(anchor ? [
+            { sessionMetrics: { some: { sessionId: anchor.id } } },
+            { attendances: { some: { sessionId: anchor.id } } },
+            { events: { some: { sessionId: anchor.id } } },
+            { communications: { some: { sessionId: anchor.id } } },
+          ] : []),
+        ],
+      },
+      select: { id: true },
+    });
     if (students.length !== studentIds.length) throw new ApiError("反馈计划包含不属于当前班级的学生", 400, "invalid_request", false);
   }
 }

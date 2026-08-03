@@ -7,6 +7,7 @@ const port = Number(process.env.E2E_PORT || 3316);
 const baseURL = `http://127.0.0.1:${port}`;
 const serverRoot = process.env.E2E_APP_DIR;
 if (!serverRoot) throw new Error("E2E_APP_DIR is required; run E2E through npm run test:e2e");
+const serverMode = process.env.E2E_SERVER_MODE === "production" ? "production" : "development";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -20,7 +21,9 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: `npm run dev -- --webpack --port ${port}`,
+    command: serverMode === "production"
+      ? `npm run build -- --webpack && npm run start -- --port ${port}`
+      : `npm run dev -- --webpack --port ${port}`,
     cwd: serverRoot,
     url: baseURL,
     reuseExistingServer: false,

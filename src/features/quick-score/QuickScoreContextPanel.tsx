@@ -40,18 +40,18 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
 
           <select
             aria-label="班级"
-            value={workspace.selectedClass}
+            value={workspace.selectedClassId}
             disabled={!controlsReady}
-            onChange={(event) => workspace.setSelectedClass(event.target.value)}
+            onChange={(event) => workspace.setSelectedClassId(event.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none"
           >
             <option value="">选择班级</option>
-            {workspace.classes.map((className) => (
-              <option key={className} value={className}>{className}</option>
+            {workspace.classes.map((klass) => (
+              <option key={klass.id} value={klass.id}>{klass.name ?? klass.code}</option>
             ))}
           </select>
 
-          {workspace.selectedClass && workspace.sessions.length > 0 && (
+          {workspace.selectedClassId && workspace.sessions.length > 0 && (
             <>
               <span className="text-xs text-gray-400">课次</span>
               <select
@@ -80,7 +80,7 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
           )}
           <Button
             onClick={() => void workspace.handleRecordClass()}
-            disabled={workspace.recordingClass || !workspace.selectedSemesterId || !workspace.selectedClass}
+            disabled={workspace.recordingClass || !workspace.selectedSemesterId || !workspace.selectedClassId}
           >{workspace.recordingClass ? "记录中…" : "开始上课"}</Button>
         </div>
 

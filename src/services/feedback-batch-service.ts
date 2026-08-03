@@ -277,6 +277,7 @@ async function persistState(
 export async function buildFeedbackBatchExport(
   sessionCode: string,
   module: FeedbackHistoryModule,
+  semesterId?: string,
 ) {
   const key = cacheKey(module, sessionCode);
   let state = cache.get(key) ?? null;
@@ -300,7 +301,10 @@ export async function buildFeedbackBatchExport(
     throw new ApiError("本批次仅生成教师研判，未生成家长反馈文本", 409, "conflict", false);
   }
 
-  const session = await prisma.classSession.findUnique({ where: { code: sessionCode }, select: { id: true } });
+  const session = await prisma.classSession.findUnique({ where: { code: sessionCode }, select: { id: true, semesterId: true } });
+  if (semesterId && session?.semesterId !== semesterId) {
+    throw new ApiError("课次不属于所选学期", 409, "conflict", false);
+  }
   const selectedVersions = session ? await prisma.feedbackGenerationSelection.findMany({
     where: { sessionId: session.id },
     include: { selectedGeneration: true },
@@ -709,6 +713,9 @@ export async function executeFeedbackBatch(
 
   const normalized = normalizeInputs(input);
   const feedbackContext = await buildFeedbackContext(prisma, input.sessionCode);
+  if (input.semesterId && feedbackContext.session.semesterId !== input.semesterId) {
+    throw new ApiError("课次不属于所选学期", 409, "conflict", false);
+  }
   const contextByStudent = new Map(
     feedbackContext.students.map((student) => [student.id, student]),
   );

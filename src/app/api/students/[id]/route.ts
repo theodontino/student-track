@@ -4,70 +4,85 @@ import { logAction } from "@/lib/logger";
 import { ServiceError } from "@/services/service-error";
 import { localDate } from "@/services/semester-service";
 import { getStudentSemesterSummaries } from "@/services/student-semester-summary-service";
+import {
+  assertClassInSemester,
+  projectStudentEnrollment,
+  requireSemesterId,
+} from "@/services/student-enrollment-service";
 
-// GET /api/students/[id] - get student with metrics, events, communications
-// v0.11: events/communications 支持分页参数 ?eventLimit=20&eventOffset=0&commLimit=20&commOffset=0
+function studentInclude(semesterId: string) {
+  return {
+    enrollments: {
+      where: { semesterId },
+      include: { class: { select: { id: true, code: true, name: true, semesterId: true } } },
+    },
+    studentLabels: { include: { label: { select: { id: true, name: true } } } },
+  } as const;
+}
+
+function serializeStudent(student: any) {
+  const projection = projectStudentEnrollment(student.enrollments ?? []);
+  return {
+    ...student,
+    enrollments: undefined,
+    class: projection.class?.name ?? projection.class?.code ?? "",
+    classId: projection.classId,
+    classCode: projection.classCode,
+    rosterStatus: projection.rosterStatus,
+    statusEffectiveAt: projection.statusEffectiveAt,
+    labels: (student.studentLabels ?? []).map((sl: any) => ({ id: sl.label.id, name: sl.label.name })),
+    studentLabels: undefined,
+  };
+}
+
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
     const url = new URL(request.url);
+    const semesterId = await requireSemesterId(prisma, url.searchParams.get("semesterId"));
     const eventLimit = Math.min(parseInt(url.searchParams.get("eventLimit") || "20"), 100);
     const eventOffset = parseInt(url.searchParams.get("eventOffset") || "0");
     const commLimit = Math.min(parseInt(url.searchParams.get("commLimit") || "20"), 100);
     const commOffset = parseInt(url.searchParams.get("commOffset") || "0");
     const semesterSummary = url.searchParams.get("semesterSummary") === "true";
-    const semesterId = url.searchParams.get("semesterId") || undefined;
 
     const student = await prisma.student.findUnique({
       where: { id },
-      include: {
-        class: { select: { id: true, code: true, name: true } },
-        studentLabels: { include: { label: { select: { id: true, name: true } } } },
-      },
+      include: studentInclude(semesterId),
     });
-
-    if (!student) {
-      return NextResponse.json({ error: "学生不存在" }, { status: 404 });
-    }
+    if (!student) return NextResponse.json({ error: "学生不存在" }, { status: 404 });
 
     const semesterResult = semesterSummary
       ? await getStudentSemesterSummaries([id], { semesterId })
       : null;
-    const resolvedSemesterId = semesterResult?.semester?.id;
     const asOfDate = localDate(new Date());
-    const sessionFilter = resolvedSemesterId
-      ? { semesterId: resolvedSemesterId, date: { lte: asOfDate } }
-      : undefined;
-    const relatedSessionFilter = sessionFilter ? { session: sessionFilter } : {};
-    const metricSessionFilter = sessionFilter ? { session: { is: sessionFilter } } : {};
+    // The detail page is semester-scoped even when a legacy caller omitted
+    // semesterId: requireSemesterId has already resolved the current term.
+    const sessionFilter = { semesterId, date: { lte: asOfDate } };
+    const relatedSessionFilter = { session: sessionFilter };
+    const metricSessionFilter = { session: { is: sessionFilter } };
 
-    // Fetch one extra to determine hasMore after semester filtering.
     const [events, communications, sessionMetrics, attendances] = await Promise.all([
       prisma.event.findMany({
         where: { studentId: id, ...relatedSessionFilter },
         include: { session: { select: { date: true, code: true, semesterNumber: true } } },
-        orderBy: { createdAt: "desc" },
-        take: eventLimit + 1,
-        skip: eventOffset,
+        orderBy: { createdAt: "desc" }, take: eventLimit + 1, skip: eventOffset,
       }),
       prisma.communication.findMany({
         where: { studentId: id, ...relatedSessionFilter },
         include: { session: { select: { date: true, code: true } } },
-        orderBy: { createdAt: "desc" },
-        take: commLimit + 1,
-        skip: commOffset,
+        orderBy: { createdAt: "desc" }, take: commLimit + 1, skip: commOffset,
       }),
       prisma.sessionMetric.findMany({
         where: { studentId: id, ...metricSessionFilter },
-        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        take: 365,
+        orderBy: [{ date: "desc" }, { createdAt: "desc" }], take: 365,
       }),
-      semesterSummary && sessionFilter
+      semesterSummary
         ? prisma.attendance.findMany({
-            where: { studentId: id, ...relatedSessionFilter },
+            where: { studentId: id, session: { semesterId, date: { lte: asOfDate } } },
             include: { session: { select: { date: true, semesterNumber: true, code: true } } },
             orderBy: [{ session: { date: "desc" } }, { createdAt: "desc" }],
           })
@@ -75,119 +90,93 @@ export async function GET(
     ]);
 
     return NextResponse.json({
-      ...student,
+      ...serializeStudent(student),
       sessionMetrics,
-      class: student.class?.name ?? student.class?.code ?? "",
-      labels: student.studentLabels.map((sl) => ({ id: sl.label.id, name: sl.label.name })),
       events: events.slice(0, eventLimit),
       communications: communications.slice(0, commLimit),
-      ...(semesterSummary && {
-        semesterSummary: semesterResult?.summaries.get(id) ?? null,
-        attendances: attendances ?? [],
-      }),
-      _pagination: {
-        eventHasMore: events.length > eventLimit,
-        commHasMore: communications.length > commLimit,
-      },
+      ...(semesterSummary && { semesterSummary: semesterResult?.summaries.get(id) ?? null, attendances: attendances ?? [] }),
+      _pagination: { eventHasMore: events.length > eventLimit, commHasMore: communications.length > commLimit },
     });
   } catch (error) {
     console.error("[/api/students/[id]] error:", error);
-    if (error instanceof ServiceError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
-    }
+    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
     return NextResponse.json({ error: "获取学生详情失败" }, { status: 500 });
   }
 }
 
-// PUT /api/students/[id] - update student
 export async function PUT(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, classCode, class: className, studentId, gender, labelNames } = body;
-    const code = classCode || className;
-
-    let classId: string | undefined;
-    if (code) {
-      const cls = await prisma.class.findFirst({
-        where: { OR: [{ code }, { name: code }] },
+    const semesterId = await requireSemesterId(prisma, body.semesterId);
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.student.findUnique({ where: { id }, select: { id: true } });
+      if (!existing) throw new ServiceError("学生不存在", 404);
+      await tx.student.update({
+        where: { id },
+        data: {
+          ...(body.name !== undefined && { name: body.name }),
+          ...(body.studentId !== undefined && { studentId: body.studentId }),
+          ...(body.gender !== undefined && { gender: body.gender }),
+        },
       });
-      if (!cls) return NextResponse.json({ error: "班级不存在" }, { status: 400 });
-      classId = cls.id;
-    }
 
-    // v0.13: sync labels via StudentLabel
-    if (labelNames !== undefined) {
-      await prisma.studentLabel.deleteMany({ where: { studentId: id } });
-      for (const name of labelNames) {
-        let label = await prisma.label.findUnique({ where: { name } });
-        if (!label) label = await prisma.label.create({ data: { name } });
-        await prisma.studentLabel.create({ data: { studentId: id, labelId: label.id } });
+      const classId = typeof body.classId === "string" ? body.classId : undefined;
+      const classCode = typeof (body.classCode || body.class) === "string" ? String(body.classCode || body.class).trim() : "";
+      if (classId || classCode) {
+        let selectedClass = classId ? await assertClassInSemester(tx, classId, semesterId) : null;
+        if (!selectedClass) {
+          const matches = await tx.class.findMany({
+            where: { semesterId, OR: [{ code: classCode }, { name: classCode }] },
+            select: { id: true, code: true, name: true, semesterId: true },
+          });
+          if (matches.length > 1) throw new ServiceError("班级名称不唯一，请使用 classId", 409);
+          selectedClass = matches[0] ?? null;
+        }
+        if (!selectedClass) throw new ServiceError("班级不存在", 404);
+        await tx.studentClassEnrollment.upsert({
+          where: { studentId_semesterId: { studentId: id, semesterId } },
+          create: { studentId: id, semesterId, classId: selectedClass.id },
+          update: { classId: selectedClass.id },
+        });
       }
-    }
 
-    await prisma.student.update({
-      where: { id },
-      data: {
-        ...(name !== undefined && { name }),
-        ...(classId !== undefined && { classId }),
-        ...(studentId !== undefined && { studentId }),
-        ...(gender !== undefined && { gender }),
-      },
+      if (body.labelNames !== undefined) {
+        await tx.studentLabel.deleteMany({ where: { studentId: id } });
+        for (const rawName of Array.isArray(body.labelNames) ? body.labelNames : []) {
+          if (typeof rawName !== "string" || !rawName.trim()) continue;
+          let label = await tx.label.findUnique({ where: { name: rawName.trim() } });
+          if (!label) label = await tx.label.create({ data: { name: rawName.trim() } });
+          await tx.studentLabel.create({ data: { studentId: id, labelId: label.id } });
+        }
+      }
+      return tx.student.findUniqueOrThrow({ where: { id }, include: studentInclude(semesterId) });
     });
-
-    const student = await prisma.student.findUnique({
-      where: { id },
-      include: {
-        class: { select: { code: true, name: true } },
-        studentLabels: { include: { label: { select: { id: true, name: true } } } },
-      },
-    });
-
-    return NextResponse.json({
-      ...student,
-      class: student?.class?.name ?? student?.class?.code ?? "",
-      labels: (student?.studentLabels || []).map((sl) => ({ id: sl.label.id, name: sl.label.name })),
-    });
+    return NextResponse.json(serializeStudent(result));
   } catch (error: any) {
-    if (error?.code === "P2002") {
-      return NextResponse.json({ error: "学号已存在" }, { status: 409 });
-    }
-    if (error?.code === "P2025") {
-      return NextResponse.json({ error: "学生不存在" }, { status: 404 });
-    }
+    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error?.code === "P2002") return NextResponse.json({ error: "学号已存在" }, { status: 409 });
+    if (error?.code === "P2025") return NextResponse.json({ error: "学生不存在" }, { status: 404 });
     console.error("[/api/students/[id]] error:", error);
     return NextResponse.json({ error: "更新学生失败" }, { status: 500 });
   }
 }
 
-// DELETE /api/students/[id] - delete student
 export async function DELETE(
   _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
-    // v0.11: fetch name before delete for logging
     const student = await prisma.student.findUnique({ where: { id }, select: { name: true, studentId: true } });
     await prisma.student.delete({ where: { id } });
-    if (student) {
-      void logAction({
-        action: "student.deleted",
-        targetType: "Student",
-        targetId: id,
-        targetName: student.name,
-        detail: { studentId: student.studentId },
-      });
-    }
+    if (student) void logAction({ action: "student.deleted", targetType: "Student", targetId: id, targetName: student.name, detail: { studentId: student.studentId } });
     return NextResponse.json({ success: true });
   } catch (error: any) {
-    if (error?.code === "P2025") {
-      return NextResponse.json({ error: "学生不存在" }, { status: 404 });
-    }
+    if (error?.code === "P2025") return NextResponse.json({ error: "学生不存在" }, { status: 404 });
     console.error("[/api/students/[id]] error:", error);
     return NextResponse.json({ error: "删除学生失败" }, { status: 500 });
   }

@@ -27,7 +27,7 @@ export default function ReviewStep({ workflow }: { workflow: AiWorkflowControlle
         <div role="group" aria-label="草案状态">
           {FILTERS.map((filter) => <Button key={filter.value} uiSize="sm" variant={workspace.filterStatus === filter.value ? "primary" : "secondary"} onClick={() => workspace.setFilterStatus(filter.value)}>{filter.label}</Button>)}
         </div>
-        <label><span>班级</span><Select aria-label="班级" value={workspace.filterClass} onChange={(event) => workspace.setFilterClass(event.target.value)}><option value="">全部</option>{workspace.classes.map((className) => <option key={className} value={className}>{className}</option>)}</Select></label>
+        <label><span>班级</span><Select aria-label="班级" value={workspace.filterClass} onChange={(event) => workspace.setFilterClass(event.target.value)}><option value="">全部</option>{workspace.classes.map((klass) => <option key={klass.id} value={klass.id}>{klass.label}</option>)}</Select></label>
       </FilterBar>
 
       {workspace.actionMessage && <StatusBanner tone={workspace.actionMessage.tone}>{workspace.actionMessage.text}</StatusBanner>}

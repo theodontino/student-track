@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useTeachingContext } from "@/features/teaching-context";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
 import { requestJson } from "@/lib/api-client";
 import type { StudentDetail, StudentDetailPanel } from "./types";
 

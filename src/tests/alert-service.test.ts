@@ -10,11 +10,6 @@ let oldClassId = "";
 let currentStudentIds: string[] = [];
 
 beforeAll(async () => {
-  const oldClass = await prisma.class.create({ data: { code: `${marker}-OLD`, name: `${marker} 往期班` } });
-  const currentClass = await prisma.class.create({ data: { code: `${marker}-NOW`, name: `${marker} 当前班` } });
-  oldClassId = oldClass.id;
-  currentClassId = currentClass.id;
-
   const oldSemester = await prisma.semester.create({
     data: { name: `${marker} 往期`, startDate: "2099-01-01", endDate: "2099-08-31" },
   });
@@ -23,19 +18,23 @@ beforeAll(async () => {
   });
   oldSemesterId = oldSemester.id;
   currentSemesterId = currentSemester.id;
+  const oldClass = await prisma.class.create({ data: { semesterId: oldSemester.id, code: `${marker}-OLD`, name: `${marker} 往期班` } });
+  const currentClass = await prisma.class.create({ data: { semesterId: currentSemester.id, code: `${marker}-NOW`, name: `${marker} 当前班` } });
+  oldClassId = oldClass.id;
+  currentClassId = currentClass.id;
 
   const oldStudent = await prisma.student.create({
-    data: { name: `${marker} 往期学生`, studentId: `${marker}-S0`, gender: "男", classId: oldClass.id },
+    data: { name: `${marker} 往期学生`, studentId: `${marker}-S0`, gender: "男", enrollments: { create: { semesterId: oldSemester.id, classId: oldClass.id } } },
   });
   const currentStudents = await Promise.all([
-    prisma.student.create({ data: { name: `${marker} 甲`, studentId: `${marker}-S1`, gender: "男", classId: oldClass.id } }),
-    prisma.student.create({ data: { name: `${marker} 乙`, studentId: `${marker}-S2`, gender: "女", classId: currentClass.id } }),
-    prisma.student.create({ data: { name: `${marker} 丙`, studentId: `${marker}-S3`, gender: "男", classId: currentClass.id } }),
-    prisma.student.create({ data: { name: `${marker} 考勤学生`, studentId: `${marker}-S-ATT`, gender: "女", classId: currentClass.id } }),
+    prisma.student.create({ data: { name: `${marker} 甲`, studentId: `${marker}-S1`, gender: "男", enrollments: { create: { semesterId: currentSemester.id, classId: currentClass.id } } } }),
+    prisma.student.create({ data: { name: `${marker} 乙`, studentId: `${marker}-S2`, gender: "女", enrollments: { create: { semesterId: currentSemester.id, classId: currentClass.id } } } }),
+    prisma.student.create({ data: { name: `${marker} 丙`, studentId: `${marker}-S3`, gender: "男", enrollments: { create: { semesterId: currentSemester.id, classId: currentClass.id } } } }),
+    prisma.student.create({ data: { name: `${marker} 考勤学生`, studentId: `${marker}-S-ATT`, gender: "女", enrollments: { create: { semesterId: currentSemester.id, classId: currentClass.id } } } }),
   ]);
   currentStudentIds = currentStudents.map((student) => student.id);
   const futureOnlyStudent = await prisma.student.create({
-    data: { name: `${marker} 未来学生`, studentId: `${marker}-S4`, gender: "女", classId: currentClass.id },
+    data: { name: `${marker} 未来学生`, studentId: `${marker}-S4`, gender: "女", enrollments: { create: { semesterId: currentSemester.id, classId: currentClass.id } } },
   });
   const attentionLabel = await prisma.label.upsert({ where: { name: "AI内部关注：成绩表现" }, create: { name: "AI内部关注：成绩表现" }, update: {} });
   await prisma.studentLabel.create({ data: { studentId: currentStudents[0].id, labelId: attentionLabel.id } });
@@ -92,9 +91,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await prisma.classSession.deleteMany({ where: { semesterId: { in: [currentSemesterId, oldSemesterId] } } });
   await prisma.student.deleteMany({ where: { studentId: { startsWith: marker } } });
-  await prisma.semester.deleteMany({ where: { id: { in: [currentSemesterId, oldSemesterId] } } });
   await prisma.class.deleteMany({ where: { id: { in: [currentClassId, oldClassId] } } });
+  await prisma.semester.deleteMany({ where: { id: { in: [currentSemesterId, oldSemesterId] } } });
   await prisma.label.deleteMany({ where: { name: "AI内部关注：成绩表现", students: { none: {} } } });
 });
 

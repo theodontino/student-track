@@ -38,8 +38,8 @@ export function useTeachingContext(initial: Partial<TeachingContext> = {}) {
     context,
     hydrated,
     setContext,
-    setSemesterId: useCallback((semesterId: string) => setContext((current) => current.semesterId === semesterId ? current : { semesterId, className: "", sessionCode: "" }), [setContext]),
-    setClassName: useCallback((className: string) => setContext((current) => current.className === className ? current : { ...current, className, sessionCode: "" }), [setContext]),
+    setSemesterId: useCallback((semesterId: string) => setContext((current) => current.semesterId === semesterId ? current : { semesterId, className: "", classId: "", sessionCode: "" }), [setContext]),
+    setClassName: useCallback((className: string) => setContext((current) => current.className === className ? current : { ...current, className, classId: "", sessionCode: "" }), [setContext]),
     setSessionCode: useCallback((sessionCode: string) => setContext((current) => current.sessionCode === sessionCode ? current : { ...current, sessionCode }), [setContext]),
   };
 }

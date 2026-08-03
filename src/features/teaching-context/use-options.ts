@@ -2,20 +2,31 @@
 
 import { useEffect, useState } from "react";
 import { requestJson } from "@/lib/api-client";
-import type { SemesterSummary, SessionSummary, StudentSummary } from "./types";
+import type { ClassSummary, SemesterSummary, SessionSummary } from "./types";
 
 export function useSemesters(refreshKey = 0) {
   const [items, setItems] = useState<SemesterSummary[]>([]);
   useEffect(() => { requestJson<SemesterSummary[]>("/api/semesters").then(setItems).catch(() => setItems([])); }, [refreshKey]);
   return items;
 }
-export function useClasses() {
-  const [items, setItems] = useState<string[]>([]);
-  useEffect(() => { requestJson<StudentSummary[]>("/api/students?summary=true&scope=active").then((students) => setItems([...new Set(students.map((student) => student.class).filter(Boolean))])).catch(() => setItems([])); }, []);
+export function useClasses(semesterId: string, refreshKey = 0) {
+  const [items, setItems] = useState<ClassSummary[]>([]);
+  useEffect(() => {
+    if (!semesterId) { setItems([]); return; }
+    requestJson<ClassSummary[]>(`/api/semesters/${encodeURIComponent(semesterId)}/classes`)
+      .then(setItems)
+      .catch(() => setItems([]));
+  }, [refreshKey, semesterId]);
   return items;
 }
-export function useSessions(semesterId: string, className: string, refreshKey = 0) {
+export function useSessions(semesterId: string, classId: string, className: string, refreshKey = 0) {
   const [items, setItems] = useState<SessionSummary[]>([]);
-  useEffect(() => { if (!semesterId || !className) { setItems([]); return; } const query = new URLSearchParams({ semesterId, className }); requestJson<SessionSummary[]>(`/api/sessions?${query}`).then(setItems).catch(() => setItems([])); }, [semesterId, className, refreshKey]);
+  useEffect(() => {
+    if (!semesterId || (!classId && !className)) { setItems([]); return; }
+    const query = new URLSearchParams({ semesterId });
+    if (classId) query.set("classId", classId);
+    else query.set("className", className);
+    requestJson<SessionSummary[]>(`/api/sessions?${query}`).then(setItems).catch(() => setItems([]));
+  }, [classId, className, refreshKey, semesterId]);
   return items;
 }

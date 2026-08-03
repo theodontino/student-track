@@ -15,7 +15,8 @@ erDiagram
   }
   Class {
     TEXT id PK
-    TEXT code UK
+    TEXT semesterId FK
+    TEXT code
     TEXT name
   }
   ClassSession {
@@ -253,9 +254,16 @@ erDiagram
   Student {
     TEXT id PK
     TEXT name
-    TEXT classId FK
     TEXT studentId UK
     TEXT gender
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
+  StudentClassEnrollment {
+    TEXT id PK
+    TEXT studentId FK
+    TEXT semesterId FK
+    TEXT classId FK
     TEXT rosterStatus
     DATETIME statusEffectiveAt
     DATETIME createdAt
@@ -448,7 +456,7 @@ erDiagram
   }
   Class o|--o{ ClassSession : "classId"
   Class ||--o{ FeedbackPlan : "classId"
-  Class ||--o{ Student : "classId"
+  Class ||--o{ StudentClassEnrollment : "classId"
   Class ||--o{ TeacherTask : "classId"
   ClassSession o|--o{ FeedbackPlan : "rangeEndSessionId"
   ClassSession o|--o{ FeedbackPlan : "rangeStartSessionId"
@@ -477,8 +485,10 @@ erDiagram
   GenerationRecord o|--o{ GenerationRecord : "parentGenerationId"
   GenerationRecord ||--o{ FeedbackGenerationSelection : "selectedGenerationId"
   Label ||--o{ StudentLabel : "labelId"
+  Semester ||--o{ Class : "semesterId"
   Semester ||--o{ ClassSession : "semesterId"
   Semester ||--o{ FeedbackPlan : "semesterId"
+  Semester ||--o{ StudentClassEnrollment : "semesterId"
   Student o|--o{ FeedbackPlanItem : "studentId"
   Student o|--o{ TeacherTask : "studentId"
   Student o|--o{ WeComHandoffPackage : "selectedStudentId"
@@ -488,6 +498,7 @@ erDiagram
   Student ||--o{ Event : "studentId"
   Student ||--o{ FeedbackGenerationSelection : "studentId"
   Student ||--o{ SessionMetric : "studentId"
+  Student ||--o{ StudentClassEnrollment : "studentId"
   Student ||--o{ StudentLabel : "studentId"
   Student ||--o{ TeacherObservation : "studentId"
   Student ||--o| CommunicationPreference : "studentId"
@@ -518,9 +529,11 @@ erDiagram
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
-| `code` | `TEXT` | 是 | unique |
+| `semesterId` | `TEXT` | 是 | FK |
+| `code` | `TEXT` | 是 |  |
 | `name` | `TEXT` | 否 |  |
 
+复合唯一约束：`semesterId + code`。
 
 ### ClassSession
 
@@ -839,14 +852,26 @@ erDiagram
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
 | `name` | `TEXT` | 是 |  |
-| `classId` | `TEXT` | 是 | FK |
 | `studentId` | `TEXT` | 是 | unique |
 | `gender` | `TEXT` | 是 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+
+### StudentClassEnrollment
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `studentId` | `TEXT` | 是 | FK |
+| `semesterId` | `TEXT` | 是 | FK |
+| `classId` | `TEXT` | 是 | FK |
 | `rosterStatus` | `TEXT` | 是 | default: 'ACTIVE' |
 | `statusEffectiveAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `updatedAt` | `DATETIME` | 是 |  |
 
+复合唯一约束：`studentId + semesterId`。
 
 ### StudentLabel
 

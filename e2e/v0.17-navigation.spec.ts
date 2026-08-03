@@ -62,7 +62,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
 
     await page.getByRole("link", { name: "教学总结" }).click();
     await expect(page).toHaveURL(new RegExp(`semesterId=${TEST_FIXTURE.semester.id}`));
-    await expect(page.getByLabel(/班级选择班级/)).toHaveValue(TEST_FIXTURE.class.name);
+    await expect(page.getByLabel(/班级选择班级/)).toHaveValue(TEST_FIXTURE.class.id);
     await expect(page.getByLabel(/课次选择课次/)).toHaveValue(TEST_FIXTURE.sessions[0].code);
 
     await page.getByRole("link", { name: "课后工作台" }).click();

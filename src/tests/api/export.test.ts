@@ -33,7 +33,7 @@ describe("/api/export", () => {
     const studentId = TEST_FIXTURE.students[1].id;
     await prisma.student.update({
       where: { id: studentId },
-      data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date("2026-07-29T00:00:00.000Z") },
+      data: { enrollments: { update: { where: { studentId_semesterId: { studentId, semesterId: TEST_FIXTURE.semester.id } }, data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date("2026-07-29T00:00:00.000Z") } } } },
     });
     try {
       const exportRows = async (includeInactive: boolean) => {
@@ -57,7 +57,7 @@ describe("/api/export", () => {
     } finally {
       await prisma.student.update({
         where: { id: studentId },
-        data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() },
+        data: { enrollments: { update: { where: { studentId_semesterId: { studentId, semesterId: TEST_FIXTURE.semester.id } }, data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() } } } },
       });
     }
   });

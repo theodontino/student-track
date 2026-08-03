@@ -19,6 +19,8 @@ interface ProcessDraftInput {
   draftId: string;
   action: ReviewAction;
   edits?: unknown;
+  /** The UI's selected semester, used to prevent confirming a draft in another term. */
+  semesterId?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -177,6 +179,9 @@ export async function processDraftReview(input: ProcessDraftInput) {
     if (draft.sessionCode && !session) {
       throw new ServiceError(`关联课次 ${draft.sessionCode} 已被删除，请重新录入`, 409);
     }
+    if (input.semesterId && (!session || session.semesterId !== input.semesterId)) {
+      throw new ServiceError("草案不属于所选学期", 409);
+    }
 
     if (isWccDraft && !session) {
       throw new ServiceError("WCC 草案必须关联有效课次才能确认", 409);
@@ -185,10 +190,16 @@ export async function processDraftReview(input: ProcessDraftInput) {
     const boundWccStudent = isWccDraft && draft.studentId
       ? await tx.student.findUnique({
         where: { id: draft.studentId },
-        select: { id: true, name: true, classId: true },
+        select: {
+          id: true,
+          name: true,
+          enrollments: session?.classId
+            ? { where: { semesterId: session.semesterId, classId: session.classId }, select: { id: true } }
+            : { where: { semesterId: session?.semesterId ?? "" }, select: { id: true } },
+        },
       })
       : null;
-    if (isWccDraft && (!boundWccStudent || boundWccStudent.classId !== session?.classId)) {
+    if (isWccDraft && (!boundWccStudent || boundWccStudent.enrollments.length !== 1)) {
       throw new ServiceError("WCC 草案绑定的学生已不存在或与课次班级不一致", 409);
     }
     if (isWccDraft && parsedData.students.length !== 1) {
@@ -261,7 +272,13 @@ export async function processDraftReview(input: ProcessDraftInput) {
     const matchingStudents = await tx.student.findMany({
       where: {
         name: { in: names },
-        ...(session?.classId ? { classId: session.classId } : {}),
+        ...(session?.classId ? {
+          OR: [
+            { enrollments: { some: { semesterId: session.semesterId, classId: session.classId, rosterStatus: "ACTIVE" } } },
+            { sessionMetrics: { some: { sessionId: session.id } } },
+            { attendances: { some: { sessionId: session.id } } },
+          ],
+        } : {}),
       },
       select: { id: true, name: true },
     });

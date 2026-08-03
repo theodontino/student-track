@@ -23,9 +23,10 @@ export function StudentEditorDialog({ workspace }: { workspace: Workspace }) {
           <Input id="student-name" required value={workspace.form.name} onChange={(event) => workspace.setForm({ ...workspace.form, name: event.target.value })} />
         </FormField>
         <div className="student-editor-form__row">
-          <FormField id="student-class-code" label="班级编号" required>
+          {!workspace.editingStudent && <FormField id="student-class-code" label="班级编号" required>
             <Input id="student-class-code" required placeholder="如：G3-01" value={workspace.form.classCode} onChange={(event) => workspace.setForm({ ...workspace.form, classCode: event.target.value })} />
-          </FormField>
+          </FormField>}
+          {workspace.editingStudent && <div className="student-editor-form__term-note"><strong>当前学期班级</strong><span>{workspace.form.classCode || "未分班"}</span><small>班级归属和在读状态属于学期名单，请通过“导入花名册”或名单调整完成。</small></div>}
           <FormField id="student-number" label="学号" required>
             <Input id="student-number" required value={workspace.form.studentId} onChange={(event) => workspace.setForm({ ...workspace.form, studentId: event.target.value })} />
           </FormField>

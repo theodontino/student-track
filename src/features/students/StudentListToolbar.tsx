@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Input, PageHeader, Select } from "@/components/ui";
-import { SemesterContextSelector } from "@/features/teaching-context";
+import { SemesterContextSelector } from "@/features/teaching-context/SemesterContextSelector";
 import type { useStudentsWorkspace } from "./useStudentsWorkspace";
 
 type Workspace = ReturnType<typeof useStudentsWorkspace>;
@@ -13,7 +13,7 @@ export function StudentListToolbar({ workspace }: { workspace: Workspace }) {
         title="学生档案"
         description="按学期查看学生四维平均表现和综合分；基础档案与标签保持全局。"
         context={<SemesterContextSelector value={workspace.selectedSemesterId} onChange={workspace.setSemesterId} compact />}
-        actions={<div className="student-list-actions"><Button variant="secondary" onClick={workspace.openImport}>导入花名册</Button><Button onClick={workspace.openCreate}>添加学生</Button></div>}
+        actions={<div className="student-list-actions"><Button variant="secondary" onClick={workspace.openImport} disabled={!workspace.selectedSemesterId}>导入花名册</Button><Button onClick={workspace.openCreate} disabled={!workspace.selectedSemesterId}>添加学生</Button></div>}
       />
       <div className="student-list-search">
         <Input

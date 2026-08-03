@@ -1,5 +1,5 @@
 import type { DraftParseResult, DraftRecordView, DraftStructuredResult } from "@/lib/types";
-import type { TeachingContext } from "@/features/teaching-context";
+import type { TeachingContext } from "@/features/teaching-context/types";
 import { isAiWorkflowState, type AiWorkflowState } from "@/features/ai-workflow";
 
 export interface InputWorkspaceState {

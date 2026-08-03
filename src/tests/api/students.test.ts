@@ -55,6 +55,19 @@ describe("/api/students", () => {
     await expect(res.json()).resolves.toEqual({ error: "学期不存在" });
   });
 
+  it("does not expose stable profiles in a semester without enrollments", async () => {
+    const semester = await prisma.semester.create({
+      data: { name: "VITEST 空白名单学期", startDate: "2098-01-01", endDate: "2098-06-30" },
+    });
+    try {
+      const response = await GET(new NextRequest(`http://localhost:3000/api/students?semesterSummary=true&semesterId=${semester.id}`));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual([]);
+    } finally {
+      await prisma.semester.delete({ where: { id: semester.id } });
+    }
+  });
+
   it("POST with missing fields returns 400", async () => {
     const req = new NextRequest("http://localhost:3000/api/students", {
       method: "POST",
@@ -102,8 +115,8 @@ describe("/api/students", () => {
         where: { action: "student.roster-status.updated", targetId: studentId },
       })).toBe(beforeLogs + 1);
     } finally {
-      await prisma.student.update({
-        where: { id: studentId },
+      await prisma.studentClassEnrollment.update({
+        where: { studentId_semesterId: { studentId, semesterId: TEST_FIXTURE.semester.id } },
         data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() },
       });
     }

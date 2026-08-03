@@ -64,7 +64,15 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
     const validStudentCount = await tx.student.count({
       where: {
         id: { in: submittedStudentIds },
-        ...(session?.classId ? { classId: session.classId } : {}),
+        ...(session?.classId ? {
+          OR: [
+            { enrollments: { some: { semesterId: session.semesterId, classId: session.classId, rosterStatus: "ACTIVE" } } },
+            { sessionMetrics: { some: { sessionId: session.id } } },
+            { attendances: { some: { sessionId: session.id } } },
+            { events: { some: { sessionId: session.id } } },
+            { communications: { some: { sessionId: session.id } } },
+          ],
+        } : {}),
       },
     });
     if (validStudentCount !== submittedStudentIds.length) {

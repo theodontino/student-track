@@ -31,6 +31,7 @@ import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from 
 import { apiErrorBody, ApiError } from "@/lib/api-errors";
 import { getEffectiveLLMSettings, resolveLLMProfileId } from "@/lib/llm-settings";
 import { FEEDBACK_REPLAY_SNAPSHOT_VERSION, feedbackContextFingerprint } from "@/services/feedback-version-service";
+import { requireSemesterId } from "@/services/student-enrollment-service";
 
 async function reviewedFeedback(
   studentName: string,
@@ -60,6 +61,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json() as Record<string, unknown>;
     const studentId = typeof body.studentId === "string" ? body.studentId : "";
     const sessionCode = typeof body.sessionCode === "string" ? body.sessionCode : "";
+    const requestedSemesterId = typeof body.semesterId === "string" ? body.semesterId : "";
     const days = typeof body.days === "number" ? body.days : undefined;
     const submittedInputRevision = typeof body.inputRevision === "string" ? body.inputRevision.trim() : "";
     const requestedIntensity = typeof body.feedbackIntensity === "string" && FEEDBACK_INTENSITIES.includes(body.feedbackIntensity as FeedbackIntensity)
@@ -97,6 +99,9 @@ export async function POST(request: NextRequest) {
         : undefined;
       try {
         const feedbackContext = await buildFeedbackContext(prisma, sessionCode);
+        if (requestedSemesterId && feedbackContext.session.semesterId !== requestedSemesterId) {
+          return NextResponse.json({ error: "课次不属于所选学期" }, { status: 409 });
+        }
         const studentContext = feedbackContext.students.find((student) => student.id === studentId);
         if (!studentContext) return NextResponse.json({ error: "该学生不属于当前课次班级" }, { status: 404 });
         const routing = await buildFeedbackRouting(prisma, feedbackContext);
@@ -221,21 +226,46 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const student = await prisma.student.findUnique({
+    const semesterId = await requireSemesterId(prisma, typeof body.semesterId === "string" ? body.semesterId : undefined);
+    const [semester, student] = await Promise.all([
+      prisma.semester.findUnique({ where: { id: semesterId }, select: { id: true, startDate: true, endDate: true } }),
+      prisma.student.findUnique({
       where: { id: studentId },
-      include: { class: { select: { name: true, code: true } } },
-    });
+      include: { enrollments: { where: { semesterId }, include: { class: { select: { id: true, name: true, code: true } } } } },
+      }),
+    ]);
+    if (!semester) return NextResponse.json({ error: "学期不存在" }, { status: 404 });
     if (!student) return NextResponse.json({ error: "学生不存在" }, { status: 404 });
+    if (!student.enrollments[0]) return NextResponse.json({ error: "该学生不属于所选学期" }, { status: 404 });
 
     const d = days || 14;
     const since = new Date(); since.setDate(since.getDate() - d);
     const sinceStr = since.toISOString().split("T")[0];
+    const effectiveSince = sinceStr < semester.startDate ? semester.startDate : sinceStr;
 
     const [metrics, events, comms, attendances] = await Promise.all([
-      prisma.sessionMetric.findMany({ where: { studentId, date: { gte: sinceStr } }, orderBy: { date: "desc" } }),
-      prisma.event.findMany({ where: { studentId, session: { date: { gte: sinceStr } } }, orderBy: { createdAt: "desc" }, include: { session: { select: { date: true } } } }),
-      prisma.communication.findMany({ where: { studentId, session: { date: { gte: sinceStr } } }, orderBy: { createdAt: "desc" }, include: { session: { select: { date: true } } } }),
-      prisma.attendance.findMany({ where: { studentId, session: { date: { gte: sinceStr } } }, include: { session: { select: { date: true } } } }),
+      prisma.sessionMetric.findMany({
+        where: {
+          studentId,
+          date: { gte: effectiveSince, lte: semester.endDate },
+          OR: [{ session: { semesterId } }, { sessionId: null }],
+        },
+        orderBy: { date: "desc" },
+      }),
+      prisma.event.findMany({
+        where: { studentId, session: { semesterId, date: { gte: effectiveSince, lte: semester.endDate } } },
+        orderBy: { createdAt: "desc" },
+        include: { session: { select: { date: true } } },
+      }),
+      prisma.communication.findMany({
+        where: { studentId, session: { semesterId, date: { gte: effectiveSince, lte: semester.endDate } } },
+        orderBy: { createdAt: "desc" },
+        include: { session: { select: { date: true } } },
+      }),
+      prisma.attendance.findMany({
+        where: { studentId, session: { semesterId, date: { gte: effectiveSince, lte: semester.endDate } } },
+        include: { session: { select: { date: true } } },
+      }),
     ]);
 
     const avgA = metrics.length ? (metrics.reduce((sum, metric) => sum + metric.scoreA, 0) / metrics.length).toFixed(1) : "-";
@@ -243,7 +273,8 @@ export async function POST(request: NextRequest) {
     const avgC = metrics.length ? (metrics.reduce((sum, metric) => sum + metric.scoreC, 0) / metrics.length).toFixed(1) : "-";
     const total = attendances.length;
     const present = attendances.filter((attendance) => attendance.present).length;
-    const context = `${student.name}（${student.class?.name ?? student.class?.code ?? ""}）近${d}天表现：
+    const enrollment = student.enrollments[0];
+    const context = `${student.name}（${enrollment?.class?.name ?? enrollment?.class?.code ?? ""}）近${d}天表现：
 - 学习(A): 均分${avgA} | 纪律(B): 均分${avgB} | 作业(C): 均分${avgC}
 - 考勤: ${total ? `${present}/${total}` : "无记录"}
 - 关键事件: ${events.map((event) => event.description).join("；") || "无"}
@@ -263,7 +294,7 @@ export async function POST(request: NextRequest) {
         );
         if (result.reviewStatus === "needs_review") markCurrentLLMCacheOperationIncomplete();
         await recordSuccessfulGeneration({
-          taskType: "feedback", stage: "review", classId: student.classId, studentId,
+          taskType: "feedback", stage: "review", classId: enrollment?.classId, semesterId, studentId,
           sourceRefs: [{ type: "student", id: studentId }], promptVersion: "feedback-recent-v1", modelRole: "feedbackReview",
           inputSnapshot: { days: d }, outputSnapshot: { reviewStatus: result.reviewStatus, draftFeedback: result.draftFeedback }, finalText: result.feedback || null,
         }).catch(() => undefined);

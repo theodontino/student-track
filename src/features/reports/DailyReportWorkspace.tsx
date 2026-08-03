@@ -30,12 +30,12 @@ import {
   type TeachingSummaryHistoryState,
 } from "./history-adapters";
 import {
-  isTeachingContext,
-  teachingContextWorkspaceKey,
-  useTeachingContext,
   type SemesterSummary,
   type TeachingContext,
-} from "@/features/teaching-context";
+} from "@/features/teaching-context/types";
+import { isTeachingContext } from "@/features/teaching-context/url-context";
+import { teachingContextWorkspaceKey } from "@/features/teaching-context/url-context";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import TeacherObservationsPanel from "./TeacherObservationsPanel";
 

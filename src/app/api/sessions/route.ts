@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ServiceError } from "@/services/service-error";
+import { assertClassInSemester, requireSemesterId } from "@/services/student-enrollment-service";
 
 // GET /api/sessions?semesterId=&className=&date=
 export async function GET(request: NextRequest) {
@@ -7,17 +9,26 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const semesterId = searchParams.get("semesterId");
     const className = searchParams.get("className");
+    const classId = searchParams.get("classId");
     const date = searchParams.get("date");
 
+    const effectiveSemesterId = (classId || className) && !semesterId
+      ? await requireSemesterId(prisma)
+      : semesterId;
     const where: Record<string, unknown> = {};
-    if (semesterId) where.semesterId = semesterId;
+    if (effectiveSemesterId) where.semesterId = effectiveSemesterId;
     if (date) where.date = date;
-    if (className) {
-      // Look up class by name or code to get classId
-      const cls = await prisma.class.findFirst({
-        where: { OR: [{ name: className }, { code: className }] },
+    if (classId) {
+      if (!effectiveSemesterId) return NextResponse.json({ error: "使用 classId 时必须提供 semesterId" }, { status: 400 });
+      await assertClassInSemester(prisma, classId, effectiveSemesterId);
+      where.classId = classId;
+    } else if (className) {
+      const matches = await prisma.class.findMany({
+        where: { ...(effectiveSemesterId ? { semesterId: effectiveSemesterId } : {}), OR: [{ name: className }, { code: className }] },
+        select: { id: true },
       });
-      where.classId = cls?.id ?? null;
+      if (matches.length > 1) return NextResponse.json({ error: "班级名称不唯一，请使用 classId" }, { status: 409 });
+      where.classId = matches[0]?.id ?? null;
     }
 
     const sessions = await prisma.classSession.findMany({
@@ -38,6 +49,7 @@ export async function GET(request: NextRequest) {
       }))
     );
   } catch (error) {
+    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
     console.error("[/api/sessions] error:", error);
     return NextResponse.json({ error: "获取课次列表失败" }, { status: 500 });
   }

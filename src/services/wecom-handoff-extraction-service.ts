@@ -9,6 +9,10 @@ export interface GenerateWeComBridgeInput {
   sourceText?: string;
   exportPath?: string;
   candidateStudentIds?: string[];
+  semesterId?: string;
+  /** Explicit teacher-selected candidates may be historical/inactive for the
+   * evidence term; automatic rosters remain ACTIVE-only. */
+  includeInactive?: boolean;
   groundedMessages?: Array<{ id: string; content: string }>;
 }
 
@@ -600,14 +604,23 @@ export async function generateWeComBridgeJson(
     recentCommunications: string[];
   }>;
   if (candidateStudentIds.length > 0) {
+    const enrollmentFilter = {
+      ...(input.semesterId ? { semesterId: input.semesterId } : {}),
+      ...(input.includeInactive ? {} : { rosterStatus: "ACTIVE" as const }),
+    };
     const students = await prisma.student.findMany({
-      where: { id: { in: candidateStudentIds }, rosterStatus: "ACTIVE" },
+      where: { id: { in: candidateStudentIds }, enrollments: { some: enrollmentFilter } },
       select: {
         id: true,
         name: true,
         studentId: true,
-        class: { select: { name: true, code: true } },
+        enrollments: {
+          where: enrollmentFilter,
+          orderBy: { semester: { startDate: "desc" } },
+          include: { class: { select: { name: true, code: true } } },
+        },
         communications: {
+          where: input.semesterId ? { session: { semesterId: input.semesterId } } : undefined,
           select: { summary: true },
           orderBy: { createdAt: "desc" },
           take: 5,
@@ -619,17 +632,25 @@ export async function generateWeComBridgeJson(
       id: student.id,
       name: student.name,
       studentId: student.studentId,
-      className: student.class?.name ?? student.class?.code ?? "",
+      className: student.enrollments?.[0]?.class.name ?? student.enrollments?.[0]?.class.code ?? (student as typeof student & { class?: { name?: string | null; code?: string | null } }).class?.name ?? (student as typeof student & { class?: { name?: string | null; code?: string | null } }).class?.code ?? "",
       recentCommunications: student.communications.map((item) => item.summary),
     }));
   } else {
+    const enrollmentFilter = {
+      ...(input.semesterId ? { semesterId: input.semesterId } : {}),
+      rosterStatus: "ACTIVE" as const,
+    };
     const students = await prisma.student.findMany({
-      where: { rosterStatus: "ACTIVE" },
+      where: { enrollments: { some: enrollmentFilter } },
       select: {
         id: true,
         name: true,
         studentId: true,
-        class: { select: { name: true, code: true } },
+        enrollments: {
+          where: enrollmentFilter,
+          orderBy: { semester: { startDate: "desc" } },
+          include: { class: { select: { name: true, code: true } } },
+        },
       },
       orderBy: { studentId: "asc" },
     });
@@ -639,7 +660,7 @@ export async function generateWeComBridgeJson(
         id: student.id,
         name: student.name,
         studentId: student.studentId,
-        className: student.class?.name ?? student.class?.code ?? "",
+        className: student.enrollments?.[0]?.class.name ?? student.enrollments?.[0]?.class.code ?? (student as typeof student & { class?: { name?: string | null; code?: string | null } }).class?.name ?? (student as typeof student & { class?: { name?: string | null; code?: string | null } }).class?.code ?? "",
         recentCommunications: [],
       }));
   }

@@ -1,15 +1,4 @@
-export type { TeachingContext, SemesterSummary, SessionSummary, StudentSummary } from "./types";
-export { TeachingContextSelector } from "./TeachingContextSelector";
-export { SemesterContextSelector } from "./SemesterContextSelector";
-export { useTeachingContext } from "./use-teaching-context";
-export { useClasses, useSemesters, useSessions } from "./use-options";
-export {
-  applyTeachingContext,
-  emptyTeachingContext,
-  hasTeachingContext,
-  isTeachingContext,
-  parseTeachingContext,
-  readStoredTeachingContext,
-  teachingContextWorkspaceKey,
-  writeStoredTeachingContext,
-} from "./url-context";
+// Keep this entry point type-only. Runtime hooks, UI components, and URL
+// helpers are imported from their focused modules so Fast Refresh does not
+// have to treat a mixed component/utility barrel as a rendering boundary.
+export type { TeachingContext, SemesterSummary, SessionSummary, StudentSummary, ClassSummary } from "./types";

@@ -182,7 +182,16 @@ export async function createAssistantRosterDraft(
   if (!session.classId || !session.class) throw new Error("该课次未关联班级");
 
   const roster = await prisma.student.findMany({
-    where: { classId: session.classId, rosterStatus: "ACTIVE" },
+    where: {
+      OR: [
+        { enrollments: { some: { semesterId: session.semesterId, classId: session.classId, rosterStatus: "ACTIVE" } } },
+        // A transferred or inactive student with records on this historical
+        // session remains eligible for review/import of that session.
+        { sessionMetrics: { some: { sessionId: session.id } } },
+        { attendances: { some: { sessionId: session.id } } },
+        { events: { some: { sessionId: session.id } } },
+      ],
+    },
     select: { id: true, name: true, studentId: true },
     orderBy: { studentId: "asc" },
   });

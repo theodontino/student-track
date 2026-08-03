@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
+import { assertClassInSemester } from "@/services/student-enrollment-service";
 
 function localDate(date = new Date()) {
   const year = date.getFullYear();
@@ -34,6 +35,7 @@ async function reorderSemesterNumbers(
 /** Creates a session, its initial attendance roster, and derived D scores atomically. */
 export async function createClassSession(input: {
   semesterId: string;
+  classId?: string;
   classCode?: string;
   date?: string;
 }) {
@@ -45,12 +47,20 @@ export async function createClassSession(input: {
     });
     if (!semester) throw new ServiceError("学期不存在", 404);
 
-    const selectedClass = input.classCode
-      ? await tx.class.findFirst({
-          where: { OR: [{ code: input.classCode }, { name: input.classCode }] },
-          select: { id: true, code: true, name: true },
-        })
+    let selectedClass = input.classId
+      ? await assertClassInSemester(tx, input.classId, input.semesterId)
       : null;
+    if (!selectedClass && input.classCode) {
+      const matches = await tx.class.findMany({
+        where: {
+          semesterId: input.semesterId,
+          OR: [{ code: input.classCode }, { name: input.classCode }],
+        },
+        select: { id: true, code: true, name: true, semesterId: true },
+      });
+      if (matches.length > 1) throw new ServiceError("班级名称不唯一，请使用 classId", 409);
+      selectedClass = matches[0] ?? null;
+    }
     if (input.classCode && !selectedClass) throw new ServiceError("班级不存在", 404);
     const classId = selectedClass?.id ?? null;
 
@@ -83,11 +93,14 @@ export async function createClassSession(input: {
       },
     });
 
+    const enrollments = classId
+      ? await tx.studentClassEnrollment.findMany({
+          where: { semesterId: input.semesterId, classId, rosterStatus: "ACTIVE" },
+          select: { studentId: true },
+        })
+      : [];
     const students = await tx.student.findMany({
-      where: {
-        rosterStatus: "ACTIVE",
-        ...(classId ? { classId } : {}),
-      },
+      where: classId ? { id: { in: enrollments.map((item) => item.studentId) } } : undefined,
       select: { id: true },
     });
     if (students.length > 0) {

@@ -25,13 +25,23 @@ export async function POST(request: NextRequest) {
 
     const session = await prisma.classSession.findUnique({
       where: { code: sessionCode },
-      select: { classId: true },
+      select: { id: true, classId: true, semesterId: true },
     });
     if (!session?.classId) {
       return NextResponse.json({ error: "课次不存在或未关联班级" }, { status: 404 });
     }
     const students = await prisma.student.findMany({
-      where: { classId: session.classId, rosterStatus: "ACTIVE" },
+      where: {
+        OR: [
+          { enrollments: { some: { semesterId: session.semesterId, classId: session.classId, rosterStatus: "ACTIVE" } } },
+          ...(session ? [
+            { sessionMetrics: { some: { sessionId: session.id } } },
+            { attendances: { some: { sessionId: session.id } } },
+            { events: { some: { sessionId: session.id } } },
+            { communications: { some: { sessionId: session.id } } },
+          ] : []),
+        ],
+      },
       select: { id: true, name: true, studentId: true },
       orderBy: { studentId: "asc" },
     });

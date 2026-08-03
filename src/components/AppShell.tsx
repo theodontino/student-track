@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { AppIcon } from "@/components/AppIcon";
 import { IconButton } from "@/components/ui";
-import { applyTeachingContext, readStoredTeachingContext } from "@/features/teaching-context";
+import { applyTeachingContext, readStoredTeachingContext } from "@/features/teaching-context/url-context";
 import { useWeComAccess } from "@/features/useWeComAccess";
 
 type NavigationItem = {

@@ -35,17 +35,17 @@ afterEach(async () => {
   await prisma.classSession.deleteMany({ where: { code: { in: rangeSessionCodes } } });
   await prisma.student.deleteMany({ where: { studentId: `${studentNumber}-RANGE` } });
   await prisma.student.deleteMany({ where: { studentId: studentNumber } });
-  await prisma.semester.deleteMany({ where: { name: `${semesterName}-RANGE` } });
-  await prisma.semester.deleteMany({ where: { name: semesterName } });
   await prisma.class.deleteMany({ where: { code: `${classCode}-RANGE` } });
   await prisma.class.deleteMany({ where: { code: classCode } });
+  await prisma.semester.deleteMany({ where: { name: `${semesterName}-RANGE` } });
+  await prisma.semester.deleteMany({ where: { name: semesterName } });
 });
 
 describe("feedback plan service", () => {
   it("keeps teacher-edited final text through approval and plan export", async () => {
-    const classRecord = await prisma.class.create({ data: { code: classCode, name: "计划测试班" } });
     const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
-    const student = await prisma.student.create({ data: { name: "测试学生", studentId: studentNumber, gender: "男", classId: classRecord.id } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "计划测试班" } });
+    const student = await prisma.student.create({ data: { name: "测试学生", studentId: studentNumber, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
     const session = await prisma.classSession.create({ data: { code: sessionCode, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
     await prisma.sessionMetric.create({ data: { studentId: student.id, sessionId: session.id, date: session.date, scoreA: 4, scoreB: 4, scoreC: 3, scoreD: 5, operator: "teacher" } });
     await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "第二道同类题能够独立完成", rawText: "测试课堂记录" } });
@@ -84,9 +84,9 @@ describe("feedback plan service", () => {
   });
 
   it("uses the selected stage range and assigns follow-up tasks to the next class session", async () => {
-    const classRecord = await prisma.class.create({ data: { code: `${classCode}-RANGE`, name: "阶段范围测试班" } });
     const semester = await prisma.semester.create({ data: { name: `${semesterName}-RANGE`, startDate: "2099-01-01", endDate: "2099-12-31" } });
-    const student = await prisma.student.create({ data: { name: "阶段测试学生", studentId: `${studentNumber}-RANGE`, gender: "女", classId: classRecord.id } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-RANGE`, name: "阶段范围测试班" } });
+    const student = await prisma.student.create({ data: { name: "阶段测试学生", studentId: `${studentNumber}-RANGE`, gender: "女", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
     const sessions = [];
     for (const [index, code] of rangeSessionCodes.entries()) {
       sessions.push(await prisma.classSession.create({
@@ -123,9 +123,9 @@ describe("feedback plan service", () => {
   });
 
   it("rebases stale evidence before generation and preserves the current student identity", async () => {
-    const classRecord = await prisma.class.create({ data: { code: `${classCode}-STALE`, name: "失效证据测试班" } });
     const semester = await prisma.semester.create({ data: { name: `${semesterName}-STALE`, startDate: "2099-01-01", endDate: "2099-12-31" } });
-    const student = await prisma.student.create({ data: { name: "失效测试学生", studentId: `${studentNumber}-STALE`, gender: "男", classId: classRecord.id } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-STALE`, name: "失效证据测试班" } });
+    const student = await prisma.student.create({ data: { name: "失效测试学生", studentId: `${studentNumber}-STALE`, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
     const session = await prisma.classSession.create({ data: { code: `${sessionCode}-STALE`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
     await prisma.sessionMetric.create({ data: { studentId: student.id, sessionId: session.id, date: session.date, scoreA: 5, scoreB: 4, scoreC: 3, scoreD: 5, operator: "teacher" } });
     await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "第一道题需要提醒", rawText: "合成测试" } });
@@ -154,9 +154,9 @@ describe("feedback plan service", () => {
   });
 
   it("keeps the previous reviewable text when regeneration fails", async () => {
-    const classRecord = await prisma.class.create({ data: { code: `${classCode}-FAIL`, name: "生成失败测试班" } });
     const semester = await prisma.semester.create({ data: { name: `${semesterName}-FAIL`, startDate: "2099-01-01", endDate: "2099-12-31" } });
-    const student = await prisma.student.create({ data: { name: "生成失败学生", studentId: `${studentNumber}-FAIL`, gender: "女", classId: classRecord.id } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-FAIL`, name: "生成失败测试班" } });
+    const student = await prisma.student.create({ data: { name: "生成失败学生", studentId: `${studentNumber}-FAIL`, gender: "女", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
     const session = await prisma.classSession.create({ data: { code: `${sessionCode}-FAIL`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
     await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "已确认课堂表现", rawText: "合成测试" } });
     const plan = await createFeedbackPlan({ type: "event_micro", purpose: "测试事件反馈", semesterId: semester.id, classId: classRecord.id, sessionId: session.id, rangeEndSessionId: session.id, studentIds: [student.id] });
@@ -179,22 +179,22 @@ describe("feedback plan service", () => {
   });
 
   it("allows an inactive student to be explicitly included with historical evidence", async () => {
-    const classRecord = await prisma.class.create({ data: { code: `${classCode}-INACTIVE`, name: "停读学生测试班" } });
     const semester = await prisma.semester.create({ data: { name: `${semesterName}-INACTIVE`, startDate: "2099-01-01", endDate: "2099-12-31" } });
-    const student = await prisma.student.create({ data: { name: "停读测试学生", studentId: `${studentNumber}-INACTIVE`, gender: "男", classId: classRecord.id, rosterStatus: "INACTIVE" } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-INACTIVE`, name: "停读学生测试班" } });
+    const student = await prisma.student.create({ data: { name: "停读测试学生", studentId: `${studentNumber}-INACTIVE`, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id, rosterStatus: "INACTIVE" } } } });
     const session = await prisma.classSession.create({ data: { code: `${sessionCode}-INACTIVE`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
     const event = await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "历史范围内的已确认记录", rawText: "合成测试" } });
 
     const plan = await createFeedbackPlan({ type: "course_end", purpose: "测试阶段范围", semesterId: semester.id, classId: classRecord.id, sessionId: session.id, rangeStartSessionId: session.id, rangeEndSessionId: session.id, studentIds: [student.id] });
     const evidence = JSON.parse(plan.items[0]!.evidenceSnapshot) as { sourceRefs: Array<{ id: string }> };
-    expect(plan.items[0]?.student).toMatchObject({ id: student.id, rosterStatus: "INACTIVE" });
+    expect(plan.items[0]?.student).toMatchObject({ id: student.id });
     expect(evidence.sourceRefs.some((ref) => ref.id === event.id)).toBe(true);
   });
 
   it("removes a managed attachment without leaving a database row or private file", async () => {
-    const classRecord = await prisma.class.create({ data: { code: `${classCode}-ATTACHMENT`, name: "附件测试班" } });
     const semester = await prisma.semester.create({ data: { name: `${semesterName}-ATTACHMENT`, startDate: "2099-01-01", endDate: "2099-12-31" } });
-    const student = await prisma.student.create({ data: { name: "附件测试学生", studentId: `${studentNumber}-ATTACHMENT`, gender: "女", classId: classRecord.id } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-ATTACHMENT`, name: "附件测试班" } });
+    const student = await prisma.student.create({ data: { name: "附件测试学生", studentId: `${studentNumber}-ATTACHMENT`, gender: "女", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
     const session = await prisma.classSession.create({ data: { code: `${sessionCode}-ATTACHMENT`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
     await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "附件测试记录", rawText: "合成测试" } });
     const plan = await createFeedbackPlan({ type: "event_micro", purpose: "测试事件反馈", semesterId: semester.id, classId: classRecord.id, sessionId: session.id, rangeEndSessionId: session.id, studentIds: [student.id] });

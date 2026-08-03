@@ -14,12 +14,13 @@ export function isTeachingContext(value: unknown): value is TeachingContext {
 
 export function parseTeachingContext(search: string): TeachingContext {
   const params = new URLSearchParams(search);
-  return { semesterId: params.get("semesterId") ?? "", className: params.get("class") ?? "", sessionCode: params.get("sessionCode") ?? "" };
+  const classId = params.get("classId");
+  return { semesterId: params.get("semesterId") ?? "", className: params.get("class") ?? "", ...(classId ? { classId } : {}), sessionCode: params.get("sessionCode") ?? "" };
 }
 
 export function applyTeachingContext(url: URL, context: TeachingContext): URL {
   const next = new URL(url);
-  const values: Array<[string, string]> = [["semesterId", context.semesterId], ["class", context.className], ["sessionCode", context.sessionCode]];
+  const values: Array<[string, string]> = [["semesterId", context.semesterId], ["class", context.className], ["classId", context.classId ?? ""], ["sessionCode", context.sessionCode]];
   for (const [key, value] of values) {
     if (value) next.searchParams.set(key, value);
     else next.searchParams.delete(key);
@@ -29,7 +30,7 @@ export function applyTeachingContext(url: URL, context: TeachingContext): URL {
 
 export function hasTeachingContext(search: string) {
   const params = new URLSearchParams(search);
-  return ["semesterId", "class", "sessionCode"].some((key) => params.has(key));
+  return ["semesterId", "class", "classId", "sessionCode"].some((key) => params.has(key));
 }
 
 export function readStoredTeachingContext(storage: Storage): TeachingContext | null {
@@ -55,7 +56,7 @@ export function writeStoredTeachingContext(storage: Storage, context: TeachingCo
 }
 
 export function teachingContextWorkspaceKey(scope: string, context: TeachingContext) {
-  const contextKey = [context.semesterId, context.className, context.sessionCode]
+  const contextKey = [context.semesterId, ...(context.classId ? [context.classId] : []), context.className, context.sessionCode]
     .map((value) => encodeURIComponent(value))
     .join("|");
   return `${scope}:${contextKey}`;

@@ -1,5 +1,5 @@
 import type { FeedbackContextStudent } from "@/features/feedback/context-types";
-import type { TeachingContext } from "@/features/teaching-context";
+import type { TeachingContext } from "@/features/teaching-context/types";
 import type { AiWorkflowState } from "@/features/ai-workflow";
 import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackReviewStatus } from "@/services/feedback-generation-service";

@@ -16,18 +16,18 @@ afterEach(async () => {
     where: { sourceFingerprint: "feedback-export-selected" },
   });
   await prisma.classSession.deleteMany({ where: { code: sessionCode } });
-  await prisma.semester.deleteMany({ where: { name: semesterName } });
   await prisma.class.deleteMany({ where: { code: classCode } });
+  await prisma.semester.deleteMany({ where: { name: semesterName } });
 });
 
 describe("/api/report/feedback-batch", () => {
   it("rebuilds an Excel download from long-term history", async () => {
-    const classRecord = await prisma.class.create({ data: { code: classCode, name: "测试班" } });
     const semester = await prisma.semester.create({
       data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" },
     });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "测试班" } });
     const student = await prisma.student.create({
-      data: { name: "张三", studentId: studentNumber, gender: "男", classId: classRecord.id },
+      data: { name: "张三", studentId: studentNumber, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } },
     });
     const session = await prisma.classSession.create({
       data: {

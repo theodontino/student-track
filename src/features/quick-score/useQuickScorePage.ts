@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useTeachingContext } from "@/features/teaching-context";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
 import type { QuickScoreNotice, QuickScoreSaveResult } from "./types";
 import { useQuickScoreReferenceData } from "./useQuickScoreReferenceData";
 import { useQuickScoreSave } from "./useQuickScoreSave";
@@ -13,9 +13,9 @@ export function useQuickScorePage() {
   const [result, setResult] = useState<QuickScoreSaveResult | null>(null);
   const teachingContext = useTeachingContext();
   const { context, hydrated: contextHydrated } = teachingContext;
-  const { semesterId: selectedSemesterId, className: selectedClass, sessionCode: selectedSessionCode } = context;
+  const { semesterId: selectedSemesterId, className: selectedClass, classId: selectedClassId = "", sessionCode: selectedSessionCode } = context;
   const scoreCards = useQuickScoreWorkspace();
-  const reference = useQuickScoreReferenceData(setNotice);
+  const reference = useQuickScoreReferenceData(setNotice, selectedSemesterId || undefined);
   const session = useQuickScoreSessions({
     context,
     contextHydrated,
@@ -23,7 +23,6 @@ export function useQuickScorePage() {
     cards: scoreCards.cards,
     setContext: teachingContext.setContext,
     setSemesterId: teachingContext.setSemesterId,
-    setClassName: teachingContext.setClassName,
     setSessionCode: teachingContext.setSessionCode,
     setCards: scoreCards.setCards,
     setOriginalScores: scoreCards.setOriginalScores,
@@ -35,6 +34,7 @@ export function useQuickScorePage() {
     changedCards: scoreCards.changedCards,
     date: session.date,
     semesterId: selectedSemesterId,
+    classId: selectedClassId,
     className: selectedClass,
     sessionCode: selectedSessionCode,
     sessions: session.sessions,
@@ -52,6 +52,21 @@ export function useQuickScorePage() {
   const selectedSession = session.sessions.find((item) => item.code === selectedSessionCode);
   const selectedSemester = reference.semesters.find((semester) => semester.id === selectedSemesterId);
   const genders = useMemo(() => new Map(reference.students.map((student) => [student.id, student.gender])), [reference.students]);
+  const setSelectedClassId = useCallback((classId: string) => {
+    const klass = reference.classes.find((item) => item.id === classId);
+    teachingContext.setContext((current) => ({
+      ...current,
+      classId,
+      className: klass?.name ?? klass?.code ?? "",
+      sessionCode: "",
+    }));
+  }, [reference.classes, teachingContext]);
+
+  useEffect(() => {
+    if (!selectedClass || selectedClassId || reference.classes.length === 0) return;
+    const matches = reference.classes.filter((klass) => klass.name === selectedClass || klass.code === selectedClass);
+    if (matches.length === 1) setSelectedClassId(matches[0].id);
+  }, [reference.classes, selectedClass, selectedClassId, setSelectedClassId]);
 
   return {
     absentCount: scoreCards.absentCount,
@@ -75,6 +90,7 @@ export function useQuickScorePage() {
     restoreHistory: session.restoreHistory,
     result,
     selectedClass,
+    selectedClassId,
     selectedSemester,
     selectedSemesterId,
     selectedSession,
@@ -85,7 +101,7 @@ export function useQuickScorePage() {
     setDeleteConfirmationOpen: session.setDeleteConfirmationOpen,
     setNote: scoreCards.setNote,
     setScore: scoreCards.setScore,
-    setSelectedClass: teachingContext.setClassName,
+    setSelectedClassId,
     setSelectedSemesterId: teachingContext.setSemesterId,
     setSelectedSessionCode: teachingContext.setSessionCode,
     setSemesters: reference.setSemesters,

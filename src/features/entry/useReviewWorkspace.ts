@@ -5,9 +5,12 @@ import { requestJson } from "@/lib/api-client";
 import type { AiWorkflowController } from "@/features/ai-workflow";
 import type { DraftRecordView, DraftStructuredResult, ScoreDimension, TeacherIntervention } from "@/lib/types";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
 import { isReviewWorkspaceState, type ReviewFilterStatus, type ReviewWorkspaceState } from "./workspace-state";
 
 export function useReviewWorkspace(workflow: AiWorkflowController) {
+  const { context, hydrated: contextHydrated } = useTeachingContext();
+  const { semesterId } = context;
   const [drafts, setDrafts] = useState<DraftRecordView[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -16,7 +19,7 @@ export function useReviewWorkspace(workflow: AiWorkflowController) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<ReviewFilterStatus>("pending");
   const [filterClass, setFilterClass] = useState("");
-  const [classes, setClasses] = useState<string[]>([]);
+  const [classes, setClasses] = useState<Array<{ id: string; label: string }>>([]);
   const [edits, setEdits] = useState<Record<string, DraftStructuredResult>>({});
   const workspaceValue = useMemo<ReviewWorkspaceState>(() => ({ edits, expandedId, filterStatus, filterClass }), [edits, expandedId, filterClass, filterStatus]);
   useSessionWorkspace({
@@ -37,22 +40,35 @@ export function useReviewWorkspace(workflow: AiWorkflowController) {
     setLoadError("");
     try {
       const params = new URLSearchParams({ status: filterStatus });
-      if (filterClass) params.set("className", filterClass);
+      if (semesterId) params.set("semesterId", semesterId);
+      if (filterClass) params.set("classId", filterClass);
       setDrafts(await requestJson<DraftRecordView[]>(`/api/review?${params}`));
     } catch (reason) {
       setLoadError(reason instanceof Error ? reason.message : "获取草稿列表失败");
     } finally {
       setLoading(false);
     }
-  }, [filterClass, filterStatus]);
+  }, [filterClass, filterStatus, semesterId]);
 
   useEffect(() => {
-    requestJson<Array<{ class: string }>>("/api/students")
-      .then((students) => setClasses([...new Set(students.map((student) => student.class))]))
+    if (!contextHydrated) return;
+    if (!semesterId) {
+      setClasses([]);
+      return;
+    }
+    requestJson<Array<{ id: string; name: string | null; code: string }>>(`/api/semesters/${encodeURIComponent(semesterId)}/classes`)
+      .then((items) => {
+        const next = items.map((item) => ({ id: item.id, label: item.name ?? item.code }));
+        setClasses(next);
+        setFilterClass((current) => current && !next.some((item) => item.id === current) ? "" : current);
+      })
       .catch(() => setClasses([]));
-  }, []);
+  }, [contextHydrated, semesterId]);
 
-  useEffect(() => { void fetchDrafts(); }, [fetchDrafts]);
+  useEffect(() => {
+    if (!contextHydrated) return;
+    void fetchDrafts();
+  }, [contextHydrated, fetchDrafts]);
 
   function toggleDraft(draft: DraftRecordView) {
     if (expandedId === draft.id) {
@@ -100,7 +116,7 @@ export function useReviewWorkspace(workflow: AiWorkflowController) {
       const data = await requestJson<{ warnings?: string[] }>("/api/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draftId, action, ...(action === "confirm" && edits[draftId] ? { edits: edits[draftId] } : {}) }),
+        body: JSON.stringify({ draftId, action, ...(semesterId ? { semesterId } : {}), ...(action === "confirm" && edits[draftId] ? { edits: edits[draftId] } : {}) }),
       });
       setActionMessage(data.warnings?.length
         ? { tone: "warning", text: data.warnings.join("；") }

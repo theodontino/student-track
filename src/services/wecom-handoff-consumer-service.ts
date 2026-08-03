@@ -42,8 +42,8 @@ export async function consumeWccHandoffPackage(
   const uniqueMessageIds = [...new Set(payload.messages.map((message) => message.id).filter(Boolean))];
   if (uniqueMessageIds.length !== payload.messages.length) throw new Error("duplicate_message_ids");
   const students = await prisma.student.findMany({
-    where: { id: selectedStudentId, rosterStatus: "ACTIVE" },
-    select: { id: true, name: true, studentId: true, classId: true },
+    where: { id: selectedStudentId, enrollments: { some: {} } },
+    include: { enrollments: { include: { class: true, semester: true } } },
   });
   if (students.length !== 1) throw new Error("directory_conflict");
   const current = new Map(students.map((student) => [student.id, student]));
@@ -55,14 +55,30 @@ export async function consumeWccHandoffPackage(
     shanghaiCalendarDate(message.sentAt),
   ]));
   const evidenceDates = [...new Set([...messageDateById.values()].filter((value): value is string => Boolean(value)))];
-  const currentClassIds = [...new Set(students.map((student) => student.classId).filter((value): value is string => Boolean(value)))];
-  const sameDaySessions = evidenceDates.length && currentClassIds.length
+  const semesters = evidenceDates.length
+    ? await prisma.semester.findMany({
+      where: { OR: evidenceDates.map((date) => ({ startDate: { lte: date }, endDate: { gte: date } })) },
+      select: { id: true, startDate: true, endDate: true },
+    })
+    : [];
+  const semesterForDate = (date: string) => semesters.filter((semester) => date >= semester.startDate && date <= semester.endDate);
+  const semesterIdsByDate = evidenceDates.map((date) => [...new Set(semesterForDate(date).map((semester) => semester.id))]);
+  const evidenceSemesterId = semesterIdsByDate.length > 0
+    && semesterIdsByDate.every((ids) => ids.length === 1)
+    && new Set(semesterIdsByDate.map((ids) => ids[0])).size === 1
+    ? semesterIdsByDate[0][0]
+    : null;
+  const currentClassIds = evidenceSemesterId
+    ? [...new Set(students.flatMap((student) => student.enrollments.filter((enrollment) => enrollment.semesterId === evidenceSemesterId).map((enrollment) => enrollment.classId)))]
+    : [];
+  const sameDaySessions = evidenceSemesterId && evidenceDates.length && currentClassIds.length
     ? await prisma.classSession.findMany({
       where: {
+        semesterId: evidenceSemesterId,
         classId: { in: currentClassIds },
         date: { in: evidenceDates },
       },
-      select: { code: true, classId: true, date: true },
+      select: { code: true, classId: true, date: true, semesterId: true },
       orderBy: { code: "asc" },
     })
     : [];
@@ -75,6 +91,8 @@ export async function consumeWccHandoffPackage(
   const generated = await generateWeComBridgeJson(prisma, {
     sourceText: sourceText(payload),
     candidateStudentIds,
+    ...(evidenceSemesterId ? { semesterId: evidenceSemesterId } : {}),
+    includeInactive: true,
     groundedMessages: payload.messages.map((message) => ({ id: message.id, content: message.content })),
   });
   const records = Array.isArray(objectValue(generated.bridgeJson).records)
@@ -115,9 +133,11 @@ export async function consumeWccHandoffPackage(
     const evidenceDate = evidenceRange && evidenceRange.min === evidenceRange.max
       ? evidenceRange.min
       : null;
-    const canAutoBind = Boolean(evidenceDate && student.classId);
-    const exactSessionCodes = canAutoBind
-      ? sessionsByClassDate.get(`${student.classId}\0${evidenceDate}`) ?? []
+    const eligibleClassIds = student.enrollments
+      .filter((enrollment) => Boolean(evidenceDate && evidenceSemesterId && enrollment.semesterId === evidenceSemesterId))
+      .map((enrollment) => enrollment.classId);
+    const exactSessionCodes = evidenceDate
+      ? eligibleClassIds.flatMap((classId) => sessionsByClassDate.get(`${classId}\0${evidenceDate}`) ?? [])
       : [];
     const sessionCode = exactSessionCodes.length === 1 ? exactSessionCodes[0] : null;
     const parsedResult = {
@@ -187,8 +207,8 @@ export async function assignWccDraftSession(
   });
   if (!session) throw new Error("session_not_found");
   const student = draft.studentId
-    ? await prisma.student.findUnique({ where: { id: draft.studentId }, select: { classId: true } })
+    ? await prisma.student.findUnique({ where: { id: draft.studentId }, include: { enrollments: { select: { classId: true, semesterId: true } } } })
     : null;
-  if (!student || (session.classId && session.classId !== student.classId)) throw new Error("session_class_conflict");
+  if (!student || (session.classId && !student.enrollments.some((enrollment) => enrollment.classId === session.classId && enrollment.semesterId === session.semesterId))) throw new Error("session_class_conflict");
   return prisma.draftRecord.update({ where: { id: draftId }, data: { sessionCode } });
 }

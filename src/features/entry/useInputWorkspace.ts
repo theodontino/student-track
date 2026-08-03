@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useTeachingContext, teachingContextWorkspaceKey } from "@/features/teaching-context";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
+import { teachingContextWorkspaceKey } from "@/features/teaching-context/url-context";
 import type { AiWorkflowController } from "@/features/ai-workflow";
 import { requestJson } from "@/lib/api-client";
 import { saveWorkHistory } from "@/lib/history";

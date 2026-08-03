@@ -14,23 +14,22 @@ let firstStudentId = "";
 let secondStudentId = "";
 
 beforeAll(async () => {
-  const [oldClass, newClass] = await Promise.all([
-    prisma.class.create({ data: { code: `${marker}-OLD`, name: `${marker} 原班` } }),
-    prisma.class.create({ data: { code: `${marker}-NEW`, name: `${marker} 新班` } }),
-  ]);
-  oldClassId = oldClass.id;
-  newClassId = newClass.id;
-
   const [previousSemester, currentSemester] = await Promise.all([
     prisma.semester.create({ data: { name: `${marker} 往期`, startDate: "2098-01-01", endDate: "2098-12-31" } }),
     prisma.semester.create({ data: { name: `${marker} 当前`, startDate: "2099-01-01", endDate: "2099-12-31" } }),
   ]);
   previousSemesterId = previousSemester.id;
   currentSemesterId = currentSemester.id;
+  const [oldClass, newClass] = await Promise.all([
+    prisma.class.create({ data: { semesterId: previousSemester.id, code: `${marker}-OLD`, name: `${marker} 原班` } }),
+    prisma.class.create({ data: { semesterId: currentSemester.id, code: `${marker}-NEW`, name: `${marker} 新班` } }),
+  ]);
+  oldClassId = oldClass.id;
+  newClassId = newClass.id;
 
   const [firstStudent, secondStudent] = await Promise.all([
-    prisma.student.create({ data: { name: `${marker} 甲`, studentId: `${marker}-S1`, gender: "男", classId: oldClass.id } }),
-    prisma.student.create({ data: { name: `${marker} 乙`, studentId: `${marker}-S2`, gender: "女", classId: newClass.id } }),
+    prisma.student.create({ data: { name: `${marker} 甲`, studentId: `${marker}-S1`, gender: "男", enrollments: { create: [{ semesterId: previousSemester.id, classId: oldClass.id }, { semesterId: currentSemester.id, classId: newClass.id }] } } }),
+    prisma.student.create({ data: { name: `${marker} 乙`, studentId: `${marker}-S2`, gender: "女", enrollments: { create: { semesterId: currentSemester.id, classId: newClass.id } } } }),
   ]);
   firstStudentId = firstStudent.id;
   secondStudentId = secondStudent.id;
@@ -39,8 +38,8 @@ beforeAll(async () => {
     data: { code: "2098120101", semesterId: previousSemester.id, semesterNumber: 1, date: "2098-12-01", classId: oldClass.id },
   });
   const currentSessions = await Promise.all([
-    prisma.classSession.create({ data: { code: "2099011001", semesterId: currentSemester.id, semesterNumber: 1, date: "2099-01-10", classId: oldClass.id } }),
-    prisma.classSession.create({ data: { code: "2099021001", semesterId: currentSemester.id, semesterNumber: 2, date: "2099-02-10", classId: oldClass.id } }),
+    prisma.classSession.create({ data: { code: "2099011001", semesterId: currentSemester.id, semesterNumber: 1, date: "2099-01-10", classId: newClass.id } }),
+    prisma.classSession.create({ data: { code: "2099021001", semesterId: currentSemester.id, semesterNumber: 2, date: "2099-02-10", classId: newClass.id } }),
     prisma.classSession.create({ data: { code: "2099121001", semesterId: currentSemester.id, semesterNumber: 3, date: "2099-12-10", classId: newClass.id } }),
   ]);
 
@@ -64,13 +63,17 @@ beforeAll(async () => {
   });
 
   // A class transfer must not hide records already attached to this student.
-  await prisma.student.update({ where: { id: firstStudent.id }, data: { classId: newClass.id } });
+  await prisma.studentClassEnrollment.update({
+    where: { studentId_semesterId: { studentId: firstStudent.id, semesterId: currentSemester.id } },
+    data: { classId: newClass.id },
+  });
 });
 
 afterAll(async () => {
+  await prisma.classSession.deleteMany({ where: { semesterId: { in: [currentSemesterId, previousSemesterId] } } });
   await prisma.student.deleteMany({ where: { studentId: { startsWith: marker } } });
-  await prisma.semester.deleteMany({ where: { id: { in: [currentSemesterId, previousSemesterId] } } });
   await prisma.class.deleteMany({ where: { id: { in: [oldClassId, newClassId] } } });
+  await prisma.semester.deleteMany({ where: { id: { in: [currentSemesterId, previousSemesterId] } } });
 });
 
 describe("student semester summary", () => {

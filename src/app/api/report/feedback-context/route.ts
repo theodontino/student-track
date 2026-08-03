@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const sessionCode = searchParams.get("sessionCode");
     if (!sessionCode) return NextResponse.json({ error: "缺少课次编码" }, { status: 400 });
+    const semesterId = searchParams.get("semesterId");
 
     const sessionIds = (searchParams.get("sessionIds") ?? "")
       .split(",")
@@ -16,6 +17,9 @@ export async function GET(request: NextRequest) {
       .filter(Boolean)
       .slice(0, 100);
     const context = await buildFeedbackContext(prisma, sessionCode, sessionIds.length ? { sessionIds } : undefined);
+    if (semesterId && context.session.semesterId !== semesterId) {
+      return NextResponse.json({ error: "课次不属于所选学期" }, { status: 409 });
+    }
     const routing = await buildFeedbackRouting(prisma, context);
     return NextResponse.json({ ...context, routing });
   } catch (error: any) {

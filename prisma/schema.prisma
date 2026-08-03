@@ -25,16 +25,21 @@ enum DraftRecordKind {
   correction
 }
 
-// 0. 班级（v0.10: 独立表，替换 Student.class / ClassSession.class 自由字符串）
+// 0. 学期班级（每个学期使用独立班级实体；同编号可跨学期复用）
 model Class {
-  id    String @id @default(cuid())
-  code  String @unique   // 班级编号，如 "G3-01"，必填
-  name  String?          // 班级名称，如 "高三(1)班"，可空
+  id         String @id @default(cuid())
+  semesterId String
+  code       String   // 班级编号，如 "G3-01"；同一学期内唯一
+  name       String?  // 班级名称，如 "高三(1)班"，可空
 
-  students Student[]
-  sessions ClassSession[]
+  semester      Semester                @relation(fields: [semesterId], references: [id], onDelete: Restrict)
+  enrollments   StudentClassEnrollment[]
+  sessions      ClassSession[]
   feedbackPlans FeedbackPlan[]
-  teacherTasks TeacherTask[]
+  teacherTasks  TeacherTask[]
+
+  @@unique([semesterId, code])
+  @@index([semesterId, name])
 }
 
 // 0b. 标签表（v0.13: 从 JSON 迁移为关联表）
@@ -59,17 +64,14 @@ model StudentLabel {
 
 // 1. 学生基础档案
 model Student {
-  id                String              @id @default(cuid())
-  name              String
-  classId           String
-  studentId         String              @unique
-  gender            String              // "男" | "女"
-  rosterStatus      StudentRosterStatus @default(ACTIVE)
-  statusEffectiveAt DateTime            @default(now())
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  id        String   @id @default(cuid())
+  name      String
+  studentId String   @unique
+  gender    String   // "男" | "女"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  class           Class             @relation(fields: [classId], references: [id])
+  enrollments     StudentClassEnrollment[]
   studentLabels   StudentLabel[]
   sessionMetrics  SessionMetric[]
   events          Event[]
@@ -83,7 +85,27 @@ model Student {
   communicationPreference CommunicationPreference?
   communicationPreferenceCandidates CommunicationPreferenceCandidate[]
 
-  @@index([rosterStatus, classId])
+  @@index([studentId])
+}
+
+// 1b. 学生在某学期的唯一班级归属与名单状态
+model StudentClassEnrollment {
+  id               String              @id @default(cuid())
+  studentId        String
+  semesterId       String
+  classId          String
+  rosterStatus     StudentRosterStatus @default(ACTIVE)
+  statusEffectiveAt DateTime            @default(now())
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  student  Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  semester Semester @relation(fields: [semesterId], references: [id], onDelete: Restrict)
+  class    Class    @relation(fields: [classId], references: [id], onDelete: Restrict)
+
+  @@unique([studentId, semesterId])
+  @@index([classId, rosterStatus])
+  @@index([semesterId, rosterStatus])
 }
 
 // 2. 课次四维评分（每课次独立评分，sessionId 可空用于无课次场景）
@@ -300,6 +322,8 @@ model Semester {
   feedbackScriptLibraryJson      String?
   feedbackScriptLibraryUpdatedAt DateTime?
 
+  classes Class[]
+  enrollments StudentClassEnrollment[]
   sessions ClassSession[]
   feedbackPlans FeedbackPlan[]
 }
@@ -315,7 +339,7 @@ model ClassSession {
   createdAt      DateTime @default(now())
 
   semester    Semester         @relation(fields: [semesterId], references: [id], onDelete: Cascade)
-  class       Class?           @relation(fields: [classId], references: [id])
+  class       Class?           @relation(fields: [classId], references: [id], onDelete: Restrict)
   attendances Attendance[]
   sessionMetrics SessionMetric[]
   events         Event[]
@@ -511,7 +535,7 @@ model FeedbackPlan {
   exportedAt          DateTime?
 
   semester          Semester      @relation(fields: [semesterId], references: [id], onDelete: Cascade)
-  class             Class          @relation(fields: [classId], references: [id], onDelete: Cascade)
+  class             Class          @relation(fields: [classId], references: [id], onDelete: Restrict)
   session           ClassSession? @relation("FeedbackPlanSession", fields: [sessionId], references: [id], onDelete: SetNull)
   rangeStartSession ClassSession? @relation("FeedbackPlanRangeStart", fields: [rangeStartSessionId], references: [id], onDelete: SetNull)
   rangeEndSession   ClassSession? @relation("FeedbackPlanRangeEnd", fields: [rangeEndSessionId], references: [id], onDelete: SetNull)
@@ -576,7 +600,7 @@ model TeacherTask {
   plan       FeedbackPlan       @relation(fields: [planId], references: [id], onDelete: Cascade)
   planItem   FeedbackPlanItem?  @relation(fields: [planItemId], references: [id], onDelete: SetNull)
   student    Student?           @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  class      Class              @relation(fields: [classId], references: [id], onDelete: Cascade)
+  class      Class              @relation(fields: [classId], references: [id], onDelete: Restrict)
   dueSession ClassSession?      @relation("TeacherTaskDueSession", fields: [dueSessionId], references: [id], onDelete: SetNull)
 
   @@index([status, dueDate])

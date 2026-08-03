@@ -37,7 +37,7 @@ test.describe.serial("v0.17.1 student semester summaries", () => {
 
     await page.getByRole("button", { name: "← 返回学生列表" }).click();
     await expect(page.getByLabel("查看学期")).toHaveValue(historicalSemester.id);
-    await expect(page.getByTestId(`student-semester-score-${TEST_FIXTURE.students[1].id}`)).toContainText("—");
+    await expect(page.getByText("还没有添加学生", { exact: true })).toBeVisible();
     await page.reload();
     await expect(page.getByLabel("查看学期")).toHaveValue(historicalSemester.id);
   });

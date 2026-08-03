@@ -15,23 +15,36 @@ async function main() {
   await prisma.communication.deleteMany();
   await prisma.sessionMetric.deleteMany();
   await prisma.classSession.deleteMany();
-  await prisma.semester.deleteMany();
+  await prisma.studentClassEnrollment.deleteMany();
   await prisma.draftRecord.deleteMany();
   await prisma.student.deleteMany();
   await prisma.class.deleteMany();
+  await prisma.semester.deleteMany();
+
+  const today = new Date();
+  const semester = await prisma.semester.create({
+    data: {
+      name: "2024-2025学年第一学期",
+      startDate: new Date(today.getTime() - 14 * 86400000).toISOString().split("T")[0],
+      endDate: new Date(today.getTime() + 90 * 86400000).toISOString().split("T")[0],
+    },
+  });
 
   // Create classes
   const class1 = await prisma.class.create({
-    data: { code: "G3-01", name: "高三(1)班" },
+    data: { semesterId: semester.id, code: "G3-01", name: "高三(1)班" },
   });
   const class2 = await prisma.class.create({
-    data: { code: "UH04477", name: null }, // 班级名可空
+    data: { semesterId: semester.id, code: "UH04477", name: null }, // 班级名可空
   });
 
   // Helper: create student with labels (v0.13: Label 关联表)
   async function createStudent(name: string, classId: string, studentId: string, gender: string, labelNames: string[]) {
     const student = await prisma.student.create({
-      data: { name, classId, studentId, gender },
+      data: { name, studentId, gender },
+    });
+    await prisma.studentClassEnrollment.create({
+      data: { studentId: student.id, semesterId: semester.id, classId },
     });
     for (const name of labelNames) {
       let label = await prisma.label.findUnique({ where: { name } });
@@ -44,16 +57,6 @@ async function main() {
   const s1 = await createStudent("张三", class1.id, "2024001", "男", ["#逻辑强", "#基础扎实"]);
   const s2 = await createStudent("李四", class1.id, "2024002", "女", ["#敏感", "#基础弱", "#用功"]);
   const s3 = await createStudent("王五", class1.id, "2024003", "男", ["#调皮", "#聪明"]);
-
-  // Create sample sessions and seed data
-  const today = new Date();
-  const semester = await prisma.semester.create({
-    data: {
-      name: "2024-2025学年第一学期",
-      startDate: new Date(today.getTime() - 14 * 86400000).toISOString().split("T")[0],
-      endDate: new Date(today.getTime() + 90 * 86400000).toISOString().split("T")[0],
-    },
-  });
 
   // Create 7 class sessions (past 7 days) for class1
   const sessions: any[] = [];

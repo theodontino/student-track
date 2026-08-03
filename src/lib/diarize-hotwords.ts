@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { DiarizeTask } from "./diarize-tasks";
 import { prisma } from "./prisma";
+import { requireSemesterId } from "@/services/student-enrollment-service";
 
 export interface DiarizeHotwordFile {
   path: string;
@@ -42,8 +43,9 @@ export function normalizeHotwordText(text: string) {
 }
 
 async function getStudentNameHotwords() {
+  const semesterId = await requireSemesterId(prisma);
   const students = await prisma.student.findMany({
-    where: { rosterStatus: "ACTIVE" },
+    where: { enrollments: { some: { semesterId, rosterStatus: "ACTIVE" } } },
     select: { name: true },
     orderBy: { studentId: "asc" },
   });

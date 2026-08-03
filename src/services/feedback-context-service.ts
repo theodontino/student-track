@@ -7,6 +7,7 @@ import {
 } from "@/lib/feedback-communication";
 import { safeFeedbackCommunicationTarget } from "@/lib/feedback-text-safety";
 import { CommunicationPreferenceSchema, type CommunicationPreference } from "@/lib/feedback-plan";
+import { semesterStudentWhere } from "@/services/student-enrollment-service";
 
 const RECENT_SESSION_LIMIT = 5;
 const COMMUNICATION_PREVIEW_LIMIT = 3;
@@ -260,13 +261,27 @@ export async function buildFeedbackContext(
   if (!className) throw new Error("该课次未关联班级");
 
   const includeStudentIds = [...new Set(options?.includeStudentIds ?? [])];
+  const historicalSessionEvidence = [
+    { sessionMetrics: { some: { sessionId: session.id } } },
+    { attendances: { some: { sessionId: session.id } } },
+    { events: { some: { sessionId: session.id } } },
+    { communications: { some: { sessionId: session.id } } },
+  ];
   const students = await prisma.student.findMany({
-    where: {
-      classId: session.classId,
-      ...(includeStudentIds.length
-        ? { OR: [{ rosterStatus: "ACTIVE" }, { id: { in: includeStudentIds } }] }
-        : { rosterStatus: "ACTIVE" }),
-    },
+    where: includeStudentIds.length
+      ? {
+          OR: [
+            semesterStudentWhere({ semesterId: session.semesterId, classId: session.classId, activeOnly: true }),
+            semesterStudentWhere({ semesterId: session.semesterId, classId: session.classId, studentIds: includeStudentIds }),
+            ...historicalSessionEvidence,
+          ],
+        }
+      : {
+          OR: [
+            semesterStudentWhere({ semesterId: session.semesterId, classId: session.classId, activeOnly: true }),
+            ...historicalSessionEvidence,
+          ],
+        },
     select: {
       id: true,
       name: true,
@@ -319,10 +334,21 @@ export async function buildFeedbackContext(
       prisma.communication.findMany({
         where: {
           studentId: { in: studentIds },
-          // Stage and course plans must not pull in a family's unrelated
-          // historical chat. The legacy five-session context keeps its old
-          // all-history communication behavior for ordinary feedback.
-          ...(options?.sessionIds?.length ? { sessionId: { in: recentSessionIds } } : {}),
+          // A feedback context is tied to the target session's class and
+          // semester. Do not let a student's communication from another term
+          // leak into the current draft merely because the profile is stable.
+          ...(options?.sessionIds?.length
+            ? { sessionId: { in: recentSessionIds } }
+            : {
+                session: {
+                  semesterId: session.semesterId,
+                  classId: session.classId,
+                  OR: [
+                    { date: { lt: session.date } },
+                    { date: session.date, semesterNumber: { lte: session.semesterNumber } },
+                  ],
+                },
+              }),
         },
         include: { session: { select: { code: true, date: true, semesterNumber: true } } },
         orderBy: { createdAt: "desc" },

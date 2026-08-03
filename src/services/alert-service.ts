@@ -149,7 +149,10 @@ export async function getAlertDashboard(
   const studentIds = [...studentSessionIds.keys()];
   if (studentIds.length === 0) return emptyDashboard(semester);
   const students = await db.student.findMany({
-    where: { id: { in: studentIds }, rosterStatus: "ACTIVE" },
+    // The dashboard is evidence-scoped: a student who was later marked
+    // inactive or transferred still belongs in the historical risk view for
+    // the sessions that produced these records.
+    where: { id: { in: studentIds } },
     select: {
       id: true,
       name: true,

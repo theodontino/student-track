@@ -19,8 +19,8 @@ describe("WCC versioned integration", () => {
   });
   afterEach(async () => {
     vi.unstubAllEnvs();
-    await prisma.student.update({
-      where: { id: TEST_FIXTURE.students[0].id },
+    await prisma.studentClassEnrollment.update({
+      where: { studentId_semesterId: { studentId: TEST_FIXTURE.students[0].id, semesterId: TEST_FIXTURE.semester.id } },
       data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() },
     });
   });
@@ -42,8 +42,8 @@ describe("WCC versioned integration", () => {
   });
 
   it("excludes inactive students from the current WCG roster without deleting them", async () => {
-    await prisma.student.update({
-      where: { id: TEST_FIXTURE.students[0].id },
+    await prisma.studentClassEnrollment.update({
+      where: { studentId_semesterId: { studentId: TEST_FIXTURE.students[0].id, semesterId: TEST_FIXTURE.semester.id } },
       data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date() },
     });
     const response = await getDirectory(request("/api/integrations/wecomcatch/v1/directory"));
@@ -51,8 +51,8 @@ describe("WCC versioned integration", () => {
     expect(body.students).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: TEST_FIXTURE.students[0].id }),
     ]));
-    await expect(prisma.student.findUniqueOrThrow({
-      where: { id: TEST_FIXTURE.students[0].id },
+    await expect(prisma.studentClassEnrollment.findUniqueOrThrow({
+      where: { studentId_semesterId: { studentId: TEST_FIXTURE.students[0].id, semesterId: TEST_FIXTURE.semester.id } },
     })).resolves.toMatchObject({ rosterStatus: "INACTIVE" });
   });
 });

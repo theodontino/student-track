@@ -52,6 +52,10 @@ async function main() {
   assertSafeTestDatabaseUrl(testEnvironment.env.DATABASE_URL);
   if (mode === "playwright") {
     testEnvironment.env.E2E_APP_DIR = prepareE2EServerWorkspace(projectRoot, testEnvironment.rootDir);
+    // Browser verification should exercise the built application.  Running
+    // WebKit against Next's dev HMR server can let a late Fast Refresh reload
+    // interrupt an otherwise valid document navigation.
+    testEnvironment.env.E2E_SERVER_MODE = process.env.E2E_SERVER_MODE ?? "production";
   }
   // Prisma 7's schema engine requires the SQLite file to exist when the URL
   // is an absolute path. Exclusive creation also guards against accidental reuse.

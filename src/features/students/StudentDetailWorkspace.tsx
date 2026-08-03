@@ -2,7 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { Badge, Button, EmptyState, ErrorState, LoadingState, StatusBanner } from "@/components/ui";
-import { SemesterContextSelector } from "@/features/teaching-context";
+import { SemesterContextSelector } from "@/features/teaching-context/SemesterContextSelector";
 import { StudentPerformanceOverview } from "./StudentPerformanceOverview";
 import { StudentRecords } from "./StudentRecords";
 import { StudentTrendChart } from "./StudentTrendChart";
@@ -28,13 +28,22 @@ export default function StudentDetailWorkspace() {
   const summary = student.semesterSummary;
   const totalSessions = summary?.attendanceRecordedCount ?? student.attendances.length;
   const presentCount = summary?.presentCount ?? student.attendances.filter((attendance) => attendance.present).length;
-  const listUrl = `/students${selectedSemesterId ? `?semesterId=${encodeURIComponent(selectedSemesterId)}` : ""}`;
+  function changeSemester(semesterId: string) {
+    setSemesterId(semesterId);
+  }
+  function returnToStudentList() {
+    const path = `/students${selectedSemesterId ? `?semesterId=${encodeURIComponent(selectedSemesterId)}` : ""}`;
+    // Context changes use the native history API to avoid remounting a page
+    // with unsaved edits. Navigate the destination directly so a stale App
+    // Router transition cannot replace the selected semester.
+    window.location.assign(path);
+  }
 
   return (
     <main className="student-detail-workspace">
       <div className="student-detail-toolbar">
-        <Button variant="ghost" uiSize="sm" onClick={() => router.push(listUrl)}>← 返回学生列表</Button>
-        <SemesterContextSelector value={selectedSemesterId} onChange={setSemesterId} compact />
+        <Button variant="ghost" uiSize="sm" onClick={returnToStudentList}>← 返回学生列表</Button>
+        <SemesterContextSelector value={selectedSemesterId} onChange={changeSemester} compact />
       </div>
 
       {loadError && <StatusBanner tone="danger"><span>{loadError}</span><Button variant="secondary" uiSize="sm" onClick={() => void fetchStudent()}>重试</Button></StatusBanner>}
@@ -44,11 +53,11 @@ export default function StudentDetailWorkspace() {
         <div className="student-profile-header__identity">
           <p>学生档案</p>
           <h1>{student.name}</h1>
-          <span>{student.class} · {student.studentId}</span>
+          <span>{student.class || "未加入本学期班级"} · {student.studentId}</span>
         </div>
         <div className="student-profile-header__meta">
-          <div>{student.rosterStatus === "INACTIVE" && <Badge tone="warning">非活跃</Badge>}{student.labels.length ? student.labels.map((label) => <Badge key={label.id}>{label.name}</Badge>) : <span>暂无标签</span>}</div>
-          <p>花名册状态生效：{new Date(student.statusEffectiveAt).toLocaleString("zh-CN")}</p>
+          <div>{!student.rosterStatus && <Badge>未加入本学期名单</Badge>}{student.rosterStatus === "INACTIVE" && <Badge tone="warning">非活跃</Badge>}{student.labels.length ? student.labels.map((label) => <Badge key={label.id}>{label.name}</Badge>) : <span>暂无标签</span>}</div>
+          <p>{student.statusEffectiveAt ? `花名册状态生效：${new Date(student.statusEffectiveAt).toLocaleString("zh-CN")}` : "本学期暂无花名册归属"}</p>
           <p>{summary?.semester.name ?? "暂无学期"} · 出勤 {presentCount}/{totalSessions} · D={summary?.attendanceScore ?? "—"}</p>
         </div>
       </header>

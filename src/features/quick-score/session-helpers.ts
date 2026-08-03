@@ -5,6 +5,8 @@ export interface QuickScoreRequestContext {
   latestRequestId: number;
   requestedSemesterId: string;
   currentSemesterId: string;
+  requestedClassId: string;
+  currentClassId: string;
   requestedClassName: string;
   currentClassName: string;
 }
@@ -12,6 +14,7 @@ export interface QuickScoreRequestContext {
 export function shouldApplyQuickScoreRequest(context: QuickScoreRequestContext): boolean {
   return context.requestId === context.latestRequestId
     && context.requestedSemesterId === context.currentSemesterId
+    && context.requestedClassId === context.currentClassId
     && context.requestedClassName === context.currentClassName;
 }
 

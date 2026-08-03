@@ -18,6 +18,21 @@ describe("/api/quick-score", () => {
     expect(body).toHaveProperty("className", TEST_FIXTURE.class.name);
   });
 
+  it("GET with semester class ID returns the active roster", async () => {
+    const { GET } = await import("@/app/api/quick-score/route");
+    const params = new URLSearchParams({
+      semesterId: TEST_FIXTURE.semester.id,
+      classId: TEST_FIXTURE.class.id,
+      sessionCode: TEST_FIXTURE.sessions[0].code,
+    });
+    const response = await GET(new NextRequest(`http://localhost:3000/api/quick-score?${params}`));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.scores).toEqual(expect.arrayContaining([
+      expect.objectContaining({ studentId: TEST_FIXTURE.students[0].id, studentName: TEST_FIXTURE.students[0].name }),
+    ]));
+  });
+
   it("GET without class returns 400", async () => {
     const { GET } = await import("@/app/api/quick-score/route");
     const req = new NextRequest("http://localhost:3000/api/quick-score");

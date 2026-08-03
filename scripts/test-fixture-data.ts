@@ -1,11 +1,11 @@
 export const TEST_FIXTURE = {
-  class: { id: "test-class-1", code: "E2E-CLASS", name: "E2E测试班" },
   semester: {
     id: "test-semester-1",
     name: "E2E固定学期",
     startDate: "2026-01-01",
     endDate: "2099-12-31",
   },
+  class: { id: "test-class-1", semesterId: "test-semester-1", code: "E2E-CLASS", name: "E2E测试班" },
   sessions: [
     { id: "test-session-1", code: "2026070101", date: "2026-07-01", semesterNumber: 1 },
     { id: "test-session-2", code: "2026070801", date: "2026-07-08", semesterNumber: 2 },

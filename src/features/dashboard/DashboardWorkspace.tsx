@@ -7,7 +7,8 @@ import DashboardOverview from "./DashboardOverview";
 import type { DashboardData } from "./types";
 import { ErrorState, LoadingState, PageHeader, Select } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
-import { useTeachingContext, type SemesterSummary } from "@/features/teaching-context";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
+import type { SemesterSummary } from "@/features/teaching-context/types";
 import TeacherTaskPanel from "./TeacherTaskPanel";
 
 export default function DashboardWorkspace() {

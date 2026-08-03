@@ -34,11 +34,11 @@ export async function GET(request: NextRequest) {
   const students = studentIds.length
     ? await prisma.student.findMany({
         where: { id: { in: studentIds } },
-        select: { id: true, name: true, studentId: true, classId: true },
+        include: { enrollments: { include: { class: true, semester: true }, orderBy: { semester: { startDate: "desc" } } } },
       })
     : [];
   const studentsById = new Map(students.map((student) => [student.id, student]));
-  const classIds = [...new Set(students.map((student) => student.classId))];
+  const classIds = [...new Set(students.flatMap((student) => student.enrollments.map((enrollment) => enrollment.classId)))];
   const allSessions = classIds.length
     ? await prisma.classSession.findMany({
         where: { classId: { in: classIds } },
@@ -57,9 +57,12 @@ export async function GET(request: NextRequest) {
     const semesterSuggestion = typeof source.semesterSuggestion === "string"
       ? source.semesterSuggestion
       : undefined;
+    const eligibleEnrollments = student
+      ? student.enrollments.filter((enrollment) => !semesterSuggestion || enrollment.semesterId === semesterSuggestion)
+      : [];
     const sessions = student
       ? allSessions
-        .filter((session) => session.classId === student.classId && (!semesterSuggestion || session.semesterId === semesterSuggestion))
+        .filter((session) => eligibleEnrollments.some((enrollment) => enrollment.classId === session.classId && enrollment.semesterId === session.semesterId))
         .map(({ code, date, semesterNumber }) => ({ code, date, semesterNumber }))
       : [];
     const suggestion = readPreReviewSuggestion(draft.reviewResult);
@@ -69,7 +72,12 @@ export async function GET(request: NextRequest) {
       supersedesDraftId: draft.supersedesDraftId,
       communicationId: draft.communicationId,
       sessionCode: draft.sessionCode,
-      student,
+      student: student ? {
+        ...student,
+        classId: eligibleEnrollments[0]?.classId ?? null,
+        class: eligibleEnrollments[0]?.class ?? null,
+        enrollments: undefined,
+      } : null,
       parsedResult: result,
       source,
       sessions,

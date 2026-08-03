@@ -38,7 +38,12 @@ describe("WCC handoff consumer", () => {
   beforeEach(() => mocks.generate.mockReset());
 
   it("creates an evidence-grounded draft directly from handoff v1", async () => {
-    const student = { id: "student-1", name: "张三", studentId: "S001", classId: "class-1" };
+    const student = {
+      id: "student-1",
+      name: "张三",
+      studentId: "S001",
+      enrollments: [{ classId: "class-1", semesterId: "semester-1", class: {}, semester: { startDate: "2026-07-01", endDate: "2026-08-31" } }],
+    };
     mocks.generate.mockResolvedValue({
       bridgeJson: {
         records: [{
@@ -59,9 +64,10 @@ describe("WCC handoff consumer", () => {
     }));
     const prisma = {
       student: { findMany: vi.fn(async () => [student]) },
+      semester: { findMany: vi.fn(async () => [{ id: "semester-1", startDate: "2026-07-01", endDate: "2026-08-31" }]) },
       classSession: {
         findMany: vi.fn(async () => [
-          { code: "2026072001", classId: "class-1", date: "2026-07-20" },
+          { code: "2026072001", classId: "class-1", semesterId: "semester-1", date: "2026-07-20" },
         ]),
       },
       draftRecord: { upsert },
@@ -88,7 +94,12 @@ describe("WCC handoff consumer", () => {
   });
 
   it("leaves cross-day evidence unbound for teacher selection", async () => {
-    const student = { id: "student-1", name: "张三", studentId: "S001", classId: "class-1" };
+    const student = {
+      id: "student-1",
+      name: "张三",
+      studentId: "S001",
+      enrollments: [{ classId: "class-1", semesterId: "semester-1", class: {}, semester: { startDate: "2026-07-01", endDate: "2026-08-31" } }],
+    };
     mocks.generate.mockResolvedValue({
       bridgeJson: {
         records: [{
@@ -108,6 +119,7 @@ describe("WCC handoff consumer", () => {
     }));
     const prisma = {
       student: { findMany: vi.fn(async () => [student]) },
+      semester: { findMany: vi.fn(async () => [{ id: "semester-1", startDate: "2026-07-01", endDate: "2026-08-31" }]) },
       classSession: { findMany: vi.fn(async () => []) },
       draftRecord: { upsert },
     };

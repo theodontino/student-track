@@ -78,14 +78,12 @@ describe("teaching summary facts", () => {
         name: "非活跃无历史",
         studentId: "TEST-INACTIVE-NO-HISTORY",
         gender: "女",
-        classId: TEST_FIXTURE.class.id,
-        rosterStatus: "INACTIVE",
-        statusEffectiveAt: new Date("2026-06-01T00:00:00.000Z"),
+        enrollments: { create: { semesterId: TEST_FIXTURE.semester.id, classId: TEST_FIXTURE.class.id, rosterStatus: "INACTIVE", statusEffectiveAt: new Date("2026-06-01T00:00:00.000Z") } },
       },
     });
     await prisma.student.update({
       where: { id: TEST_FIXTURE.students[0].id },
-      data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date("2026-06-01T00:00:00.000Z") },
+      data: { enrollments: { update: { where: { studentId_semesterId: { studentId: TEST_FIXTURE.students[0].id, semesterId: TEST_FIXTURE.semester.id } }, data: { rosterStatus: "INACTIVE", statusEffectiveAt: new Date("2026-06-01T00:00:00.000Z") } } } },
     });
     try {
       const context = await buildTeachingSummaryContext(TeachingSummaryRequestSchema.parse({
@@ -98,7 +96,7 @@ describe("teaching summary facts", () => {
     } finally {
       await prisma.student.update({
         where: { id: TEST_FIXTURE.students[0].id },
-        data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() },
+        data: { enrollments: { update: { where: { studentId_semesterId: { studentId: TEST_FIXTURE.students[0].id, semesterId: TEST_FIXTURE.semester.id } }, data: { rosterStatus: "ACTIVE", statusEffectiveAt: new Date() } } } },
       });
       await prisma.student.delete({ where: { id: inactiveRosterOnlyId } });
     }

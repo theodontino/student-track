@@ -24,6 +24,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const sessionCode = searchParams.get("sessionCode")?.trim();
+    const semesterId = searchParams.get("semesterId")?.trim();
     if (!sessionCode) {
       throw new ApiError("缺少课次编码", 400, "invalid_request", false);
     }
@@ -31,7 +32,7 @@ export async function GET(request: NextRequest) {
     if (!historyModule) {
       throw new ApiError("无效的历史模块", 400, "invalid_request", false);
     }
-    const buffer = await buildFeedbackBatchExport(sessionCode, historyModule);
+    const buffer = await buildFeedbackBatchExport(sessionCode, historyModule, semesterId || undefined);
     const body = Buffer.from(buffer);
     return new Response(body, {
       headers: {

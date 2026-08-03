@@ -9,11 +9,18 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
   const prisma = new PrismaClient({ adapter });
 
   try {
-    await prisma.class.create({ data: TEST_FIXTURE.class });
     await prisma.semester.create({ data: TEST_FIXTURE.semester });
+    await prisma.class.create({ data: TEST_FIXTURE.class });
 
     for (const student of TEST_FIXTURE.students) {
-      await prisma.student.create({ data: { ...student, classId: TEST_FIXTURE.class.id } });
+      await prisma.student.create({ data: student });
+      await prisma.studentClassEnrollment.create({
+        data: {
+          studentId: student.id,
+          semesterId: TEST_FIXTURE.semester.id,
+          classId: TEST_FIXTURE.class.id,
+        },
+      });
     }
 
     const logicLabel = await prisma.label.create({

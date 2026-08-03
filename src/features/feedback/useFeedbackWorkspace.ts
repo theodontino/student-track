@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { FeedbackContextStudent } from "@/features/feedback/context-types";
 import type { InputHistoryState } from "@/features/entry";
-import { teachingContextWorkspaceKey, useTeachingContext } from "@/features/teaching-context";
+import { teachingContextWorkspaceKey } from "@/features/teaching-context/url-context";
+import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
 import { useAiWorkflow } from "@/features/ai-workflow";
 import { requestJson, requestJsonValidated } from "@/lib/api-client";
 import {
@@ -246,7 +247,16 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
 
   const contextByStudent = useMemo(() => new Map(contextStudents.map((student) => [student.id, student])), [contextStudents]);
   const confirmedAssessmentEvidence = assessmentPdfs.evidenceByStudent;
-  useEffect(() => { requestJson<FeedbackStudentOption[]>("/api/students?scope=active").then(setStudents).catch(() => setStudents([])); }, []);
+  useEffect(() => {
+    if (!contextHydrated || !semesterId) {
+      setStudents([]);
+      return;
+    }
+    const query = new URLSearchParams({ scope: "active", semesterId });
+    requestJson<FeedbackStudentOption[]>(`/api/students?${query.toString()}`)
+      .then(setStudents)
+      .catch(() => setStudents([]));
+  }, [contextHydrated, semesterId]);
   useEffect(() => {
     if (!workspace.hydrated) return;
     const draft = sessionStorage.getItem("student-track:feedback-draft")
@@ -271,12 +281,12 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     if (!sessionCode) { setContextStudents([]); setFeedbackRouting([]); setContextError(""); return; }
     let cancelled = false;
     setContextLoading(true); setContextError("");
-    requestJson<FeedbackContextResponse>(`/api/report/feedback-context?sessionCode=${encodeURIComponent(sessionCode)}`)
+    requestJson<FeedbackContextResponse>(`/api/report/feedback-context?sessionCode=${encodeURIComponent(sessionCode)}&semesterId=${encodeURIComponent(semesterId)}`)
       .then((data) => { if (!cancelled) { setContextStudents(data.students || []); setFeedbackRouting(data.routing || []); } })
       .catch((reason) => { if (!cancelled) { setContextStudents([]); setFeedbackRouting([]); setContextError(errorMessage(reason, "读取反馈上下文失败")); } })
       .finally(() => { if (!cancelled) setContextLoading(false); });
     return () => { cancelled = true; };
-  }, [sessionCode, contextReloadKey]);
+  }, [semesterId, sessionCode, contextReloadKey]);
 
   function resetFeedback() { dispatchFeedback({ type: "reset" }); setFeedbackBatch(emptyFeedbackBatchProgress()); setFeedbackPhase("idle"); }
   function markFeedbackInputsChanged(message = "") {
@@ -321,6 +331,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   function feedbackSavePayload(partial = false) {
     const payload = {
       sessionCode,
+      semesterId,
       historyModule: "feedback" as const,
       saveState: true,
       savePartial: partial,
@@ -539,6 +550,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         signal: controller.signal,
         body: JSON.stringify({
           sessionCode,
+          semesterId,
           historyModule: "feedback",
           bypassCache: forceRegenerate,
           lessonMaterial: effectiveLessonMaterial(),
@@ -686,6 +698,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionCode,
+          semesterId,
           historyModule: "feedback",
           revisionOnly: true,
           lessonMaterial: effectiveLessonMaterial(),
@@ -718,6 +731,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
           body: JSON.stringify({
             studentId,
             sessionCode,
+            semesterId,
             lessonMaterial: effectiveLessonMaterial(),
             assessmentEvidence: confirmedAssessmentEvidence[studentId],
             feedbackIntensity: card.feedbackIntensity,
@@ -808,7 +822,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setRegeneratingId(studentId); setError("");
     setStatus(`${card?.name ?? "该学生"}正在重试，请稍候…`);
     try {
-      const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, inputRevision: feedbackBatch.inputRevision, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy: normalizeFeedbackOutputStrategy(retryStrategy) }) });
+      const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ studentId, sessionCode, semesterId, inputRevision: feedbackBatch.inputRevision, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[studentId], feedbackIntensity: card?.feedbackIntensity, outputStrategy: normalizeFeedbackOutputStrategy(retryStrategy) }) });
       adoptLessonMaterial(data.lessonMaterial);
       dispatchFeedback({ type: "patch", studentId, patch: { feedback: data.feedback || "", draftFeedback: data.draftFeedback, reviewStatus: data.reviewStatus, reviewIssues: data.reviewIssues || [] } });
       dispatchFeedback({ type: "dirty", value: true });
@@ -960,7 +974,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     workflow.start("保存并导出反馈", "正在检查最终反馈文本…"); workflow.transition("saving", "正在保存修改并准备 Excel…");
     try {
       if (feedbackDirty) await saveFeedbackState();
-      const response = await fetch(`/api/report/feedback-batch?sessionCode=${encodeURIComponent(sessionCode)}&module=feedback`);
+      const response = await fetch(`/api/report/feedback-batch?sessionCode=${encodeURIComponent(sessionCode)}&semesterId=${encodeURIComponent(semesterId)}&module=feedback`);
       if (!response.ok) {
         const body = await response.json().catch(() => null) as { error?: string } | null;
         throw new Error(body?.error || `导出请求失败（HTTP ${response.status}）`);
@@ -1066,7 +1080,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     if (!singleStudentId) return; setSingleLoading(true); setError("");
     try {
       const body = sessionCode
-        ? { studentId: singleStudentId, sessionCode, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[singleStudentId] }
+        ? { studentId: singleStudentId, sessionCode, semesterId, lessonMaterial: effectiveLessonMaterial(), assessmentEvidence: confirmedAssessmentEvidence[singleStudentId] }
         : { studentId: singleStudentId, days: singleDays };
       const data = await requestJsonValidated(FeedbackSingleResponseSchema, "/api/report/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const feedback = data.feedback ?? ""; setSingleFeedback(feedback); setSingleDraftFeedback(data.draftFeedback ?? ""); setSingleReviewStatus(data.reviewStatus); setSingleReviewIssues(data.reviewIssues ?? []);

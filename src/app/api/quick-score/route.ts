@@ -6,39 +6,51 @@ import {
   type QuickScoreEntry,
 } from "@/services/quick-score-service";
 import { ServiceError } from "@/services/service-error";
+import { requireSemesterId } from "@/services/student-enrollment-service";
 
 // GET /api/quick-score?class=&date=&sessionCode= — get existing scores for a class/session
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const className = searchParams.get("class");
+    const requestedClassId = searchParams.get("classId");
+    const requestedSemesterId = searchParams.get("semesterId");
     const date = searchParams.get("date");
     const sessionCode = searchParams.get("sessionCode");
 
-    if (!className || (!date && !sessionCode)) {
+    if ((!className && !requestedClassId) || (!date && !sessionCode)) {
       return NextResponse.json({ error: "缺少 class 以及 date 或 sessionCode 参数" }, { status: 400 });
     }
 
-    // Resolve classId from className (by name or code)
-    const cls = await prisma.class.findFirst({
-      where: { OR: [{ name: className }, { code: className }] },
-    });
+    const semesterId = await requireSemesterId(prisma, requestedSemesterId);
+    // Resolve classId inside the selected semester; classId is preferred.
+    const classMatches = requestedClassId
+      ? []
+      : await prisma.class.findMany({ where: { semesterId, OR: [{ name: className ?? "" }, { code: className ?? "" }] } });
+    const cls = requestedClassId
+      ? await prisma.class.findUnique({ where: { id: requestedClassId } })
+      : classMatches.length === 1 ? classMatches[0] : null;
     const classId = cls?.id;
     if (!classId) {
       return NextResponse.json({ error: "班级不存在" }, { status: 404 });
     }
+    if (cls.semesterId !== semesterId) return NextResponse.json({ error: "班级不属于所选学期" }, { status: 409 });
 
     let targetDate = date;
-    let targetSession: { id: string; code: string; semesterNumber: number; date: string; classId: string | null } | null = null;
+    let targetSession: { id: string; code: string; semesterNumber: number; date: string; classId: string | null; semesterId: string } | null = null;
 
     if (sessionCode) {
       targetSession = await prisma.classSession.findUnique({
         where: { code: sessionCode },
-        select: { id: true, code: true, semesterNumber: true, date: true, classId: true },
+        select: { id: true, code: true, semesterNumber: true, date: true, classId: true, semesterId: true },
       });
 
       if (!targetSession) {
         return NextResponse.json({ error: "课次不存在" }, { status: 404 });
+      }
+
+      if (targetSession.semesterId !== semesterId) {
+        return NextResponse.json({ error: "课次不属于所选学期" }, { status: 409 });
       }
 
       if (targetSession.classId && targetSession.classId !== classId) {
@@ -54,9 +66,8 @@ export async function GET(request: NextRequest) {
 
     const students = await prisma.student.findMany({
       where: {
-        classId,
         OR: [
-          { rosterStatus: "ACTIVE" },
+          { enrollments: { some: { semesterId, classId, rosterStatus: "ACTIVE" } } },
           ...(targetSession
             ? [
                 { sessionMetrics: { some: { sessionId: targetSession.id } } },
@@ -80,18 +91,18 @@ export async function GET(request: NextRequest) {
           where: { studentId: { in: studentIds }, date: targetDate, sessionId: null },
         });
 
-    let sessions: { id: string; code: string; semesterNumber: number; date: string; classId: string | null }[] = [];
+    let sessions: { id: string; code: string; semesterNumber: number; date: string; classId: string | null; semesterId?: string }[] = [];
     let attendanceSessionId = targetSession?.id;
 
     if (targetSession) {
       sessions = [{
         id: targetSession.id, code: targetSession.code,
-        semesterNumber: targetSession.semesterNumber, date: targetSession.date, classId: targetSession.classId,
+        semesterNumber: targetSession.semesterNumber, date: targetSession.date, classId: targetSession.classId, semesterId,
       }];
     } else {
       sessions = await prisma.classSession.findMany({
-        where: { date: targetDate, classId },
-        select: { id: true, code: true, semesterNumber: true, date: true, classId: true },
+        where: { date: targetDate, semesterId, classId },
+        select: { id: true, code: true, semesterNumber: true, date: true, classId: true, semesterId: true },
         orderBy: { code: "desc" },
       });
 
@@ -131,6 +142,9 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("[/api/quick-score] error:", error);
+    if (error instanceof ServiceError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json({ error: "获取评分数据失败" }, { status: 500 });
   }
 }

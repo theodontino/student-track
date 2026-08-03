@@ -15,19 +15,19 @@ beforeEach(async () => {
   const suffix = randomUUID().slice(0, 8);
   labelName = `#反馈上下文-${suffix}`;
   internalLabelName = `AI内部关注：测试-${suffix}`;
-  const classroom = await prisma.class.create({
-    data: { code: `CTX-${suffix}`, name: `上下文测试班-${suffix}` },
-  });
-  classId = classroom.id;
   const semester = await prisma.semester.create({
     data: { name: `上下文测试学期-${suffix}`, startDate: "2099-01-01", endDate: "2099-12-31" },
   });
   semesterId = semester.id;
+  const classroom = await prisma.class.create({
+    data: { semesterId, code: `CTX-${suffix}`, name: `上下文测试班-${suffix}` },
+  });
+  classId = classroom.id;
   const student = await prisma.student.create({
-    data: { name: `上下文学生-${suffix}`, studentId: `CTX-STU-${suffix}`, gender: "女", classId },
+    data: { name: `上下文学生-${suffix}`, studentId: `CTX-STU-${suffix}`, gender: "女", enrollments: { create: { semesterId, classId } } },
   });
   const studentWithoutHistory = await prisma.student.create({
-    data: { name: `无历史学生-${suffix}`, studentId: `CTX-NO-${suffix}`, gender: "男", classId },
+    data: { name: `无历史学生-${suffix}`, studentId: `CTX-NO-${suffix}`, gender: "男", enrollments: { create: { semesterId, classId } } },
   });
   studentIds = [student.id, studentWithoutHistory.id];
   const label = await prisma.label.create({ data: { name: labelName } });
@@ -90,9 +90,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await prisma.label.deleteMany({ where: { name: { in: [labelName, internalLabelName] } } });
-  if (semesterId) await prisma.semester.deleteMany({ where: { id: semesterId } });
+  if (semesterId) await prisma.classSession.deleteMany({ where: { semesterId } });
   if (studentIds.length > 0) await prisma.student.deleteMany({ where: { id: { in: studentIds } } });
   if (classId) await prisma.class.deleteMany({ where: { id: classId } });
+  if (semesterId) await prisma.semester.deleteMany({ where: { id: semesterId } });
   classId = "";
   semesterId = "";
   studentIds = [];
@@ -162,7 +163,7 @@ describe("buildFeedbackContext", () => {
         name: `同期学生${index}-${suffix}`,
         studentId: `CTX-PEER-${index}-${suffix}`,
         gender: "男",
-        classId,
+        enrollments: { create: { semesterId, classId } },
       },
     })));
     studentIds.push(...peers.map((student) => student.id));

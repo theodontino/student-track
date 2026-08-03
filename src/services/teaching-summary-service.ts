@@ -195,10 +195,22 @@ export async function buildTeachingSummaryContext(
     }),
     db.student.findMany({
       where: {
-        rosterStatus: "ACTIVE",
-        ...(hasSchoolSession ? {} : { classId: { in: classIds } }),
+        enrollments: {
+          some: {
+            semesterId: resolved.semester.id,
+            rosterStatus: "ACTIVE",
+            ...(hasSchoolSession ? {} : { classId: { in: classIds } }),
+          },
+        },
       },
-      select: { id: true, name: true, classId: true, class: { select: { code: true, name: true } } },
+      select: {
+        id: true,
+        name: true,
+        enrollments: {
+          where: { semesterId: resolved.semester.id },
+          include: { class: { select: { id: true, code: true, name: true } } },
+        },
+      },
     }),
   ]);
 
@@ -208,14 +220,26 @@ export async function buildTeachingSummaryContext(
   const missingStudents = missingIds.length
     ? await db.student.findMany({
         where: { id: { in: missingIds } },
-        select: { id: true, name: true, classId: true, class: { select: { code: true, name: true } } },
+        select: {
+          id: true,
+          name: true,
+          enrollments: {
+            where: { semesterId: resolved.semester.id },
+            include: { class: { select: { id: true, code: true, name: true } } },
+          },
+        },
       })
     : [];
-  const students = [...roster, ...missingStudents].sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+  const students = [...roster, ...missingStudents].map((student) => ({
+    id: student.id,
+    name: student.name,
+    classId: student.enrollments[0]?.classId ?? null,
+    class: student.enrollments[0]?.class ?? { id: "", code: "", name: null },
+  })).sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
 
   const sessionStudentIds = new Map<string, Set<string>>();
   for (const session of sessions) {
-    const ids = new Set(roster.filter((student) => !session.classId || student.classId === session.classId).map((student) => student.id));
+    const ids = new Set(students.filter((student) => !session.classId || student.classId === session.classId).map((student) => student.id));
     sessionStudentIds.set(session.id, ids);
   }
   for (const row of [...metrics, ...attendances, ...events, ...selectedCommunications]) {

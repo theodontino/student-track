@@ -37,12 +37,15 @@ describe("quick-score request and recovery helpers", () => {
       latestRequestId: 2,
       requestedSemesterId: "semester-1",
       currentSemesterId: "semester-1",
+      requestedClassId: "class-1",
+      currentClassId: "class-1",
       requestedClassName: "一班",
       currentClassName: "一班",
     };
     expect(shouldApplyQuickScoreRequest(current)).toBe(true);
     expect(shouldApplyQuickScoreRequest({ ...current, requestId: 1 })).toBe(false);
     expect(shouldApplyQuickScoreRequest({ ...current, currentSemesterId: "semester-2" })).toBe(false);
+    expect(shouldApplyQuickScoreRequest({ ...current, currentClassId: "class-2" })).toBe(false);
     expect(shouldApplyQuickScoreRequest({ ...current, currentClassName: "二班" })).toBe(false);
   });
 
