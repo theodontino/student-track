@@ -6,7 +6,11 @@ import {
   normalizeFeedbackUseDecision,
 } from "@/lib/feedback-communication";
 import { generateWeComBridgeJson } from "@/services/wecom-handoff-extraction-service";
-import { shanghaiCalendarDate, summarizeMessageDateRange } from "@/services/wecom-session-matcher";
+import {
+  candidateSemesterIdsForEvidence,
+  handoffEvidenceDates,
+} from "@/services/wecom-handoff-alignment-service";
+import { summarizeMessageDateRange } from "@/services/wecom-session-matcher";
 
 function stableDraftId(batchId: string, studentId: string, messageIds: string[]) {
   const digest = createHash("sha256")
@@ -50,24 +54,12 @@ export async function consumeWccHandoffPackage(
 
   // handoff 包不携带 ST 身份或课次。候选范围只使用 ST 本端唯一匹配或教师选择的学生。
   const candidateStudentIds = students.map((student) => student.id);
-  const messageDateById = new Map(payload.messages.map((message) => [
-    message.id,
-    shanghaiCalendarDate(message.sentAt),
-  ]));
-  const evidenceDates = [...new Set([...messageDateById.values()].filter((value): value is string => Boolean(value)))];
-  const semesters = evidenceDates.length
-    ? await prisma.semester.findMany({
-      where: { OR: evidenceDates.map((date) => ({ startDate: { lte: date }, endDate: { gte: date } })) },
-      select: { id: true, startDate: true, endDate: true },
-    })
-    : [];
-  const semesterForDate = (date: string) => semesters.filter((semester) => date >= semester.startDate && date <= semester.endDate);
-  const semesterIdsByDate = evidenceDates.map((date) => [...new Set(semesterForDate(date).map((semester) => semester.id))]);
-  const evidenceSemesterId = semesterIdsByDate.length > 0
-    && semesterIdsByDate.every((ids) => ids.length === 1)
-    && new Set(semesterIdsByDate.map((ids) => ids[0])).size === 1
-    ? semesterIdsByDate[0][0]
-    : null;
+  const evidenceDates = handoffEvidenceDates(payload);
+  const candidateSemesterIds = await candidateSemesterIdsForEvidence(prisma, evidenceDates);
+  const selectedSemesterIds = [...new Set(students[0].enrollments
+    .filter((enrollment) => candidateSemesterIds.includes(enrollment.semesterId))
+    .map((enrollment) => enrollment.semesterId))];
+  const evidenceSemesterId = selectedSemesterIds.length === 1 ? selectedSemesterIds[0] : null;
   const currentClassIds = evidenceSemesterId
     ? [...new Set(students.flatMap((student) => student.enrollments.filter((enrollment) => enrollment.semesterId === evidenceSemesterId).map((enrollment) => enrollment.classId)))]
     : [];

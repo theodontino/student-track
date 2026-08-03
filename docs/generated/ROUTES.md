@@ -54,6 +54,7 @@
 | `/api/teacher-tasks` | `GET` |
 | `/api/teaching-memory` | `GET`, `PATCH`, `POST` |
 | `/api/wecom/handoff/[id]` | `GET`, `PATCH` |
+| `/api/wecom/handoff/alignment-recovery` | `GET`, `POST` |
 | `/api/wecom/handoff/batch-retry` | `POST` |
 | `/api/wecom/handoff/receipt-repair` | `GET`, `POST` |
 | `/api/wecom/handoff` | `GET`, `POST` |

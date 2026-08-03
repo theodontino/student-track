@@ -17,6 +17,8 @@ import {
   actOnWccHandoffPackage,
   getWccHandoffPackageDetails,
   listWccHandoffPackages,
+  previewWccPendingAlignmentRecovery,
+  recoverWccPendingAlignments,
   retryWccHandoffPackages,
   scanAndConsumeWccPackages,
 } from "@/services/wecom-file-handoff-service";
@@ -73,6 +75,7 @@ afterEach(async () => {
   await prisma.communication.deleteMany({ where: { sourceKey: { startsWith: "draft:wcc-" } } });
   await prisma.draftRecord.deleteMany({ where: { id: { startsWith: "wcc-" } } });
   await prisma.weComHandoffPackage.deleteMany();
+  await prisma.semester.deleteMany({ where: { id: { startsWith: "test-handoff-" } } });
   delete process.env.STUDENT_TRACK_WCC_EXCHANGE_ROOT;
   await rm(exchangeRoot, { recursive: true, force: true });
 });
@@ -118,6 +121,22 @@ describe("WCC file handoff consumer", () => {
       exchangeRoot, "v1", "receipts", "source-test", "pkg-no-value",
     ));
     expect(receiptNames).toHaveLength(1);
+  });
+
+  it("backfills conversation identity on an old ledger without reprocessing the package", async () => {
+    await publishSynthetic();
+    await scanAndConsumeWccPackages(prisma);
+    const item = await prisma.weComHandoffPackage.findFirstOrThrow();
+    await prisma.weComHandoffPackage.update({
+      where: { id: item.id },
+      data: { conversationId: null },
+    });
+
+    const repeated = await scanAndConsumeWccPackages(prisma);
+
+    expect(repeated.duplicates).toBe(1);
+    await expect(prisma.weComHandoffPackage.findUniqueOrThrow({ where: { id: item.id } }))
+      .resolves.toMatchObject({ conversationId: "conversation-test", status: "no_value" });
   });
 
   it("reads immutable package evidence for diagnostics without copying it into the ledger", async () => {
@@ -271,7 +290,15 @@ describe("WCC file handoff consumer", () => {
     expect(student?.classId).toBeTruthy();
     const session = await prisma.classSession.findFirstOrThrow({
       where: { classId: student!.classId! },
-      select: { code: true, date: true },
+      select: { code: true, date: true, semesterId: true },
+    });
+    await prisma.semester.create({
+      data: {
+        id: "test-handoff-overlapping-semester",
+        name: "合成重叠学期",
+        startDate: session.date,
+        endDate: session.date,
+      },
     });
     extraction.generate.mockResolvedValue({
       bridgeJson: {
@@ -329,6 +356,119 @@ describe("WCC file handoff consumer", () => {
       receiptFiles[0],
     ), "utf8"));
     expect(receipt).toMatchObject({ status: "accepted", outcome: "pending_review" });
+    await expect(prisma.weComHandoffPackage.findFirstOrThrow({
+      where: { packageId: "pkg-full-handoff" },
+    })).resolves.toMatchObject({
+      conversationId: "conversation-test",
+      selectedStudentId: student!.id,
+    });
+  });
+
+  it("reuses an explicitly confirmed student for later packages in the same conversation", async () => {
+    const student = await prisma.student.findFirstOrThrow({
+      where: { enrollments: { some: { rosterStatus: "ACTIVE" } } },
+      include: { enrollments: { where: { rosterStatus: "ACTIVE" }, select: { classId: true } } },
+    });
+    const session = await prisma.classSession.findFirstOrThrow({
+      where: { classId: student.enrollments[0].classId },
+      select: { date: true },
+    });
+    extraction.generate.mockResolvedValue({
+      bridgeJson: { records: [] },
+      diagnostics: { modelName: "synthetic-model" },
+    });
+    const valuable = {
+      worthProcessing: true,
+      decision: "student_related",
+      reasons: ["synthetic_feedback_value"],
+      classifier: "test",
+    };
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-remembered-first",
+      conversation: { id: "conversation-remembered", title: "不含学生姓名" },
+      classification: valuable,
+      messages: [{ id: "message-remembered-first", sentAt: `${session.date}T10:00:00+08:00`, content: "合成反馈一" }],
+    }));
+    await scanAndConsumeWccPackages(prisma);
+    const first = await prisma.weComHandoffPackage.findFirstOrThrow({
+      where: { packageId: "pkg-remembered-first" },
+    });
+    expect(first.status).toBe("pending_alignment");
+    await actOnWccHandoffPackage(prisma, first.id, "align", student.id);
+
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-remembered-second",
+      conversation: { id: "conversation-remembered", title: "仍然不含学生姓名" },
+      classification: valuable,
+      messages: [{ id: "message-remembered-second", sentAt: `${session.date}T10:05:00+08:00`, content: "合成反馈二" }],
+    }));
+    await scanAndConsumeWccPackages(prisma);
+
+    await expect(prisma.weComHandoffPackage.findFirstOrThrow({
+      where: { packageId: "pkg-remembered-second" },
+    })).resolves.toMatchObject({
+      status: "no_value",
+      conversationId: "conversation-remembered",
+      selectedStudentId: student.id,
+    });
+  });
+
+  it("previews pending alignment without writes and requires confirmation for bounded recovery", async () => {
+    const student = await prisma.student.findFirstOrThrow({
+      where: { enrollments: { some: { rosterStatus: "ACTIVE" } } },
+      include: { enrollments: { where: { rosterStatus: "ACTIVE" }, select: { classId: true } } },
+    });
+    const session = await prisma.classSession.findFirstOrThrow({
+      where: { classId: student.enrollments[0].classId },
+      select: { date: true },
+    });
+    const payload = packagePayload({
+      packageId: "pkg-recovery-preview",
+      conversation: { id: "conversation-recovery", title: student.name },
+      classification: {
+        worthProcessing: true,
+        decision: "student_related",
+        reasons: ["synthetic_feedback_value"],
+        classifier: "test",
+      },
+      messages: [{ id: "message-recovery", sentAt: `${session.date}T10:00:00+08:00`, content: "合成反馈" }],
+    });
+    const digest = await publishSynthetic(payload);
+    const ledger = await prisma.weComHandoffPackage.create({
+      data: {
+        sourceId: "source-test",
+        conversationId: "conversation-recovery",
+        packageId: "pkg-recovery-preview",
+        packageSha256: digest,
+        status: "pending_alignment",
+        outcome: "pending_review",
+        messageCount: 1,
+        producedAt: new Date("2026-07-26T10:00:00+08:00"),
+      },
+    });
+
+    await expect(previewWccPendingAlignmentRecovery(prisma)).resolves.toMatchObject({
+      total: 1,
+      inspected: 1,
+      eligible: 1,
+      manual: 0,
+    });
+    await expect(prisma.weComHandoffPackage.findUniqueOrThrow({ where: { id: ledger.id } }))
+      .resolves.toMatchObject({ status: "pending_alignment", selectedStudentId: null });
+    await expect(recoverWccPendingAlignments(prisma, "WRONG"))
+      .rejects.toThrow("confirmation_required");
+
+    extraction.generate.mockResolvedValue({
+      bridgeJson: { records: [] },
+      diagnostics: { modelName: "synthetic-model" },
+    });
+    await expect(recoverWccPendingAlignments(
+      prisma,
+      "REPROCESS_MATCHABLE_HANDOFFS",
+      25,
+    )).resolves.toMatchObject({ attempted: 1, recovered: 1, failed: 0 });
+    await expect(prisma.weComHandoffPackage.findUniqueOrThrow({ where: { id: ledger.id } }))
+      .resolves.toMatchObject({ status: "no_value", selectedStudentId: student.id });
   });
 
   it("does not allow WCC confirmation to change its evidence, student, or missing session", async () => {

@@ -29,6 +29,14 @@ type ReceiptRepairPreview = {
   createReceipt: number;
   skipped: Record<string, number>;
 };
+type AlignmentRecoveryPreview = {
+  total: number;
+  inspected: number;
+  eligible: number;
+  manual: number;
+  uninspected: number;
+  reasons: Record<string, number>;
+};
 type PackageDetail = {
   id: string;
   packageId: string;
@@ -87,7 +95,9 @@ export default function WccHandoffPanel() {
   const [message, setMessage] = useState("");
   const [receiptPreview, setReceiptPreview] = useState<ReceiptRepairPreview | null>(null);
   const [repairConfirmation, setRepairConfirmation] = useState("");
-  const [filter, setFilter] = useState<"attention" | "review" | "complete" | "all">("attention");
+  const [alignmentPreview, setAlignmentPreview] = useState<AlignmentRecoveryPreview | null>(null);
+  const [alignmentConfirmation, setAlignmentConfirmation] = useState("");
+  const [filter, setFilter] = useState<"alignment" | "errors" | "review" | "complete" | "all">("alignment");
   const [selectedRetries, setSelectedRetries] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Record<string, PackageDetail>>({});
   const refresh = () => request("/api/wecom/handoff")
@@ -96,12 +106,14 @@ export default function WccHandoffPanel() {
   useEffect(() => { void refresh(); }, []);
 
   const counts = useMemo(() => ({
-    attention: data.items.filter((item) => ["pending_alignment", "retryable_failure", "rejected"].includes(item.status)).length,
+    pendingAlignment: data.items.filter((item) => item.status === "pending_alignment").length,
+    errors: data.items.filter((item) => ["retryable_failure", "rejected"].includes(item.status)).length,
     pendingReview: data.items.filter((item) => item.status === "pending_review").length,
     complete: data.items.filter((item) => ["no_value", "discarded"].includes(item.status)).length,
   }), [data.items]);
   const visibleItems = useMemo(() => data.items.filter((item) => {
-    if (filter === "attention") return ["pending_alignment", "retryable_failure", "rejected"].includes(item.status);
+    if (filter === "alignment") return item.status === "pending_alignment";
+    if (filter === "errors") return ["retryable_failure", "rejected"].includes(item.status);
     if (filter === "review") return item.status === "pending_review";
     if (filter === "complete") return ["no_value", "discarded"].includes(item.status);
     return true;
@@ -138,11 +150,15 @@ export default function WccHandoffPanel() {
     }
     setBusy(item.id);
     try {
-      await request(`/api/wecom/handoff/${encodeURIComponent(item.id)}`, {
+      const result = await request(`/api/wecom/handoff/${encodeURIComponent(item.id)}`, {
         method: "PATCH",
         body: JSON.stringify({ action, studentId }),
       });
-      setMessage(action === "discard" ? "已丢弃；WCC 原始归档未被删除" : "处理完成");
+      setMessage(action === "discard"
+        ? "已丢弃；WCC 原始归档未被删除"
+        : result.status === "pending_alignment"
+          ? "所选学生在证据对应学期没有唯一归属，请核对学期名单"
+          : "处理完成");
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "处理失败");
@@ -217,6 +233,37 @@ export default function WccHandoffPanel() {
     }
   }
 
+  async function previewAlignments() {
+    setBusy("alignment-preview");
+    try {
+      const preview = await request("/api/wecom/handoff/alignment-recovery") as AlignmentRecoveryPreview;
+      setAlignmentPreview(preview);
+      setMessage(`待匹配只读预检完成：${preview.eligible} 条可自动恢复，${preview.manual} 条仍需人工确认${preview.uninspected ? `，${preview.uninspected} 条未纳入本次预检` : ""}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "待匹配预检失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function recoverAlignments() {
+    setBusy("alignment-recovery");
+    try {
+      const result = await request("/api/wecom/handoff/alignment-recovery", {
+        method: "POST",
+        body: JSON.stringify({ confirmation: alignmentConfirmation, limit: 25 }),
+      });
+      setAlignmentConfirmation("");
+      setAlignmentPreview(null);
+      setMessage(`待匹配恢复完成：尝试 ${result.attempted}，已送复核或完成 ${result.recovered}，仍待匹配 ${result.stillPending}，异常 ${result.failed}；另有 ${result.remainingEligible} 条可继续处理`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "待匹配恢复失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
   return <section className="handoff-panel">
     <div className="handoff-panel__header">
       <div>
@@ -230,10 +277,33 @@ export default function WccHandoffPanel() {
     </div>
     <div className="handoff-panel__metrics">
       <span><strong>{data.items.length}</strong>已登记</span>
+      <span><strong>{counts.pendingAlignment}</strong>待匹配</span>
       <span><strong>{counts.pendingReview}</strong>已送教师复核</span>
-      <span><strong>{counts.attention}</strong>接收异常</span>
+      <span><strong>{counts.errors}</strong>接收异常</span>
       <span><strong>{counts.complete}</strong>已完成</span>
     </div>
+    {counts.pendingAlignment > 0 && <div className="handoff-item__actions">
+      <Button variant="secondary" onClick={() => void previewAlignments()} disabled={Boolean(busy)}>
+        {busy === "alignment-preview" ? "正在预检待匹配…" : "只读预检待匹配"}
+      </Button>
+      {alignmentPreview && <span>
+        已检查 {alignmentPreview.inspected}/{alignmentPreview.total} · 可自动恢复 {alignmentPreview.eligible} · 仍需人工 {alignmentPreview.manual}
+      </span>}
+      {alignmentPreview?.eligible ? <>
+        <input
+          aria-label="待匹配恢复确认"
+          value={alignmentConfirmation}
+          onChange={(event) => setAlignmentConfirmation(event.target.value)}
+          placeholder="输入 REPROCESS_MATCHABLE_HANDOFFS"
+        />
+        <Button
+          onClick={() => void recoverAlignments()}
+          disabled={alignmentConfirmation !== "REPROCESS_MATCHABLE_HANDOFFS" || Boolean(busy)}
+        >
+          {busy === "alignment-recovery" ? "正在顺序处理…" : "确认处理最多 25 条"}
+        </Button>
+      </> : null}
+    </div>}
     <div className="handoff-item__actions">
       <Button variant="secondary" onClick={() => void previewReceipts()} disabled={Boolean(busy)}>
         {busy === "receipt-preview" ? "正在预检回执…" : "只读预检历史回执"}
@@ -265,13 +335,14 @@ export default function WccHandoffPanel() {
       <div className="handoff-item__actions">
         <label>查看
           <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
-            <option value="attention">仅接收异常</option>
+            <option value="alignment">仅待匹配</option>
+            <option value="errors">仅接收异常</option>
             <option value="review">已送教师复核</option>
             <option value="complete">已完成</option>
             <option value="all">全部已登记</option>
           </select>
         </label>
-        {filter === "attention" && <Button
+        {filter === "errors" && <Button
           variant="secondary"
           disabled={!retryableVisibleIds.length || Boolean(busy)}
           onClick={() => setSelectedRetries((current) => {
@@ -286,7 +357,7 @@ export default function WccHandoffPanel() {
         >
           {allVisibleRetriesSelected ? `取消选择当前 ${retryableVisibleIds.length} 项` : `选择当前 ${retryableVisibleIds.length} 个可重试包`}
         </Button>}
-        {filter === "attention" && <Button
+        {filter === "errors" && <Button
           disabled={!selectedRetries.size || Boolean(busy)}
           onClick={() => void retrySelected()}
         >

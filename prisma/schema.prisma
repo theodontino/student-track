@@ -725,6 +725,7 @@ model MemoryCompactionRun {
 model WeComHandoffPackage {
   id                String   @id @default(cuid())
   sourceId          String
+  conversationId    String?
   packageId         String
   packageSha256     String
   status            String
@@ -749,6 +750,7 @@ model WeComHandoffPackage {
 
   @@unique([sourceId, packageId, packageSha256])
   @@index([sourceId, packageId])
+  @@index([sourceId, conversationId])
   @@index([status, updatedAt])
   @@index([selectedStudentId])
   @@index([rootPackageId, revisionNumber])

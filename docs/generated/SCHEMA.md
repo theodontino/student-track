@@ -355,6 +355,7 @@ erDiagram
   WeComHandoffPackage {
     TEXT id PK
     TEXT sourceId
+    TEXT conversationId
     TEXT packageId
     TEXT packageSha256
     TEXT status
@@ -995,6 +996,7 @@ erDiagram
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
 | `sourceId` | `TEXT` | 是 |  |
+| `conversationId` | `TEXT` | 否 |  |
 | `packageId` | `TEXT` | 是 |  |
 | `packageSha256` | `TEXT` | 是 |  |
 | `status` | `TEXT` | 是 |  |

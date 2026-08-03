@@ -13,7 +13,10 @@ import {
 } from "@/lib/contracts/wecom-file-transfer";
 import { consumeWccHandoffPackage } from "@/services/wecom-handoff-consumer-service";
 import { WeComExtractionError } from "@/services/wecom-handoff-extraction-service";
-import { shanghaiCalendarDate } from "@/services/wecom-session-matcher";
+import {
+  resolveWccHandoffAlignment,
+  type WccAlignmentReason,
+} from "@/services/wecom-handoff-alignment-service";
 
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -215,15 +218,6 @@ export async function listWccHandoffReceipts(sourceId: string, packageId: string
   return receipts;
 }
 
-function exactTitleMatches(
-  title: string | undefined,
-  students: Array<{ id: string; name: string; studentId: string; classId?: string }>,
-) {
-  const normalized = (title || "").trim();
-  if (!normalized) return [];
-  return students.filter((student) => normalized.includes(student.name));
-}
-
 function safeFailure(error: unknown) {
   if (error instanceof WeComExtractionError) {
     if (error.code === "evidence_mismatch") {
@@ -256,7 +250,13 @@ async function consumeValidatedPackage(
     where: { sourceId: payload.source.id, packageId: payload.packageId },
     orderBy: { createdAt: "asc" },
   });
-  const same = existingIdentity.find((item) => item.packageSha256 === sha256);
+  let same = existingIdentity.find((item) => item.packageSha256 === sha256);
+  if (same && !same.conversationId) {
+    same = await prisma.weComHandoffPackage.update({
+      where: { id: same.id },
+      data: { conversationId: payload.conversation.id },
+    });
+  }
   if (same && !force && !["discovered"].includes(same.status)) {
     if (same.status === "processing") {
       const stale = !same.lastAttemptAt
@@ -285,6 +285,7 @@ async function consumeValidatedPackage(
     const conflict = await prisma.weComHandoffPackage.create({
       data: {
         sourceId: payload.source.id,
+        conversationId: payload.conversation.id,
         packageId: payload.packageId,
         packageSha256: sha256,
         status: "rejected",
@@ -307,6 +308,7 @@ async function consumeValidatedPackage(
   const ledger = same || await prisma.weComHandoffPackage.create({
     data: {
       sourceId: payload.source.id,
+      conversationId: payload.conversation.id,
       packageId: payload.packageId,
       packageSha256: sha256,
       rootPackageId: lineage.rootPackageId,
@@ -319,19 +321,6 @@ async function consumeValidatedPackage(
   });
 
   let matchedStudentId = selectedStudentId;
-  const evidenceDates = [...new Set(payload.messages.map((message) => shanghaiCalendarDate(message.sentAt)).filter((date): date is string => Boolean(date)))];
-  const evidenceSemesters = evidenceDates.length
-    ? await prisma.semester.findMany({
-      where: { OR: evidenceDates.map((date) => ({ startDate: { lte: date }, endDate: { gte: date } })) },
-      select: { id: true, startDate: true, endDate: true },
-    })
-    : [];
-  const semesterIdsByDate = evidenceDates.map((date) => [...new Set(evidenceSemesters.filter((semester) => date >= semester.startDate && date <= semester.endDate).map((semester) => semester.id))]);
-  const targetSemesterId = semesterIdsByDate.length > 0
-    && semesterIdsByDate.every((ids) => ids.length === 1)
-    && new Set(semesterIdsByDate.map((ids) => ids[0])).size === 1
-    ? semesterIdsByDate[0][0]
-    : null;
   let lineageDraft: {
     id: string;
     status: string;
@@ -439,15 +428,11 @@ async function consumeValidatedPackage(
     return { id: updated.id, status: updated.status, outcome: updated.outcome };
   }
 
-  if (!matchedStudentId && targetSemesterId) {
-    const rows = await prisma.student.findMany({
-      where: { enrollments: { some: { semesterId: targetSemesterId, rosterStatus: "ACTIVE" } } },
-      include: { enrollments: { where: { semesterId: targetSemesterId, rosterStatus: "ACTIVE" }, select: { classId: true } } },
-    });
-    const students = rows.map((student) => ({ id: student.id, name: student.name, studentId: student.studentId, classId: student.enrollments[0]?.classId }));
-    const matches = exactTitleMatches(payload.conversation.title, students);
-    if (matches.length === 1) matchedStudentId = matches[0].id;
-  }
+  const alignment = await resolveWccHandoffAlignment(prisma, {
+    payload,
+    selectedStudentId: matchedStudentId,
+  });
+  matchedStudentId = alignment.studentId || undefined;
   if (!matchedStudentId) {
     const pending = await prisma.weComHandoffPackage.update({
       where: { id: ledger.id },
@@ -466,7 +451,12 @@ async function consumeValidatedPackage(
 
   await prisma.weComHandoffPackage.update({
     where: { id: ledger.id },
-    data: { status: "processing", selectedStudentId: matchedStudentId, lastAttemptAt: new Date() },
+    data: {
+      status: "processing",
+      conversationId: payload.conversation.id,
+      selectedStudentId: matchedStudentId,
+      lastAttemptAt: new Date(),
+    },
   });
   try {
     const result = await consumeWccHandoffPackage(prisma, payload, matchedStudentId, {
@@ -524,21 +514,17 @@ async function performScanAndConsume(prisma: PrismaClient, limit = 20) {
   // 这样能跳过已处理过的前 N 个，把新包送进处理路径。
   const allMarkers = await markerFiles();
   const seen = await prisma.weComHandoffPackage.findMany({
-    select: { sourceId: true, packageId: true, packageSha256: true },
+    select: { sourceId: true, packageId: true, packageSha256: true, conversationId: true },
   });
-  const seenKeys = new Set(seen.map((row) => `${row.sourceId}/${row.packageId}/${row.packageSha256}`));
+  const seenIdentities = new Set(seen.map((row) => `${row.sourceId}/${row.packageId}`));
+  const needsConversationBackfill = new Set(seen
+    .filter((row) => !row.conversationId)
+    .map((row) => `${row.sourceId}/${row.packageId}`));
+  const markerIdentity = (marker: string) => `${path.basename(path.dirname(marker))}/${path.basename(marker, ".sha256")}`;
   const ordered = [
-    ...allMarkers.filter((marker) => {
-      const packageId = path.basename(marker, ".sha256");
-      const sourceId = path.basename(path.dirname(marker));
-      // marker 的 sha256 需要读文件才知道，先用 (sourceId, packageId) 粗筛
-      return !Array.from(seenKeys).some((key) => key.startsWith(`${sourceId}/${packageId}/`));
-    }),
-    ...allMarkers.filter((marker) => {
-      const packageId = path.basename(marker, ".sha256");
-      const sourceId = path.basename(path.dirname(marker));
-      return Array.from(seenKeys).some((key) => key.startsWith(`${sourceId}/${packageId}/`));
-    }),
+    ...allMarkers.filter((marker) => !seenIdentities.has(markerIdentity(marker))),
+    ...allMarkers.filter((marker) => needsConversationBackfill.has(markerIdentity(marker))),
+    ...allMarkers.filter((marker) => seenIdentities.has(markerIdentity(marker)) && !needsConversationBackfill.has(markerIdentity(marker))),
   ];
   const cap = Math.max(1, Math.min(limit, 100));
   const markers = ordered.slice(0, cap);
@@ -716,6 +702,108 @@ export async function retryWccHandoffPackages(
     stillRetryable: results.filter((item) => item.status === "retryable_failure").length,
     failed: results.filter((item) => item.status === "failed").length,
     skipped: results.filter((item) => item.status === "skipped").length,
+    results,
+  };
+}
+
+type PendingAlignmentInspection = {
+  id: string;
+  studentId: string | null;
+  reason: WccAlignmentReason | "package_unavailable";
+};
+
+async function inspectPendingAlignments(
+  prisma: PrismaClient,
+  inspectionLimit = 200,
+): Promise<{ total: number; items: PendingAlignmentInspection[] }> {
+  const [total, pending] = await Promise.all([
+    prisma.weComHandoffPackage.count({ where: { status: "pending_alignment" } }),
+    prisma.weComHandoffPackage.findMany({
+      where: { status: "pending_alignment" },
+      orderBy: { updatedAt: "asc" },
+      take: Math.max(1, Math.min(inspectionLimit, 500)),
+      select: { id: true },
+    }),
+  ]);
+  const items: PendingAlignmentInspection[] = [];
+  for (const row of pending) {
+    try {
+      const loaded = await packageForLedger(prisma, row.id);
+      const alignment = await resolveWccHandoffAlignment(prisma, { payload: loaded.payload });
+      items.push({ id: row.id, studentId: alignment.studentId, reason: alignment.reason });
+    } catch {
+      items.push({ id: row.id, studentId: null, reason: "package_unavailable" });
+    }
+  }
+  return { total, items };
+}
+
+/** Read-only classification of pending alignment rows; no package is retried. */
+export async function previewWccPendingAlignmentRecovery(prisma: PrismaClient) {
+  const inspected = await inspectPendingAlignments(prisma);
+  const eligible = inspected.items.filter((item) => Boolean(item.studentId));
+  const reasons = inspected.items.reduce<Record<string, number>>((counts, item) => {
+    if (!item.studentId) counts[item.reason] = (counts[item.reason] ?? 0) + 1;
+    return counts;
+  }, {});
+  return {
+    total: inspected.total,
+    inspected: inspected.items.length,
+    eligible: eligible.length,
+    manual: inspected.items.length - eligible.length,
+    uninspected: Math.max(0, inspected.total - inspected.items.length),
+    reasons,
+  };
+}
+
+/**
+ * Explicitly confirmed and bounded recovery. Matching is revalidated immediately
+ * before the existing extraction pipeline runs; no manual-only row is changed.
+ */
+export async function recoverWccPendingAlignments(
+  prisma: PrismaClient,
+  confirmation: string,
+  limit = 25,
+) {
+  if (confirmation !== "REPROCESS_MATCHABLE_HANDOFFS") throw new Error("confirmation_required");
+  const cap = Math.max(1, Math.min(limit, 25));
+  const inspected = await inspectPendingAlignments(prisma);
+  const eligible = inspected.items.filter(
+    (item): item is PendingAlignmentInspection & { studentId: string } => Boolean(item.studentId),
+  ).slice(0, cap);
+  const results: Array<{ id: string; status: string; code?: string | null; error?: string }> = [];
+  for (const item of eligible) {
+    try {
+      const loaded = await packageForLedger(prisma, item.id);
+      const revalidated = await resolveWccHandoffAlignment(prisma, { payload: loaded.payload });
+      if (!revalidated.studentId || revalidated.studentId !== item.studentId) {
+        results.push({ id: item.id, status: "skipped", error: "alignment_changed" });
+        continue;
+      }
+      const result = await consumeValidatedPackage(
+        prisma,
+        loaded.payload,
+        loaded.sha256,
+        item.studentId,
+        true,
+      );
+      results.push({ id: item.id, status: result.status, code: "code" in result ? result.code : null });
+    } catch (error) {
+      results.push({
+        id: item.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : "handoff_action_failed",
+      });
+    }
+  }
+  return {
+    attempted: eligible.length,
+    recovered: results.filter((item) => ["pending_review", "no_value"].includes(item.status)).length,
+    stillPending: results.filter((item) => item.status === "pending_alignment").length,
+    failed: results.filter((item) => item.status === "failed" || ["retryable_failure", "rejected"].includes(item.status)).length,
+    skipped: results.filter((item) => item.status === "skipped").length,
+    remainingEligible: Math.max(0, inspected.items.filter((item) => Boolean(item.studentId)).length - eligible.length),
+    manual: inspected.items.filter((item) => !item.studentId).length,
     results,
   };
 }
