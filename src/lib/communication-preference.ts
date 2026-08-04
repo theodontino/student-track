@@ -1,7 +1,7 @@
 import { CommunicationPreferenceSchema, type CommunicationPreference } from "@/lib/feedback-plan";
 
 export const COMMUNICATION_PREFERENCE_SIGNAL_VALUES = {
-  length: ["short", "standard", "detailed"],
+  length: ["short", "standard", "detailed", "flexible"],
   deliveryChannel: ["text", "voice", "either"],
   phoneContact: ["accepted", "not_accepted"],
   evidence: ["teacher_conclusion", "classroom_example", "data_trend"],
@@ -24,6 +24,8 @@ type GroundedPreferenceMessage = {
   direction?: string | null;
 };
 
+const feedbackPreferenceQuestion = /(?:反馈|沟通).{0,40}(?:方式|形式|频率|详细|简短|更短|语音|文字|电话|微信|多|少)|(?:语音|文字|电话|微信|详细|简短|更短).{0,30}(?:哪种|哪个|还是|倾向|方便|接受)/u;
+
 function groundedSignal(
   field: CommunicationPreferenceSignalField,
   value: string,
@@ -44,7 +46,13 @@ export function inferGroundedCommunicationPreferenceSignals(
   messages: GroundedPreferenceMessage[],
 ): CommunicationPreferenceSignal[] {
   const signals = new Map<CommunicationPreferenceSignalField, CommunicationPreferenceSignal>();
+  let pendingQuestion = "";
   for (const message of messages) {
+    if (message.direction === "outgoing") {
+      const outgoing = message.content.trim();
+      if (outgoing && feedbackPreferenceQuestion.test(outgoing)) pendingQuestion = outgoing;
+      continue;
+    }
     if (message.direction !== "incoming" || !message.id || !message.content.trim()) continue;
     const text = message.content.trim();
     if (!signals.has("length")) {
@@ -80,6 +88,37 @@ export function inferGroundedCommunicationPreferenceSignals(
         rejected ?? accepted,
       );
       if (signal) signals.set("phoneContact", signal);
+    }
+    if (pendingQuestion) {
+      const flexible = text.match(/(?:我)?都(?:可|可以|行|能接受)|均可|怎么方便怎么来|看老师方便|反馈方式.{0,8}都能接受/u);
+      const genericAccepted = text.match(/^(?:可以|可以的)(?:[。！!]|\s|辛苦老师)*$/u)
+        ?? text.match(/(?:^|[1１][：:])\s*可以(?:的)?/u);
+      if (!signals.has("length") && /详细|简短|更短/u.test(pendingQuestion) && flexible) {
+        const signal = groundedSignal("length", "flexible", message, flexible);
+        if (signal) signals.set("length", signal);
+      }
+      if (!signals.has("deliveryChannel") && /语音/u.test(pendingQuestion) && /文字/u.test(pendingQuestion)) {
+        const textReply = text.match(/(?:[3３][：:]?\s*|倾向.{0,6})文字|文字(?:反馈)?(?:即可|为主|优先)?$/u);
+        const voiceReply = text.match(/(?:[3３][：:]?\s*|倾向.{0,6})语音|语音(?:反馈)?(?:即可|为主|优先)?$/u);
+        const signal = groundedSignal(
+          "deliveryChannel",
+          flexible ? "either" : textReply ? "text" : "voice",
+          message,
+          flexible ?? textReply ?? voiceReply,
+        );
+        if (signal) signals.set("deliveryChannel", signal);
+      }
+      if (!signals.has("phoneContact") && /(?:微信)?电话/u.test(pendingQuestion)) {
+        const phoneReply = text.match(/随时.{0,24}(?:微信|电话).{0,24}(?:反馈|沟通)|(?:微信|电话).{0,24}(?:反馈|沟通)/u);
+        const signal = groundedSignal(
+          "phoneContact",
+          "accepted",
+          message,
+          phoneReply ?? flexible ?? genericAccepted,
+        );
+        if (signal) signals.set("phoneContact", signal);
+      }
+      pendingQuestion = "";
     }
   }
   return [...signals.values()];

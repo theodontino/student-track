@@ -33,6 +33,17 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function parsedPreferenceSignals(value: string) {
+  try {
+    const parsed = objectValue(JSON.parse(value));
+    return Array.isArray(objectValue(parsed.wccSource).preferenceSignals)
+      ? objectValue(parsed.wccSource).preferenceSignals as unknown[]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function consumeWccHandoffPackage(
   prisma: PrismaClient,
   payload: WccStudentTrackFileV1,
@@ -86,7 +97,11 @@ export async function consumeWccHandoffPackage(
     candidateStudentIds,
     ...(evidenceSemesterId ? { semesterId: evidenceSemesterId } : {}),
     includeInactive: true,
-    groundedMessages: payload.messages.map((message) => ({ id: message.id, content: message.content })),
+    groundedMessages: payload.messages.map((message) => ({
+      id: message.id,
+      content: message.content,
+      direction: message.direction,
+    })),
   });
   let records = Array.isArray(objectValue(generated.bridgeJson).records)
     ? objectValue(generated.bridgeJson).records as unknown[]
@@ -178,18 +193,20 @@ export async function consumeWccHandoffPackage(
         occurredAt: evidenceRange,
       },
     };
-    const draft = await prisma.draftRecord.upsert({
+    const rawText = JSON.stringify({
+      packageId: payload.packageId,
+      conversation: payload.conversation,
+      messageIds,
+      evidence,
+      classification: payload.classification,
+    });
+    const serializedParsedResult = JSON.stringify(parsedResult);
+    const existingOrCreated = await prisma.draftRecord.upsert({
       where: { id },
       create: {
         id,
-        rawText: JSON.stringify({
-          packageId: payload.packageId,
-          conversation: payload.conversation,
-          messageIds,
-          evidence,
-          classification: payload.classification,
-        }),
-        parsedResult: JSON.stringify(parsedResult),
+        rawText,
+        parsedResult: serializedParsedResult,
         status: "pending",
         kind: lineage?.kind ?? "standard",
         studentId: student.id,
@@ -198,9 +215,18 @@ export async function consumeWccHandoffPackage(
         communicationId: lineage?.communicationId,
         handoffPackageId: lineage?.handoffPackageId,
       },
-      // 重复交付只能幂等返回，不能改写已确认草稿的历史课次。
+      // Repeated delivery cannot rewrite confirmed history. A separately
+      // selected retry may enrich only the still-pending draft below.
       update: {},
     });
+    const draft = existingOrCreated.status === "pending"
+      && preferenceSignals.length > 0
+      && parsedPreferenceSignals(existingOrCreated.parsedResult).length === 0
+      ? await prisma.draftRecord.update({
+        where: { id },
+        data: { rawText, parsedResult: serializedParsedResult },
+      })
+      : existingOrCreated;
     drafts.push({ id: draft.id, status: draft.status, kind: draft.kind, studentId: student.id, studentName: student.name });
   }
   return {

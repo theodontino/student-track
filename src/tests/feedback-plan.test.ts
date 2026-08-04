@@ -7,6 +7,7 @@ import {
 } from "@/lib/feedback-plan";
 import { createAuditSnapshot } from "@/services/feedback-plan-audit";
 import {
+  communicationPreferenceFromSignals,
   inferCommunicationPreferenceCandidate,
   inferGroundedCommunicationPreferenceSignals,
 } from "@/lib/communication-preference";
@@ -219,5 +220,44 @@ describe("feedback plan composition gate", () => {
     }])).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ field: "length" }),
     ]));
+  });
+
+  it("grounds a flexible reply from the immediately preceding teacher question", () => {
+    const signals = inferGroundedCommunicationPreferenceSignals([
+      {
+        id: "question",
+        direction: "outgoing",
+        content: "能接受微信电话吗？反馈要详细还是简短？倾向语音还是文字？",
+      },
+      {
+        id: "answer",
+        direction: "incoming",
+        content: "我都可以，看老师方便。",
+      },
+    ]);
+    expect(signals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "length", value: "flexible", messageId: "answer" }),
+      expect.objectContaining({ field: "deliveryChannel", value: "either", messageId: "answer" }),
+      expect.objectContaining({ field: "phoneContact", value: "accepted", messageId: "answer" }),
+    ]));
+    expect(communicationPreferenceFromSignals(signals)?.preference).toMatchObject({
+      length: "flexible",
+      deliveryChannel: "either",
+      phoneContact: "accepted",
+    });
+  });
+
+  it("does not infer an answer from acknowledgement or an unrelated reply", () => {
+    const question = {
+      id: "question",
+      direction: "outgoing",
+      content: "能接受微信电话吗？反馈要详细还是简短？倾向语音还是文字？",
+    };
+    for (const content of ["收到，老师辛苦了！", "这个作业孩子不是很明白"]) {
+      expect(inferGroundedCommunicationPreferenceSignals([
+        question,
+        { id: "answer", direction: "incoming", content },
+      ])).toEqual([]);
+    }
   });
 });

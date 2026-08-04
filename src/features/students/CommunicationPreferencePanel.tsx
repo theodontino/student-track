@@ -6,7 +6,7 @@ import { requestJson } from "@/lib/api-client";
 
 type Value = string;
 const fields = [
-  ["length", "长度", ["unknown", "short", "standard", "detailed"]],
+  ["length", "长度", ["unknown", "short", "standard", "detailed", "flexible"]],
   ["deliveryChannel", "反馈形式", ["unknown", "text", "voice", "either"]],
   ["phoneContact", "微信电话", ["unknown", "accepted", "not_accepted"]],
   ["evidence", "证据偏好", ["unknown", "teacher_conclusion", "classroom_example", "data_trend"]],
@@ -14,7 +14,7 @@ const fields = [
   ["familyParticipation", "家庭参与", ["unknown", "inform_only", "remind_confirm", "observe_report", "simple_check"]],
   ["frequency", "沟通频率", ["unknown", "every_session", "stage_only", "exception_only"]],
 ] as const;
-const labels: Record<string, string> = { unknown: "未知", short: "简短", standard: "标准", detailed: "详细", text: "文字", voice: "语音", either: "文字或语音均可", accepted: "接受", not_accepted: "不接受", teacher_conclusion: "教师结论", classroom_example: "课堂例子", data_trend: "数据趋势", plain: "生活化", basic: "基础术语", professional: "专业细节", inform_only: "只知情", remind_confirm: "提醒/确认", observe_report: "观察/反馈", simple_check: "简单检查", every_session: "每次课", stage_only: "阶段性", exception_only: "异常时" };
+const labels: Record<string, string> = { unknown: "未知", short: "简短", standard: "标准", detailed: "详细", flexible: "长短均可", text: "文字", voice: "语音", either: "文字或语音均可", accepted: "接受", not_accepted: "不接受", teacher_conclusion: "教师结论", classroom_example: "课堂例子", data_trend: "数据趋势", plain: "生活化", basic: "基础术语", professional: "专业细节", inform_only: "只知情", remind_confirm: "提醒/确认", observe_report: "观察/反馈", simple_check: "简单检查", every_session: "每次课", stage_only: "阶段性", exception_only: "异常时" };
 
 export default function CommunicationPreferencePanel({ studentId }: { studentId: string }) {
   const [preference, setPreference] = useState<Record<string, Value> | null>(null);

@@ -130,6 +130,7 @@ const preferenceLabels: Record<string, string> = {
   short: "简短",
   standard: "标准",
   detailed: "详细",
+  flexible: "长短均可",
   text: "文字",
   voice: "语音",
   either: "文字或语音均可",

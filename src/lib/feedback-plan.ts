@@ -108,7 +108,7 @@ export type FeedbackAuditSnapshot = z.infer<typeof FeedbackAuditSnapshotSchema>;
 
 export const CommunicationPreferenceSchema = z.object({
   version: z.literal(1),
-  length: z.enum(["unknown", "short", "standard", "detailed"]),
+  length: z.enum(["unknown", "short", "standard", "detailed", "flexible"]),
   deliveryChannel: z.enum(["unknown", "text", "voice", "either"]).default("unknown"),
   phoneContact: z.enum(["unknown", "accepted", "not_accepted"]).default("unknown"),
   evidence: z.enum(["unknown", "teacher_conclusion", "classroom_example", "data_trend"]),

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   generateWeComBridgeJson,
+  validateWeComBridgeJson,
   WeComExtractionError,
 } from "@/services/wecom-handoff-extraction-service";
 
@@ -231,7 +232,7 @@ describe("wecom bridge service", () => {
     await expect(generateWeComBridgeJson(prisma, {
       sourceText: "[message-1] 可以微信电话，简短文字反馈即可。",
       candidateStudentIds: ["student-1"],
-      groundedMessages: [{ id: "message-1", content: "可以微信电话，简短文字反馈即可。" }],
+      groundedMessages: [{ id: "message-1", content: "可以微信电话，简短文字反馈即可。", direction: "incoming" }],
     })).resolves.toMatchObject({
       bridgeJson: { records: [{ preferenceSignals: [
         { field: "length", value: "short", messageId: "message-1" },
@@ -239,6 +240,26 @@ describe("wecom bridge service", () => {
         { field: "phoneContact", value: "accepted", messageId: "message-1" },
       ] }] },
     });
+  });
+
+  it("rejects a preference signal grounded in an outgoing teacher message", () => {
+    expect(() => validateWeComBridgeJson({
+      source: "wecomcatch",
+      mode: "candidateOnly",
+      records: [{
+        matchedStudent: { id: "student-1", confidence: "high" },
+        messageIds: ["message-1"],
+        factualSummary: "老师询问家长是否希望简短文字反馈。",
+        feedbackUse: { relevant: true, category: "feedback-preference", priority: "medium" },
+        preferenceSignals: [{ field: "length", value: "short", messageId: "message-1", quote: "简短文字反馈" }],
+        evidence: [{ messageId: "message-1", quote: "简短文字反馈" }],
+        confidence: "high",
+      }],
+    }, [{
+      id: "message-1",
+      content: "是否希望简短文字反馈？",
+      direction: "outgoing",
+    }], ["student-1"])).toThrow(WeComExtractionError);
   });
 
   it("rejects invented evidence after one corrective retry", async () => {

@@ -675,13 +675,31 @@ export async function retryWccHandoffPackages(
   for (const id of selected) {
     const current = await prisma.weComHandoffPackage.findUnique({
       where: { id },
-      select: { status: true },
+      select: {
+        status: true,
+        drafts: { select: { status: true, parsedResult: true } },
+      },
     });
     if (!current) {
       results.push({ id, status: "skipped", error: "package_not_found" });
       continue;
     }
-    if (!["retryable_failure", "no_value"].includes(current.status)) {
+    const pendingPreferenceEnrichment = current.status === "pending_review"
+      && current.drafts.some((draft) => {
+        if (draft.status !== "pending") return false;
+        try {
+          const source = (JSON.parse(draft.parsedResult) as { wccSource?: {
+            classification?: { reasons?: unknown };
+            preferenceSignals?: unknown;
+          } }).wccSource;
+          return Array.isArray(source?.classification?.reasons)
+            && source.classification.reasons.includes("feedback_category_feedback_preference")
+            && (!Array.isArray(source.preferenceSignals) || source.preferenceSignals.length === 0);
+        } catch {
+          return false;
+        }
+      });
+    if (!["retryable_failure", "no_value"].includes(current.status) && !pendingPreferenceEnrichment) {
       results.push({ id, status: "skipped", error: "not_retryable" });
       continue;
     }

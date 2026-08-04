@@ -330,6 +330,70 @@ describe("WCC file handoff consumer", () => {
     ]));
   });
 
+  it("enriches an unconfirmed preference draft on an explicit selected retry", async () => {
+    const students = await prisma.student.findMany({
+      include: { enrollments: { where: { rosterStatus: "ACTIVE" } } },
+    });
+    const student = students.find((candidate) => (
+      candidate.enrollments.length > 0
+      && students.filter((other) => candidate.name.includes(other.name)).length === 1
+    ));
+    expect(student).toBeTruthy();
+    const baseRecord = {
+      matchedStudent: { id: student!.id, confidence: "high" },
+      messageIds: ["answer"],
+      factualSummary: "家长回答了反馈接收方式，等待教师核对具体选项。",
+      feedbackUse: { relevant: true, category: "feedback-preference", priority: "medium" },
+      preferenceSignals: [],
+      evidence: [{ messageId: "answer", quote: "简短文字反馈" }],
+      confidence: "high",
+    };
+    extraction.generate
+      .mockResolvedValueOnce({ bridgeJson: { records: [baseRecord] }, diagnostics: { modelName: "synthetic-model" } })
+      .mockResolvedValueOnce({
+        bridgeJson: { records: [{
+          ...baseRecord,
+          preferenceSignals: [
+            { field: "length", value: "short", messageId: "answer", quote: "简短" },
+            { field: "deliveryChannel", value: "text", messageId: "answer", quote: "文字反馈" },
+          ],
+        }] },
+        diagnostics: { modelName: "synthetic-model" },
+      });
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-preference-enrichment",
+      conversation: { id: "conversation-enrichment", title: student!.name },
+      classification: {
+        worthProcessing: true,
+        decision: "student_related",
+        reasons: ["feedback_category_feedback_preference", "feedback_priority_medium"],
+        classifier: "synthetic-triage",
+      },
+      messages: [{
+        id: "answer",
+        sentAt: "2026-07-26T10:00:00+08:00",
+        direction: "incoming",
+        content: "简短文字反馈即可。",
+      }],
+    }));
+    await scanAndConsumeWccPackages(prisma);
+    const ledger = await prisma.weComHandoffPackage.findFirstOrThrow({
+      where: { packageId: "pkg-preference-enrichment" },
+    });
+    await expect(retryWccHandoffPackages(prisma, [ledger.id])).resolves.toMatchObject({
+      total: 1,
+      recovered: 1,
+      skipped: 0,
+    });
+    const draft = await prisma.draftRecord.findFirstOrThrow({
+      where: { handoffPackageId: ledger.id },
+    });
+    expect(JSON.parse(draft.parsedResult).wccSource.preferenceSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "length", value: "short" }),
+      expect.objectContaining({ field: "deliveryChannel", value: "text" }),
+    ]));
+  });
+
   it("completes publish, consume, teacher confirmation and receipt visibility", async () => {
     const students = (await prisma.student.findMany({
       include: { enrollments: { where: { rosterStatus: "ACTIVE" }, orderBy: { semester: { startDate: "desc" } }, select: { classId: true } } },
