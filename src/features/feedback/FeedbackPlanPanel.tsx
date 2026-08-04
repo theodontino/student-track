@@ -35,7 +35,12 @@ interface PlanItem {
   audit?: FeedbackAuditSnapshot | null;
   itemRevision: number;
   reviewMode?: "model" | "teacher_edited";
-  student?: { name: string; studentId?: string; communicationPreference?: { preferenceSnapshot: string } | null } | null;
+  student?: {
+    name: string;
+    studentId?: string;
+    communicationPreference?: { preferenceSnapshot: string } | null;
+    communicationPreferenceCandidates?: Array<{ id: string; preferenceSnapshot: string; evidenceSnapshot: string }>;
+  } | null;
   tasks?: Array<{ id: string; action: string; status: string; dueType: string; dueDate?: string | null; dueSessionId?: string | null }>;
   attachments?: Array<{ id: string; displayName: string; mimeType: string; sizeBytes: number; sha256: string; relativeLocator: string; status: string }>;
 }
@@ -125,6 +130,11 @@ const preferenceLabels: Record<string, string> = {
   short: "简短",
   standard: "标准",
   detailed: "详细",
+  text: "文字",
+  voice: "语音",
+  either: "文字或语音均可",
+  accepted: "接受微信电话",
+  not_accepted: "不接受微信电话",
   teacher_conclusion: "教师结论",
   classroom_example: "课堂例子",
   data_trend: "数据趋势",
@@ -443,6 +453,22 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     setActivePlan(payload.plan); await loadPlans();
   }
 
+  async function resolvePreferenceCandidate(item: PlanItem, candidateId: string, decision: "confirmed" | "rejected") {
+    if (!item.studentId) return;
+    setBusy(true); setError("");
+    try {
+      const response = await fetch(`/api/students/${encodeURIComponent(item.studentId)}/communication-preference/candidates/${encodeURIComponent(candidateId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      const payload = await response.json().catch(() => null) as ApiFailurePayload | null;
+      if (!response.ok) throw new Error(apiFailureMessage(payload, "处理沟通偏好候选失败"));
+      if (activePlan) await openPlan(activePlan.id);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "处理沟通偏好候选失败"); }
+    finally { setBusy(false); }
+  }
+
   async function saveItem(item: PlanItem) {
     if (!activePlan) return;
     const draft = drafts[item.id];
@@ -658,6 +684,8 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       const hasProtocolIssue = blockedIssues.some((issue: { code: string }) => protocolIssueCodes.has(issue.code));
       const visibleAuditIssues = (audit.items || []).filter((issue: { code: string }) => !protocolIssueCodes.has(issue.code));
       const preference = parseObject(item.student?.communicationPreference?.preferenceSnapshot);
+      const pendingPreferenceCandidate = item.student?.communicationPreferenceCandidates?.[0];
+      const pendingPreference = parseObject(pendingPreferenceCandidate?.preferenceSnapshot);
       const anchorId = activePlan.rangeEndSessionId || activePlan.sessionId;
       const anchorIndex = rangeSessions.findIndex((session) => session.id === anchorId);
       const futureSessions = anchorIndex >= 0 ? rangeSessions.slice(anchorIndex + 1) : [];
@@ -674,7 +702,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
         <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 版本 {item.itemRevision}</small></span></label><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge></header>
         {item.studentId && !item.student && <StatusBanner tone="danger">学生身份没有加载完整，已禁止把该条目当作班级公共反馈。请刷新计划后重试。</StatusBanner>}
         <details className="feedback-plan-evidence"><summary>查看证据篮子与内部审核 <span>{(evidence.teachingEvidence || []).length} 条证据 · {audit.status || "待审核"}</span></summary><div className="feedback-plan-evidence__body"><p>{(evidence.teachingEvidence || []).map((entry: { content: string }) => entry.content).join("；") || "暂无已确认证据"}</p>{(evidence.communicationContext || []).length > 0 && <p className="feedback-plan-evidence__communication">沟通背景：{(evidence.communicationContext || []).map((entry: { content: string }) => entry.content).join("；")}</p>}{hasProtocolIssue && <StatusBanner tone="danger">生成结果使用了旧版或不匹配的反馈结构，已阻止批准。请点击顶部“重新组装/生成”，系统会按当前反馈类型重新整理。</StatusBanner>}{visibleAuditIssues.map((issue: { message: string; severity: string }, index: number) => <StatusBanner key={`${issue.message}-${index}`} tone={issue.severity === "blocked" ? "danger" : "warning"}>{issue.message}</StatusBanner>)}</div></details>
-        {item.student && <details className="feedback-plan-preference"><summary>家庭沟通偏好</summary><p>长度：{preferenceLabel(preference.length)} · 证据：{preferenceLabel(preference.evidence)} · 术语：{preferenceLabel(preference.terminology)} · 家庭参与：{preferenceLabel(preference.familyParticipation)} · 频率：{preferenceLabel(preference.frequency)}</p></details>}
+        {item.student && <details className="feedback-plan-preference" open={Boolean(pendingPreferenceCandidate)}><summary>家庭沟通偏好{pendingPreferenceCandidate ? " · 有待确认候选" : ""}</summary><p>当前生效：长度 {preferenceLabel(preference.length)} · 形式 {preferenceLabel(preference.deliveryChannel)} · 电话 {preferenceLabel(preference.phoneContact)} · 证据 {preferenceLabel(preference.evidence)} · 术语 {preferenceLabel(preference.terminology)} · 家庭参与 {preferenceLabel(preference.familyParticipation)} · 频率 {preferenceLabel(preference.frequency)}</p>{pendingPreferenceCandidate && <div className="feedback-plan-preference__candidate"><p>待确认：长度 {preferenceLabel(pendingPreference.length)} · 形式 {preferenceLabel(pendingPreference.deliveryChannel)} · 电话 {preferenceLabel(pendingPreference.phoneContact)} · 频率 {preferenceLabel(pendingPreference.frequency)}</p><div><Button uiSize="sm" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "confirmed")} disabled={busy}>确认并用于反馈</Button><Button uiSize="sm" variant="ghost" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "rejected")} disabled={busy}>不是偏好</Button></div></div>}</details>}
         <div className="feedback-plan-item__controls"><label><span>结尾类型</span><select value={composition.closureType || "positive_recognition"} onChange={(event) => updateClosure(event.target.value)} disabled={busy || itemImmutable}>{FEEDBACK_CLOSURES_BY_TYPE[activePlan.type].map((closure) => <option key={closure} value={closure}>{closureLabels[closure] || closure}</option>)}</select></label><div className="feedback-plan-modules"><span className="feedback-plan-label">可选模块</span>{moduleRows.map((module) => <label key={module.key} className={`feedback-plan-module feedback-plan-module--${module.status}`}><input type="checkbox" checked={module.status === "included"} disabled={busy || itemImmutable || module.status === "blocked" || !module.content} onChange={(event) => updateModule(module.key, event.target.checked)} /><span><strong>{moduleLabels[module.key] || module.key}</strong><small>{module.status === "blocked" ? `阻断：${module.reason || "缺证据"}` : !module.content ? "暂无可用证据" : module.reason || ""}</small></span></label>)}</div></div>
         <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={5} value={draft.text} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, text: event.target.value } }))} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · 保存后重新运行程序门禁</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)}>保存修改</Button></div></div>
         {item.tasks?.map((task) => <p className="feedback-plan-task" key={task.id}>教师任务：{task.action} · {task.status}</p>)}

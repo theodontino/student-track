@@ -72,6 +72,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await prisma.communicationPreferenceCandidate.deleteMany({ where: { sourceType: "communication" } });
   await prisma.communication.deleteMany({ where: { sourceKey: { startsWith: "draft:wcc-" } } });
   await prisma.draftRecord.deleteMany({ where: { id: { startsWith: "wcc-" } } });
   await prisma.weComHandoffPackage.deleteMany();
@@ -155,7 +156,7 @@ describe("WCC file handoff consumer", () => {
       .resolves.toMatchObject({ status: "no_value", code: null });
   });
 
-  it("retries selected recoverable packages sequentially and skips other states", async () => {
+  it("retries failures and explicitly selected no-value packages sequentially", async () => {
     await publishSynthetic();
     await scanAndConsumeWccPackages(prisma);
     const item = await prisma.weComHandoffPackage.findFirstOrThrow();
@@ -173,8 +174,11 @@ describe("WCC file handoff consumer", () => {
     });
     await expect(retryWccHandoffPackages(prisma, [item.id])).resolves.toMatchObject({
       total: 1,
-      skipped: 1,
+      recovered: 1,
+      skipped: 0,
     });
+    await prisma.weComHandoffPackage.update({ where: { id: item.id }, data: { status: "pending_review" } });
+    await expect(retryWccHandoffPackages(prisma, [item.id])).resolves.toMatchObject({ total: 1, skipped: 1 });
   });
 
   it("recovers a stale processing package as an explicit retryable failure", async () => {
@@ -305,9 +309,14 @@ describe("WCC file handoff consumer", () => {
         records: [{
           matchedStudent: { id: student!.id, confidence: "high" },
           messageIds: ["message-test"],
-          factualSummary: "家长反馈学生近期学习信心有所改善。",
-          feedbackUse: { relevant: true, category: "learning-confidence", priority: "high" },
-          evidence: [{ messageId: "message-test", quote: "近期学习信心有所改善" }],
+          factualSummary: "家长明确偏好简短文字反馈，并接受微信电话沟通。",
+          feedbackUse: { relevant: true, category: "feedback-preference", priority: "high" },
+          preferenceSignals: [
+            { field: "length", value: "short", messageId: "message-test", quote: "简短文字反馈" },
+            { field: "deliveryChannel", value: "text", messageId: "message-test", quote: "文字反馈" },
+            { field: "phoneContact", value: "accepted", messageId: "message-test", quote: "可以微信电话" },
+          ],
+          evidence: [{ messageId: "message-test", quote: "简短文字反馈" }],
           confidence: "high",
         }],
       },
@@ -325,7 +334,7 @@ describe("WCC file handoff consumer", () => {
       messages: [{
         id: "message-test",
         sentAt: `${session.date}T10:00:00+08:00`,
-        content: "近期学习信心有所改善",
+        content: "可以微信电话，简短文字反馈即可。",
       }],
     }));
 
@@ -340,6 +349,12 @@ describe("WCC file handoff consumer", () => {
     await processDraftReview({ draftId: draft.id, action: "confirm" });
 
     expect(await prisma.communication.count()).toBe(communicationCount + 1);
+    await expect(prisma.communicationPreferenceCandidate.findFirstOrThrow({
+      where: { studentId: student!.id, status: "pending", sourceType: "communication" },
+    })).resolves.toMatchObject({
+      preferenceSnapshot: expect.stringContaining('"deliveryChannel":"text"'),
+      evidenceSnapshot: expect.not.stringContaining("简短文字反馈"),
+    });
     expect(await prisma.draftRecord.findUniqueOrThrow({ where: { id: draft.id } })).toMatchObject({
       status: "confirmed",
     });

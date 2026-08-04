@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { COMMUNICATION_PREFERENCE_SIGNAL_VALUES } from "@/lib/communication-preference";
 import { FEEDBACK_COMMUNICATION_CATEGORIES } from "@/lib/feedback-communication";
 import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
 import type { ChatCompletion } from "openai/resources/chat/completions";
@@ -158,7 +159,7 @@ const groundedBridgeSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["matchedStudent", "messageIds", "factualSummary", "feedbackUse", "evidence", "confidence"],
+        required: ["matchedStudent", "messageIds", "factualSummary", "feedbackUse", "preferenceSignals", "evidence", "confidence"],
         properties: {
           matchedStudent: {
             type: "object",
@@ -179,6 +180,21 @@ const groundedBridgeSchema = {
               relevant: { type: "boolean", enum: [true] },
               category: { type: "string", enum: FEEDBACK_COMMUNICATION_CATEGORIES },
               priority: { type: "string", enum: ["high", "medium"] },
+            },
+          },
+          preferenceSignals: {
+            type: "array",
+            maxItems: 7,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["field", "value", "messageId", "quote"],
+              properties: {
+                field: { type: "string", enum: Object.keys(COMMUNICATION_PREFERENCE_SIGNAL_VALUES) },
+                value: { type: "string", enum: [...new Set(Object.values(COMMUNICATION_PREFERENCE_SIGNAL_VALUES).flat())] },
+                messageId: { type: "string", minLength: 1 },
+                quote: { type: "string", minLength: 2, maxLength: 160 },
+              },
             },
           },
           evidence: {
@@ -296,6 +312,15 @@ function restoreGroundedMessageIds(
         }
       }
     }
+    if (Array.isArray(record.preferenceSignals)) {
+      for (const signalValue of record.preferenceSignals) {
+        if (!signalValue || typeof signalValue !== "object") continue;
+        const signal = signalValue as Record<string, unknown>;
+        if (typeof signal.messageId === "string") {
+          signal.messageId = referenceToId.get(signal.messageId) ?? signal.messageId;
+        }
+      }
+    }
   }
   return restored;
 }
@@ -325,6 +350,7 @@ export function validateWeComBridgeJson(
         ? [...new Set(rawMessageIds)]
         : [];
       const evidence = Array.isArray(record?.evidence) ? record.evidence : [];
+      const preferenceSignals = Array.isArray(record?.preferenceSignals) ? record.preferenceSignals : null;
       const summary = clean(record?.factualSummary);
       const feedbackUse = record?.feedbackUse && typeof record.feedbackUse === "object"
         ? record.feedbackUse as Record<string, unknown>
@@ -343,10 +369,40 @@ export function validateWeComBridgeJson(
         || feedbackUse.relevant !== true
         || !FEEDBACK_COMMUNICATION_CATEGORIES.includes(feedbackUse.category as typeof FEEDBACK_COMMUNICATION_CATEGORIES[number])
         || !["high", "medium"].includes(clean(feedbackUse.priority))
+        || preferenceSignals === null
         || evidence.length < 1
         || evidence.length > 3
       ) {
         throw new WeComExtractionError("evidence_mismatch", "模型记录缺少可自动写入的高置信度事实证据");
+      }
+      const seenPreferenceFields = new Set<string>();
+      for (const signalValue of preferenceSignals) {
+        const signal = signalValue && typeof signalValue === "object"
+          ? signalValue as Record<string, unknown>
+          : null;
+        const field = clean(signal?.field) as keyof typeof COMMUNICATION_PREFERENCE_SIGNAL_VALUES;
+        const signalValueText = clean(signal?.value);
+        const messageId = clean(signal?.messageId);
+        const quote = normalizeEvidenceText(clean(signal?.quote));
+        const allowed = COMMUNICATION_PREFERENCE_SIGNAL_VALUES[field] as readonly string[] | undefined;
+        if (
+          !allowed?.includes(signalValueText)
+          || seenPreferenceFields.has(field)
+          || !messageIds.includes(messageId)
+          || !messages.has(messageId)
+          || quote.length < 2
+          || quote.length > 160
+          || !messages.get(messageId)?.includes(quote)
+        ) {
+          throw new WeComExtractionError("evidence_mismatch", "模型返回的沟通偏好缺少可核验的逐字证据");
+        }
+        seenPreferenceFields.add(field);
+      }
+      if (
+        (preferenceSignals.length > 0 && feedbackUse.category !== "feedback-preference")
+        || (feedbackUse.category === "feedback-preference" && preferenceSignals.length === 0)
+      ) {
+        throw new WeComExtractionError("evidence_mismatch", "反馈偏好分类与结构化偏好证据不一致");
       }
       for (const evidenceValue of evidence) {
         const item = evidenceValue && typeof evidenceValue === "object"
@@ -678,7 +734,9 @@ export async function generateWeComBridgeJson(
 学生候选：
 ${JSON.stringify(roster.map((student) => ({ id: student.id, name: student.name, studentId: student.studentId })), null, 2)}
 
-输出必须严格符合 JSON Schema。只保留能改善后续课后反馈的中高价值信息：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。收悉、感谢、排课、报名缴费、接送、普通请假、文件发送、群通知和无新增事实的寒暄不得输出。越接近当前时间且尚未被后续消息取代的信息，priority 越高。每条记录只能使用候选学生 ID，matchedStudent.confidence 和 confidence 都必须基于原文判断；feedbackUse.relevant 必须为 true，priority 只能为 high 或 medium。messageIds 只引用支撑该事实的 M001、M002 等短消息引用，不得猜测原始消息 ID。evidence.messageId 使用同一短引用。evidence 必须提供 1 至 3 条输入消息中逐字存在的短句，不得改写标点、措辞或补充推断。factualSummary 只概括已经明确发生或明确约定的事实；不得生成建议、课次、沟通对象或关注标签。没有足够逐字证据或没有反馈价值时 records 返回空数组。
+输出必须严格符合 JSON Schema。只保留能改善后续课后反馈的中高价值信息：学习进步、具体困难、学习习惯、学习方法、学习信心、家长担心、反馈偏好、教师仍需兑现的承诺，或会直接影响学习表现的临时背景。家长对“反馈长短、文字或语音、是否接受微信电话、反馈频率、证据详略、术语程度、家庭如何参与”的直接回答始终属于 feedback-preference，即使回答很短也必须保留；不得从未回复、回复速度、语气或普通学习描述推断偏好。越接近当前时间且尚未被后续消息取代的信息，priority 越高。每条记录只能使用候选学生 ID，matchedStudent.confidence 和 confidence 都必须基于原文判断；feedbackUse.relevant 必须为 true，priority 只能为 high 或 medium。messageIds 只引用支撑该事实的 M001、M002 等短消息引用，不得猜测原始消息 ID。evidence.messageId 使用同一短引用。evidence 必须提供 1 至 3 条输入消息中逐字存在的短句，不得改写标点、措辞或补充推断。factualSummary 只概括已经明确发生或明确约定的事实；不得生成建议、课次、沟通对象或关注标签。
+
+每条记录都必须返回 preferenceSignals。普通事实返回空数组。只有家长或教师明确表达反馈接收偏好时才填写：field=length 对应 short/standard/detailed；deliveryChannel 对应 text/voice/either；phoneContact 对应 accepted/not_accepted；其余字段只能使用 Schema 给出的受控值。每个字段最多一条，并分别引用能逐字证明该值的消息与短句。存在 preferenceSignals 时 feedbackUse.category 必须为 feedback-preference；feedback-preference 记录也必须至少有一条 preferenceSignals。没有足够逐字证据或没有反馈价值时 records 返回空数组。
 
 当前连续交流段：
 ${promptText}`

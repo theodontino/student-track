@@ -189,4 +189,9 @@ describe("feedback plan composition gate", () => {
     expect(result?.preference).toMatchObject({ length: "short", evidence: "classroom_example", familyParticipation: "remind_confirm" });
     expect(result?.signals.length).toBeGreaterThan(0);
   });
+
+  it("does not treat an ordinary observation as a family communication preference", () => {
+    expect(inferCommunicationPreferenceCandidate("家长说我观察到孩子今天上课很专注。"))
+      .toBeNull();
+  });
 });

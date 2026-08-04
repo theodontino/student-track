@@ -119,8 +119,8 @@ export default function WccHandoffPanel() {
     return true;
   }), [data.items, filter]);
   const retryableVisibleIds = useMemo(
-    () => visibleItems.filter((item) => item.status === "retryable_failure").map((item) => item.id).slice(0, 25),
-    [visibleItems],
+    () => visibleItems.filter((item) => item.status === "retryable_failure" || (filter === "complete" && item.status === "no_value")).map((item) => item.id).slice(0, 25),
+    [filter, visibleItems],
   );
   const allVisibleRetriesSelected = retryableVisibleIds.length > 0
     && retryableVisibleIds.every((id) => selectedRetries.has(id));
@@ -342,7 +342,7 @@ export default function WccHandoffPanel() {
             <option value="all">全部已登记</option>
           </select>
         </label>
-        {filter === "errors" && <Button
+        {(filter === "errors" || filter === "complete") && <Button
           variant="secondary"
           disabled={!retryableVisibleIds.length || Boolean(busy)}
           onClick={() => setSelectedRetries((current) => {
@@ -355,13 +355,13 @@ export default function WccHandoffPanel() {
             return next;
           })}
         >
-          {allVisibleRetriesSelected ? `取消选择当前 ${retryableVisibleIds.length} 项` : `选择当前 ${retryableVisibleIds.length} 个可重试包`}
+          {allVisibleRetriesSelected ? `取消选择当前 ${retryableVisibleIds.length} 项` : filter === "complete" ? `选择当前 ${retryableVisibleIds.length} 个重新分拣` : `选择当前 ${retryableVisibleIds.length} 个可重试包`}
         </Button>}
-        {filter === "errors" && <Button
+        {(filter === "errors" || filter === "complete") && <Button
           disabled={!selectedRetries.size || Boolean(busy)}
           onClick={() => void retrySelected()}
         >
-          {busy === "batch-retry" ? `正在顺序重试 ${selectedRetries.size} 项…` : `顺序批量重试 (${selectedRetries.size}/25)`}
+          {busy === "batch-retry" ? `正在顺序处理 ${selectedRetries.size} 项…` : filter === "complete" ? `用当前模型重新分拣 (${selectedRetries.size}/25)` : `顺序批量重试 (${selectedRetries.size}/25)`}
         </Button>}
         <span>每包均可展开查看完整消息与安全诊断。</span>
       </div>
@@ -369,7 +369,7 @@ export default function WccHandoffPanel() {
       {visibleItems.map((item) => <article className={`handoff-item handoff-item--${item.status}`} key={item.id}>
         <div className="handoff-item__main">
           <div className="handoff-item__title">
-            {item.status === "retryable_failure" && <input
+            {(item.status === "retryable_failure" || (filter === "complete" && item.status === "no_value")) && <input
               aria-label={`选择重试 ${item.packageId}`}
               type="checkbox"
               checked={selectedRetries.has(item.id)}
@@ -410,6 +410,7 @@ export default function WccHandoffPanel() {
             <Button onClick={() => void act(item, "align")} disabled={busy === item.id}>确认匹配并处理</Button>
           </>}
           {item.status === "retryable_failure" && <Button onClick={() => void act(item, "retry")} disabled={busy === item.id}>重试</Button>}
+          {filter === "complete" && item.status === "no_value" && <Button onClick={() => void act(item, "retry")} disabled={busy === item.id}>重新分拣</Button>}
           {["pending_alignment", "retryable_failure", "rejected"].includes(item.status)
             && <Button variant="secondary" onClick={() => void act(item, "discard")} disabled={busy === item.id}>丢弃</Button>}
         </div>

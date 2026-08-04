@@ -456,7 +456,7 @@ export async function getFeedbackPlan(id: string, db: PrismaClient = prisma) {
   const plan = await db.feedbackPlan.findUnique({
     where: { id },
     include: {
-      items: { include: { student: { include: { communicationPreference: true } }, tasks: true, attachments: true, selectedGeneration: true } },
+      items: { include: { student: { include: { communicationPreference: true, communicationPreferenceCandidates: { where: { status: "pending" }, orderBy: { createdAt: "desc" }, take: 1 } } }, tasks: true, attachments: true, selectedGeneration: true } },
       tasks: true,
       attachments: true,
       exportRuns: { orderBy: { createdAt: "desc" } },
@@ -467,7 +467,7 @@ export async function getFeedbackPlan(id: string, db: PrismaClient = prisma) {
   if (checked.some((entry) => plan.attachments.some((attachment) => attachment.id === entry.id && attachment.status !== entry.status))) {
     return db.feedbackPlan.findUnique({
       where: { id },
-      include: { items: { include: { student: { include: { communicationPreference: true } }, tasks: true, attachments: true, selectedGeneration: true } }, tasks: true, attachments: true, exportRuns: { orderBy: { createdAt: "desc" } } },
+      include: { items: { include: { student: { include: { communicationPreference: true, communicationPreferenceCandidates: { where: { status: "pending" }, orderBy: { createdAt: "desc" }, take: 1 } } }, tasks: true, attachments: true, selectedGeneration: true } }, tasks: true, attachments: true, exportRuns: { orderBy: { createdAt: "desc" } } },
     });
   }
   return plan;

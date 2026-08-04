@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
 import { normalizeAttentionSignalCandidates } from "@/lib/attention-labels";
-import { inferCommunicationPreferenceCandidate } from "@/lib/communication-preference";
+import {
+  communicationPreferenceFromSignals,
+  inferCommunicationPreferenceCandidate,
+} from "@/lib/communication-preference";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
 import type { ParseResult, ParsedStudent } from "@/lib/parser";
@@ -168,6 +171,11 @@ export async function processDraftReview(input: ProcessDraftInput) {
         throw new ServiceError("草稿内容已损坏，无法确认", 422);
       }
     }
+    const sourceRecord = isRecord(source) ? source : {};
+    const wccSource = isRecord(sourceRecord.wccSource) ? sourceRecord.wccSource : {};
+    const wccPreferenceCandidate = isWccDraft
+      ? communicationPreferenceFromSignals(wccSource.preferenceSignals)
+      : null;
     const parsedData = normalizeParsedData(source);
     const today = new Date().toISOString().split("T")[0];
     const session = draft.sessionCode
@@ -463,7 +471,9 @@ export async function processDraftReview(input: ProcessDraftInput) {
             });
             confirmedCommunicationId = communication.id;
           }
-          const preferenceCandidate = inferCommunicationPreferenceCandidate(summary);
+          const preferenceCandidate = isWccDraft
+            ? wccPreferenceCandidate
+            : inferCommunicationPreferenceCandidate(summary);
           if (preferenceCandidate && confirmedCommunicationId) {
             const existingCandidate = await tx.communicationPreferenceCandidate.findFirst({
               where: { sourceType: "communication", sourceId: confirmedCommunicationId },
@@ -476,7 +486,12 @@ export async function processDraftReview(input: ProcessDraftInput) {
                   sourceType: "communication",
                   sourceId: confirmedCommunicationId,
                   preferenceSnapshot: JSON.stringify(preferenceCandidate.preference),
-                  evidenceSnapshot: JSON.stringify({ signals: preferenceCandidate.signals }),
+                  evidenceSnapshot: JSON.stringify({
+                    signals: preferenceCandidate.signals,
+                    ...(isWccDraft && "messageIds" in preferenceCandidate
+                      ? { messageIds: preferenceCandidate.messageIds }
+                      : {}),
+                  }),
                 },
               });
             }

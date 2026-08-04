@@ -681,7 +681,7 @@ export async function retryWccHandoffPackages(
       results.push({ id, status: "skipped", error: "package_not_found" });
       continue;
     }
-    if (current.status !== "retryable_failure") {
+    if (!["retryable_failure", "no_value"].includes(current.status)) {
       results.push({ id, status: "skipped", error: "not_retryable" });
       continue;
     }

@@ -182,6 +182,7 @@ describe("wecom bridge service", () => {
         messageIds: ["M001"],
         factualSummary: "家长明确表示学生近期希望获得更多鼓励。",
         feedbackUse: { relevant: true, category: "learning-confidence", priority: "high" },
+        preferenceSignals: [],
         evidence: [{ messageId: "M001", quote: "最近希望多鼓励" }],
         confidence: "high",
       }],
@@ -205,6 +206,39 @@ describe("wecom bridge service", () => {
     const schema = mocks.completionCreate.mock.calls[0][0].response_format.json_schema.schema;
     expect(schema.properties.records.items.required).toContain("evidence");
     expect(schema.properties.records.items.required).toContain("feedbackUse");
+    expect(schema.properties.records.items.required).toContain("preferenceSignals");
+  });
+
+  it("extracts explicit delivery preferences with separately grounded signals", async () => {
+    mocks.completionCreate.mockResolvedValue(completion(JSON.stringify({
+      source: "wecomcatch",
+      mode: "candidateOnly",
+      records: [{
+        matchedStudent: { id: "student-1", confidence: "high" },
+        messageIds: ["M001"],
+        factualSummary: "家长明确偏好简短文字反馈，并接受微信电话沟通。",
+        feedbackUse: { relevant: true, category: "feedback-preference", priority: "high" },
+        preferenceSignals: [
+          { field: "length", value: "short", messageId: "M001", quote: "简短文字反馈" },
+          { field: "deliveryChannel", value: "text", messageId: "M001", quote: "文字反馈" },
+          { field: "phoneContact", value: "accepted", messageId: "M001", quote: "可以微信电话" },
+        ],
+        evidence: [{ messageId: "M001", quote: "简短文字反馈" }],
+        confidence: "high",
+      }],
+    })));
+
+    await expect(generateWeComBridgeJson(prisma, {
+      sourceText: "[message-1] 可以微信电话，简短文字反馈即可。",
+      candidateStudentIds: ["student-1"],
+      groundedMessages: [{ id: "message-1", content: "可以微信电话，简短文字反馈即可。" }],
+    })).resolves.toMatchObject({
+      bridgeJson: { records: [{ preferenceSignals: [
+        { field: "length", value: "short", messageId: "message-1" },
+        { field: "deliveryChannel", value: "text", messageId: "message-1" },
+        { field: "phoneContact", value: "accepted", messageId: "message-1" },
+      ] }] },
+    });
   });
 
   it("rejects invented evidence after one corrective retry", async () => {
@@ -216,6 +250,7 @@ describe("wecom bridge service", () => {
         messageIds: ["M001"],
         factualSummary: "家长明确表示学生准备参加额外课程。",
         feedbackUse: { relevant: true, category: "parent-concern", priority: "medium" },
+        preferenceSignals: [],
         evidence: [{ messageId: "M001", quote: "准备参加额外课程" }],
         confidence: "high",
       }],

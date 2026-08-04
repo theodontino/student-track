@@ -120,6 +120,7 @@ export async function consumeWccHandoffPackage(
       feedbackUse,
     );
     const evidence = Array.isArray(record.evidence) ? record.evidence : [];
+    const preferenceSignals = Array.isArray(record.preferenceSignals) ? record.preferenceSignals : [];
     // 只有证据都落在同一中国日历日、学生当前班级当天恰好一节课时才自动绑定。
     // 其余情形保留为 null，由教师在候选面板明确选择，避免把正式沟通绑错课次。
     const evidenceDate = evidenceRange && evidenceRange.min === evidenceRange.max
@@ -146,6 +147,7 @@ export async function consumeWccHandoffPackage(
         conversation: payload.conversation,
         messageIds,
         evidence,
+        preferenceSignals,
         feedbackUse,
         classification: payload.classification,
         // 只保存此候选的证据日期范围，而不是整批会话范围。
