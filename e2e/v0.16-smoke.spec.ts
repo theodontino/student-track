@@ -43,8 +43,14 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     const studentCard = page.getByText(TEST_FIXTURE.students[0].name, { exact: true }).locator("..").locator("..");
     await studentCard.getByRole("button", { name: "✓ 到" }).click();
     await studentCard.getByText("学习", { exact: true }).locator("..").getByRole("button", { name: "5", exact: true }).click();
+    const saveResponsePromise = page.waitForResponse((response) => {
+      const request = response.request();
+      return new URL(response.url()).pathname === "/api/quick-score" && request.method() === "POST";
+    });
     await page.getByRole("button", { name: "全部提交" }).click();
-    await expect(page.getByText("已提交 1 条评分", { exact: false })).toBeVisible();
+    const saveResponse = await saveResponsePromise;
+    expect(saveResponse.ok()).toBe(true);
+    await expect(page.getByText("没有未保存修改", { exact: true })).toBeVisible();
 
     await page.reload();
     await selectQuickScoreClass(page);
