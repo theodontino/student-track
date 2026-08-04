@@ -6,7 +6,10 @@ import {
   validateCompositionForBundle,
 } from "@/lib/feedback-plan";
 import { createAuditSnapshot } from "@/services/feedback-plan-audit";
-import { inferCommunicationPreferenceCandidate } from "@/lib/communication-preference";
+import {
+  inferCommunicationPreferenceCandidate,
+  inferGroundedCommunicationPreferenceSignals,
+} from "@/lib/communication-preference";
 
 function bundle(overrides: Record<string, unknown> = {}) {
   return FeedbackEvidenceBundleSchema.parse({
@@ -193,5 +196,28 @@ describe("feedback plan composition gate", () => {
   it("does not treat an ordinary observation as a family communication preference", () => {
     expect(inferCommunicationPreferenceCandidate("家长说我观察到孩子今天上课很专注。"))
       .toBeNull();
+  });
+
+  it("grounds only direct incoming feedback preference wording", () => {
+    expect(inferGroundedCommunicationPreferenceSignals([{
+      id: "message-1",
+      direction: "incoming",
+      content: "文字和语音都可以，简短反馈即可。",
+    }])).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "length", value: "short", messageId: "message-1" }),
+      expect.objectContaining({ field: "deliveryChannel", value: "either", messageId: "message-1" }),
+    ]));
+    expect(inferGroundedCommunicationPreferenceSignals([{
+      id: "message-2",
+      direction: "outgoing",
+      content: "文字和语音都可以吗？",
+    }])).toEqual([]);
+    expect(inferGroundedCommunicationPreferenceSignals([{
+      id: "message-3",
+      direction: "incoming",
+      content: "简短或详细都可以，文字和语音均可。",
+    }])).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "length" }),
+    ]));
   });
 });

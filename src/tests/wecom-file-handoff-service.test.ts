@@ -283,6 +283,53 @@ describe("WCC file handoff consumer", () => {
     expect(discarded).toMatchObject({ status: "discarded", outcome: "no_value" });
   });
 
+  it("keeps a grounded preference candidate when the LLM returns no records", async () => {
+    const students = await prisma.student.findMany({
+      include: { enrollments: { where: { rosterStatus: "ACTIVE" } } },
+    });
+    const student = students.find((candidate) => (
+      candidate.enrollments.length > 0
+      && students.filter((other) => candidate.name.includes(other.name)).length === 1
+    ));
+    expect(student).toBeTruthy();
+    extraction.generate.mockResolvedValue({
+      bridgeJson: { records: [] },
+      diagnostics: { modelName: "synthetic-model" },
+    });
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-grounded-preference-fallback",
+      conversation: { id: "conversation-preference", title: student!.name },
+      classification: {
+        worthProcessing: true,
+        decision: "student_related",
+        reasons: [
+          "feedback_category_feedback_preference",
+          "feedback_priority_medium",
+        ],
+        classifier: "synthetic-triage",
+      },
+      messages: [{
+        id: "message-preference",
+        sentAt: "2026-07-26T10:00:00+08:00",
+        direction: "incoming",
+        content: "文字和语音都可以，简短反馈即可。",
+      }],
+    }));
+
+    await expect(scanAndConsumeWccPackages(prisma)).resolves.toMatchObject({
+      accepted: 1,
+      failed: 0,
+      results: [expect.objectContaining({ status: "pending_review" })],
+    });
+    const draft = await prisma.draftRecord.findFirstOrThrow({
+      where: { handoffPackage: { packageId: "pkg-grounded-preference-fallback" } },
+    });
+    expect(JSON.parse(draft.parsedResult).wccSource.preferenceSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "length", value: "short", messageId: "message-preference" }),
+      expect.objectContaining({ field: "deliveryChannel", value: "either", messageId: "message-preference" }),
+    ]));
+  });
+
   it("completes publish, consume, teacher confirmation and receipt visibility", async () => {
     const students = (await prisma.student.findMany({
       include: { enrollments: { where: { rosterStatus: "ACTIVE" }, orderBy: { semester: { startDate: "desc" } }, select: { classId: true } } },

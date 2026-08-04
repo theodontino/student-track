@@ -18,6 +18,73 @@ export type CommunicationPreferenceSignal = {
   quote: string;
 };
 
+type GroundedPreferenceMessage = {
+  id: string;
+  content: string;
+  direction?: string | null;
+};
+
+function groundedSignal(
+  field: CommunicationPreferenceSignalField,
+  value: string,
+  message: GroundedPreferenceMessage,
+  match: RegExpMatchArray | null,
+): CommunicationPreferenceSignal | null {
+  const quote = match?.[0]?.trim() ?? "";
+  if (!quote || quote.length < 2 || quote.length > 160) return null;
+  return { field, value, messageId: message.id, quote };
+}
+
+/**
+ * Deterministic last-resort extraction for WCG packages already classified as
+ * explicit feedback preferences. It only accepts direct incoming wording and
+ * preserves an exact quote; the result still becomes a pending teacher review.
+ */
+export function inferGroundedCommunicationPreferenceSignals(
+  messages: GroundedPreferenceMessage[],
+): CommunicationPreferenceSignal[] {
+  const signals = new Map<CommunicationPreferenceSignalField, CommunicationPreferenceSignal>();
+  for (const message of messages) {
+    if (message.direction !== "incoming" || !message.id || !message.content.trim()) continue;
+    const text = message.content.trim();
+    if (!signals.has("length")) {
+      const short = text.match(/简短(?:些|一点|文字反馈|反馈)?|不要太长|一句话/u);
+      const detailed = text.match(/详细(?:些|一点|反馈)?|具体说明|展开讲|多说一些/u);
+      const signal = groundedSignal(
+        "length",
+        short ? "short" : "detailed",
+        message,
+        short && !detailed ? short : detailed && !short ? detailed : null,
+      );
+      if (signal) signals.set("length", signal);
+    }
+    if (!signals.has("deliveryChannel")) {
+      const either = text.match(/(?:语音.{0,12}文字|文字.{0,12}语音).{0,12}(?:都|均)?(?:可|可以|接受|方便)|(?:都|均)(?:可|可以|接受).{0,12}(?:语音.{0,12}文字|文字.{0,12}语音)/u);
+      const textOnly = text.match(/文字(?:反馈)?(?:更方便|即可|为主|优先)|倾向.{0,6}文字/u);
+      const voiceOnly = text.match(/语音(?:反馈)?(?:更方便|即可|为主|优先)|倾向.{0,6}语音/u);
+      const signal = groundedSignal(
+        "deliveryChannel",
+        either ? "either" : textOnly ? "text" : "voice",
+        message,
+        either ?? textOnly ?? voiceOnly,
+      );
+      if (signal) signals.set("deliveryChannel", signal);
+    }
+    if (!signals.has("phoneContact")) {
+      const rejected = text.match(/(?:不接受|不要|不方便).{0,8}(?:微信)?电话|(?:微信)?电话.{0,8}(?:不接受|不要|不方便)/u);
+      const accepted = text.match(/(?:接受|可以|可).{0,8}(?:微信)?电话|(?:微信)?电话.{0,8}(?:接受|可以|可|方便)/u);
+      const signal = groundedSignal(
+        "phoneContact",
+        rejected ? "not_accepted" : "accepted",
+        message,
+        rejected ?? accepted,
+      );
+      if (signal) signals.set("phoneContact", signal);
+    }
+  }
+  return [...signals.values()];
+}
+
 export function communicationPreferenceFromSignals(value: unknown): {
   preference: CommunicationPreference;
   signals: string[];

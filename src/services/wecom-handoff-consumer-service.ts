@@ -5,6 +5,7 @@ import {
   formatFeedbackCommunicationSummary,
   normalizeFeedbackUseDecision,
 } from "@/lib/feedback-communication";
+import { inferGroundedCommunicationPreferenceSignals } from "@/lib/communication-preference";
 import { generateWeComBridgeJson } from "@/services/wecom-handoff-extraction-service";
 import {
   candidateSemesterIdsForEvidence,
@@ -87,9 +88,32 @@ export async function consumeWccHandoffPackage(
     includeInactive: true,
     groundedMessages: payload.messages.map((message) => ({ id: message.id, content: message.content })),
   });
-  const records = Array.isArray(objectValue(generated.bridgeJson).records)
+  let records = Array.isArray(objectValue(generated.bridgeJson).records)
     ? objectValue(generated.bridgeJson).records as unknown[]
     : [];
+  const classificationReasons = payload.classification.reasons ?? [];
+  if (
+    records.length === 0
+    && classificationReasons.includes("feedback_category_feedback_preference")
+    && candidateStudentIds.length === 1
+  ) {
+    const preferenceSignals = inferGroundedCommunicationPreferenceSignals(payload.messages);
+    if (preferenceSignals.length > 0) {
+      const messageIds = [...new Set(preferenceSignals.map((signal) => signal.messageId))];
+      records = [{
+        matchedStudent: { id: candidateStudentIds[0], confidence: "high" },
+        messageIds,
+        factualSummary: "家长明确表达了反馈接收偏好，具体设置需教师核对原文证据。",
+        feedbackUse: { relevant: true, category: "feedback-preference", priority: "medium" },
+        preferenceSignals,
+        evidence: preferenceSignals.slice(0, 3).map((signal) => ({
+          messageId: signal.messageId,
+          quote: signal.quote,
+        })),
+        confidence: "high",
+      }];
+    }
+  }
   const drafts = [];
   for (const rawRecord of records) {
     const record = objectValue(rawRecord);
