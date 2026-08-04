@@ -61,11 +61,16 @@ describe("feedback plan service", () => {
         parentAction: null,
         modules: [
           { key: "observed_moment", content: "第二道同类题能够独立完成", evidenceRefs: ["current-event-0"], status: "included", reason: "课堂片段" },
-          { key: "teacher_interpretation", content: "方法正在稳定", evidenceRefs: ["current-event-0"], status: "included", reason: "教师判断" },
+          { key: "teacher_interpretation", content: "学习测验4分，课堂状态4分，方法正在稳定", evidenceRefs: ["current-event-0", "current-score-a", "current-score-b"], status: "included", reason: "教师判断" },
         ],
-        draftFeedback: "教师修改后的事件反馈。",
+        evidenceCoverage: [
+          { evidenceId: "current-event-0", statement: "第二道同类题能够独立完成" },
+          { evidenceId: "current-score-a", statement: "学习测验4分" },
+          { evidenceId: "current-score-b", statement: "课堂状态4分" },
+        ],
+        draftFeedback: "教师修改后的事件反馈：第二道同类题能够独立完成，学习测验4分，课堂状态4分。",
       },
-      finalText: "教师修改后的事件反馈。",
+      finalText: "教师修改后的事件反馈：第二道同类题能够独立完成，学习测验4分，课堂状态4分。",
       reviewMode: "teacher_edited",
     });
     expect(patched.status).toBe("needs_review");
@@ -75,7 +80,7 @@ describe("feedback plan service", () => {
     const workbook = await buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete");
     const parsed = XLSX.read(workbook, { type: "array" });
     const rows = XLSX.utils.sheet_to_json<Record<string, string>>(parsed.Sheets["课后反馈"]!, { defval: "" });
-    expect(rows[0]).toMatchObject({ 姓名: "测试学生", 最终反馈: "教师修改后的事件反馈。" });
+    expect(rows[0]).toMatchObject({ 姓名: "测试学生", 最终反馈: "教师修改后的事件反馈：第二道同类题能够独立完成，学习测验4分，课堂状态4分。" });
     await expect(buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete")).rejects.toThrow("已经按相同文本导出过");
     await buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete", { allowRepeat: true });
     const exportRuns = await prisma.feedbackExportRun.findMany({ where: { planId: plan.id }, orderBy: { createdAt: "asc" } });
@@ -134,14 +139,20 @@ describe("feedback plan service", () => {
     await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "第三道同类题已经独立完成", rawText: "合成测试" } });
     await invalidateFeedbackPlans({ sessionId: session.id, studentIds: [student.id] });
     generationMocks.generate.mockImplementation(async ({ evidenceBundle }: { evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> } }) => {
-      const modules = evidenceBundle.teachingEvidence.slice(0, 2).map((entry, index) => ({
-        key: index === 0 ? "observed_moment" : "teacher_interpretation",
-        content: entry.content,
-        evidenceRefs: [entry.id],
-        status: "included" as const,
-        reason: "合成测试",
-      }));
-      const composition = { version: 1 as const, closureType: "positive_recognition" as const, needParentAction: false, parentAction: null, modules, draftFeedback: "根据最新证据生成的反馈。" };
+      const [first, ...remaining] = evidenceBundle.teachingEvidence;
+      const modules = [
+        { key: "observed_moment", content: first!.content, evidenceRefs: [first!.id], status: "included" as const, reason: "合成测试" },
+        { key: "teacher_interpretation", content: remaining.map((entry) => entry.content).join("；"), evidenceRefs: remaining.map((entry) => entry.id), status: "included" as const, reason: "合成测试" },
+      ];
+      const composition = {
+        version: 1 as const,
+        closureType: "positive_recognition" as const,
+        needParentAction: false,
+        parentAction: null,
+        modules,
+        evidenceCoverage: evidenceBundle.teachingEvidence.map((entry) => ({ evidenceId: entry.id, statement: entry.content })),
+        draftFeedback: evidenceBundle.teachingEvidence.map((entry) => entry.content).join("；"),
+      };
       return { draftComposition: composition, composition };
     });
 
@@ -151,6 +162,57 @@ describe("feedback plan service", () => {
     expect(evidence.sourceFingerprint).not.toBe(oldFingerprint);
     expect(evidence.teachingEvidence.map((entry) => entry.content).join(" ")).toContain("第三道同类题已经独立完成");
     expect(refreshed!.items[0]).toMatchObject({ status: "needs_review", student: { id: student.id, name: "失效测试学生" } });
+  });
+
+  it("persists PDF and classroom-practice evidence and reuses it on regeneration", async () => {
+    const semester = await prisma.semester.create({ data: { name: `${semesterName}-ASSESSMENT`, startDate: "2099-01-01", endDate: "2099-12-31" } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-ASSESSMENT`, name: "测评证据测试班" } });
+    const student = await prisma.student.create({ data: { name: "测评测试学生", studentId: `${studentNumber}-ASSESSMENT`, gender: "女", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
+    const session = await prisma.classSession.create({ data: { code: `${sessionCode}-ASSESSMENT`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
+    await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "课堂练习时能写出判断依据", rawText: "合成测试" } });
+    const plan = await createFeedbackPlan({ type: "event_micro", purpose: "测试事件反馈", semesterId: semester.id, classId: classRecord.id, sessionId: session.id, rangeEndSessionId: session.id, studentIds: [student.id] });
+    const baseEvidence = {
+      sessionCode: session.code,
+      studentId: student.id,
+      reportDate: session.date,
+      totalQuestions: 2,
+      cohortAverageRate: 75,
+      knowledgePoints: [{ name: "离子判断", questionCount: 2, correctRate: 50, cohortAverageRate: 75 }],
+      wrongItems: [{ questionNumber: "2", studentAnswer: "A", correctAnswer: "B", knowledgePoints: ["离子判断"] }],
+      similarPracticeCount: 1,
+    };
+    const assessmentEvidence = {
+      [student.id]: [
+        { ...baseEvidence, sourceType: "assessment_pdf" as const, reportTitle: "出门测", correctRate: 50 },
+        { ...baseEvidence, sourceType: "classroom_practice" as const, reportTitle: "课堂练习", correctRate: 50 },
+      ],
+    };
+    generationMocks.generate.mockImplementation(async ({ evidenceBundle }: { evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }>; assessmentEvidence: Array<{ id: string; content: string; sourceRefs: Array<{ type: string }> }> } }) => {
+      expect(evidenceBundle.assessmentEvidence.map((entry) => entry.sourceRefs[0]?.type)).toEqual(["assessment-pdf", "classroom-practice"]);
+      const allEvidence = evidenceBundle.teachingEvidence.concat(evidenceBundle.assessmentEvidence);
+      const composition = {
+        version: 1 as const,
+        closureType: "positive_recognition" as const,
+        needParentAction: false,
+        parentAction: null,
+        modules: [
+          { key: "observed_moment", content: "课堂练习时能写出判断依据", evidenceRefs: [evidenceBundle.teachingEvidence[0]!.id], status: "included" as const, reason: "课堂证据" },
+          { key: "teacher_interpretation", content: "本次离子判断仍需订正", evidenceRefs: evidenceBundle.assessmentEvidence.map((entry) => entry.id), status: "included" as const, reason: "测评证据" },
+        ],
+        evidenceCoverage: allEvidence.map((entry) => ({ evidenceId: entry.id, statement: entry.content })),
+        draftFeedback: allEvidence.map((entry) => entry.content).join("；"),
+      };
+      return { draftComposition: composition, composition };
+    });
+
+    await generateFeedbackPlanItems({ planId: plan.id, assessmentEvidence });
+    let refreshed = await getFeedbackPlan(plan.id);
+    expect(JSON.parse(refreshed!.items[0]!.evidenceSnapshot).assessmentEvidence).toHaveLength(2);
+
+    await generateFeedbackPlanItems({ planId: plan.id });
+    refreshed = await getFeedbackPlan(plan.id);
+    expect(JSON.parse(refreshed!.items[0]!.evidenceSnapshot).assessmentEvidence).toHaveLength(2);
+    expect(generationMocks.generate).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the previous reviewable text when regeneration fails", async () => {
@@ -164,8 +226,8 @@ describe("feedback plan service", () => {
       composition: { version: 1, closureType: "positive_recognition", needParentAction: false, parentAction: null, modules: [
         { key: "observed_moment", content: "已确认课堂表现", evidenceRefs: ["current-event-0"], status: "included", reason: "合成测试" },
         { key: "teacher_interpretation", content: "表现较稳定", evidenceRefs: ["current-event-0"], status: "included", reason: "合成测试" },
-      ], draftFeedback: "原有待审核文本。" },
-      finalText: "原有待审核文本。",
+      ], evidenceCoverage: [{ evidenceId: "current-event-0", statement: "已确认课堂表现" }], draftFeedback: "已确认课堂表现；原有待审核文本。" },
+      finalText: "已确认课堂表现；原有待审核文本。",
       reviewMode: "teacher_edited",
     });
     await prisma.feedbackPlanItem.update({ where: { id: plan.items[0]!.id }, data: { reviewMode: "model" } });
@@ -174,7 +236,7 @@ describe("feedback plan service", () => {
     const progress: Array<{ status?: string; error?: string }> = [];
     await expect(generateFeedbackPlanItems({ planId: plan.id, onProgress: (event) => { progress.push(event); } })).resolves.toEqual([]);
     const restored = await getFeedbackPlan(plan.id);
-    expect(restored!.items[0]).toMatchObject({ status: "needs_review", finalText: "原有待审核文本。", finalTextHash: patched.finalTextHash });
+    expect(restored!.items[0]).toMatchObject({ status: "needs_review", finalText: "已确认课堂表现；原有待审核文本。", finalTextHash: patched.finalTextHash });
     expect(progress).toContainEqual(expect.objectContaining({ status: "error", error: "本条反馈生成失败，已保留原版本，可单独重试" }));
   });
 

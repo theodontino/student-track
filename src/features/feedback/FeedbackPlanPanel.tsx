@@ -13,12 +13,14 @@ import {
   type FeedbackEvidenceBundle,
 } from "@/lib/feedback-plan";
 import type { FeedbackContextStudent } from "./context-types";
+import type { StudentAssessmentEvidence } from "@/lib/feedback-materials";
 
 type Workspace = {
   activeStep: string;
   setActiveStep: (step: "prepare" | "extract" | "review" | "generate" | "export") => void;
   context: { semesterId: string; className: string; sessionCode: string };
   contextStudents: FeedbackContextStudent[];
+  confirmedAssessmentEvidence: Record<string, StudentAssessmentEvidence>;
 };
 
 interface PlanItem {
@@ -35,6 +37,7 @@ interface PlanItem {
   audit?: FeedbackAuditSnapshot | null;
   itemRevision: number;
   reviewMode?: "model" | "teacher_edited";
+  selectedGeneration?: { inputSnapshot?: string | null } | null;
   student?: {
     name: string;
     studentId?: string;
@@ -189,6 +192,11 @@ function parseComposition(value: string | undefined, planType?: FeedbackPlanType
     needParentAction: compositionData.needParentAction === true,
     parentAction: compositionData.parentAction && typeof compositionData.parentAction === "object" ? compositionData.parentAction : null,
     modules,
+    evidenceCoverage: Array.isArray(compositionData.evidenceCoverage)
+      ? compositionData.evidenceCoverage.filter((entry): entry is FeedbackCompositionPlan["evidenceCoverage"][number] => (
+        Boolean(entry && typeof entry.evidenceId === "string" && typeof entry.statement === "string")
+      ))
+      : [],
     draftFeedback: typeof compositionData.draftFeedback === "string" ? compositionData.draftFeedback : "",
   };
 }
@@ -229,6 +237,12 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   const [progress, setProgress] = useState<{ done: number; total: number; current: string; errors: string[] } | null>(null);
   const [repeatExportRequest, setRepeatExportRequest] = useState<{ planId: string; mode: "complete" | "approved_only" } | null>(null);
   const candidateDefaultsKey = useRef("");
+
+  const assessmentEvidenceForStudentIds = (studentIds: string[]) => Object.fromEntries(
+    studentIds.flatMap((studentId) => workspace.confirmedAssessmentEvidence[studentId]
+      ? [[studentId, workspace.confirmedAssessmentEvidence[studentId]]]
+      : []),
+  );
 
   const candidateSourceStudents = type === "stage_trend" || type === "course_end"
     ? (rangeContextStudents.length ? rangeContextStudents : workspace.contextStudents)
@@ -389,6 +403,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
           rangeStartSessionId: type === "stage_trend" || type === "course_end" ? (rangeStartSessionId || undefined) : undefined,
           rangeEndSessionId: type === "stage_trend" || type === "course_end" ? (rangeEndSessionId || sessionMeta.sessionId) : sessionMeta.sessionId,
           ...(type === "class_update" ? {} : { studentIds: selectedStudentIds }),
+          ...(type === "class_update" ? {} : { assessmentEvidence: assessmentEvidenceForStudentIds(selectedStudentIds) }),
         }),
       });
       const payload = await response.json() as { plan?: Plan } & ApiFailurePayload;
@@ -399,16 +414,26 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   }
 
   async function generatePlan(plan: Plan) {
-    const itemIds = plan.items.filter(canRegenerate).map((item) => item.id);
+    const itemIds = plan.items
+      .filter((item) => selectedItemIds.includes(item.id) && canRegenerate(item))
+      .map((item) => item.id);
     if (!itemIds.length) {
-      setError("当前计划没有可重新生成的条目；已批准或已导出的版本需要通过新计划保留历史。");
+      setError("请先勾选要重新生成的条目；已批准或已导出的版本需要通过新计划保留历史。");
       return;
     }
     setBusy(true); setError("");
     setProgress({ done: 0, total: itemIds.length, current: "准备生成…", errors: [] });
     try {
+      const regeneratingStudentIds = plan.items
+        .filter((item) => itemIds.includes(item.id))
+        .flatMap((item) => item.studentId ? [item.studentId] : []);
       const response = await fetch(`/api/report/feedback-plans/${plan.id}`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate", stream: true, itemIds }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+          action: "generate",
+          stream: true,
+          itemIds,
+          assessmentEvidence: assessmentEvidenceForStudentIds(regeneratingStudentIds),
+        }),
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as ApiFailurePayload | null;
@@ -642,7 +667,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     : isExport
       ? "只把已批准的教师最终文本写入 Excel；未批准条目不会进入导出。"
       : "按证据篮子组装可选模块，实时查看生成进度并处理程序门禁。";
-  const canGenerate = Boolean(activePlan?.items.some(canRegenerate));
+  const canGenerate = Boolean(activePlan?.items.some((item) => selectedItemIds.includes(item.id) && canRegenerate(item)));
   const allItemsApproved = Boolean(activePlan?.items.length && activePlan.items.every((item) => ["approved", "exported"].includes(item.status)));
 
   return <Section title={title} description={description} className="feedback-plan-panel" actions={isPrepare ? <Button onClick={() => void createPlan()} disabled={busy || !sessionMeta || (type !== "class_update" && selectedStudentIds.length === 0)}>{busy ? "处理中…" : "创建反馈计划"}</Button> : activePlan ? <div className="feedback-plan-header-actions"><Button uiSize="sm" variant="secondary" onClick={() => void generatePlan(activePlan)} disabled={busy || !canGenerate}>{busy ? "生成中…" : activePlan.items.some((item) => item.finalText) ? "重新组装/生成" : "开始生成"}</Button><Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || selectedItemIds.length === 0}>批准所选可通过项</Button>{isExport && <><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button></>}<Button uiSize="sm" variant="ghost" onClick={() => void deletePlan(activePlan)} disabled={busy}>删除计划</Button></div> : null}>
@@ -668,10 +693,32 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       const composition = parseComposition(item.compositionSnapshot, activePlan.type, item.composition);
       const audit = item.audit ?? parseObject(item.auditSnapshot);
       const evidence = item.evidence ?? parseObject(item.evidenceSnapshot);
+      const assessmentEvidence = evidence.assessmentEvidence || [];
+      const requiredEvidenceIds = new Set([
+        ...(evidence.teachingEvidence || []),
+        ...assessmentEvidence,
+      ].filter((entry: { confirmed?: boolean; kind?: string }) => entry.confirmed !== false && entry.kind !== "model_candidate")
+        .map((entry: { id: string }) => entry.id));
       const allowedModules = FEEDBACK_MODULES[activePlan.type] as readonly string[];
       const moduleMap = new Map<string, FeedbackModule>(composition.modules.map((module) => [module.key, module]));
       const moduleRows: FeedbackModule[] = allowedModules.map((key) => moduleMap.get(key) ?? { key, content: "", evidenceRefs: [], status: "omitted", reason: "模型未选择" });
       const draft = drafts[item.id] ?? { text: item.finalText ?? composition.draftFeedback ?? "", revision: item.itemRevision };
+      const normalizedDraftText = draft.text.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "");
+      const coveredEvidenceIds = new Set((composition.evidenceCoverage || [])
+        .filter((coverage) => requiredEvidenceIds.has(coverage.evidenceId)
+          && normalizedDraftText.includes(coverage.statement.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "")))
+        .map((coverage) => coverage.evidenceId));
+      const selectedGenerationInput = parseObject(item.selectedGeneration?.inputSnapshot);
+      const initialDraft = parseObject(selectedGenerationInput.draftComposition as Record<string, unknown> | undefined);
+      const initialDraftText = typeof initialDraft.draftFeedback === "string" ? initialDraft.draftFeedback : "";
+      const normalizedInitialDraftText = initialDraftText.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "");
+      const initialDraftCoveredEvidenceIds = new Set((Array.isArray(initialDraft.evidenceCoverage) ? initialDraft.evidenceCoverage : [])
+        .filter((coverage: { evidenceId?: string; statement?: string }) => (
+          Boolean(coverage.evidenceId && coverage.statement)
+          && requiredEvidenceIds.has(coverage.evidenceId!)
+          && normalizedInitialDraftText.includes(coverage.statement!.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, ""))
+        ))
+        .map((coverage: { evidenceId: string }) => coverage.evidenceId));
       const updateModule = (key: string, enabled: boolean) => {
         const current = moduleMap.get(key);
         if (!current || current.status === "blocked") return;
@@ -681,7 +728,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
         if (FEEDBACK_CLOSURE_TYPES.includes(closureType as never)) void saveComposition(item, { ...composition, closureType: closureType as FeedbackCompositionPlan["closureType"] });
       };
       const blockedIssues = (audit.items || []).filter((issue: { severity: string }) => issue.severity === "blocked");
-      const protocolIssueCodes = new Set(["module_not_allowed", "evidence_ref_missing", "module_count_invalid", "closure_not_allowed"]);
+      const protocolIssueCodes = new Set(["module_not_allowed", "evidence_ref_missing", "module_count_invalid", "closure_not_allowed", "confirmed_evidence_omitted", "evidence_coverage_duplicate", "evidence_coverage_unknown", "confirmed_evidence_text_omitted", "evidence_coverage_unsubstantiated"]);
       const hasProtocolIssue = blockedIssues.some((issue: { code: string }) => protocolIssueCodes.has(issue.code));
       const visibleAuditIssues = (audit.items || []).filter((issue: { code: string }) => !protocolIssueCodes.has(issue.code));
       const preference = parseObject(item.student?.communicationPreference?.preferenceSnapshot);
@@ -702,7 +749,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       return <article key={item.id} className="feedback-plan-item">
         <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 版本 {item.itemRevision}</small></span></label><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge></header>
         {item.studentId && !item.student && <StatusBanner tone="danger">学生身份没有加载完整，已禁止把该条目当作班级公共反馈。请刷新计划后重试。</StatusBanner>}
-        <details className="feedback-plan-evidence"><summary>查看证据篮子与内部审核 <span>{(evidence.teachingEvidence || []).length} 条证据 · {audit.status || "待审核"}</span></summary><div className="feedback-plan-evidence__body"><p>{(evidence.teachingEvidence || []).map((entry: { content: string }) => entry.content).join("；") || "暂无已确认证据"}</p>{(evidence.communicationContext || []).length > 0 && <p className="feedback-plan-evidence__communication">沟通背景：{(evidence.communicationContext || []).map((entry: { content: string }) => entry.content).join("；")}</p>}{hasProtocolIssue && <StatusBanner tone="danger">生成结果使用了旧版或不匹配的反馈结构，已阻止批准。请点击顶部“重新组装/生成”，系统会按当前反馈类型重新整理。</StatusBanner>}{visibleAuditIssues.map((issue: { message: string; severity: string }, index: number) => <StatusBanner key={`${issue.message}-${index}`} tone={issue.severity === "blocked" ? "danger" : "warning"}>{issue.message}</StatusBanner>)}</div></details>
+        <details className="feedback-plan-evidence"><summary>查看证据篮子与内部审核 <span>初稿 {initialDraftCoveredEvidenceIds.size}/{requiredEvidenceIds.size} · 成稿 {coveredEvidenceIds.size}/{requiredEvidenceIds.size} · {audit.status || "待审核"}</span></summary><div className="feedback-plan-evidence__body"><p>{(evidence.teachingEvidence || []).map((entry: { content: string }) => entry.content).join("；") || "暂无已确认课堂证据"}</p>{assessmentEvidence.length > 0 && <p className="feedback-plan-evidence__assessment">测评与练习：{assessmentEvidence.map((entry: { content: string }) => entry.content).join("；")}</p>}{initialDraftText && <details><summary>查看模型全证据初稿</summary><p>{initialDraftText}</p></details>}{(evidence.communicationContext || []).length > 0 && <p className="feedback-plan-evidence__communication">沟通背景：{(evidence.communicationContext || []).map((entry: { content: string }) => entry.content).join("；")}</p>}{hasProtocolIssue && <StatusBanner tone="danger">生成结果使用了旧版或不匹配的反馈结构，已阻止批准。请点击顶部“重新组装/生成”，系统会按当前反馈类型重新整理。</StatusBanner>}{visibleAuditIssues.map((issue: { message: string; severity: string }, index: number) => <StatusBanner key={`${issue.message}-${index}`} tone={issue.severity === "blocked" ? "danger" : "warning"}>{issue.message}</StatusBanner>)}</div></details>
         {item.student && <details className="feedback-plan-preference" open={Boolean(pendingPreferenceCandidate)}><summary>家庭沟通偏好{pendingPreferenceCandidate ? " · 有待确认候选" : ""}</summary><p>当前生效：长度 {preferenceLabel(preference.length)} · 形式 {preferenceLabel(preference.deliveryChannel)} · 电话 {preferenceLabel(preference.phoneContact)} · 证据 {preferenceLabel(preference.evidence)} · 术语 {preferenceLabel(preference.terminology)} · 家庭参与 {preferenceLabel(preference.familyParticipation)} · 频率 {preferenceLabel(preference.frequency)}</p>{pendingPreferenceCandidate && <div className="feedback-plan-preference__candidate"><p>待确认：长度 {preferenceLabel(pendingPreference.length)} · 形式 {preferenceLabel(pendingPreference.deliveryChannel)} · 电话 {preferenceLabel(pendingPreference.phoneContact)} · 频率 {preferenceLabel(pendingPreference.frequency)}</p><div><Button uiSize="sm" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "confirmed")} disabled={busy}>确认并用于反馈</Button><Button uiSize="sm" variant="ghost" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "rejected")} disabled={busy}>不是偏好</Button></div></div>}</details>}
         <div className="feedback-plan-item__controls"><label><span>结尾类型</span><select value={composition.closureType || "positive_recognition"} onChange={(event) => updateClosure(event.target.value)} disabled={busy || itemImmutable}>{FEEDBACK_CLOSURES_BY_TYPE[activePlan.type].map((closure) => <option key={closure} value={closure}>{closureLabels[closure] || closure}</option>)}</select></label><div className="feedback-plan-modules"><span className="feedback-plan-label">可选模块</span>{moduleRows.map((module) => <label key={module.key} className={`feedback-plan-module feedback-plan-module--${module.status}`}><input type="checkbox" checked={module.status === "included"} disabled={busy || itemImmutable || module.status === "blocked" || !module.content} onChange={(event) => updateModule(module.key, event.target.checked)} /><span><strong>{moduleLabels[module.key] || module.key}</strong><small>{module.status === "blocked" ? `阻断：${module.reason || "缺证据"}` : !module.content ? "暂无可用证据" : module.reason || ""}</small></span></label>)}</div></div>
         <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={5} value={draft.text} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, text: event.target.value } }))} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · 保存后重新运行程序门禁</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)}>保存修改</Button></div></div>

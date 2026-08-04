@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { StudentAssessmentEvidenceSchema } from "@/lib/contracts/feedback";
 
 export const FEEDBACK_PLAN_TYPES = ["class_update", "event_micro", "stage_trend", "course_end"] as const;
 export type FeedbackPlanType = typeof FEEDBACK_PLAN_TYPES[number];
@@ -51,6 +52,7 @@ export const FeedbackEvidenceBundleSchema = z.object({
   planType: z.enum(FEEDBACK_PLAN_TYPES),
   studentId: z.string().max(200).nullable(),
   teachingEvidence: z.array(evidenceItemSchema).max(100),
+  assessmentEvidence: z.array(evidenceItemSchema).max(50).default([]),
   communicationContext: z.array(evidenceItemSchema).max(50),
   executionConstraints: z.object({
     existingTaskIds: z.array(z.string().max(200)).max(50),
@@ -67,7 +69,7 @@ const moduleStatusSchema = z.enum(["included", "omitted", "blocked"]);
 export const FeedbackModuleSchema = z.object({
   key: z.string().min(1).max(100),
   content: z.string().max(5000),
-  evidenceRefs: z.array(z.string().max(200)).max(30),
+  evidenceRefs: z.array(z.string().max(200)).max(200),
   status: moduleStatusSchema,
   reason: z.string().max(500),
 });
@@ -85,6 +87,10 @@ export const FeedbackCompositionPlanSchema = z.object({
     notNeeded: z.string().max(500),
   }).nullable(),
   modules: z.array(FeedbackModuleSchema).max(12),
+  evidenceCoverage: z.array(z.object({
+    evidenceId: z.string().min(1).max(200),
+    statement: z.string().trim().min(2).max(1000),
+  })).max(150).default([]),
   draftFeedback: z.string().max(10000),
 });
 export type FeedbackCompositionPlan = z.infer<typeof FeedbackCompositionPlanSchema>;
@@ -118,6 +124,19 @@ export const CommunicationPreferenceSchema = z.object({
 });
 export type CommunicationPreference = z.infer<typeof CommunicationPreferenceSchema>;
 
+const feedbackPlanAssessmentEvidenceValueSchema = z.union([
+  StudentAssessmentEvidenceSchema,
+  z.array(StudentAssessmentEvidenceSchema).min(1).max(20),
+]);
+
+export const FeedbackPlanAssessmentEvidenceSchema = z.record(
+  z.string().trim().min(1).max(200),
+  feedbackPlanAssessmentEvidenceValueSchema,
+).refine((value) => Object.keys(value).length <= 200, {
+  message: "assessmentEvidence cannot contain more than 200 students",
+});
+export type FeedbackPlanAssessmentEvidenceInput = z.infer<typeof FeedbackPlanAssessmentEvidenceSchema>;
+
 export const FeedbackPlanCreateSchema = z.object({
   type: z.enum(FEEDBACK_PLAN_TYPES),
   purpose: z.string().trim().min(1).max(500),
@@ -127,6 +146,7 @@ export const FeedbackPlanCreateSchema = z.object({
   rangeStartSessionId: z.string().trim().max(200).optional(),
   rangeEndSessionId: z.string().trim().max(200).optional(),
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  assessmentEvidence: FeedbackPlanAssessmentEvidenceSchema.optional(),
 });
 export type FeedbackPlanCreateInput = z.infer<typeof FeedbackPlanCreateSchema>;
 
@@ -158,15 +178,37 @@ const PROMISE_PATTERNS = [
 // “家长可以/只需要”等主体时，才把文本视为家长动作。
 const PARENT_ACTION_PATTERNS = /(?:请(?:您|家长)|麻烦(?:您|家长)|(?:希望|建议)家长|家长(?:可以|只需要|只需|需要|需|这边))/u;
 
+function coverageText(value: string) {
+  return value.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "").toLocaleLowerCase("zh-CN");
+}
+
+function evidenceStatementMatches(evidenceContent: string, statement: string) {
+  const normalizedEvidence = coverageText(evidenceContent);
+  const normalizedStatement = coverageText(statement);
+  const numericTokens = [...new Set(evidenceContent.match(/\d+(?:\.\d+)?%?/g) ?? [])];
+  if (numericTokens.length > 0 && !numericTokens.some((token) => normalizedStatement.includes(coverageText(token)))) {
+    return false;
+  }
+  const hanRuns = evidenceContent.match(/[\p{Script=Han}]+/gu) ?? [];
+  const bigrams = new Set(hanRuns.flatMap((run) => (
+    [...run].slice(0, -1).map((character, index) => `${character}${[...run][index + 1]}`)
+  )));
+  const overlappingBigrams = [...bigrams].filter((token) => normalizedStatement.includes(token));
+  return normalizedEvidence.includes(normalizedStatement)
+    || normalizedStatement.includes(normalizedEvidence)
+    || overlappingBigrams.length >= Math.min(2, bigrams.size);
+}
+
 export function validateCompositionForBundle(
   composition: FeedbackCompositionPlan,
   bundle: FeedbackEvidenceBundle,
   taskIds: Set<string> = new Set(bundle.executionConstraints.existingTaskIds),
   identity?: { studentName?: string; otherStudentNames?: string[] },
+  options: { requireAllEvidenceInText?: boolean } = {},
 ): { status: FeedbackAuditSnapshot["status"]; issues: z.infer<typeof FeedbackAuditItemSchema>[] } {
   const issues: z.infer<typeof FeedbackAuditItemSchema>[] = [];
   const included = composition.modules.filter((module) => module.status === "included");
-  const evidence = bundle.teachingEvidence.concat(bundle.communicationContext);
+  const evidence = bundle.teachingEvidence.concat(bundle.assessmentEvidence, bundle.communicationContext);
   const evidenceIds = new Set(evidence.filter((item) => item.confirmed && item.kind !== "model_candidate").map((item) => item.id));
   const allowedModules = new Set(FEEDBACK_MODULES[bundle.planType]);
   const allowedClosures = new Set<FeedbackClosureType>(FEEDBACK_CLOSURES_BY_TYPE[bundle.planType]);
@@ -183,6 +225,79 @@ export function validateCompositionForBundle(
     }
     if (section.evidenceRefs.some((ref) => !evidenceIds.has(ref))) {
       issues.push({ code: "evidence_ref_missing", severity: "blocked", message: `模块 ${section.key} 引用了不存在的证据` });
+    }
+  }
+  const requiredEvidenceIds = new Set(bundle.teachingEvidence.concat(bundle.assessmentEvidence)
+    .filter((item) => item.confirmed && item.kind !== "model_candidate")
+    .map((item) => item.id));
+  const includedEvidenceIds = new Set(included.flatMap((module) => module.evidenceRefs));
+  const omittedEvidenceIds = [...requiredEvidenceIds].filter((id) => !includedEvidenceIds.has(id));
+  if (options.requireAllEvidenceInText && omittedEvidenceIds.length > 0) {
+    issues.push({
+      code: "confirmed_evidence_omitted",
+      severity: "blocked",
+      message: `反馈尚未覆盖全部已确认的教学与测评证据：${omittedEvidenceIds.join("、")}`,
+    });
+  }
+  const coverageByEvidenceId = new Map<string, string>();
+  const duplicateCoverageIds = new Set<string>();
+  for (const coverage of composition.evidenceCoverage) {
+    if (coverageByEvidenceId.has(coverage.evidenceId)) duplicateCoverageIds.add(coverage.evidenceId);
+    coverageByEvidenceId.set(coverage.evidenceId, coverage.statement);
+  }
+  if (duplicateCoverageIds.size > 0) {
+    issues.push({
+      code: "evidence_coverage_duplicate",
+      severity: "blocked",
+      message: `同一证据不能重复声明正文覆盖：${[...duplicateCoverageIds].join("、")}`,
+    });
+  }
+  const unknownCoverageIds = [...coverageByEvidenceId.keys()].filter((id) => !requiredEvidenceIds.has(id));
+  if (unknownCoverageIds.length > 0) {
+    issues.push({
+      code: "evidence_coverage_unknown",
+      severity: "blocked",
+      message: `正文覆盖声明引用了非教学/测评证据：${unknownCoverageIds.join("、")}`,
+    });
+  }
+  const missingTextCoverageIds: string[] = [];
+  const invalidTextCoverageIds: string[] = [];
+  const normalizedDraft = coverageText(composition.draftFeedback);
+  for (const evidenceItem of bundle.teachingEvidence.concat(bundle.assessmentEvidence)
+    .filter((item) => item.confirmed && item.kind !== "model_candidate")) {
+    const statement = coverageByEvidenceId.get(evidenceItem.id);
+    if (!statement) {
+      if (options.requireAllEvidenceInText) missingTextCoverageIds.push(evidenceItem.id);
+      continue;
+    }
+    if (!normalizedDraft.includes(coverageText(statement))) {
+      missingTextCoverageIds.push(evidenceItem.id);
+      continue;
+    }
+    if (!evidenceStatementMatches(evidenceItem.content, statement)) invalidTextCoverageIds.push(evidenceItem.id);
+  }
+  if (missingTextCoverageIds.length > 0) {
+    issues.push({
+      code: "confirmed_evidence_text_omitted",
+      severity: "blocked",
+      message: `以下已确认教学与测评证据没有对应到最终反馈正文：${missingTextCoverageIds.join("、")}`,
+    });
+  }
+  if (invalidTextCoverageIds.length > 0) {
+    issues.push({
+      code: "evidence_coverage_unsubstantiated",
+      severity: "blocked",
+      message: `以下正文覆盖句与对应证据缺少数字或关键词关联：${invalidTextCoverageIds.join("、")}`,
+    });
+  }
+  if (!options.requireAllEvidenceInText) {
+    const intentionallyOmittedIds = [...requiredEvidenceIds].filter((id) => !coverageByEvidenceId.has(id));
+    if (intentionallyOmittedIds.length > 0) {
+      issues.push({
+        code: "final_evidence_omitted",
+        severity: "requires_teacher",
+        message: `最终成稿未保留以下初稿证据，请教师确认是否接受本次删减：${intentionallyOmittedIds.join("、")}`,
+      });
     }
   }
   const unconfirmedRef = included.flatMap((module) => module.evidenceRefs).find((ref) => evidence.some((item) => item.id === ref && (!item.confirmed || item.kind === "model_candidate")));

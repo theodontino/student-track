@@ -15,9 +15,11 @@ import {
   FeedbackPlanItemPatchSchema,
   type CommunicationPreference,
   type FeedbackEvidenceBundle,
+  type FeedbackPlanAssessmentEvidenceInput,
   type FeedbackPlanCreateInput,
   type FeedbackPlanItemPatch,
 } from "@/lib/feedback-plan";
+import type { StudentAssessmentEvidence } from "@/lib/feedback-materials";
 import { createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
 import { generateFeedbackPlanComposition } from "@/services/feedback-generation-service";
@@ -33,7 +35,80 @@ function json(value: unknown) {
   return JSON.stringify(value);
 }
 
+function normalizedCoverageText(value: string) {
+  return value.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
 type FeedbackPlanDb = PrismaClient | Prisma.TransactionClient;
+type NormalizedPlanAssessmentEvidence = Record<string, StudentAssessmentEvidence[]>;
+
+function normalizePlanAssessmentEvidence(input: {
+  assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
+  sessionCode: string;
+  allowedStudentIds: string[];
+}): NormalizedPlanAssessmentEvidence {
+  const allowedStudentIds = new Set(input.allowedStudentIds);
+  const normalized: NormalizedPlanAssessmentEvidence = {};
+  for (const [studentId, value] of Object.entries(input.assessmentEvidence ?? {})) {
+    if (!allowedStudentIds.has(studentId)) {
+      throw new ApiError(`学生 ${studentId} 的测评证据不属于本次反馈对象`, 400, "invalid_request", false);
+    }
+    const evidenceItems = Array.isArray(value) ? value : [value];
+    normalized[studentId] = evidenceItems.map((evidence) => {
+      if (evidence.sessionCode && evidence.sessionCode !== input.sessionCode) {
+        throw new ApiError(`学生 ${studentId} 的测评证据属于课次 ${evidence.sessionCode}`, 400, "invalid_request", false);
+      }
+      if (evidence.studentId && evidence.studentId !== studentId) {
+        throw new ApiError(`测评证据绑定学生与提交学生 ${studentId} 不一致`, 400, "invalid_request", false);
+      }
+      return {
+        ...evidence,
+        sourceType: evidence.sourceType ?? "assessment_pdf",
+        sessionCode: input.sessionCode,
+        studentId,
+      };
+    });
+  }
+  return normalized;
+}
+
+function assessmentEvidenceItems(items: StudentAssessmentEvidence[]): FeedbackEvidenceBundle["assessmentEvidence"] {
+  return items.map((evidence) => {
+    const sourceType = evidence.sourceType ?? "assessment_pdf";
+    const sourceLabel = sourceType === "classroom_practice" ? "课堂练习" : "出门测 PDF";
+    const evidenceHash = sha256(JSON.stringify(evidence)).slice(0, 16);
+    const knowledgePoints = evidence.knowledgePoints.slice(0, 20).map((item) => (
+      `${item.name}：${item.questionCount}题，正确率${item.correctRate}%${item.cohortAverageRate === null ? "" : `，同期均值${item.cohortAverageRate}%`}`
+    ));
+    const wrongItems = evidence.wrongItems.slice(0, 20).map((item) => (
+      `第${item.questionNumber}题本人答${item.studentAnswer || "未提取"}，正确答案${item.correctAnswer || "未提取"}${item.knowledgePoints.length ? `，涉及${item.knowledgePoints.join("、")}` : ""}`
+    ));
+    const content = [
+      `${evidence.reportDate || "日期未知"} ${evidence.reportTitle || sourceLabel}：共${evidence.totalQuestions}题，正确率${evidence.correctRate}%${evidence.cohortAverageRate === null ? "" : `，同期均值${evidence.cohortAverageRate}%`}`,
+      knowledgePoints.length ? `知识点结果：${knowledgePoints.join("；")}` : "",
+      wrongItems.length ? `错题明细：${wrongItems.join("；")}` : "报告未列出错题",
+      evidence.similarPracticeCount > 0 ? `报告附带${evidence.similarPracticeCount}道相似练习` : "",
+      "证据边界：只能解释本次结果，不据此推断长期能力或人格特征",
+    ].filter(Boolean).join("。").slice(0, 3000);
+    return {
+      id: `assessment-${sourceType}-${evidenceHash}`,
+      kind: "fact" as const,
+      content,
+      sourceRefs: [{
+        type: sourceType === "classroom_practice" ? "classroom-practice" : "assessment-pdf",
+        id: `${sourceType}:${evidenceHash}`,
+        label: sourceLabel,
+      }],
+      occurredAt: evidence.reportDate ? evidence.reportDate.slice(0, 64) : undefined,
+      confirmed: true,
+    };
+  });
+}
+
+function persistedAssessmentEvidence(snapshot: string): FeedbackEvidenceBundle["assessmentEvidence"] {
+  const parsed = FeedbackEvidenceBundleSchema.safeParse(parseJson(snapshot, null));
+  return parsed.success ? parsed.data.assessmentEvidence : [];
+}
 
 function derivePlanStatus(items: Array<{ status: string }>) {
   if (!items.length) return "draft";
@@ -154,6 +229,8 @@ function evidenceFromStudent(input: {
   student: FeedbackContextStudent | null;
   sourceFingerprint: string;
   existingTaskIds?: string[];
+  assessmentEvidence?: StudentAssessmentEvidence[];
+  preservedAssessmentEvidence?: FeedbackEvidenceBundle["assessmentEvidence"];
 }): FeedbackEvidenceBundle {
   const student = input.student;
   const current = student?.rawMetrics.current;
@@ -225,12 +302,20 @@ function evidenceFromStudent(input: {
     occurredAt: item.date,
     confirmed: true,
   })) ?? [];
-  const allEvidence = teachingEvidence.concat(communicationContext);
+  const assessmentEvidence = input.assessmentEvidence
+    ? assessmentEvidenceItems(input.assessmentEvidence)
+    : input.preservedAssessmentEvidence ?? [];
+  const allEvidence: FeedbackEvidenceBundle["teachingEvidence"] = [
+    ...teachingEvidence,
+    ...assessmentEvidence,
+    ...communicationContext,
+  ];
   return FeedbackEvidenceBundleSchema.parse({
     version: 1,
     planType: input.planType,
     studentId: student?.id ?? null,
     teachingEvidence,
+    assessmentEvidence,
     communicationContext,
     executionConstraints: {
       existingTaskIds: input.existingTaskIds ?? [],
@@ -273,6 +358,7 @@ function evidenceFromClassContext(input: {
     planType: input.planType,
     studentId: null,
     teachingEvidence: evidence.slice(0, 100),
+    assessmentEvidence: [],
     communicationContext: [],
     executionConstraints: {
       existingTaskIds: input.existingTaskIds ?? [],
@@ -390,6 +476,11 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
   });
   const selectedIds = candidateStudentIds(input, context);
   if (!selectedIds.length) throw new ApiError("没有可加入反馈计划的学生", 400, "invalid_request", false);
+  const assessmentByStudent = normalizePlanAssessmentEvidence({
+    assessmentEvidence: input.assessmentEvidence,
+    sessionCode: context?.session.code ?? "",
+    allowedStudentIds: selectedIds.filter((studentId): studentId is string => Boolean(studentId)),
+  });
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);
   const existingTasks = await db.teacherTask.findMany({
     where: {
@@ -420,6 +511,7 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
       existingTaskIds: existingTasks.map((task) => task.id).sort(),
       fixedArrangementRefs: [],
     },
+    assessmentEvidence: assessmentByStudent,
   }));
 
   const created = await db.$transaction(async (tx) => {
@@ -438,7 +530,13 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
             const student = studentId ? contextByStudent.get(studentId) ?? null : null;
             const bundle = input.type === "class_update"
               ? evidenceFromClassContext({ planType: input.type, students: context?.students ?? [], sessionId: input.sessionId ?? rangeEndSessionId, sourceFingerprint, existingTaskIds: taskIdsByStudent.get(null) })
-              : evidenceFromStudent({ planType: input.type, student, sourceFingerprint, existingTaskIds: taskIdsByStudent.get(studentId) });
+              : evidenceFromStudent({
+                planType: input.type,
+                student,
+                sourceFingerprint,
+                existingTaskIds: taskIdsByStudent.get(studentId),
+                assessmentEvidence: studentId ? assessmentByStudent[studentId] : undefined,
+              });
             return { studentId, evidenceSnapshot: json(bundle) };
           }),
         },
@@ -495,7 +593,11 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
   const bundle = FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
   const composition = patch.composition ?? parseCompositionSnapshot(item.compositionSnapshot, item.plan.type, patch.finalText ?? item.finalText ?? "");
   const finalText = patch.finalText ?? composition.draftFeedback;
-  const nextComposition = FeedbackCompositionPlanSchema.parse({ ...composition, draftFeedback: finalText });
+  const normalizedFinalText = normalizedCoverageText(finalText);
+  const evidenceCoverage = patch.finalText === undefined
+    ? composition.evidenceCoverage
+    : composition.evidenceCoverage.filter((coverage) => normalizedFinalText.includes(normalizedCoverageText(coverage.statement)));
+  const nextComposition = FeedbackCompositionPlanSchema.parse({ ...composition, evidenceCoverage, draftFeedback: finalText });
   const taskIds = activeTaskIds(item.tasks);
   const otherStudentNames = item.plan.items.flatMap((entry) => entry.id !== item.id && entry.student?.name ? [entry.student.name] : []);
   const audit = createAuditSnapshot(nextComposition, bundle, taskIds, { studentName: item.student?.name ?? undefined, otherStudentNames });
@@ -907,6 +1009,7 @@ export async function deleteFeedbackPlan(id: string, db: PrismaClient = prisma) 
 export async function generateFeedbackPlanItems(input: {
   planId: string;
   itemIds?: string[];
+  assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
   signal?: AbortSignal;
   onProgress?: (event: { type: "status" | "item"; message?: string; itemId?: string; status?: string; error?: string }) => void | Promise<void>;
 }, db: PrismaClient = prisma) {
@@ -937,6 +1040,11 @@ export async function generateFeedbackPlanItems(input: {
   };
   const context = await findContextForPlan(db, planInput);
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);
+  const normalizedAssessmentEvidence = normalizePlanAssessmentEvidence({
+    assessmentEvidence: input.assessmentEvidence,
+    sessionCode: context?.session.code ?? "",
+    allowedStudentIds: selected.flatMap((item) => item.studentId ? [item.studentId] : []),
+  });
 
   // A stale item must never reuse its old evidence snapshot. Rebase the
   // deterministic bundle first; this creates a new mutable item revision while
@@ -961,13 +1069,24 @@ export async function generateFeedbackPlanItems(input: {
         communicationPreference: student.communicationPreference ?? null,
       })) ?? [],
       executionConstraints: { existingTaskIds: pendingTasks.map((task) => task.id).sort(), fixedArrangementRefs: [] },
+      assessmentEvidence: normalizedAssessmentEvidence,
     }));
     await db.$transaction(async (tx) => {
       for (const item of staleItems) {
         const student = item.studentId ? contextByStudent.get(item.studentId) ?? null : null;
+        const replacementAssessment = item.studentId ? normalizedAssessmentEvidence[item.studentId] : undefined;
+        const preservedAssessment = replacementAssessment ? undefined : persistedAssessmentEvidence(item.evidenceSnapshot);
+        const itemFingerprint = sha256(JSON.stringify({ sourceFingerprint, assessmentEvidence: replacementAssessment ?? preservedAssessment }));
         const bundle = planBeforeRebase.type === "class_update"
-          ? evidenceFromClassContext({ planType: "class_update", students: context?.students ?? [], sessionId: planBeforeRebase.sessionId ?? planBeforeRebase.rangeEndSessionId ?? undefined, sourceFingerprint, existingTaskIds: taskIdsByStudent.get(null) })
-          : evidenceFromStudent({ planType: planBeforeRebase.type as FeedbackPlanCreateInput["type"], student, sourceFingerprint, existingTaskIds: taskIdsByStudent.get(item.studentId) });
+          ? evidenceFromClassContext({ planType: "class_update", students: context?.students ?? [], sessionId: planBeforeRebase.sessionId ?? planBeforeRebase.rangeEndSessionId ?? undefined, sourceFingerprint: itemFingerprint, existingTaskIds: taskIdsByStudent.get(null) })
+          : evidenceFromStudent({
+            planType: planBeforeRebase.type as FeedbackPlanCreateInput["type"],
+            student,
+            sourceFingerprint: itemFingerprint,
+            existingTaskIds: taskIdsByStudent.get(item.studentId),
+            assessmentEvidence: replacementAssessment,
+            preservedAssessmentEvidence: preservedAssessment,
+          });
         await tx.feedbackPlanItem.update({
           where: { id: item.id },
           data: {
@@ -998,6 +1117,28 @@ export async function generateFeedbackPlanItems(input: {
   }
 
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+
+  const assessmentBundleOverrides = new Map<string, FeedbackEvidenceBundle>();
+  for (const item of selected) {
+    if (!item.studentId || !Object.hasOwn(normalizedAssessmentEvidence, item.studentId)) continue;
+    const student = contextByStudent.get(item.studentId) ?? null;
+    const assessmentEvidence = normalizedAssessmentEvidence[item.studentId]!;
+    const sourceFingerprint = sha256(JSON.stringify({
+      planInput,
+      studentId: item.studentId,
+      promptContext: student?.promptContext ?? null,
+      communicationPreference: student?.communicationPreference ?? null,
+      existingTaskIds: [...activeTaskIds(item.tasks)].sort(),
+      assessmentEvidence,
+    }));
+    assessmentBundleOverrides.set(item.id, evidenceFromStudent({
+      planType: plan.type as FeedbackPlanCreateInput["type"],
+      student,
+      sourceFingerprint,
+      existingTaskIds: [...activeTaskIds(item.tasks)],
+      assessmentEvidence,
+    }));
+  }
 
   const unsupported = selected.filter((item) => !["evidence_ready", "needs_review"].includes(item.status));
   if (unsupported.length) throw new ApiError("反馈条目当前状态不能生成，请刷新计划后重试", 409, "conflict", false);
@@ -1031,7 +1172,8 @@ export async function generateFeedbackPlanItems(input: {
       const student = item.studentId ? contextByStudent.get(item.studentId) ?? null : null;
       const itemName = student?.name ?? "班级公共反馈";
       try {
-        const bundle = FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
+        const bundle = assessmentBundleOverrides.get(item.id)
+          ?? FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
         const preference = student?.communicationPreference;
         const generated = await generateFeedbackPlanComposition({
           studentName: student?.name ?? "班级家长",
@@ -1047,7 +1189,12 @@ export async function generateFeedbackPlanItems(input: {
           signal: input.signal,
         });
         const otherStudentNames = plan.items.flatMap((entry) => entry.student?.name && entry.student.id !== item.studentId ? [entry.student.name] : []);
-        const audit = createAuditSnapshot(generated.composition, bundle, activeTaskIds(item.tasks), { studentName: student?.name ?? undefined, otherStudentNames });
+        const audit = createAuditSnapshot(
+          generated.composition,
+          bundle,
+          activeTaskIds(item.tasks),
+          { studentName: student?.name ?? undefined, otherStudentNames },
+        );
         const generation = await recordSuccessfulGeneration({
           taskType: "feedback",
           stage: "plan-review",
@@ -1067,6 +1214,7 @@ export async function generateFeedbackPlanItems(input: {
         const writeResult = await db.feedbackPlanItem.updateMany({
           where: { id: item.id, status: "generating" },
           data: {
+            evidenceSnapshot: json(bundle),
             compositionSnapshot: json(generated.composition),
             auditSnapshot: json(audit),
             finalText: generated.composition.draftFeedback,

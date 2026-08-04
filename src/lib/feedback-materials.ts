@@ -41,6 +41,7 @@ export interface AssessmentWrongItem {
 }
 
 export interface StudentAssessmentEvidence {
+  sourceType?: "assessment_pdf" | "classroom_practice";
   sessionCode?: string;
   studentId?: string;
   reportTitle: string;

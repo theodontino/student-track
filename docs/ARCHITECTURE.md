@@ -59,7 +59,7 @@ Page / Component
 
 ## LLM 边界
 
-反馈计划由 `feedback-plan-service` 统一负责范围、证据快照、模块依赖、偏好失效、任务事务、审批和导出；页面只调用 `/api/report/feedback-plans` 及其子路由。生成顺序固定为：服务从课次评价、事件、沟通、测验证据和已确认偏好构建 `FeedbackEvidenceBundle`；`feedbackDraft` 返回 `FeedbackCompositionPlan` 与初稿；`feedbackReview` 对同一证据包审核并受限润色；程序门禁检查来源引用、学生身份、模块依赖、家长动作、隐性承诺、内部内容和文本哈希。未批准条目不能进入 Excel。
+反馈计划由 `feedback-plan-service` 统一负责范围、证据快照、模块依赖、偏好失效、任务事务、审批和导出；页面只调用 `/api/report/feedback-plans` 及其子路由。生成顺序固定为：服务从课次评价、事件、沟通、测验证据和已确认偏好构建 `FeedbackEvidenceBundle`；其中个人测评通过独立 `assessmentEvidence` 通道进入，按课次与学生校验，旧证据快照缺少该字段时按空数组兼容。`feedbackDraft` 返回 `FeedbackCompositionPlan` 与初稿；每条已确认教学或测评证据必须通过 `evidenceCoverage` 映射到初稿中逐字存在、且与证据数字或关键词关联的句子，只挂 ID 或正文缺句会先纠错、仍失败则拒绝保存。`feedbackReview` 再对同一证据包审核并受限润色；模型产出的成稿默认继续全覆盖。教师手工复核时可以删减最终成稿，服务会同步删去对应覆盖声明并留下 `requires_teacher` 审计项，而不会伪装成仍已覆盖。初稿和证据包保存在热 `GenerationRecord.inputSnapshot`，页面可直接查看。未批准条目不能进入 Excel。
 
 `TeacherTask` 是未来教师动作的硬门禁；`TeacherObservation` 仅表示内部观察，不能解除承诺阻断。教师确认的教师处理会以 `Event.type = "教师处理"` 持久化，并在反馈计划证据中标记为已确认判断。沟通偏好候选由 Student Track 从教师手工设置，或从 handoff 包内经过消息 ID 与逐字证据校验的结构化偏好信号产生；教师确认沟通草稿后才建立候选，确认候选前不改变当前偏好。摘要正则不作为 WCC 偏好的事实来源，WCG 也不直接写入偏好标签。反馈附件写入仓库外私有目录，数据库只保存最小元数据和受控相对定位符。
 

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { buildFeedbackPlanExportWorkbook } from "@/services/feedback-export-service";
 import { apiErrorBody, apiStreamErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
-import { FeedbackPlanItemPatchSchema } from "@/lib/feedback-plan";
+import { FeedbackPlanAssessmentEvidenceSchema, FeedbackPlanItemPatchSchema } from "@/lib/feedback-plan";
 import {
   approveFeedbackPlanItems,
   createTeacherTask,
@@ -87,6 +87,10 @@ export async function POST(request: NextRequest, context: Context) {
     }
     if (body.action === "generate") {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
+      const parsedAssessmentEvidence = body.assessmentEvidence === undefined
+        ? { success: true as const, data: undefined }
+        : FeedbackPlanAssessmentEvidenceSchema.safeParse(body.assessmentEvidence);
+      if (!parsedAssessmentEvidence.success) throw new ApiError("反馈计划测评证据参数无效", 400, "invalid_request", false);
       if (body.stream === true) {
         const encoder = new TextEncoder();
         const stream = new ReadableStream<Uint8Array>({
@@ -95,6 +99,7 @@ export async function POST(request: NextRequest, context: Context) {
             void generateFeedbackPlanItems({
               planId: id,
               itemIds,
+              assessmentEvidence: parsedAssessmentEvidence.data,
               signal: request.signal,
               onProgress: write,
             }).then(() => controller.close()).catch((error) => {
@@ -105,7 +110,7 @@ export async function POST(request: NextRequest, context: Context) {
         });
         return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" } });
       }
-      const items = await generateFeedbackPlanItems({ planId: id, itemIds, signal: request.signal });
+      const items = await generateFeedbackPlanItems({ planId: id, itemIds, assessmentEvidence: parsedAssessmentEvidence.data, signal: request.signal });
       const plan = await getFeedbackPlan(id);
       return NextResponse.json({ items: plan ? plan.items.map((item) => toFeedbackPlanItemView(item, plan.type)) : items });
     }

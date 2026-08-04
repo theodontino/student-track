@@ -21,6 +21,7 @@ const composition = JSON.stringify({
     { key: "observed_moment", content: "氧化还原反应测验完成稳定", evidenceRefs: ["event-1"], status: "included", reason: "具体表现" },
     { key: "teacher_interpretation", content: "本次方法使用较稳定", evidenceRefs: ["event-1"], status: "included", reason: "教师判断" },
   ],
+  evidenceCoverage: [{ evidenceId: "event-1", statement: "本次测验完成稳定" }],
   draftFeedback: "模型初稿：本次测验完成稳定。",
 });
 
@@ -41,6 +42,7 @@ function plan(text = "模型初稿：本次测验完成稳定。", status = "nee
       evidenceSnapshot: evidence,
       compositionSnapshot: composition,
       auditSnapshot: JSON.stringify({ version: 1, status: "pass", items: [], textHash: "e2e-final-hash", semanticReviewRequired: false }),
+      selectedGeneration: { inputSnapshot: JSON.stringify({ draftComposition: JSON.parse(composition) }) },
       itemRevision: 2,
       student: { name: TEST_FIXTURE.students[0].name, studentId: TEST_FIXTURE.students[0].studentId },
       tasks: [],
@@ -54,6 +56,7 @@ test("feedback plan supports create, streamed generation, teacher edit, approval
   let currentText = "模型初稿：本次测验完成稳定。";
   let currentStatus = "needs_review";
   let generated = false;
+  let generatedItemIds: string[] = [];
   let successfulExports = 0;
   let planCreated = false;
   await page.route("**/api/report/feedback-plans**", async (route) => {
@@ -80,9 +83,10 @@ test("feedback plan supports create, streamed generation, teacher edit, approval
       return;
     }
     if (url.pathname.endsWith("/e2e-feedback-plan-1") && request.method() === "POST") {
-      const body = request.postDataJSON() as { action?: string; allowRepeat?: boolean };
+      const body = request.postDataJSON() as { action?: string; allowRepeat?: boolean; itemIds?: string[] };
       if (body.action === "generate") {
         generated = true;
+        generatedItemIds = body.itemIds ?? [];
         await route.fulfill({ status: 200, contentType: "application/x-ndjson; charset=utf-8", body: `{"type":"status","message":"开始生成 1 条反馈"}\n{"type":"item","itemId":"e2e-feedback-item-1","status":"needs_review"}\n` });
         return;
       }
@@ -122,9 +126,11 @@ test("feedback plan supports create, streamed generation, teacher edit, approval
   await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
   await page.reload();
   await expect(page.getByText("E2E 反馈计划", { exact: true })).toBeVisible();
+  await expect(page.getByText("初稿 1/1 · 成稿 1/1 · pass", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "重新组装/生成" }).click();
   await expect(page.getByText("生成进度 1/1", { exact: true })).toBeVisible();
   expect(generated).toBe(true);
+  expect(generatedItemIds).toEqual(["e2e-feedback-item-1"]);
 
   const editor = page.getByLabel(`${TEST_FIXTURE.students[0].name}反馈计划文本`);
   await editor.fill("教师修改后的反馈文本。");

@@ -41,6 +41,7 @@ export const LessonFeedbackMaterialSchema: z.ZodType<LessonFeedbackMaterial> = z
 });
 
 export const StudentAssessmentEvidenceSchema: z.ZodType<StudentAssessmentEvidence> = z.object({
+  sourceType: z.enum(["assessment_pdf", "classroom_practice"]).optional(),
   sessionCode: text(128).optional(),
   studentId: text(200).optional(),
   reportTitle: text(2000),
@@ -63,7 +64,7 @@ export const StudentAssessmentEvidenceSchema: z.ZodType<StudentAssessmentEvidenc
   similarPracticeCount: count,
 });
 
-const assessmentEvidenceRecord = z.record(
+export const AssessmentEvidenceRecordSchema = z.record(
   z.string().max(200),
   StudentAssessmentEvidenceSchema,
 ).refine((value) => Object.keys(value).length <= 200, {
@@ -139,7 +140,7 @@ export const FeedbackBatchHistoryStateSchema = z.object({
   failedStudentIds: z.array(requiredText(200)).max(200).optional(),
   interruptionReason: text(2000).optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
-  assessmentEvidence: assessmentEvidenceRecord.optional(),
+  assessmentEvidence: AssessmentEvidenceRecordSchema.optional(),
   outputStrategy: FeedbackOutputStrategySchema.optional(),
 }).passthrough();
 
@@ -242,7 +243,7 @@ export const FeedbackBatchPostSchema = z.object({
   failedStudentIds: z.array(requiredText(200)).max(200).optional(),
   interruptionReason: text(2000).optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
-  assessmentEvidence: assessmentEvidenceRecord.optional(),
+  assessmentEvidence: AssessmentEvidenceRecordSchema.optional(),
   routingOverrides: z.record(z.string().max(200), z.enum(FEEDBACK_INTENSITIES)).optional(),
   outputStrategy: FeedbackOutputStrategySchema.optional(),
   // 前端 saveFeedbackState 直接传入 feedbackCards，包含 name/labels 等展示字段；

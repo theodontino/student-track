@@ -3,6 +3,7 @@ import {
   CommunicationPreferenceSchema,
   FeedbackCompositionPlanSchema,
   FeedbackEvidenceBundleSchema,
+  FeedbackPlanAssessmentEvidenceSchema,
   validateCompositionForBundle,
 } from "@/lib/feedback-plan";
 import { createAuditSnapshot } from "@/services/feedback-plan-audit";
@@ -55,12 +56,121 @@ function composition(overrides: Record<string, unknown> = {}) {
       status: "included",
       reason: "教师判断",
     }],
+    evidenceCoverage: [{ evidenceId: "event-1", statement: "第二道同类题已经能够独立完成" }],
     draftFeedback: "今天第二道同类题已经能够独立完成，这个处理过程比较稳。",
     ...overrides,
   });
 }
 
 describe("feedback plan composition gate", () => {
+  it("keeps old evidence snapshots compatible and accepts multiple assessment sources", () => {
+    expect(bundle().assessmentEvidence).toEqual([]);
+    const evidence = {
+      sessionCode: "SESSION-1",
+      studentId: "student-test-1",
+      reportTitle: "本次结果",
+      reportDate: "2099-01-01",
+      totalQuestions: 2,
+      correctRate: 50,
+      cohortAverageRate: null,
+      knowledgePoints: [],
+      wrongItems: [],
+      similarPracticeCount: 0,
+    };
+    expect(FeedbackPlanAssessmentEvidenceSchema.parse({
+      "student-test-1": [
+        { ...evidence, sourceType: "assessment_pdf" },
+        { ...evidence, sourceType: "classroom_practice" },
+      ],
+    })["student-test-1"]).toHaveLength(2);
+  });
+
+  it("blocks a plan that silently omits any confirmed teaching or assessment evidence", () => {
+    const evidence = bundle({
+      teachingEvidence: [
+        ...bundle().teachingEvidence,
+        { id: "score-a", kind: "fact", content: "本次学习测验4分", sourceRefs: [{ type: "metric", id: "metric-1" }], confirmed: true },
+      ],
+      assessmentEvidence: [{
+        id: "assessment-1",
+        kind: "fact",
+        content: "本次出门测共2题，正确1题",
+        sourceRefs: [{ type: "assessment-pdf", id: "assessment-source-1" }],
+        confirmed: true,
+      }],
+    });
+    const result = validateCompositionForBundle(composition(), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    expect(result.status).toBe("blocked");
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "confirmed_evidence_omitted",
+      message: expect.stringContaining("score-a"),
+    }));
+    expect(result.issues.find((issue) => issue.code === "confirmed_evidence_omitted")?.message).toContain("assessment-1");
+
+    const fullyCovered = validateCompositionForBundle(composition({
+      modules: [
+        { key: "observed_moment", content: "课堂表现与学习测验", evidenceRefs: ["event-1", "score-a"], status: "included", reason: "课堂证据" },
+        { key: "teacher_interpretation", content: "解释本次出门测", evidenceRefs: ["assessment-1"], status: "included", reason: "测评证据" },
+      ],
+      evidenceCoverage: [
+        { evidenceId: "event-1", statement: "第二道同类题能够独立完成" },
+        { evidenceId: "score-a", statement: "本次学习测验4分" },
+        { evidenceId: "assessment-1", statement: "出门测共2题，正确1题" },
+      ],
+      draftFeedback: "第二道同类题能够独立完成，本次学习测验4分；出门测共2题，正确1题，仅代表本次结果。",
+    }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    expect(fullyCovered.status).toBe("pass");
+  });
+
+  it("blocks evidence IDs that are attached to modules but not actually reflected in the final text", () => {
+    const evidence = bundle({
+      teachingEvidence: [
+        ...bundle().teachingEvidence,
+        { id: "score-a", kind: "fact", content: "本次学习测验 4 分", sourceRefs: [{ type: "metric", id: "metric-1" }], confirmed: true },
+      ],
+    });
+    const refOnly = validateCompositionForBundle(composition({
+      modules: [
+        { key: "observed_moment", content: "课堂表现", evidenceRefs: ["event-1", "score-a"], status: "included", reason: "课堂证据" },
+        { key: "teacher_interpretation", content: "状态稳定", evidenceRefs: ["event-1"], status: "included", reason: "教师判断" },
+      ],
+      evidenceCoverage: [{ evidenceId: "event-1", statement: "第二道同类题已经能够独立完成" }],
+      draftFeedback: "今天第二道同类题已经能够独立完成，这个处理过程比较稳。",
+    }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    expect(refOnly.status).toBe("blocked");
+    expect(refOnly.issues).toContainEqual(expect.objectContaining({
+      code: "confirmed_evidence_text_omitted",
+      message: expect.stringContaining("score-a"),
+    }));
+
+    const unrelatedSentence = validateCompositionForBundle(composition({
+      modules: [
+        { key: "observed_moment", content: "课堂表现", evidenceRefs: ["event-1", "score-a"], status: "included", reason: "课堂证据" },
+        { key: "teacher_interpretation", content: "状态稳定", evidenceRefs: ["event-1"], status: "included", reason: "教师判断" },
+      ],
+      evidenceCoverage: [
+        { evidenceId: "event-1", statement: "第二道同类题已经能够独立完成" },
+        { evidenceId: "score-a", statement: "这个处理过程比较稳" },
+      ],
+      draftFeedback: "今天第二道同类题已经能够独立完成，这个处理过程比较稳。",
+    }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    expect(unrelatedSentence.status).toBe("blocked");
+    expect(unrelatedSentence.issues).toContainEqual(expect.objectContaining({ code: "evidence_coverage_unsubstantiated" }));
+  });
+
+  it("allows a teacher-reviewed final text to omit draft evidence while recording the omission", () => {
+    const result = validateCompositionForBundle(composition({
+      evidenceCoverage: [],
+      draftFeedback: "教师最终选择只保留简短结论。",
+    }), bundle());
+    expect(result.status).toBe("needs_review");
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
+    }));
+    expect(result.issues.some((issue) => issue.severity === "blocked")).toBe(false);
+  });
+
   it("allows a positive recognition without a parent action or future promise", () => {
     const result = validateCompositionForBundle(composition(), bundle());
     expect(result.status).toBe("pass");
@@ -90,13 +200,13 @@ describe("feedback plan composition gate", () => {
 
   it("does not mistake classroom actions or chemistry model terms for parent actions/internal content", () => {
     const classroomReminder = validateCompositionForBundle(composition({
-      draftFeedback: "我在课堂上提醒学生先圈出题目条件，第二题已经完成。",
+      draftFeedback: "第二道同类题已经能够独立完成；我在课堂上提醒学生先圈出题目条件。",
     }), bundle());
     expect(classroomReminder.status).toBe("pass");
     expect(classroomReminder.issues).toEqual([]);
 
     const chemistryModel = validateCompositionForBundle(composition({
-      draftFeedback: "今天使用分子模型后，结构判断更清楚了。",
+      draftFeedback: "第二道同类题已经能够独立完成；今天使用分子模型后，结构判断更清楚了。",
     }), bundle());
     expect(chemistryModel.status).toBe("pass");
     expect(chemistryModel.issues).toEqual([]);
@@ -118,7 +228,7 @@ describe("feedback plan composition gate", () => {
         status: "included",
         reason: "判断",
       }],
-      draftFeedback: "我会在下次课继续观察这部分是否稳定。",
+      draftFeedback: "第二道同类题已经能够独立完成；我会在下次课继续观察这部分是否稳定。",
     }), bundle());
     expect(result.status).toBe("blocked");
     expect(result.issues.some((issue) => issue.code === "followup_without_task")).toBe(true);
@@ -149,7 +259,7 @@ describe("feedback plan composition gate", () => {
         status: "included",
         reason: "判断",
       }],
-      draftFeedback: "我会在下次课继续观察这部分是否稳定。",
+      draftFeedback: "第二道同类题已经能够独立完成；我会在下次课继续观察这部分是否稳定。",
     }), bundle({ executionConstraints: { existingTaskIds: ["task-test-1"], fixedArrangementRefs: [], teacherInterventionPresent: false } }), new Set(["task-test-1"]));
     expect(result.status).toBe("needs_review");
     expect(result.issues.some((issue) => issue.code === "promise_requires_teacher")).toBe(true);

@@ -15,8 +15,9 @@ export function createAuditSnapshot(
   bundle: FeedbackEvidenceBundle,
   taskIds?: Set<string>,
   identity?: { studentName?: string; otherStudentNames?: string[] },
+  options?: { requireAllEvidenceInText?: boolean },
 ): FeedbackAuditSnapshot {
-  const result = validateCompositionForBundle(composition, bundle, taskIds, identity);
+  const result = validateCompositionForBundle(composition, bundle, taskIds, identity, options);
   return {
     version: 1,
     status: result.status,

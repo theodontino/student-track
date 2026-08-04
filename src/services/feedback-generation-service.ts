@@ -718,6 +718,20 @@ function normalizeCompositionDependencies(composition: FeedbackCompositionPlan) 
   };
 }
 
+function normalizedCoverageText(value: string) {
+  return value.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function retainCoveragePresentInFinalText(composition: FeedbackCompositionPlan) {
+  const normalizedText = normalizedCoverageText(composition.draftFeedback);
+  return {
+    ...composition,
+    evidenceCoverage: composition.evidenceCoverage.filter((coverage) => (
+      normalizedText.includes(normalizedCoverageText(coverage.statement))
+    )),
+  };
+}
+
 /**
  * Three-layer feedback generation used by FeedbackPlan. The first layer is
  * supplied by the deterministic evidence service; this function only performs
@@ -729,12 +743,29 @@ export async function generateFeedbackPlanComposition(input: FeedbackPlanGenerat
   const evidenceText = JSON.stringify(evidence);
   const allowedModules = [...FEEDBACK_MODULES[input.planType]];
   const allowedClosures = [...FEEDBACK_CLOSURES_BY_TYPE[input.planType]];
-  const evidenceIds = evidence.teachingEvidence.concat(evidence.communicationContext)
+  const evidenceIds = evidence.teachingEvidence.concat(evidence.assessmentEvidence, evidence.communicationContext)
     .filter((item) => item.confirmed && item.kind !== "model_candidate")
     .map((item) => item.id);
-  const protocolBoundary = `当前类型允许的 module key 只有：${allowedModules.join(", ")}。
+  const requiredEvidenceIds = evidence.teachingEvidence.concat(evidence.assessmentEvidence)
+    .filter((item) => item.confirmed && item.kind !== "model_candidate")
+    .map((item) => item.id);
+  const baseProtocolBoundary = `当前类型允许的 module key 只有：${allowedModules.join(", ")}。
 当前类型允许的 closureType 只有：${allowedClosures.join(", ")}。
 evidenceRefs 只能逐字使用以下证据 ID：${evidenceIds.join(", ")}。`;
+  const draftProtocolBoundary = `${baseProtocolBoundary}
+必须全部覆盖并在 draftFeedback 中反映的已确认教学与测评证据 ID：${requiredEvidenceIds.join(", ")}。
+evidenceCoverage 必须为上述每个必覆盖 ID 提供且只提供一条 {evidenceId, statement}；statement 必须逐字出现在 draftFeedback 中，并包含与该证据对应的具体数字或关键词。`;
+  const fullEvidenceStructuralCodes = new Set([
+    "module_not_allowed",
+    "evidence_ref_missing",
+    "module_count_invalid",
+    "closure_not_allowed",
+    "confirmed_evidence_omitted",
+    "evidence_coverage_duplicate",
+    "evidence_coverage_unknown",
+    "confirmed_evidence_text_omitted",
+    "evidence_coverage_unsubstantiated",
+  ]);
   const draftPrompt = `你是 Student Track 的反馈组装模型。请只依据确定性证据包，为${input.studentName}生成结构化反馈组装方案。不要添加证据包之外的事实、教师动作、家长动作或未来承诺。
 
 反馈类型：${input.planType}
@@ -743,15 +774,16 @@ evidenceRefs 只能逐字使用以下证据 ID：${evidenceIds.join(", ")}。`;
 ${evidenceText}
 
 结构协议（必须严格遵守）：
-${protocolBoundary}
+${draftProtocolBoundary}
 
 规则：
 1. 只能从上面明确列出的 module key 中选择两到四个有价值的模块，不得自造、翻译或使用旧版模块名；每个 included 模块至少引用一个上面列出的证据 ID。
-2. needParentAction 默认 false；家长动作只能是提醒、确认、提供条件或反馈异常。
-3. teacher_intervention、teacher_support 和 intervention_outcome 必须有证据；followup_observation 必须已有任务或固定安排。
-4. closureType 只能从上面列出的当前类型选项中选择；不得因为示例中出现其他结尾就使用越界值。
-5. 不产生续班、销售、风险标签或内部研判；不要称呼家长。
-6. draftFeedback 只是初稿，不要写标题或项目符号。
+2. teachingEvidence 与 assessmentEvidence 中所有 confirmed=true 的证据 ID 都必须至少被一个 included 模块引用，并把对应事实反映在 draftFeedback 中，不得只挂 ID 而省略内容；同时为每个 ID 填写 evidenceCoverage，statement 必须是 draftFeedback 中逐字存在且真实承载该证据的短句。assessmentEvidence 还要解释本次正确情况、错题或知识点表现，同时明确这只是单次结果。
+3. needParentAction 默认 false；家长动作只能是提醒、确认、提供条件或反馈异常。
+4. teacher_intervention、teacher_support 和 intervention_outcome 必须有证据；followup_observation 必须已有任务或固定安排。
+5. closureType 只能从上面列出的当前类型选项中选择；不得因为示例中出现其他结尾就使用越界值。
+6. 不产生续班、销售、风险标签或内部研判；不要称呼家长。
+7. draftFeedback 只是初稿，不要写标题或项目符号。
 
 只返回 JSON：{
   "version":1,
@@ -759,6 +791,7 @@ ${protocolBoundary}
   "needParentAction":false,
   "parentAction":null,
   "modules":[{"key":"...","content":"...","evidenceRefs":["..."],"status":"included|omitted|blocked","reason":"..."}],
+  "evidenceCoverage":[{"evidenceId":"...","statement":"draftFeedback 中逐字存在的对应事实短句"}],
   "draftFeedback":"..."
 }`;
   const draftRaw = await generateDraft(input.draftClient, input.draftModel, draftPrompt, input.signal, input.profileId, "json");
@@ -770,16 +803,94 @@ ${protocolBoundary}
     const repairPrompt = `你是 Student Track 的结构修复模型。下面的反馈组装输出不是合法结构，请只做 JSON 结构修复，不新增、删除或改写其中的教学事实。
 
 反馈类型：${input.planType}
-${protocolBoundary}
+${draftProtocolBoundary}
 
 无效输出：
 ${draftRaw.slice(0, 12000)}
 
-请返回完整 JSON，必须包含 version=1、closureType、needParentAction、parentAction、modules、draftFeedback。parentAction 不需要时必须为 null；每个 module 必须包含 key、content、evidenceRefs、status、reason。`;
+请返回完整 JSON，必须包含 version=1、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。parentAction 不需要时必须为 null；每个 module 必须包含 key、content、evidenceRefs、status、reason；evidenceCoverage 必须覆盖所有必覆盖证据，且 statement 逐字出现在 draftFeedback 中。`;
     const repairedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, repairPrompt, input.signal, { disableReasoning: true, profileId: input.profileId });
     const repairedContent = repairedResponse.choices[0]?.message?.content?.trim();
     if (!repairedContent) throw error;
     draftComposition = normalizeCompositionDependencies(parseComposition(repairedContent, "draft"));
+  }
+  let draftAudit = createAuditSnapshot(
+    draftComposition,
+    evidence,
+    input.existingTaskIds,
+    undefined,
+    { requireAllEvidenceInText: true },
+  );
+  const draftCoverageIssues = () => draftAudit.items.filter((issue) => issue.severity === "blocked" && fullEvidenceStructuralCodes.has(issue.code));
+  if (draftCoverageIssues().length > 0) {
+    const coverageRepairPrompt = `你是 Student Track 的全证据初稿纠错模型。上一版初稿没有把每条已确认教学与测评证据真正写入正文。请补全初稿，不新增证据包之外的事实或动作。
+
+反馈类型：${input.planType}
+${draftProtocolBoundary}
+
+确定性证据包：
+${evidenceText}
+
+上一版初稿：
+${JSON.stringify(draftComposition)}
+
+必须修正的问题：
+${draftCoverageIssues().map((issue) => `- ${issue.message}`).join("\n")}
+
+只返回完整 JSON，字段为 version、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。初稿必须逐条覆盖所有必覆盖证据；evidenceCoverage.statement 必须逐字出现在 draftFeedback 中并承载对应事实。`;
+    const correctedDraftResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, coverageRepairPrompt, input.signal, { profileId: input.profileId });
+    const correctedDraftContent = correctedDraftResponse.choices[0]?.message?.content?.trim();
+    if (correctedDraftContent) {
+      try {
+        draftComposition = normalizeCompositionDependencies(parseComposition(correctedDraftContent, "correction"));
+        draftAudit = createAuditSnapshot(
+          draftComposition,
+          evidence,
+          input.existingTaskIds,
+          undefined,
+          { requireAllEvidenceInText: true },
+        );
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== "llm_schema_invalid") throw error;
+      }
+    }
+  }
+  if (draftCoverageIssues().length > 0) {
+    const requiredEvidence = evidence.teachingEvidence.concat(evidence.assessmentEvidence)
+      .filter((item) => item.confirmed && item.kind !== "model_candidate");
+    const perEvidenceLimit = Math.max(20, Math.floor(7500 / Math.max(1, requiredEvidence.length)));
+    const evidenceCoverage = requiredEvidence.map((item) => ({
+      evidenceId: item.id,
+      statement: (item.content.length >= 2 ? item.content : `证据：${item.content}`).slice(0, perEvidenceLimit).trim(),
+    }));
+    const modules = draftComposition.modules.map((module) => ({ ...module, evidenceRefs: [...module.evidenceRefs] }));
+    const includedIndexes = modules.flatMap((module, index) => module.status === "included" ? [index] : []);
+    if (includedIndexes.length > 0) {
+      for (const [index, coverage] of evidenceCoverage.entries()) {
+        const moduleIndex = includedIndexes[index % includedIndexes.length]!;
+        if (!modules[moduleIndex]!.evidenceRefs.includes(coverage.evidenceId)) modules[moduleIndex]!.evidenceRefs.push(coverage.evidenceId);
+      }
+      const originalText = draftComposition.draftFeedback.trim().slice(0, 2000);
+      const missingStatements = evidenceCoverage
+        .map((coverage) => coverage.statement)
+        .filter((statement) => !normalizedCoverageText(originalText).includes(normalizedCoverageText(statement)));
+      draftComposition = FeedbackCompositionPlanSchema.parse({
+        ...draftComposition,
+        modules,
+        evidenceCoverage,
+        draftFeedback: [originalText, ...missingStatements].filter(Boolean).join("；").slice(0, 10000),
+      });
+      draftAudit = createAuditSnapshot(
+        draftComposition,
+        evidence,
+        input.existingTaskIds,
+        undefined,
+        { requireAllEvidenceInText: true },
+      );
+    }
+  }
+  if (draftCoverageIssues().length > 0) {
+    throw new ApiError("反馈初稿未覆盖全部已确认教学与测评证据，本条未保存；请重试生成", 502, "llm_schema_invalid", true);
   }
   const reviewPrompt = `你是 Student Track 的反馈审核与受限润色模型。请对照同一份确定性证据包审核组装方案，并只在证据允许的范围内润色。润色不得新增事实、家长动作、教师处理或未来承诺。
 
@@ -790,16 +901,17 @@ ${evidenceText}
 ${JSON.stringify(draftComposition)}
 
 结构协议（优先级高于原组装方案）：
-${protocolBoundary}
+${baseProtocolBoundary}
 
 审核规则：
 1. 所有 included 模块必须使用当前类型允许的精确 key，并至少有一个有效 evidenceRefs；原方案中的旧版或自造 key 必须改成当前目录中的合适 key，不能原样保留。
-2. 家长动作开关、教师处理、处理结果和后续观察遵守字段依赖。
-3. 发现隐性承诺、内部信息或证据不足时，将对应模块标记 blocked 或 needs_review，不要替教师放行。
-4. closureType 必须属于当前类型允许列表；原方案越界时必须纠正。
-5. 只返回完整结构化 JSON，draftFeedback 是最终家长文本。
+2. 初稿已经逐条保留全部 teachingEvidence 与 assessmentEvidence。审核时默认保留；若为了家长可读性确需删减，必须同时删除对应 evidenceCoverage 项，不能把正文已删除的事实继续标成已覆盖。不得把单次测评外推为长期能力。
+3. 家长动作开关、教师处理、处理结果和后续观察遵守字段依赖。
+4. 发现隐性承诺、内部信息或证据不足时，将对应模块标记 blocked 或 needs_review，不要替教师放行。
+5. closureType 必须属于当前类型允许列表；原方案越界时必须纠正。
+6. 只返回完整结构化 JSON，draftFeedback 是最终家长文本。
 
-返回字段必须包含 version、closureType、needParentAction、parentAction、modules 和 draftFeedback；modules 使用 key、content、evidenceRefs、status、reason。`;
+返回字段必须包含 version、closureType、needParentAction、parentAction、modules、evidenceCoverage 和 draftFeedback；modules 使用 key、content、evidenceRefs、status、reason；evidenceCoverage 使用 evidenceId、statement。`;
   const reviewedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, reviewPrompt, input.signal, { profileId: input.profileId });
   let reviewedContent = reviewedResponse.choices[0]?.message?.content?.trim();
   if (!reviewedContent) throw new Error("反馈审核模型返回空结果");
@@ -811,7 +923,7 @@ ${protocolBoundary}
     const repairReviewPrompt = `你是 Student Track 的审核结果结构修复模型。上一份审核输出不是合法 JSON。请依据同一证据包修复结构并删除越界的家长动作或教师承诺，不新增事实。
 
 反馈类型：${input.planType}
-${protocolBoundary}
+${baseProtocolBoundary}
 
 确定性证据包：
 ${evidenceText}
@@ -819,20 +931,27 @@ ${evidenceText}
 无效审核输出：
 ${reviewedContent.slice(0, 12000)}
 
-只返回完整 JSON，字段必须包含 version=1、closureType、needParentAction、parentAction、modules、draftFeedback。无需家长动作时 needParentAction=false 且 parentAction=null。`;
+只返回完整 JSON，字段必须包含 version=1、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。无需家长动作时 needParentAction=false 且 parentAction=null；evidenceCoverage 的 statement 必须逐字出现在 draftFeedback 中。`;
     const repairedReview = await createReviewCompletion(input.reviewClient, input.reviewModel, repairReviewPrompt, input.signal, { disableReasoning: true, profileId: input.profileId });
     const repairedContent = repairedReview.choices[0]?.message?.content?.trim();
     if (!repairedContent) throw error;
-    reviewedContent = repairedContent;
-    reviewedComposition = normalizeCompositionDependencies(parseComposition(repairedContent, "review"));
+    try {
+      reviewedContent = repairedContent;
+      reviewedComposition = normalizeCompositionDependencies(parseComposition(repairedContent, "review"));
+    } catch (repairError) {
+      if (!(repairError instanceof ApiError) || repairError.code !== "llm_schema_invalid") throw repairError;
+      reviewedComposition = draftComposition;
+      reviewedContent = JSON.stringify(draftComposition);
+    }
   }
+  reviewedComposition = retainCoveragePresentInFinalText(reviewedComposition);
   let audit = createAuditSnapshot(reviewedComposition, evidence, input.existingTaskIds);
   const blocked = audit.items.filter((issue) => issue.severity === "blocked");
   if (blocked.length) {
     const correctionPrompt = `你是 Student Track 的结构纠错模型。上一版反馈未通过程序门禁，请只修正结构和越界表达，不新增任何事实或动作。
 
 反馈类型：${input.planType}
-${protocolBoundary}
+${baseProtocolBoundary}
 
 确定性证据包：
 ${evidenceText}
@@ -843,16 +962,26 @@ ${JSON.stringify(reviewedComposition)}
 必须修正的问题：
 ${blocked.map((issue) => `- ${issue.message}`).join("\n")}
 
-只返回完整 JSON，字段为 version、closureType、needParentAction、parentAction、modules、draftFeedback。modules 必须选两到四个，且 key 和 evidenceRefs 只能取上面允许的精确值。`;
+只返回完整 JSON，字段为 version、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。modules 必须选两到四个，且 key 和 evidenceRefs 只能取上面允许的精确值；evidenceCoverage 只能保留 statement 仍逐字存在于 draftFeedback 的条目。`;
     const correctedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, correctionPrompt, input.signal, { profileId: input.profileId });
     const correctedContent = correctedResponse.choices[0]?.message?.content?.trim();
     if (correctedContent) {
       reviewedComposition = normalizeCompositionDependencies(parseComposition(correctedContent, "correction"));
+      reviewedComposition = retainCoveragePresentInFinalText(reviewedComposition);
       audit = createAuditSnapshot(reviewedComposition, evidence, input.existingTaskIds);
     }
   }
-  const structuralCodes = new Set(["module_not_allowed", "evidence_ref_missing", "module_count_invalid", "closure_not_allowed"]);
-  if (audit.items.some((issue) => issue.severity === "blocked" && structuralCodes.has(issue.code))) {
+  const finalStructuralCodes = new Set([
+    "module_not_allowed",
+    "evidence_ref_missing",
+    "module_count_invalid",
+    "closure_not_allowed",
+    "evidence_coverage_duplicate",
+    "evidence_coverage_unknown",
+    "confirmed_evidence_text_omitted",
+    "evidence_coverage_unsubstantiated",
+  ]);
+  if (audit.items.some((issue) => issue.severity === "blocked" && finalStructuralCodes.has(issue.code))) {
     throw new ApiError("反馈模型未遵守当前类型的模块协议，本条未保存；请重试生成", 502, "llm_schema_invalid", true);
   }
   return {
