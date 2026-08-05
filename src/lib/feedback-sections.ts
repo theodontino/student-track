@@ -30,7 +30,7 @@ export const FEEDBACK_STYLE_OPTIONS: Record<FeedbackStyle, {
 }> = {
   gentle: {
     label: "温和",
-    instruction: "语气自然、有耐心，先让家长看清孩子被观察到的具体表现，再稳妥说明问题；不得虚构表扬或淡化事实。",
+    instruction: "语气自然、有耐心，让家长看清孩子被观察到的具体表现和需要说明的问题；不得虚构表扬或淡化事实。",
   },
   professional: {
     label: "专业",

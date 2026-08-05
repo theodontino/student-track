@@ -17,6 +17,31 @@ export interface FeedbackExportCard {
   contextPreview?: { communications?: string[] };
 }
 
+export const WECOM_DRAFT_PACKAGE_CONTRACT_VERSION = "student-track.wecom-draft-package.v1";
+
+export interface WeComDraftPackageV1 {
+  contractVersion: typeof WECOM_DRAFT_PACKAGE_CONTRACT_VERSION;
+  packageId: string;
+  createdAt: string;
+  manifestSha256: string;
+  plan: {
+    id: string;
+    revision: number;
+    type: string;
+  };
+  items: Array<{
+    itemId: string;
+    studentRef: {
+      id: string;
+      businessId: string;
+      displayName: string;
+    };
+    text: string;
+    textSha256: string;
+    approvedAt: string;
+  }>;
+}
+
 function average(values: number[]) {
   if (values.length === 0) return "";
   return +(values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1);
@@ -305,4 +330,72 @@ export async function buildFeedbackPlanExportWorkbook(
     await tx.feedbackPlan.update({ where: { id: planId }, data: { status: allExported ? "exported" : "partially_exported", exportedAt: new Date() } });
   });
   return buffer;
+}
+
+/** Builds a no-send handoff package for WCG from teacher-approved personal feedback. */
+export async function buildWeComDraftPackage(
+  prisma: PrismaClient,
+  planId: string,
+): Promise<WeComDraftPackageV1> {
+  const plan = await prisma.feedbackPlan.findUnique({
+    where: { id: planId },
+    select: {
+      id: true,
+      planRevision: true,
+      type: true,
+      items: {
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          studentId: true,
+          status: true,
+          finalText: true,
+          approvedAt: true,
+          student: { select: { name: true, studentId: true } },
+        },
+      },
+    },
+  });
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+
+  const items = plan.items.flatMap((item) => {
+    const text = item.finalText?.trim() ?? "";
+    if (!item.studentId || !item.student || !item.approvedAt || !text || !["approved", "exported"].includes(item.status)) return [];
+    const textSha256 = createHash("sha256").update(text).digest("hex");
+    return [{
+      itemId: item.id,
+      studentRef: {
+        id: item.studentId,
+        businessId: item.student.studentId,
+        displayName: item.student.name,
+      },
+      text,
+      textSha256,
+      approvedAt: item.approvedAt.toISOString(),
+    }];
+  });
+  if (!items.length) throw new ApiError("没有可呈递的已批准个人反馈", 409, "conflict", false);
+
+  const manifest = items.map((item) => ({
+    itemId: item.itemId,
+    studentId: item.studentRef.id,
+    textSha256: item.textSha256,
+  }));
+  const manifestSha256 = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const packageSeed = {
+    contractVersion: WECOM_DRAFT_PACKAGE_CONTRACT_VERSION,
+    planId: plan.id,
+    planRevision: plan.planRevision,
+    manifestSha256,
+  };
+  const packageHash = createHash("sha256").update(JSON.stringify(packageSeed)).digest("hex");
+
+  return {
+    contractVersion: WECOM_DRAFT_PACKAGE_CONTRACT_VERSION,
+    packageId: `st-draft-${packageHash}`,
+    createdAt: new Date().toISOString(),
+    manifestSha256,
+    plan: { id: plan.id, revision: plan.planRevision, type: plan.type },
+    items,
+  };
 }

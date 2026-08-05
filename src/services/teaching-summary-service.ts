@@ -587,7 +587,6 @@ async function generateStructuredInterpretation(
   const base = {
     model: modelName,
     messages: [{ role: "user" as const, content: prompt }],
-    temperature: 0.2,
     // 当前 DeepSeek 配置接受 low、拒绝 none。提高预算是为了给低强度推理
     // 和结构化正文同时留出空间；实际用量仍由模型按完成时停止决定。
     ...getLLMCompletionOptions(undefined, 8192, true),

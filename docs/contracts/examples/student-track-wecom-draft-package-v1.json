@@ -1,0 +1,24 @@
+{
+  "contractVersion": "student-track.wecom-draft-package.v1",
+  "packageId": "st-draft-8d7130dd8d210c758bc5f694b93c7bb847d27b7ef14a05414a88b6ddc6ded600",
+  "createdAt": "2099-01-02T03:04:05.000Z",
+  "manifestSha256": "59ebab161a29286b6c3fc0f65a5b9234b5cd5dda4f68ebf6c873f8a0d1b33b40",
+  "plan": {
+    "id": "test-plan-1",
+    "revision": 1,
+    "type": "event_micro"
+  },
+  "items": [
+    {
+      "itemId": "test-item-1",
+      "studentRef": {
+        "id": "test-student-1",
+        "businessId": "TEST-001",
+        "displayName": "张三"
+      },
+      "text": "本次能够独立完成同类题，请继续保持订正后的复盘方法。",
+      "textSha256": "42ea6a1b48b0eb2f42faca0a9b290bf97de9b5ce0aaf1439c345571cdd4f1f3c",
+      "approvedAt": "2099-01-02T03:00:00.000Z"
+    }
+  ]
+}

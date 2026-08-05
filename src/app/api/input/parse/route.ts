@@ -75,7 +75,7 @@ ${fixedText}
               await llmCallStream([
                 { role: "system", content: SYSTEM_PROMPT },
                 { role: "user", content: userPrompt },
-              ], 0.3, (delta) => {
+              ], (delta) => {
                 content += delta;
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", content: delta })}\n\n`));
               });

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://student-track.local/contracts/student-track-wecom-draft-package-v1.schema.json",
+  "title": "Student Track to WCG guarded draft package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "packageId", "createdAt", "manifestSha256", "plan", "items"],
+  "properties": {
+    "contractVersion": { "const": "student-track.wecom-draft-package.v1" },
+    "packageId": { "type": "string", "pattern": "^st-draft-[0-9a-f]{64}$" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "type": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["itemId", "studentRef", "text", "textSha256", "approvedAt"],
+        "properties": {
+          "itemId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "studentRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "businessId", "displayName"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "businessId": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "displayName": { "type": "string", "minLength": 1, "maxLength": 128 }
+            }
+          },
+          "text": { "type": "string", "minLength": 1, "maxLength": 5000 },
+          "textSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "approvedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}
+

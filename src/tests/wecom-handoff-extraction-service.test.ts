@@ -84,6 +84,7 @@ describe("wecom bridge service", () => {
     expect(request.response_format.type).toBe("json_schema");
     expect(request.response_format.json_schema.strict).toBe(true);
     expect(request.reasoning_effort).toBeUndefined();
+    expect(request).not.toHaveProperty("temperature");
   });
 
   it("accepts a JSON Schema response carried by LM Studio reasoning_content", async () => {

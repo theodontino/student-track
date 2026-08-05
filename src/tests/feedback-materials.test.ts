@@ -71,10 +71,8 @@ describe("feedback materials", () => {
     const prompt = assessmentEvidencePrompt(evidence);
     expect(prompt).toContain("正确率80%");
     expect(prompt).toContain("第5题本人答D、正确答案A");
-    expect(prompt).toContain("先不看答案重做第5题");
-    expect(prompt).toContain("再完成报告附带的1道相似练习");
-    expect(prompt).toContain("每题写一句判断依据");
-    expect(prompt).toContain("不得据此推断长期能力");
+    expect(prompt).toContain("报告附带1道相似练习");
+    expect(prompt).not.toContain("可执行课后任务");
   });
 
   it("removes a generic student judgment while preserving advice on the same line", () => {

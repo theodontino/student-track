@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { buildFeedbackPlanExportWorkbook } from "@/services/feedback-export-service";
+import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 import { apiErrorBody, apiStreamErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
 import { FeedbackPlanAssessmentEvidenceSchema, FeedbackPlanItemPatchSchema } from "@/lib/feedback-plan";
 import {
@@ -10,6 +10,7 @@ import {
   generateFeedbackPlanItems,
   getFeedbackPlan,
   patchFeedbackPlanItem,
+  retainStaleFeedbackPlanItems,
   toFeedbackPlanDetail,
   toFeedbackPlanItemView,
   updateTeacherTaskStatus,
@@ -85,6 +86,18 @@ export async function POST(request: NextRequest, context: Context) {
         },
       });
     }
+    if (body.action === "export_wecom_drafts") {
+      const draftPackage = await buildWeComDraftPackage(prisma, id);
+      const body = JSON.stringify(draftPackage, null, 2);
+      return new Response(body, {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="wecom-drafts_${id}.json"`,
+          "Content-Length": String(Buffer.byteLength(body)),
+          "Cache-Control": "no-store",
+        },
+      });
+    }
     if (body.action === "generate") {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
       const parsedAssessmentEvidence = body.assessmentEvidence === undefined
@@ -113,6 +126,11 @@ export async function POST(request: NextRequest, context: Context) {
       const items = await generateFeedbackPlanItems({ planId: id, itemIds, assessmentEvidence: parsedAssessmentEvidence.data, signal: request.signal });
       const plan = await getFeedbackPlan(id);
       return NextResponse.json({ items: plan ? plan.items.map((item) => toFeedbackPlanItemView(item, plan.type)) : items });
+    }
+    if (body.action === "retain_stale") {
+      const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
+      const plan = await retainStaleFeedbackPlanItems({ planId: id, itemIds });
+      return NextResponse.json({ plan: toFeedbackPlanDetail(plan) });
     }
     if (body.action === "task" && typeof body.itemId === "string") {
       const task = await createTeacherTask({

@@ -498,14 +498,12 @@ async function createStructuredCompletion(
   client: CompletionClient,
   model: string,
   prompt: string,
-  temperature: number,
   schema: Record<string, unknown>,
   onRetry?: GenerateWeComBridgeOptions["onRetry"],
 ): Promise<{ response: CompletionResponse; protocol: "json_schema" | "json_object" }> {
   const base = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
-    temperature,
     ...getLLMCompletionOptions("wecomExtraction", 8192),
   };
   const { reasoning_effort: _reasoningEffort, ...baseWithoutReasoning } = base;
@@ -558,11 +556,10 @@ export async function createWecomStructuredCompletion(
   client: CompletionClient,
   model: string,
   prompt: string,
-  temperature: number,
   schema: Record<string, unknown>,
   onRetry?: GenerateWeComBridgeOptions["onRetry"],
 ): Promise<{ response: CompletionResponse; protocol: "json_schema" | "json_object" }> {
-  return createStructuredCompletion(client, model, prompt, temperature, schema, onRetry);
+  return createStructuredCompletion(client, model, prompt, schema, onRetry);
 }
 
 export function classifyWeComProviderError(error: unknown): WeComExtractionError {
@@ -759,7 +756,7 @@ ${text}`;
   const client = createLLMClient("wecomExtraction");
   const model = getLLMModel("wecomExtraction");
   const schema = grounded ? groundedBridgeSchema : candidateBridgeSchema;
-  const first = await createStructuredCompletion(client, model, prompt, 0.1, schema, options.onRetry);
+  const first = await createStructuredCompletion(client, model, prompt, schema, options.onRetry);
   try {
     const extracted = extractCompletion(
       first.response,
@@ -784,7 +781,7 @@ ${text}`;
   }
 
   const retryPrompt = `${prompt}\n\n上一次输出未通过结构或证据校验。请重新完整提取，只返回符合 Schema 的 JSON；消息引用必须逐字复制 M001、M002 等短编号，证据 quote 必须逐字存在于对应消息。`;
-  const retry = await createStructuredCompletion(client, model, retryPrompt, 0, schema, options.onRetry);
+  const retry = await createStructuredCompletion(client, model, retryPrompt, schema, options.onRetry);
   try {
     const extracted = extractCompletion(
       retry.response,

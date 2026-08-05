@@ -14,8 +14,8 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/feedback-generation-service")>(),
   generateFeedbackPlanComposition: generationMocks.generate,
 }));
-import { addFeedbackAttachment, approveFeedbackPlanItems, createFeedbackPlan, createTeacherTask, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, patchFeedbackPlanItem, removeFeedbackAttachment } from "@/services/feedback-plan-service";
-import { buildFeedbackPlanExportWorkbook } from "@/services/feedback-export-service";
+import { addFeedbackAttachment, approveFeedbackPlanItems, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, patchFeedbackPlanItem, removeFeedbackAttachment, resolvePreferenceCandidate, retainStaleFeedbackPlanItems } from "@/services/feedback-plan-service";
+import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 
 const suffix = "PLAN-SERVICE";
 const classCode = `TEST-${suffix}`;
@@ -32,16 +32,54 @@ afterEach(async () => {
   await prisma.feedbackPlan.deleteMany({ where: { purpose: "测试事件反馈" } });
   await prisma.feedbackPlan.deleteMany({ where: { purpose: "测试阶段范围" } });
   await prisma.classSession.deleteMany({ where: { code: sessionCode } });
+  await prisma.classSession.deleteMany({ where: { code: `${sessionCode}-WCG` } });
   await prisma.classSession.deleteMany({ where: { code: { in: rangeSessionCodes } } });
   await prisma.student.deleteMany({ where: { studentId: `${studentNumber}-RANGE` } });
   await prisma.student.deleteMany({ where: { studentId: studentNumber } });
+  await prisma.student.deleteMany({ where: { studentId: `${studentNumber}-WCG` } });
   await prisma.class.deleteMany({ where: { code: `${classCode}-RANGE` } });
   await prisma.class.deleteMany({ where: { code: classCode } });
+  await prisma.class.deleteMany({ where: { code: `${classCode}-WCG` } });
   await prisma.semester.deleteMany({ where: { name: `${semesterName}-RANGE` } });
   await prisma.semester.deleteMany({ where: { name: semesterName } });
+  await prisma.semester.deleteMany({ where: { name: `${semesterName}-WCG` } });
 });
 
 describe("feedback plan service", () => {
+  it("keeps generated text when a communication preference is confirmed and can recover legacy stale text without a model call", async () => {
+    const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "偏好确认测试班" } });
+    const student = await prisma.student.create({ data: { name: "测试学生", studentId: studentNumber, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
+    const session = await prisma.classSession.create({ data: { code: sessionCode, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
+    await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "课堂能独立完成练习", rawText: "合成测试" } });
+    const plan = await createFeedbackPlan({ type: "event_micro", purpose: "测试事件反馈", semesterId: semester.id, classId: classRecord.id, sessionId: session.id, rangeEndSessionId: session.id, studentIds: [student.id] });
+    const item = await patchFeedbackPlanItem(plan.items[0]!.id, {
+      composition: { version: 1, closureType: "positive_recognition", needParentAction: false, parentAction: null, modules: [
+        { key: "observed_moment", content: "课堂能独立完成练习", evidenceRefs: ["current-event-0"], status: "included", reason: "合成测试" },
+        { key: "teacher_interpretation", content: "本节内容已经基本消化", evidenceRefs: ["current-event-0"], status: "included", reason: "合成测试" },
+      ], evidenceCoverage: [{ evidenceId: "current-event-0", statement: "课堂能独立完成练习" }], draftFeedback: "课堂能独立完成练习，本节内容已经基本消化。" },
+      finalText: "课堂能独立完成练习，本节内容已经基本消化。",
+    });
+    const candidate = await createPreferenceCandidate({
+      studentId: student.id,
+      sourceType: "teacher",
+      preference: { version: 1, length: "detailed", deliveryChannel: "text", phoneContact: "accepted", evidence: "unknown", terminology: "unknown", familyParticipation: "unknown", frequency: "every_session" },
+      evidence: { source: "teacher_manual" },
+    });
+
+    await resolvePreferenceCandidate(candidate.id, "confirmed");
+    let refreshed = await getFeedbackPlan(plan.id);
+    expect(refreshed!.items[0]).toMatchObject({ status: "needs_review", finalText: item.finalText });
+
+    await prisma.feedbackPlanItem.update({ where: { id: item.id }, data: { status: "stale" } });
+    await prisma.feedbackPlan.update({ where: { id: plan.id }, data: { status: "stale" } });
+    await retainStaleFeedbackPlanItems({ planId: plan.id, itemIds: [item.id] });
+    refreshed = await getFeedbackPlan(plan.id);
+    expect(refreshed!.items[0]).toMatchObject({ status: "needs_review", reviewMode: "teacher_edited", finalText: item.finalText });
+    expect(refreshed!.status).toBe("in_review");
+    expect(generationMocks.generate).not.toHaveBeenCalled();
+  });
+
   it("keeps teacher-edited final text through approval and plan export", async () => {
     const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
     const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "计划测试班" } });
@@ -56,7 +94,7 @@ describe("feedback plan service", () => {
     const patched = await patchFeedbackPlanItem(item.id, {
       composition: {
         version: 1,
-        closureType: "positive_recognition",
+        closureType: "informational",
         needParentAction: false,
         parentAction: null,
         modules: [
@@ -86,6 +124,36 @@ describe("feedback plan service", () => {
     const exportRuns = await prisma.feedbackExportRun.findMany({ where: { planId: plan.id }, orderBy: { createdAt: "asc" } });
     expect(exportRuns.map((run) => run.isRepeat)).toEqual([false, true]);
     expect(JSON.parse(exportRuns[0]!.itemManifest)[0]).toEqual({ itemId: item.id, finalTextHash: patched.finalTextHash });
+  });
+
+  it("exports a stable no-send WCG package from teacher-approved personal feedback", async () => {
+    const semester = await prisma.semester.create({ data: { name: `${semesterName}-WCG`, startDate: "2099-01-01", endDate: "2099-12-31" } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-WCG`, name: "企微草稿测试班" } });
+    const student = await prisma.student.create({ data: { name: "张三", studentId: `${studentNumber}-WCG`, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
+    const session = await prisma.classSession.create({ data: { code: `${sessionCode}-WCG`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
+    await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "合成课堂证据", rawText: "合成测试" } });
+    const plan = await createFeedbackPlan({ type: "event_micro", purpose: "测试事件反馈", semesterId: semester.id, classId: classRecord.id, sessionId: session.id, rangeEndSessionId: session.id, studentIds: [student.id] });
+    const item = plan.items[0]!;
+    const patched = await patchFeedbackPlanItem(item.id, {
+      composition: { version: 1, closureType: "positive_recognition", needParentAction: false, parentAction: null, modules: [
+        { key: "observed_moment", content: "合成课堂证据", evidenceRefs: ["current-event-0"], status: "included", reason: "合成测试" },
+        { key: "teacher_interpretation", content: "方法逐步稳定", evidenceRefs: ["current-event-0"], status: "included", reason: "合成测试" },
+      ], evidenceCoverage: [{ evidenceId: "current-event-0", statement: "合成课堂证据" }], draftFeedback: "模型草稿不应导出" },
+      finalText: "  教师最终确认文本。  ",
+      reviewMode: "teacher_edited",
+    });
+    await approveFeedbackPlanItems({ planId: plan.id, itemIds: [item.id], expectedHashes: { [item.id]: patched.finalTextHash! } });
+
+    const first = await buildWeComDraftPackage(prisma, plan.id);
+    const second = await buildWeComDraftPackage(prisma, plan.id);
+    expect(first.packageId).toBe(second.packageId);
+    expect(first.manifestSha256).toBe(second.manifestSha256);
+    expect(first.items).toEqual([expect.objectContaining({
+      itemId: item.id,
+      studentRef: { id: student.id, businessId: `${studentNumber}-WCG`, displayName: "张三" },
+      text: "教师最终确认文本。",
+    })]);
+    expect(first).not.toHaveProperty("messageSent");
   });
 
   it("uses the selected stage range and assigns follow-up tasks to the next class session", async () => {

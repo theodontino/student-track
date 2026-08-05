@@ -85,7 +85,7 @@ describe("feedback plan composition gate", () => {
     })["student-test-1"]).toHaveLength(2);
   });
 
-  it("blocks a plan that silently omits any confirmed teaching or assessment evidence", () => {
+  it("warns when a plan silently omits confirmed teaching or assessment evidence", () => {
     const evidence = bundle({
       teachingEvidence: [
         ...bundle().teachingEvidence,
@@ -100,7 +100,7 @@ describe("feedback plan composition gate", () => {
       }],
     });
     const result = validateCompositionForBundle(composition(), evidence, undefined, undefined, { requireAllEvidenceInText: true });
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_review");
     expect(result.issues).toContainEqual(expect.objectContaining({
       code: "confirmed_evidence_omitted",
       message: expect.stringContaining("score-a"),
@@ -114,15 +114,15 @@ describe("feedback plan composition gate", () => {
       ],
       evidenceCoverage: [
         { evidenceId: "event-1", statement: "第二道同类题能够独立完成" },
-        { evidenceId: "score-a", statement: "本次学习测验4分" },
-        { evidenceId: "assessment-1", statement: "出门测共2题，正确1题" },
+        { evidenceId: "score-a", statement: "本次学习测验反映出基础步骤比较稳定" },
+        { evidenceId: "assessment-1", statement: "本次出门测反映出部分内容还没有消化" },
       ],
-      draftFeedback: "第二道同类题能够独立完成，本次学习测验4分；出门测共2题，正确1题，仅代表本次结果。",
+      draftFeedback: "第二道同类题能够独立完成。本次学习测验反映出基础步骤比较稳定，但本次出门测反映出部分内容还没有消化。",
     }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
     expect(fullyCovered.status).toBe("pass");
   });
 
-  it("blocks evidence IDs that are attached to modules but not actually reflected in the final text", () => {
+  it("warns when evidence IDs are attached to modules but not reflected in the final text", () => {
     const evidence = bundle({
       teachingEvidence: [
         ...bundle().teachingEvidence,
@@ -137,7 +137,7 @@ describe("feedback plan composition gate", () => {
       evidenceCoverage: [{ evidenceId: "event-1", statement: "第二道同类题已经能够独立完成" }],
       draftFeedback: "今天第二道同类题已经能够独立完成，这个处理过程比较稳。",
     }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
-    expect(refOnly.status).toBe("blocked");
+    expect(refOnly.status).toBe("needs_review");
     expect(refOnly.issues).toContainEqual(expect.objectContaining({
       code: "confirmed_evidence_text_omitted",
       message: expect.stringContaining("score-a"),
@@ -154,7 +154,7 @@ describe("feedback plan composition gate", () => {
       ],
       draftFeedback: "今天第二道同类题已经能够独立完成，这个处理过程比较稳。",
     }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
-    expect(unrelatedSentence.status).toBe("blocked");
+    expect(unrelatedSentence.status).toBe("needs_review");
     expect(unrelatedSentence.issues).toContainEqual(expect.objectContaining({ code: "evidence_coverage_unsubstantiated" }));
   });
 
@@ -177,24 +177,40 @@ describe("feedback plan composition gate", () => {
     expect(result.issues).toEqual([]);
   });
 
-  it("blocks a parent action hidden in text when the action switch is false", () => {
+  it("blocks student-directed language only while auditing model-generated parent text", () => {
+    const studentDirected = composition({ draftFeedback: "你今天第二道同类题已经能够独立完成，继续加油。" });
+    const generatedAudit = validateCompositionForBundle(
+      studentDirected,
+      bundle(),
+      undefined,
+      undefined,
+      { enforceParentAudience: true },
+    );
+    expect(generatedAudit.status).toBe("blocked");
+    expect(generatedAudit.issues).toContainEqual(expect.objectContaining({ code: "recipient_mismatch" }));
+
+    const teacherEditAudit = validateCompositionForBundle(studentDirected, bundle());
+    expect(teacherEditAudit.issues.some((issue) => issue.code === "recipient_mismatch")).toBe(false);
+  });
+
+  it("warns about a parent action hidden in text when the action switch is false", () => {
     const result = validateCompositionForBundle(composition({ draftFeedback: "麻烦家长提醒孩子今晚完成订正。" }), bundle());
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_review");
     expect(result.issues.some((issue) => issue.code === "implicit_parent_action")).toBe(true);
 
     const indirect = validateCompositionForBundle(composition({ draftFeedback: "希望家长关注孩子的作息。" }), bundle());
-    expect(indirect.status).toBe("blocked");
+    expect(indirect.status).toBe("needs_review");
     expect(indirect.issues.some((issue) => issue.code === "implicit_parent_action")).toBe(true);
   });
 
-  it("blocks an enabled parent-action module without structured action content", () => {
+  it("warns about an enabled parent-action module without structured action content", () => {
     const result = validateCompositionForBundle(composition({
       modules: [
         ...composition().modules,
         { key: "parent_action", content: "关注作息", evidenceRefs: ["event-1"], status: "included", reason: "模型建议" },
       ],
     }), bundle());
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_review");
     expect(result.issues.some((issue) => issue.code === "parent_action_content_missing")).toBe(true);
   });
 
@@ -212,7 +228,7 @@ describe("feedback plan composition gate", () => {
     expect(chemistryModel.issues).toEqual([]);
   });
 
-  it("blocks follow-up observation without an approved task", () => {
+  it("warns about follow-up observation without an approved task", () => {
     const result = validateCompositionForBundle(composition({
       closureType: "continued_observation",
       modules: [{
@@ -230,16 +246,16 @@ describe("feedback plan composition gate", () => {
       }],
       draftFeedback: "第二道同类题已经能够独立完成；我会在下次课继续观察这部分是否稳定。",
     }), bundle());
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_review");
     expect(result.issues.some((issue) => issue.code === "followup_without_task")).toBe(true);
     expect(result.issues.some((issue) => issue.code === "promise_without_task")).toBe(true);
   });
 
-  it("blocks a teacher's future action even when it is phrased as a neutral plan", () => {
+  it("warns about a teacher's future action even when it is phrased as a neutral plan", () => {
     const result = validateCompositionForBundle(composition({
       draftFeedback: "老师会在下次课检查这部分是否稳定。",
     }), bundle());
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_review");
     expect(result.issues.some((issue) => issue.code === "promise_without_task")).toBe(true);
   });
 

@@ -244,6 +244,7 @@ describe("generation memory retention", () => {
     const request = mocks.completionCreate.mock.calls[0]?.[0];
     expect(request.messages[1].content).toContain("受控学期摘要：氧化还原反应的证据表达逐步稳定。");
     expect(request.messages[1].content).not.toContain("\"snapshot\":{\"version\":1");
+    expect(request).not.toHaveProperty("temperature");
 
     const draft = await prisma.teachingMemory.findFirstOrThrow({ where: { memoryTier: "long-term" } });
     expect(JSON.parse(draft.sourceRefs)).toEqual(expect.arrayContaining([

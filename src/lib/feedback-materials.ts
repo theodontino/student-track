@@ -437,18 +437,6 @@ export function assessmentEvidencePrompt(evidence: StudentAssessmentEvidence | n
     `第${item.questionNumber}题本人答${item.studentAnswer || "未提取"}、正确答案${item.correctAnswer || "未提取"}`
     + `${item.knowledgePoints.length ? `，涉及${item.knowledgePoints.join("、")}` : ""}`
   ));
-  const wrongQuestionNumbers = evidence.wrongItems
-    .map((item) => `第${item.questionNumber}题`)
-    .join("、");
-  const actionPlan = evidence.wrongItems.length
-    ? [
-      `先不看答案重做${wrongQuestionNumbers}，每题写一句判断依据`,
-      evidence.similarPracticeCount > 0
-        ? `再完成报告附带的${evidence.similarPracticeCount}道相似练习`
-        : "",
-      "仍不能独立完成时，再看讲解或向老师提问",
-    ].filter(Boolean).join("；")
-    : "";
   return [
     "【该生出门测客观证据】",
     evidence.sessionCode ? `绑定课次：${evidence.sessionCode}` : "",
@@ -457,7 +445,6 @@ export function assessmentEvidencePrompt(evidence: StudentAssessmentEvidence | n
     weakPoints.length ? `尚未全部通过的知识点：${weakPoints.join("；")}` : "报告列出的知识点本次均已通过。",
     wrongItems.length ? `错题：${wrongItems.join("；")}` : "报告未列出错题。",
     evidence.similarPracticeCount > 0 ? `报告附带${evidence.similarPracticeCount}道相似练习。` : "",
-    actionPlan ? `可执行课后任务（这是建议，不是已经完成的事实）：${actionPlan}。` : "",
-    "证据边界：单次报告只能描述本次答题，不得据此推断长期能力或人格特征。",
+    "内部推断边界（不要写入家长反馈）：只将本报告视为本次答题证据，不据此推断长期能力或人格特征，也不要添加固定免责声明。",
   ].filter(Boolean).join("\n");
 }

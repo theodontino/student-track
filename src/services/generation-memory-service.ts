@@ -581,7 +581,6 @@ export async function generateLongTermMemoryDraftsForClass(classId: string, db: 
     const model = getLLMModel();
     const response = await client.chat.completions.create({
       model,
-      temperature: 0,
       ...getLLMCompletionOptions(undefined, 2048),
       response_format: { type: "json_object" },
       messages: [

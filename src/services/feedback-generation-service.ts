@@ -20,6 +20,7 @@ import {
 } from "@/lib/feedback-sections";
 import {
   containsRecipientPlaceholder,
+  containsStudentDirectedAddress,
   sanitizeFeedbackPromptText,
 } from "@/lib/feedback-text-safety";
 import {
@@ -45,6 +46,8 @@ const FEEDBACK_ROUTINE_RETRY_MAX_TOKENS = 4096;
 const LESSON_SUMMARY_INITIAL_MAX_TOKENS = 1536;
 const LESSON_SUMMARY_RETRY_MAX_TOKENS = 3072;
 const FEEDBACK_MAX_ATTEMPTS = 2;
+
+const PARENT_RECIPIENT_PROTOCOL = `【收件人协议（硬规则）】默认收件人是家长。全文站在老师对家长说话的位置，谈到学生时使用姓名、“孩子”或第三人称；不得直接对学生使用“你/你们”或学生式称呼，也不得自行切换收件人。`;
 
 type LLMClient = ReturnType<typeof createLLMClient>;
 
@@ -218,7 +221,6 @@ async function createReviewCompletion(
   const baseBody = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
-    temperature: 0,
     max_tokens: configured.max_tokens,
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   };
@@ -252,7 +254,6 @@ async function createRoutineCompletion(
   const baseBody = {
     model,
     messages: [{ role: "user" as const, content: prompt }],
-    temperature: 0.2,
     ...configured,
     // 配置中的 maxTokens 是常规调用的偏好，不应让一次 length 截断的
     // 恢复路径再次回到更小上限。
@@ -292,7 +293,6 @@ async function generateDraft(
     const baseBody = {
       model,
       messages: [{ role: "user" as const, content: prompt }],
-      temperature: responseMode === "json" ? 0 : 0.5,
       max_tokens: Math.max(configured.max_tokens, requestedMaxTokens),
       reasoning_effort: reasoningEffort,
     };
@@ -504,14 +504,16 @@ export async function generateRoutineFeedback(input: GenerateRoutineFeedbackInpu
 
 ${input.promptContext}
 
+${PARENT_RECIPIENT_PROTOCOL}
+
 规则：
-1. ${feedbackLengthRequirement(input.length)}，写成自然、连贯的微信短句；只围绕本次最值得说的一件表现，带上具体依据，并用一句有边界的解释说明它为什么值得家长知道。
-2. 语气要像老师认真看过孩子当堂表现后亲自发出的简短消息：事实之后可以自然表达一次具体的肯定、关照或稳妥的收束，让家长感到孩子被看见；不得用空泛夸奖代替事实，也不得写成冷冰冰的评分结论。
-3. 本次表达风格：${feedbackStyleInstruction(input.style)}风格只改变表达，不得改变事实、证据、问题强度、教师内部研判或安全规则。
-4. 默认不布置建议或任务。只有背景明确要求家长配合时，才加一句最小必要提醒；没有明确前后证据，不得写“越来越好、明显提升、习惯形成、从不会到会”。
-5. 家校沟通只用于确定表达重点，不能替代本课事实；不要提及内部标签、风险、观察、班均或其他学生。
-6. 公共课程材料只可说明本节主题，不可当作学生个人掌握证据。不要套用“整体表现优异、值得肯定、继续保持、订正巩固”等空泛模板；具体表现得到的真诚肯定可以保留。
-7. 不使用任何家长称呼、寒暄或模板占位符，例如“XX妈妈”“某某家长”“家长您好”；直接从该生本次表现开始。
+1. ${feedbackLengthRequirement(input.length)}，写成自然、连贯的微信消息。围绕本次最值得说的一条主线展开，可以带上一到两个相关判断，让家长知道孩子哪些地方学得还可以、哪里还没有消化，以及这些表现为什么值得注意。
+2. 教师判断应多于数据罗列。只保留家长容易理解且能支撑判断的标志性数据，例如总正确率或有明确可比基础的变化；题目明细、过程分和重复数字尽量转化为对知识点、方法或能力表现的解释。
+3. 可以连接多条证据，判断它们共同反映了什么。只有跨课次、可比较的重复证据才能说某个能力问题正在延续或已经连成一条线；单次证据只解释本次表现。
+4. 本次表达风格：${feedbackStyleInstruction(input.style)}风格只改变表达，不得改变事实、证据、问题强度、教师内部研判或安全规则。
+5. 默认不布置建议或任务。只有判断需要的时候可以这样做；没有前后证据，不得写“越来越好、明显提升、习惯形成、从不会到会”。
+6. 像老师自然说话一样组织内容，不套“先说表现、再报数据、最后提建议”的固定顺序，也不写成编号报告。可以从判断、课堂瞬间或家长最关心的变化自然起笔。
+7. 公共课程材料只可说明本节主题。具体表现得到的真诚肯定可以保留。
 8. 只返回合法 JSON：{"verdict":"pass|needs_review","feedback":"最终文本","issues":["简短原因"]}。证据不足时返回 needs_review，不要补写。`;
   let payload: ReviewPayload | null = null;
   let failureReason = "";
@@ -568,6 +570,11 @@ ${input.promptContext}
     reviewStatus = "needs_review";
     reviewIssues.push("反馈中出现了家长称呼占位符");
   }
+  if (containsStudentDirectedAddress(feedback)) {
+    feedback = "";
+    reviewStatus = "needs_review";
+    reviewIssues.push("家长反馈错误地直接面向学生");
+  }
   return {
     draftFeedback: "",
     feedback,
@@ -582,16 +589,15 @@ export async function generateFeedbackDraft(input: FeedbackDraftInput) {
 ${input.promptContext}
 
 分析要求：
-1. 不要复述整份课程母版。只提炼最值得告诉家长的一项表现或问题；只有明确需要时才提出一项最小动作。
-2. 最近两次只与个人本学期整体和对应课次班均对照；不得做“前两次 vs 最近两次”，也不得改写成“比学期初、比以前、一开始时更好”，不得写排名。
-3. 个人 PDF 中的题数、正确率、知识点和答案是本次客观证据；单道错题不得扩张成长期能力判断。
-4. 从历史评价、助教备注和事件中寻找真实的努力、习惯或方法信号，例如连续主动回答、开始记录步骤、愿意订正、由提示后完成到独立完成。一次行为只能写“本次出现”，重复行为可写“最近连续出现”或“正在形成”；没有方向性对照时不得写“越来越、明显提升、比以前更”。
-5. 只有同一能力的前后证据或明确 T1/T2/T3 结果才能写“从不会到会”“已经掌握”“形成习惯”；否则只能描述本次结果和正在出现的积极信号。
-6. 家校沟通已按实际发生时间由近到远排列。优先使用最接近本课且尚未解决的关切或承诺；较旧内容只作背景，若已被更新沟通取代则忽略。若家长曾担心成绩、难度、信心、方法或作业，应寻找本次可以回应该关切的证据；无相关证据或沟通只是收悉、请假、排课时，不要强行使用。
-7. 所有背景都要区分“事实”“有边界的成长解读”和“建议”。成长解读要帮助家长理解孩子正在吸收什么、哪种方法正在建立，但不能拔高或许诺结果。
-8. 默认不写课后动作。只有背景明确需要家长配合或已有具体教师承诺时，才写一项可执行动作；不要只写“订正巩固”“加强复习”。
-9. 只分析该生本人，不比较、不提其他学生姓名，不补充背景中不存在的成绩、考勤、事件或家校结论。
-10. 控制在 100–180 字，可分点；不要使用家长称呼、寒暄或可直接发送的结尾。最终家长话术将由下一阶段生成，目标长度为${feedbackLengthRequirement(input.length)}，表达风格为：${feedbackStyleInstruction(input.style)}`;
+1. 以确定性背景为事实底座，不补充其中不存在的成绩、考勤、事件、沟通、教师动作或家庭情况。
+2. 不必只复述证据。优先形成教师判断：从题目和课堂过程看，哪些知识已经能够使用，哪里只是暂时会做但还没有真正消化，问题更接近概念理解、条件识别、步骤习惯还是迁移能力。
+3. 把多次课堂、测评和沟通中指向同一能力的证据连接起来。只有存在跨时间的重复表现时，才能判断某个长期被忽略的能力已经形成连续问题；只有单次证据时，就停留在本次判断。
+4. 规划正文信息时减少原始数据暴露。优先选择总正确率、今天相对昨天、今天相对个人以往等家长能直接理解且确有可比基础的标志性数据；其余题目明细、分项分数和重复数字用于支撑分析，不必逐项展示。
+5. 合理联想必须能回到现有证据。把“已经发生的事实”“基于证据的解释”“可选建议”区分清楚；原因不确定时可以提出可能性，但不要写成确定事实，也不要从单次表现推断人格或长期能力。
+6. 初稿不是摘要，也不是最终发送文本，不以简短和信息压缩为目标。优先把证据之间的联系、教学判断和不同写作角度写充分，删减与最终取舍交给后续审核和老师。
+7. 家校沟通已按实际发生时间由近到远排列。优先使用较新且仍有效的关切或承诺；旧内容被新沟通取代时忽略。没有相关证据时不强行回应。
+8. 只有现有证据确实支持时才提出家长动作、教师承诺或具体课后任务；不要把建议写成已经发生的事实。
+9. 只分析该生本人。可以从最重要的判断、一个课堂瞬间或家长关心的问题自然展开，不预设“事实—分析—建议”的固定顺序；证据较多时自然分句，允许完整主语、连接词、适度重复、自然省略和不完全对称的句式。表达风格参考：${feedbackStyleInstruction(input.style)}`;
   return generateDraft(input.client, input.model, draftPrompt, input.signal, input.profileId);
 }
 
@@ -608,22 +614,19 @@ ${input.promptContext}
 内部分析草稿（仅供参考，不得原样发送）：
 ${draftFeedback}
 
+${PARENT_RECIPIENT_PROTOCOL}
+
 成稿与审核规则：
-1. 学生身份、本次表现、近期趋势、考勤、事件和家校沟通都必须能在确定性背景中找到依据；分析草稿与背景冲突时以背景为准。
-2. 写成老师课后单独发给家长的微信，不写成学习报告。用2—4个自然短句，只突出一个核心结论；不要求同时表扬、分析问题和布置动作。
-3. 家长读完应得到三种真实感受：老师确实观察到了我的孩子；孩子的努力和变化被看见；当前问题具体且下一步可控。情绪价值来自降低不确定感和看见真实努力，不来自空泛夸奖、制造焦虑或承诺提分。
-4. 不使用 A/B/C/D 等系统字段代号，不比较或提到其他学生，不把建议写成已经发生的事实。
-5. 公共课程材料不得被写成个体掌握结论；出门测统一说明中的“有错误、表现好”等模板判断不得作为证据。
-6. 不输出排名；允许说“最近两次处在个人本学期较好水平”或“本次与同期整体接近”，但不得将全学期常态对照改写为“比学期初、比以前更好”，不要制造竞争和焦虑。
-7. 不要照抄或近义改写群反馈，不要罗列完整课堂内容。课程主题最多用半句话交代，除非它是理解个体错题所必需的背景。
-8. 禁用“整体表现优异”“值得肯定”“后续请关注”“订正巩固”“巩固学习效果”“如有疑问可随时联系老师”等成套 AI 话术。可以直接、口语化，但不要油腻或夸张。
-9. 只有明确的前后证据才可写“从不会到会”“已经掌握”“越来越”“明显提升”“习惯已经形成”。若证据只是本次答题和重复出现的积极事件，应写“这次已经能……”“最近几节课都……”“这种做法正在慢慢稳定下来”。
-10. 家校沟通按实际发生时间由近到远提供。优先回应最近且仍有效的学习关切或教师承诺；旧内容与新内容冲突时以新内容为准。可用本次证据自然回应，例如“您之前提到他觉得开始变难，这次……”。与学习无关的收悉、请假、排课和寒暄不得进入反馈。
-11. 只有背景明确需要补救且给出题号或材料时，才写一项具体任务；不得凭空编造题目内容。普通情况可直接结束，不强行布置作业。
-12. 最终 feedback 应满足${feedbackLengthRequirement(input.length)}；本次表达风格为：${feedbackStyleInstruction(input.style)}风格只改变表达，不得改变事实、证据、问题强度、内部研判或安全规则。文本应具体、连贯，适合直接发送；不要标题、项目符号或内部分析措辞。不得使用任何家长称呼、寒暄或模板占位符，例如“XX妈妈”“某某家长”“家长您好”，直接从该生表现开始。
-13. 分析可靠且已成功成稿时 verdict="pass"；需要删改分析中的不可靠内容但仍能安全成稿时 verdict="revise"；无法可靠成稿时 verdict="needs_review"。
-14. 无论 pass 还是 revise 都必须返回完整最终 feedback；needs_review 可返回一份供教师修改的保守文本，并在 issues 中说明原因。
-15. 只返回合法 JSON：{"verdict":"pass|revise|needs_review","feedback":"最终文本","issues":["简短原因"]}。`;
+1. 逐项核对事实底座。分析草稿与背景冲突时以背景为准；没有依据的事实、确定性过高的结论和越界承诺需要修正。
+2. 让教师判断成为正文主体。用题目与课堂证据说明孩子哪里学得还可以、哪里没有真正消化、背后更像是哪一种知识或能力问题；有跨时间证据时，可以把反复出现的能力表现连成一条清楚的线。
+3. 数据只承担锚定判断的作用。优先保留总正确率和有明确可比基础的变化；分项分数、题号和重复数字尽量消化成自然判断，不把证据包改写成数据清单。不得为了减少数字而丢掉证据所支持的重要结论。
+4. 不要因为内容包含分析或联想就自动删掉。只要能由现有证据合理支持，应保留它的教学价值；确定性过高时优先改成适当的可能性表达，而不是删除整段。
+5. 这是供老师继续审核和删改的可发送草稿。除明显重复、事实冲突或安全越界外，不要为了追求短、稳或统一风格主动删掉有依据的内容；最终取舍交给老师。
+6. 可以重新组织证据并补充自然过渡，使文本像老师课后单独发给家长的微信。不要套固定段式，也不要按“先……再……最后……”机械推进。长句可以拆开，缺少主语时可以补回主语，也可以保留适度冗余、自然停顿和变化的语序。${feedbackLengthRequirement(input.length)}只作为柔性参考，不要求为此压缩内容；表达风格为：${feedbackStyleInstruction(input.style)}。
+7. 不使用系统字段代号，不比较或提到其他学生，不输出排名。公共课程材料和统一模板不能替代该生个人证据；建议不能写成已经发生的事实。
+8. 家校沟通优先使用较新且仍有效的学习关切或教师承诺。具体任务、教师未来动作和家庭配合必须有背景依据；不确定时放入 issues 交给老师判断。
+9. 分析可靠且已成功成稿时 verdict="pass"；修正了不可靠内容时 verdict="revise"；仍有无法确认的事实或边界时 verdict="needs_review"。无论哪种 verdict，都返回尽可能完整的 feedback，供老师继续修改。
+10. 只返回合法 JSON：{"verdict":"pass|revise|needs_review","feedback":"最终文本","issues":["简短原因"]}。`;
   const reviewed = await reviewDraft(input.client, input.model, reviewPrompt, input.signal, input.profileId);
   if (!reviewed) {
     return {
@@ -654,6 +657,11 @@ ${draftFeedback}
   if (containsRecipientPlaceholder(feedback)) {
     reviewStatus = "needs_review";
     reviewIssues.push("反馈中出现了家长称呼占位符");
+    feedback = "";
+  }
+  if (containsStudentDirectedAddress(feedback)) {
+    reviewStatus = "needs_review";
+    reviewIssues.push("家长反馈错误地直接面向学生");
     feedback = "";
   }
   return {
@@ -749,12 +757,13 @@ export async function generateFeedbackPlanComposition(input: FeedbackPlanGenerat
   const requiredEvidenceIds = evidence.teachingEvidence.concat(evidence.assessmentEvidence)
     .filter((item) => item.confirmed && item.kind !== "model_candidate")
     .map((item) => item.id);
-  const baseProtocolBoundary = `当前类型允许的 module key 只有：${allowedModules.join(", ")}。
+  const baseProtocolBoundary = `${PARENT_RECIPIENT_PROTOCOL}
+当前类型允许的 module key 只有：${allowedModules.join(", ")}。
 当前类型允许的 closureType 只有：${allowedClosures.join(", ")}。
 evidenceRefs 只能逐字使用以下证据 ID：${evidenceIds.join(", ")}。`;
   const draftProtocolBoundary = `${baseProtocolBoundary}
 必须全部覆盖并在 draftFeedback 中反映的已确认教学与测评证据 ID：${requiredEvidenceIds.join(", ")}。
-evidenceCoverage 必须为上述每个必覆盖 ID 提供且只提供一条 {evidenceId, statement}；statement 必须逐字出现在 draftFeedback 中，并包含与该证据对应的具体数字或关键词。`;
+evidenceCoverage 必须为上述每个必覆盖 ID 提供且只提供一条 {evidenceId, statement}；statement 必须逐字出现在 draftFeedback 中，并保留能追溯到对应证据的关键词。覆盖证据不等于逐项暴露原始数据，只在数字对家长理解判断确有帮助时保留。`;
   const fullEvidenceStructuralCodes = new Set([
     "module_not_allowed",
     "evidence_ref_missing",
@@ -769,7 +778,7 @@ evidenceCoverage 必须为上述每个必覆盖 ID 提供且只提供一条 {evi
   const draftPrompt = `你是 Student Track 的反馈组装模型。请只依据确定性证据包，为${input.studentName}生成结构化反馈组装方案。不要添加证据包之外的事实、教师动作、家长动作或未来承诺。
 
 反馈类型：${input.planType}
-表达偏好：长度 ${input.length}；语气与术语按 ${input.style}，但偏好不能改变事实、风险、家长动作或教师承诺边界。
+表达风格参考：${input.style}。这是充分初稿，不使用最终长度要求。
 确定性证据包：
 ${evidenceText}
 
@@ -778,12 +787,14 @@ ${draftProtocolBoundary}
 
 规则：
 1. 只能从上面明确列出的 module key 中选择两到四个有价值的模块，不得自造、翻译或使用旧版模块名；每个 included 模块至少引用一个上面列出的证据 ID。
-2. teachingEvidence 与 assessmentEvidence 中所有 confirmed=true 的证据 ID 都必须至少被一个 included 模块引用，并把对应事实反映在 draftFeedback 中，不得只挂 ID 而省略内容；同时为每个 ID 填写 evidenceCoverage，statement 必须是 draftFeedback 中逐字存在且真实承载该证据的短句。assessmentEvidence 还要解释本次正确情况、错题或知识点表现，同时明确这只是单次结果。
+2. teachingEvidence 与 assessmentEvidence 中所有 confirmed=true 的证据 ID 都必须至少被一个 included 模块引用，并把它所支持的事实或判断反映在 draftFeedback 中，不得只挂 ID 而省略内容；同时为每个 ID 填写 evidenceCoverage，statement 必须是 draftFeedback 中逐字存在且真实承载该证据含义的短句。多条证据可以共同支撑同一个自然判断，不必逐项报数。
 3. needParentAction 默认 false；家长动作只能是提醒、确认、提供条件或反馈异常。
 4. teacher_intervention、teacher_support 和 intervention_outcome 必须有证据；followup_observation 必须已有任务或固定安排。
 5. closureType 只能从上面列出的当前类型选项中选择；不得因为示例中出现其他结尾就使用越界值。
-6. 不产生续班、销售、风险标签或内部研判；不要称呼家长。
-7. draftFeedback 只是初稿，不要写标题或项目符号。
+6. modules 和 evidenceCoverage 是审计元数据，不是正文模板。draftFeedback 应以教师判断为主体：从题目和课堂表现判断哪些内容已经能够使用、哪里还没有真正消化，以及问题更接近知识理解、条件识别、步骤习惯还是迁移能力。
+7. 数据只用作家长能理解的判断锚点。优先保留总正确率和有明确可比基础的变化；题号、分项分数和重复数字尽量转化为知识点、方法或能力判断。只有跨时间的重复证据才能描述长期能力线索。
+8. 可以分析这些证据放在一起可能说明什么、当前更值得关注什么、哪些积极信号正在出现。合理联想要能回到证据；不确定的原因或趋势使用适当的可能性表达，不写成确定事实。
+9. 这是供后续审核和老师删改的充分初稿，不使用最终长度要求。优先多保留有价值的判断、证据联系和表达角度；从最自然的地方起笔，不套固定顺序，证据较多时分句表达，并保留完整主语、连接词、适度重复和自然停顿。不要写标题或项目符号。
 
 只返回 JSON：{
   "version":1,
@@ -819,11 +830,11 @@ ${draftRaw.slice(0, 12000)}
     evidence,
     input.existingTaskIds,
     undefined,
-    { requireAllEvidenceInText: true },
+    { requireAllEvidenceInText: true, enforceParentAudience: true },
   );
-  const draftCoverageIssues = () => draftAudit.items.filter((issue) => issue.severity === "blocked" && fullEvidenceStructuralCodes.has(issue.code));
+  const draftCoverageIssues = () => draftAudit.items.filter((issue) => fullEvidenceStructuralCodes.has(issue.code));
   if (draftCoverageIssues().length > 0) {
-    const coverageRepairPrompt = `你是 Student Track 的全证据初稿纠错模型。上一版初稿没有把每条已确认教学与测评证据真正写入正文。请补全初稿，不新增证据包之外的事实或动作。
+    const coverageRepairPrompt = `你是 Student Track 的全证据初稿纠错模型。上一版初稿没有把每条已确认教学与测评证据真正写入正文。请补全初稿，不新增证据包之外的事实或动作。补全时优先把证据消化成教师判断，不逐项堆叠原始数据；只保留帮助家长理解判断的标志性数字。
 
 反馈类型：${input.planType}
 ${draftProtocolBoundary}
@@ -848,50 +859,14 @@ ${draftCoverageIssues().map((issue) => `- ${issue.message}`).join("\n")}
           evidence,
           input.existingTaskIds,
           undefined,
-          { requireAllEvidenceInText: true },
+          { requireAllEvidenceInText: true, enforceParentAudience: true },
         );
       } catch (error) {
         if (!(error instanceof ApiError) || error.code !== "llm_schema_invalid") throw error;
       }
     }
   }
-  if (draftCoverageIssues().length > 0) {
-    const requiredEvidence = evidence.teachingEvidence.concat(evidence.assessmentEvidence)
-      .filter((item) => item.confirmed && item.kind !== "model_candidate");
-    const perEvidenceLimit = Math.max(20, Math.floor(7500 / Math.max(1, requiredEvidence.length)));
-    const evidenceCoverage = requiredEvidence.map((item) => ({
-      evidenceId: item.id,
-      statement: (item.content.length >= 2 ? item.content : `证据：${item.content}`).slice(0, perEvidenceLimit).trim(),
-    }));
-    const modules = draftComposition.modules.map((module) => ({ ...module, evidenceRefs: [...module.evidenceRefs] }));
-    const includedIndexes = modules.flatMap((module, index) => module.status === "included" ? [index] : []);
-    if (includedIndexes.length > 0) {
-      for (const [index, coverage] of evidenceCoverage.entries()) {
-        const moduleIndex = includedIndexes[index % includedIndexes.length]!;
-        if (!modules[moduleIndex]!.evidenceRefs.includes(coverage.evidenceId)) modules[moduleIndex]!.evidenceRefs.push(coverage.evidenceId);
-      }
-      const originalText = draftComposition.draftFeedback.trim().slice(0, 2000);
-      const missingStatements = evidenceCoverage
-        .map((coverage) => coverage.statement)
-        .filter((statement) => !normalizedCoverageText(originalText).includes(normalizedCoverageText(statement)));
-      draftComposition = FeedbackCompositionPlanSchema.parse({
-        ...draftComposition,
-        modules,
-        evidenceCoverage,
-        draftFeedback: [originalText, ...missingStatements].filter(Boolean).join("；").slice(0, 10000),
-      });
-      draftAudit = createAuditSnapshot(
-        draftComposition,
-        evidence,
-        input.existingTaskIds,
-        undefined,
-        { requireAllEvidenceInText: true },
-      );
-    }
-  }
-  if (draftCoverageIssues().length > 0) {
-    throw new ApiError("反馈初稿未覆盖全部已确认教学与测评证据，本条未保存；请重试生成", 502, "llm_schema_invalid", true);
-  }
+  const unresolvedDraftIssues = draftCoverageIssues();
   const reviewPrompt = `你是 Student Track 的反馈审核与受限润色模型。请对照同一份确定性证据包审核组装方案，并只在证据允许的范围内润色。润色不得新增事实、家长动作、教师处理或未来承诺。
 
 确定性证据包：
@@ -903,13 +878,20 @@ ${JSON.stringify(draftComposition)}
 结构协议（优先级高于原组装方案）：
 ${baseProtocolBoundary}
 
+初稿覆盖检查：
+${unresolvedDraftIssues.length
+    ? unresolvedDraftIssues.map((issue) => `- ${issue.message}`).join("\n")
+    : "已覆盖全部确认的教学与测评证据。"}
+
 审核规则：
 1. 所有 included 模块必须使用当前类型允许的精确 key，并至少有一个有效 evidenceRefs；原方案中的旧版或自造 key 必须改成当前目录中的合适 key，不能原样保留。
-2. 初稿已经逐条保留全部 teachingEvidence 与 assessmentEvidence。审核时默认保留；若为了家长可读性确需删减，必须同时删除对应 evidenceCoverage 项，不能把正文已删除的事实继续标成已覆盖。不得把单次测评外推为长期能力。
-3. 家长动作开关、教师处理、处理结果和后续观察遵守字段依赖。
-4. 发现隐性承诺、内部信息或证据不足时，将对应模块标记 blocked 或 needs_review，不要替教师放行。
-5. closureType 必须属于当前类型允许列表；原方案越界时必须纠正。
-6. 只返回完整结构化 JSON，draftFeedback 是最终家长文本。
+2. 审核时先把覆盖检查中仍缺失的证据自然补入教师判断，并保留已经有依据的判断；不要为了篇幅或统一风格主动删减。可以减少分项分数、题号和重复数字，只留下总正确率或有解释价值的变化等标志性数据。只有正文确实删除证据含义时，才同步删除对应 evidenceCoverage。
+3. 让教师判断比数据更突出。说明哪里学得还可以、哪里没有真正消化，以及多条证据共同指向的知识或能力问题；只有存在跨时间重复证据时才形成长期判断。
+4. 不要因为存在联想或教学判断就自动删除。能由证据合理支持的分析应保留；如果语气过满，优先降低确定性或在审核问题中提示，不要退回机械复述。润色时从最自然的地方展开，不套固定顺序；可以拆开高密度长句、补回自然主语和过渡，并保留适度冗余与变化的语序。长度偏好 ${input.length} 与表达风格 ${input.style} 只作为柔性参考，不能成为压缩有依据内容的理由。
+5. 家长动作开关、教师处理、处理结果和后续观察遵守字段依赖。
+6. 发现事实冲突、隐性承诺、内部信息或证据明显不足时，将对应模块标记 blocked 或 needs_review，不要替教师放行。
+7. closureType 必须属于当前类型允许列表；原方案越界时必须纠正。
+8. 只返回完整结构化 JSON，draftFeedback 是供老师继续删改的家长文本草稿。
 
 返回字段必须包含 version、closureType、needParentAction、parentAction、modules、evidenceCoverage 和 draftFeedback；modules 使用 key、content、evidenceRefs、status、reason；evidenceCoverage 使用 evidenceId、statement。`;
   const reviewedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, reviewPrompt, input.signal, { profileId: input.profileId });
@@ -945,10 +927,16 @@ ${reviewedContent.slice(0, 12000)}
     }
   }
   reviewedComposition = retainCoveragePresentInFinalText(reviewedComposition);
-  let audit = createAuditSnapshot(reviewedComposition, evidence, input.existingTaskIds);
+  let audit = createAuditSnapshot(
+    reviewedComposition,
+    evidence,
+    input.existingTaskIds,
+    undefined,
+    { requireAllEvidenceInText: true, enforceParentAudience: true },
+  );
   const blocked = audit.items.filter((issue) => issue.severity === "blocked");
   if (blocked.length) {
-    const correctionPrompt = `你是 Student Track 的结构纠错模型。上一版反馈未通过程序门禁，请只修正结构和越界表达，不新增任何事实或动作。
+    const correctionPrompt = `你是 Student Track 的结构纠错模型。上一版反馈未通过程序门禁，请只修正结构和越界表达，不新增任何事实或动作。保持教师判断和自然叙述，不要为了补结构退回逐项报数。
 
 反馈类型：${input.planType}
 ${baseProtocolBoundary}
@@ -963,26 +951,25 @@ ${JSON.stringify(reviewedComposition)}
 ${blocked.map((issue) => `- ${issue.message}`).join("\n")}
 
 只返回完整 JSON，字段为 version、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。modules 必须选两到四个，且 key 和 evidenceRefs 只能取上面允许的精确值；evidenceCoverage 只能保留 statement 仍逐字存在于 draftFeedback 的条目。`;
-    const correctedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, correctionPrompt, input.signal, { profileId: input.profileId });
-    const correctedContent = correctedResponse.choices[0]?.message?.content?.trim();
-    if (correctedContent) {
-      reviewedComposition = normalizeCompositionDependencies(parseComposition(correctedContent, "correction"));
-      reviewedComposition = retainCoveragePresentInFinalText(reviewedComposition);
-      audit = createAuditSnapshot(reviewedComposition, evidence, input.existingTaskIds);
+    try {
+      const correctedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, correctionPrompt, input.signal, { profileId: input.profileId });
+      const correctedContent = correctedResponse.choices[0]?.message?.content?.trim();
+      if (correctedContent) {
+        reviewedComposition = normalizeCompositionDependencies(parseComposition(correctedContent, "correction"));
+        reviewedComposition = retainCoveragePresentInFinalText(reviewedComposition);
+        audit = createAuditSnapshot(
+          reviewedComposition,
+          evidence,
+          input.existingTaskIds,
+          undefined,
+          { requireAllEvidenceInText: true, enforceParentAudience: true },
+        );
+      }
+    } catch {
+      throwIfAborted(input.signal);
+      // 结构纠错是可选增强。已有可读草稿时，超时或协议错误只保留在
+      // audit 中交给教师处理，不能把整条反馈丢弃。
     }
-  }
-  const finalStructuralCodes = new Set([
-    "module_not_allowed",
-    "evidence_ref_missing",
-    "module_count_invalid",
-    "closure_not_allowed",
-    "evidence_coverage_duplicate",
-    "evidence_coverage_unknown",
-    "confirmed_evidence_text_omitted",
-    "evidence_coverage_unsubstantiated",
-  ]);
-  if (audit.items.some((issue) => issue.severity === "blocked" && finalStructuralCodes.has(issue.code))) {
-    throw new ApiError("反馈模型未遵守当前类型的模块协议，本条未保存；请重试生成", 502, "llm_schema_invalid", true);
   }
   return {
     draftComposition,

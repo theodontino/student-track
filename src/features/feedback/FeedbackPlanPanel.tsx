@@ -6,6 +6,7 @@ import {
   FEEDBACK_CLOSURE_TYPES,
   FEEDBACK_CLOSURES_BY_TYPE,
   FEEDBACK_MODULES,
+  isHardFeedbackAuditIssue,
   type FeedbackCompositionPlan,
   type FeedbackModule,
   type FeedbackPlanType,
@@ -207,7 +208,9 @@ function planStatusLabel(status: string) {
 
 function auditStatus(item: PlanItem) {
   const audit = item.audit ?? parseObject(item.auditSnapshot);
-  return typeof audit.status === "string" ? audit.status : "needs_review";
+  const issues = Array.isArray(audit.items) ? audit.items as Array<{ code?: string }> : [];
+  if (issues.some((issue) => typeof issue.code === "string" && isHardFeedbackAuditIssue(issue.code))) return "blocked";
+  return audit.status === "pass" ? "pass" : "needs_review";
 }
 
 function canRegenerate(item: PlanItem) {
@@ -472,6 +475,23 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     } finally { setBusy(false); }
   }
 
+  async function retainStaleText(plan: Plan) {
+    const itemIds = plan.items.filter((item) => item.status === "stale" && item.finalText?.trim()).map((item) => item.id);
+    if (!itemIds.length) return;
+    setBusy(true); setError("");
+    try {
+      const response = await fetch(`/api/report/feedback-plans/${plan.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "retain_stale", itemIds }),
+      });
+      const payload = await response.json().catch(() => null) as ApiFailurePayload | null;
+      if (!response.ok) throw new Error(apiFailureMessage(payload, "保留现有反馈失败"));
+      await openPlan(plan.id);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "保留现有反馈失败"); }
+    finally { setBusy(false); }
+  }
+
   async function openPlan(id: string) {
     const response = await fetch(`/api/report/feedback-plans/${id}`);
     if (!response.ok) throw new Error("无法读取反馈计划详情");
@@ -540,7 +560,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
         const name = item.student?.name ?? "班级公共反馈";
         if (!item.finalText?.trim()) return `${name}：尚无最终文本`;
         if (["stale", "generating"].includes(item.status)) return `${name}：${planStatusLabel(item.status)}`;
-        if (auditStatus(item) === "blocked") return `${name}：存在程序门禁阻断`;
+        if (auditStatus(item) === "blocked") return `${name}：姓名、收件对象或证据真实性检查未通过`;
         return `${name}：当前状态不能批准`;
       });
       setError(failures.length ? failures.join("；") : "请先选择要批准的反馈条目。");
@@ -645,6 +665,27 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     finally { setBusy(false); }
   }
 
+  async function exportWeComDrafts(plan: Plan) {
+    setBusy(true); setError("");
+    try {
+      const response = await fetch(`/api/report/feedback-plans/${plan.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "export_wecom_drafts" }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as ApiFailurePayload | null;
+        throw new Error(apiFailureMessage(payload, "企微草稿包导出失败"));
+      }
+      const blob = await response.blob();
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json") || blob.size < 128) throw new Error("导出响应不是有效的企微草稿 JSON");
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a"); anchor.href = href; anchor.download = `wecom-drafts_${plan.id}.json`; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(href);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "企微草稿包导出失败"); }
+    finally { setBusy(false); }
+  }
+
   async function deletePlan(plan: Plan) {
     if (!window.confirm(`确认删除“${typeLabels[plan.type]}”计划及其受控附件吗？此操作不可撤销。`)) return;
     setBusy(true); setError("");
@@ -668,9 +709,10 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       ? "只把已批准的教师最终文本写入 Excel；未批准条目不会进入导出。"
       : "按证据篮子组装可选模块，实时查看生成进度并处理程序门禁。";
   const canGenerate = Boolean(activePlan?.items.some((item) => selectedItemIds.includes(item.id) && canRegenerate(item)));
+  const staleTextCount = activePlan?.items.filter((item) => item.status === "stale" && item.finalText?.trim()).length ?? 0;
   const allItemsApproved = Boolean(activePlan?.items.length && activePlan.items.every((item) => ["approved", "exported"].includes(item.status)));
 
-  return <Section title={title} description={description} className="feedback-plan-panel" actions={isPrepare ? <Button onClick={() => void createPlan()} disabled={busy || !sessionMeta || (type !== "class_update" && selectedStudentIds.length === 0)}>{busy ? "处理中…" : "创建反馈计划"}</Button> : activePlan ? <div className="feedback-plan-header-actions"><Button uiSize="sm" variant="secondary" onClick={() => void generatePlan(activePlan)} disabled={busy || !canGenerate}>{busy ? "生成中…" : activePlan.items.some((item) => item.finalText) ? "重新组装/生成" : "开始生成"}</Button><Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || selectedItemIds.length === 0}>批准所选可通过项</Button>{isExport && <><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button></>}<Button uiSize="sm" variant="ghost" onClick={() => void deletePlan(activePlan)} disabled={busy}>删除计划</Button></div> : null}>
+  return <Section title={title} description={description} className="feedback-plan-panel" actions={isPrepare ? <Button onClick={() => void createPlan()} disabled={busy || !sessionMeta || (type !== "class_update" && selectedStudentIds.length === 0)}>{busy ? "处理中…" : "创建反馈计划"}</Button> : activePlan ? <div className="feedback-plan-header-actions">{staleTextCount > 0 && <Button uiSize="sm" variant="secondary" onClick={() => void retainStaleText(activePlan)} disabled={busy}>保留现有正文（{staleTextCount}）</Button>}<Button uiSize="sm" variant="secondary" onClick={() => void generatePlan(activePlan)} disabled={busy || !canGenerate}>{busy ? "生成中…" : activePlan.items.some((item) => item.finalText) ? "重新组装/生成" : "开始生成"}</Button><Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || selectedItemIds.length === 0}>批准所选可通过项</Button>{isExport && <><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button><Button uiSize="sm" variant="secondary" onClick={() => void exportWeComDrafts(activePlan)} disabled={busy || !activePlan.items.some((item) => item.studentId && ["approved", "exported"].includes(item.status) && item.finalText?.trim())}>导出企微草稿 JSON</Button></>}<Button uiSize="sm" variant="ghost" onClick={() => void deletePlan(activePlan)} disabled={busy}>删除计划</Button></div> : null}>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {!isPrepare && !activePlan && plansLoaded && <StatusBanner tone="warning"><span>当前课次还没有可恢复的反馈计划，请先到“准备”步骤选择反馈类型和对象。</span><Button uiSize="sm" variant="secondary" onClick={() => workspace.setActiveStep("prepare")}>返回准备</Button></StatusBanner>}
     {repeatExportRequest && activePlan?.id === repeatExportRequest.planId && <StatusBanner tone="warning"><span>相同文本已经导出过。只有确实需要重新下载时才继续。</span><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, repeatExportRequest.mode, true)} disabled={busy}>确认重复导出</Button><Button uiSize="sm" variant="ghost" onClick={() => setRepeatExportRequest(null)} disabled={busy}>取消</Button></StatusBanner>}
@@ -727,10 +769,11 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       const updateClosure = (closureType: string) => {
         if (FEEDBACK_CLOSURE_TYPES.includes(closureType as never)) void saveComposition(item, { ...composition, closureType: closureType as FeedbackCompositionPlan["closureType"] });
       };
-      const blockedIssues = (audit.items || []).filter((issue: { severity: string }) => issue.severity === "blocked");
+      const auditIssues = audit.items || [];
+      const blockedIssues = auditIssues.filter((issue: { code: string }) => isHardFeedbackAuditIssue(issue.code));
       const protocolIssueCodes = new Set(["module_not_allowed", "evidence_ref_missing", "module_count_invalid", "closure_not_allowed", "confirmed_evidence_omitted", "evidence_coverage_duplicate", "evidence_coverage_unknown", "confirmed_evidence_text_omitted", "evidence_coverage_unsubstantiated"]);
-      const hasProtocolIssue = blockedIssues.some((issue: { code: string }) => protocolIssueCodes.has(issue.code));
-      const visibleAuditIssues = (audit.items || []).filter((issue: { code: string }) => !protocolIssueCodes.has(issue.code));
+      const hasProtocolIssue = auditIssues.some((issue: { code: string }) => protocolIssueCodes.has(issue.code));
+      const visibleAuditIssues = auditIssues.filter((issue: { code: string }) => !protocolIssueCodes.has(issue.code));
       const preference = parseObject(item.student?.communicationPreference?.preferenceSnapshot);
       const pendingPreferenceCandidate = item.student?.communicationPreferenceCandidates?.[0];
       const pendingPreference = parseObject(pendingPreferenceCandidate?.preferenceSnapshot);
@@ -745,17 +788,18 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
         dueDate: "",
       };
       const itemLabel = item.student?.name ?? (item.studentId ? "学生信息加载失败" : "班级公共反馈");
-      const itemImmutable = ["approved", "exported", "stale", "generating"].includes(item.status);
+      const itemImmutable = ["approved", "exported", "generating"].includes(item.status);
       return <article key={item.id} className="feedback-plan-item">
         <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 版本 {item.itemRevision}</small></span></label><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge></header>
         {item.studentId && !item.student && <StatusBanner tone="danger">学生身份没有加载完整，已禁止把该条目当作班级公共反馈。请刷新计划后重试。</StatusBanner>}
-        <details className="feedback-plan-evidence"><summary>查看证据篮子与内部审核 <span>初稿 {initialDraftCoveredEvidenceIds.size}/{requiredEvidenceIds.size} · 成稿 {coveredEvidenceIds.size}/{requiredEvidenceIds.size} · {audit.status || "待审核"}</span></summary><div className="feedback-plan-evidence__body"><p>{(evidence.teachingEvidence || []).map((entry: { content: string }) => entry.content).join("；") || "暂无已确认课堂证据"}</p>{assessmentEvidence.length > 0 && <p className="feedback-plan-evidence__assessment">测评与练习：{assessmentEvidence.map((entry: { content: string }) => entry.content).join("；")}</p>}{initialDraftText && <details><summary>查看模型全证据初稿</summary><p>{initialDraftText}</p></details>}{(evidence.communicationContext || []).length > 0 && <p className="feedback-plan-evidence__communication">沟通背景：{(evidence.communicationContext || []).map((entry: { content: string }) => entry.content).join("；")}</p>}{hasProtocolIssue && <StatusBanner tone="danger">生成结果使用了旧版或不匹配的反馈结构，已阻止批准。请点击顶部“重新组装/生成”，系统会按当前反馈类型重新整理。</StatusBanner>}{visibleAuditIssues.map((issue: { message: string; severity: string }, index: number) => <StatusBanner key={`${issue.message}-${index}`} tone={issue.severity === "blocked" ? "danger" : "warning"}>{issue.message}</StatusBanner>)}</div></details>
+        {item.status === "stale" && <StatusBanner tone="warning">来源信息已更新，但当前正文仍然保留。你可以直接修改并保存，点击顶部“保留现有正文”，或只勾选本条重新生成；无需删除计划。</StatusBanner>}
+        <details className="feedback-plan-evidence"><summary>查看证据篮子与内部审核 <span>初稿 {initialDraftCoveredEvidenceIds.size}/{requiredEvidenceIds.size} · 成稿 {coveredEvidenceIds.size}/{requiredEvidenceIds.size} · {auditStatus(item)}</span></summary><div className="feedback-plan-evidence__body"><p>{(evidence.teachingEvidence || []).map((entry: { content: string }) => entry.content).join("；") || "暂无已确认课堂证据"}</p>{assessmentEvidence.length > 0 && <p className="feedback-plan-evidence__assessment">测评与练习：{assessmentEvidence.map((entry: { content: string }) => entry.content).join("；")}</p>}{initialDraftText && <details><summary>查看模型全证据初稿</summary><p>{initialDraftText}</p></details>}{(evidence.communicationContext || []).length > 0 && <p className="feedback-plan-evidence__communication">沟通背景：{(evidence.communicationContext || []).map((entry: { content: string }) => entry.content).join("；")}</p>}{hasProtocolIssue && <StatusBanner tone="warning">反馈结构或证据取舍有待教师确认，但不影响批准当前正文。</StatusBanner>}{visibleAuditIssues.map((issue: { code: string; message: string }, index: number) => <StatusBanner key={`${issue.message}-${index}`} tone={isHardFeedbackAuditIssue(issue.code) ? "danger" : "warning"}>{issue.message}</StatusBanner>)}</div></details>
         {item.student && <details className="feedback-plan-preference" open={Boolean(pendingPreferenceCandidate)}><summary>家庭沟通偏好{pendingPreferenceCandidate ? " · 有待确认候选" : ""}</summary><p>当前生效：长度 {preferenceLabel(preference.length)} · 形式 {preferenceLabel(preference.deliveryChannel)} · 电话 {preferenceLabel(preference.phoneContact)} · 证据 {preferenceLabel(preference.evidence)} · 术语 {preferenceLabel(preference.terminology)} · 家庭参与 {preferenceLabel(preference.familyParticipation)} · 频率 {preferenceLabel(preference.frequency)}</p>{pendingPreferenceCandidate && <div className="feedback-plan-preference__candidate"><p>待确认：长度 {preferenceLabel(pendingPreference.length)} · 形式 {preferenceLabel(pendingPreference.deliveryChannel)} · 电话 {preferenceLabel(pendingPreference.phoneContact)} · 频率 {preferenceLabel(pendingPreference.frequency)}</p><div><Button uiSize="sm" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "confirmed")} disabled={busy}>确认并用于反馈</Button><Button uiSize="sm" variant="ghost" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "rejected")} disabled={busy}>不是偏好</Button></div></div>}</details>}
         <div className="feedback-plan-item__controls"><label><span>结尾类型</span><select value={composition.closureType || "positive_recognition"} onChange={(event) => updateClosure(event.target.value)} disabled={busy || itemImmutable}>{FEEDBACK_CLOSURES_BY_TYPE[activePlan.type].map((closure) => <option key={closure} value={closure}>{closureLabels[closure] || closure}</option>)}</select></label><div className="feedback-plan-modules"><span className="feedback-plan-label">可选模块</span>{moduleRows.map((module) => <label key={module.key} className={`feedback-plan-module feedback-plan-module--${module.status}`}><input type="checkbox" checked={module.status === "included"} disabled={busy || itemImmutable || module.status === "blocked" || !module.content} onChange={(event) => updateModule(module.key, event.target.checked)} /><span><strong>{moduleLabels[module.key] || module.key}</strong><small>{module.status === "blocked" ? `阻断：${module.reason || "缺证据"}` : !module.content ? "暂无可用证据" : module.reason || ""}</small></span></label>)}</div></div>
-        <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={5} value={draft.text} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, text: event.target.value } }))} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · 保存后重新运行程序门禁</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)}>保存修改</Button></div></div>
+        <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={5} value={draft.text} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, text: event.target.value } }))} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · 保存后重新运行程序门禁</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)}>{item.status === "stale" ? "保留当前正文并复核" : "保存修改"}</Button></div></div>
         {item.tasks?.map((task) => <p className="feedback-plan-task" key={task.id}>教师任务：{task.action} · {task.status}</p>)}
         {item.attachments?.map((attachment) => <div className={`feedback-plan-attachment ${attachment.status === "missing" ? "is-missing" : ""}`} key={attachment.id}><span>发送附件：{attachment.displayName} · {attachment.sizeBytes}B · {attachment.status === "missing" ? "文件缺失，不能导出" : attachment.status}</span><Button uiSize="sm" variant="ghost" onClick={() => void removeAttachment(activePlan, attachment.id)} disabled={busy}>移除</Button></div>)}
-        <div className="feedback-plan-item__footer">{blockedIssues.some((issue: { code: string }) => ["followup_without_task", "promise_without_task"].includes(issue.code)) && <div className="feedback-plan-task-form"><input aria-label={`${itemLabel}教师任务`} value={taskDraft.action} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, action: event.target.value } }))} /><select aria-label={`${itemLabel}任务截止方式`} value={taskDraft.dueType} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueType: event.target.value as TaskDraft["dueType"] } }))}><option value="session" disabled={futureSessions.length === 0}>按课次</option><option value="date">按日期</option></select>{taskDraft.dueType === "session" ? <select aria-label={`${itemLabel}任务截止课次`} value={taskDraft.dueSessionId} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueSessionId: event.target.value } }))}>{futureSessions.map((session) => <option key={session.id} value={session.id}>{session.date} · {session.code}</option>)}</select> : <input aria-label={`${itemLabel}任务截止日期`} type="date" value={taskDraft.dueDate} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueDate: event.target.value } }))} />}<Button uiSize="sm" variant="secondary" onClick={() => void createTask(activePlan, item)} disabled={busy || !taskDraft.action.trim() || (taskDraft.dueType === "date" && !taskDraft.dueDate)}>批准并创建教师任务</Button></div>}{isExport && <label className="feedback-plan-attachment-picker">标记发送附件<input type="file" onChange={(event) => void uploadAttachment(activePlan, item, event.target.files?.[0])} disabled={busy || item.status === "stale"} /></label>}</div>
+        <div className="feedback-plan-item__footer">{auditIssues.some((issue: { code: string }) => ["followup_without_task", "promise_without_task"].includes(issue.code)) && <div className="feedback-plan-task-form"><input aria-label={`${itemLabel}教师任务`} value={taskDraft.action} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, action: event.target.value } }))} /><select aria-label={`${itemLabel}任务截止方式`} value={taskDraft.dueType} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueType: event.target.value as TaskDraft["dueType"] } }))}><option value="session" disabled={futureSessions.length === 0}>按课次</option><option value="date">按日期</option></select>{taskDraft.dueType === "session" ? <select aria-label={`${itemLabel}任务截止课次`} value={taskDraft.dueSessionId} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueSessionId: event.target.value } }))}>{futureSessions.map((session) => <option key={session.id} value={session.id}>{session.date} · {session.code}</option>)}</select> : <input aria-label={`${itemLabel}任务截止日期`} type="date" value={taskDraft.dueDate} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueDate: event.target.value } }))} />}<Button uiSize="sm" variant="secondary" onClick={() => void createTask(activePlan, item)} disabled={busy || !taskDraft.action.trim() || (taskDraft.dueType === "date" && !taskDraft.dueDate)}>批准并创建教师任务</Button></div>}{isExport && <label className="feedback-plan-attachment-picker">标记发送附件<input type="file" onChange={(event) => void uploadAttachment(activePlan, item, event.target.files?.[0])} disabled={busy || item.status === "stale"} /></label>}</div>
       </article>;
     })}</div>}
     {isExport && activePlan?.exportRuns && activePlan.exportRuns.length > 0 && <div className="feedback-plan-exports"><strong>导出记录</strong>{activePlan.exportRuns.slice(0, 5).map((run, index) => { const isFirst = index === activePlan.exportRuns!.length - 1; const label = run.isRepeat ? "重复导出" : isFirst ? "首次导出" : run.mode === "approved_only" ? "补导" : "完整导出"; return <span key={run.id}>{label} · {new Date(run.createdAt).toLocaleString("zh-CN")} · {run.manifestHash.slice(0, 10)}…</span>; })}</div>}

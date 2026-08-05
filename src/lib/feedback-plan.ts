@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { StudentAssessmentEvidenceSchema } from "@/lib/contracts/feedback";
+import { containsStudentDirectedAddress } from "@/lib/feedback-text-safety";
 
 export const FEEDBACK_PLAN_TYPES = ["class_update", "event_micro", "stage_trend", "course_end"] as const;
 export type FeedbackPlanType = typeof FEEDBACK_PLAN_TYPES[number];
@@ -103,6 +104,19 @@ export const FeedbackAuditItemSchema = z.object({
   taskId: z.string().max(200).optional(),
 });
 
+export const HARD_FEEDBACK_AUDIT_CODES = new Set([
+  "empty_text",
+  "recipient_mismatch",
+  "cross_student_content",
+  "unconfirmed_evidence",
+  "teacher_intervention_unconfirmed",
+  "intervention_outcome_without_action",
+]);
+
+export function isHardFeedbackAuditIssue(code: string) {
+  return HARD_FEEDBACK_AUDIT_CODES.has(code);
+}
+
 export const FeedbackAuditSnapshotSchema = z.object({
   version: z.literal(1),
   status: z.enum(["pass", "needs_review", "blocked"]),
@@ -185,10 +199,6 @@ function coverageText(value: string) {
 function evidenceStatementMatches(evidenceContent: string, statement: string) {
   const normalizedEvidence = coverageText(evidenceContent);
   const normalizedStatement = coverageText(statement);
-  const numericTokens = [...new Set(evidenceContent.match(/\d+(?:\.\d+)?%?/g) ?? [])];
-  if (numericTokens.length > 0 && !numericTokens.some((token) => normalizedStatement.includes(coverageText(token)))) {
-    return false;
-  }
   const hanRuns = evidenceContent.match(/[\p{Script=Han}]+/gu) ?? [];
   const bigrams = new Set(hanRuns.flatMap((run) => (
     [...run].slice(0, -1).map((character, index) => `${character}${[...run][index + 1]}`)
@@ -204,7 +214,7 @@ export function validateCompositionForBundle(
   bundle: FeedbackEvidenceBundle,
   taskIds: Set<string> = new Set(bundle.executionConstraints.existingTaskIds),
   identity?: { studentName?: string; otherStudentNames?: string[] },
-  options: { requireAllEvidenceInText?: boolean } = {},
+  options: { requireAllEvidenceInText?: boolean; enforceParentAudience?: boolean } = {},
 ): { status: FeedbackAuditSnapshot["status"]; issues: z.infer<typeof FeedbackAuditItemSchema>[] } {
   const issues: z.infer<typeof FeedbackAuditItemSchema>[] = [];
   const included = composition.modules.filter((module) => module.status === "included");
@@ -215,6 +225,13 @@ export function validateCompositionForBundle(
 
   if (!composition.draftFeedback.trim()) {
     issues.push({ code: "empty_text", severity: "blocked", message: "最终反馈文本为空" });
+  }
+  if (options.enforceParentAudience && containsStudentDirectedAddress(composition.draftFeedback)) {
+    issues.push({
+      code: "recipient_mismatch",
+      severity: "blocked",
+      message: "家长反馈直接对学生使用了第二人称或学生式鼓励语",
+    });
   }
   if (included.length < 2 || included.length > 4) {
     issues.push({ code: "module_count_invalid", severity: "blocked", message: "每条反馈必须选择两到四个有价值的模块" });
@@ -287,7 +304,7 @@ export function validateCompositionForBundle(
     issues.push({
       code: "evidence_coverage_unsubstantiated",
       severity: "blocked",
-      message: `以下正文覆盖句与对应证据缺少数字或关键词关联：${invalidTextCoverageIds.join("、")}`,
+      message: `以下正文覆盖句与对应证据缺少可追溯的关键词关联：${invalidTextCoverageIds.join("、")}`,
     });
   }
   if (!options.requireAllEvidenceInText) {
@@ -355,8 +372,13 @@ export function validateCompositionForBundle(
     issues.push({ code: "promise_requires_teacher", severity: "requires_teacher", message: "反馈包含教师未来动作，请确认任务范围与截止节点" });
   }
 
-  const status = issues.some((issue) => issue.severity === "blocked")
+  const normalizedIssues = issues.map((issue) => (
+    issue.severity === "blocked" && !isHardFeedbackAuditIssue(issue.code)
+      ? { ...issue, severity: "requires_teacher" as const }
+      : issue
+  ));
+  const status = normalizedIssues.some((issue) => issue.severity === "blocked")
     ? "blocked"
-    : issues.some((issue) => issue.severity === "requires_teacher") ? "needs_review" : "pass";
-  return { status, issues };
+    : normalizedIssues.some((issue) => issue.severity === "requires_teacher") ? "needs_review" : "pass";
+  return { status, issues: normalizedIssues };
 }

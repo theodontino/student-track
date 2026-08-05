@@ -13,6 +13,7 @@ import {
   FeedbackEvidenceBundleSchema,
   FeedbackPlanCreateSchema,
   FeedbackPlanItemPatchSchema,
+  isHardFeedbackAuditIssue,
   type CommunicationPreference,
   type FeedbackEvidenceBundle,
   type FeedbackPlanAssessmentEvidenceInput,
@@ -588,7 +589,7 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
   const item = await db.feedbackPlanItem.findUnique({ include: { plan: { include: { items: { include: { student: true } } } }, student: true, tasks: true } , where: { id } });
   if (!item) throw new ApiError("反馈计划条目不存在", 404, "not_found", false);
   if (["approved", "exported"].includes(item.status)) throw new ApiError("已批准或已导出的反馈不可原位修改，请新建反馈计划", 409, "conflict", false);
-  if (["stale", "generating"].includes(item.status)) throw new ApiError("反馈证据已变化或正在生成，请刷新计划后重试", 409, "conflict", false);
+  if (item.status === "generating") throw new ApiError("反馈正在生成，请刷新计划后重试", 409, "conflict", false);
   if (patch.expectedItemRevision && patch.expectedItemRevision !== item.itemRevision) throw new ApiError("反馈计划条目已被其他操作更新", 409, "conflict", false);
   const bundle = FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
   const composition = patch.composition ?? parseCompositionSnapshot(item.compositionSnapshot, item.plan.type, patch.finalText ?? item.finalText ?? "");
@@ -618,6 +619,41 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
     },
     include: { tasks: true },
   });
+}
+
+/**
+ * Keep already generated text after a teacher acknowledges a non-destructive
+ * context change. This never calls the model or changes the evidence snapshot.
+ */
+export async function retainStaleFeedbackPlanItems(input: {
+  planId: string;
+  itemIds?: string[];
+}, db: PrismaClient = prisma) {
+  const requestedIds = input.itemIds ? [...new Set(input.itemIds)] : undefined;
+  const items = await db.feedbackPlanItem.findMany({
+    where: {
+      planId: input.planId,
+      status: "stale",
+      ...(requestedIds ? { id: { in: requestedIds } } : {}),
+    },
+    select: { id: true, finalText: true },
+  });
+  const retainedIds = items.filter((item) => Boolean(item.finalText?.trim())).map((item) => item.id);
+  if (!retainedIds.length) throw new ApiError("没有可保留的已生成正文", 409, "conflict", false);
+  await db.$transaction(async (tx) => {
+    await tx.feedbackPlanItem.updateMany({
+      where: { id: { in: retainedIds }, planId: input.planId, status: "stale" },
+      data: { status: "needs_review", reviewMode: "teacher_edited", itemRevision: { increment: 1 } },
+    });
+    const planItems = await tx.feedbackPlanItem.findMany({ where: { planId: input.planId }, select: { status: true } });
+    await tx.feedbackPlan.update({
+      where: { id: input.planId },
+      data: { status: derivePlanStatus(planItems), planRevision: { increment: 1 }, approvedAt: null, exportedAt: null },
+    });
+  });
+  const plan = await getFeedbackPlan(input.planId, db);
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  return plan;
 }
 
 export async function createTeacherTask(input: {
@@ -733,9 +769,9 @@ export async function approveFeedbackPlanItems(input: { planId: string; itemIds?
         activeTaskIds(item.tasks),
         { studentName: item.student?.name ?? undefined, otherStudentNames: plan.items.flatMap((entry) => entry.studentId && entry.studentId !== item.studentId && entry.student?.name ? [entry.student.name] : []) },
       );
-      if (!item.finalText?.trim() || !item.finalTextHash || !audit || audit.textHash !== item.finalTextHash || recalculatedAudit.textHash !== item.finalTextHash || audit.status === "blocked" || recalculatedAudit.status === "blocked") {
-        const blocked = [...(audit?.items ?? []), ...recalculatedAudit.items]
-          .filter((issue) => issue.severity === "blocked")
+      const hardBlocked = recalculatedAudit.items.filter((issue) => isHardFeedbackAuditIssue(issue.code));
+      if (!item.finalText?.trim() || !item.finalTextHash || !audit || audit.textHash !== item.finalTextHash || recalculatedAudit.textHash !== item.finalTextHash || hardBlocked.length > 0) {
+        const blocked = hardBlocked
           .map((issue) => issue.message);
         failures.push(`${itemLabel}：${blocked.join("、") || "未通过文本哈希或程序门禁"}`);
       }
@@ -1194,6 +1230,7 @@ export async function generateFeedbackPlanItems(input: {
           bundle,
           activeTaskIds(item.tasks),
           { studentName: student?.name ?? undefined, otherStudentNames },
+          { requireAllEvidenceInText: true, enforceParentAudience: true },
         );
         const generation = await recordSuccessfulGeneration({
           taskType: "feedback",
@@ -1313,14 +1350,6 @@ export async function resolvePreferenceCandidate(id: string, decision: "confirme
       where: { studentId: candidate.studentId },
       create: { studentId: candidate.studentId, preferenceSnapshot: json(preference), sourceCandidateId: id, confirmedAt: new Date() },
       update: { preferenceSnapshot: json(preference), sourceCandidateId: id, confirmedAt: new Date() },
-    });
-    await tx.feedbackPlanItem.updateMany({
-      where: { studentId: candidate.studentId, status: { in: ["evidence_ready", "generating", "needs_review"] } },
-      data: { status: "stale" },
-    });
-    await tx.feedbackPlan.updateMany({
-      where: { items: { some: { studentId: candidate.studentId, status: "stale" } } },
-      data: { status: "stale" },
     });
     return updated;
   });

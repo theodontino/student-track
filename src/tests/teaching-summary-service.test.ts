@@ -148,6 +148,7 @@ describe("teaching summary facts", () => {
       response_format: expect.objectContaining({ type: "json_schema" }),
       reasoning_effort: "low",
     }));
+    expect(mocks.completionCreate.mock.calls[0][0]).not.toHaveProperty("temperature");
 
     const cached = await generateTeachingSummary(request);
     expect(cached.cache.status).toBe("hit");

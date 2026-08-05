@@ -36,6 +36,7 @@ type Candidate = {
   sessions: SessionOption[];
   createdAt: string;
   preReview?: Suggestion | null;
+  preReviewError?: string | null;
 };
 
 type ListResponse = {
@@ -477,7 +478,11 @@ export default function WccCandidateReviewPanel() {
                       )}
                     </div>
                   ) : (
-                    <span className="text-xs text-slate-400">未预审</span>
+                    item.preReviewError ? (
+                      <span className="text-xs text-rose-700">预审失败：{item.preReviewError}</span>
+                    ) : (
+                      <span className="text-xs text-slate-400">未预审</span>
+                    )
                   )}
                 </td>
                 <td className="px-3 py-2">

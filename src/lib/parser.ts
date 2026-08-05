@@ -36,7 +36,6 @@ interface ReviewResult {
 // v0.6: LLM call with retry (up to 2 retries on timeout/error)
 async function llmCall(
   messages: ChatCompletionMessageParam[],
-  temperature: number,
   maxRetries = 2
 ): Promise<string> {
   const client = createLLMClient();
@@ -46,7 +45,7 @@ async function llmCall(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const resp = await client.chat.completions.create({
-        model, messages, temperature, ...getLLMCompletionOptions(undefined, 16384),
+        model, messages, ...getLLMCompletionOptions(undefined, 16384),
       });
       const content = resp.choices[0]?.message?.content?.trim() || "";
       if (resp.choices[0]?.finish_reason === "length") {
@@ -67,7 +66,6 @@ async function llmCall(
 /** v0.13: stream LLM call — calls onChunk for each token delta */
 export async function llmCallStream(
   messages: ChatCompletionMessageParam[],
-  temperature: number,
   onChunk: (delta: string) => void,
   maxRetries = 2
 ): Promise<string> {
@@ -78,7 +76,7 @@ export async function llmCallStream(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const stream = await client.chat.completions.create({
-        model, messages, temperature, ...getLLMCompletionOptions(undefined, 16384), stream: true,
+        model, messages, ...getLLMCompletionOptions(undefined, 16384), stream: true,
       });
       let content = "";
       for await (const chunk of stream) {
@@ -159,7 +157,7 @@ ${rawText}`;
   const content = await llmCall([
     { role: "system", content: NAME_FIX_SYSTEM_PROMPT },
     { role: "user", content: userPrompt },
-  ], 0.1, 1);
+  ], 1);
 
   try {
     const parsed = NameFixPayloadSchema.parse(parseJSONValue(content));
@@ -187,7 +185,7 @@ ${rawText}
   const content = await llmCall([
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: userPrompt },
-  ], 0.3);
+  ]);
   return DraftStructuredResultSchema.parse(parseJSONValue(content));
 }
 
@@ -199,7 +197,7 @@ export async function reviewParsed(rawText: string, parsedResult: ParseResult): 
     .replace("{rawText}", rawText)
     .replace("{parsedResult}", JSON.stringify(parsedResult, null, 2));
 
-  const content = await llmCall([{ role: "user", content: userPrompt }], 0.2);
+  const content = await llmCall([{ role: "user", content: userPrompt }]);
   return DraftReviewResultSchema.parse(parseJSONValue(content));
 }
 
