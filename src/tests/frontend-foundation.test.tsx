@@ -35,7 +35,13 @@ describe("frontend foundation", () => {
   it("returns typed JSON and normalizes API failures", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })).mockResolvedValueOnce(new Response(JSON.stringify({ error: "固定错误" }), { status: 422, headers: { "Content-Type": "application/json" } })));
     await expect(requestJson<{ ok: boolean }>("/ok")).resolves.toEqual({ ok: true });
-    await expect(requestJson("/fail")).rejects.toEqual(expect.objectContaining<ApiError>({ name: "ApiError", status: 422, message: "固定错误" }));
+    await expect(requestJson("/fail")).rejects.toEqual(expect.objectContaining<ApiError>({
+      name: "ApiError",
+      status: 422,
+      message: "固定错误",
+      code: "internal_error",
+      retryable: false,
+    }));
   });
 
   it("handles empty success responses and plain-text API failures", async () => {
@@ -48,7 +54,13 @@ describe("frontend foundation", () => {
 
     await expect(requestJson<void>("/empty")).resolves.toBeUndefined();
     await expect(requestJson("/text-failure")).rejects.toEqual(
-      expect.objectContaining<ApiError>({ name: "ApiError", status: 503, message: "服务暂时不可用" }),
+      expect.objectContaining<ApiError>({
+        name: "ApiError",
+        status: 503,
+        message: "服务暂时不可用",
+        code: "internal_error",
+        retryable: false,
+      }),
     );
   });
 

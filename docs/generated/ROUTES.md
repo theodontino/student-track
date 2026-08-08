@@ -46,6 +46,7 @@
 | `/api/teacher-observations` | `GET` |
 | `/api/teacher-tasks` | `GET` |
 | `/api/teaching-memory` | `GET`, `PATCH`, `POST` |
+| `/api/v1/system/health` | `GET` |
 | `/api/wecom/handoff/[id]` | `GET`, `PATCH` |
 | `/api/wecom/handoff/alignment-recovery` | `GET`, `POST` |
 | `/api/wecom/handoff/batch-retry` | `POST` |

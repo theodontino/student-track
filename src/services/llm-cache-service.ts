@@ -11,6 +11,7 @@ import {
   stat,
 } from "node:fs/promises";
 import path from "node:path";
+import { resolveStudentTrackDataPath } from "@/lib/runtime-paths";
 
 export type LLMTaskType = "wecom" | "classroom-parse" | "feedback" | "daily-report";
 export type LLMCacheStatus = "active" | "succeeded" | "failed" | "interrupted";
@@ -59,7 +60,7 @@ const storage = new AsyncLocalStorage<LLMCacheContext>();
 const activeDirectories = new Set<string>();
 
 function cacheRoot() {
-  return process.env.LLM_CACHE_ROOT || path.join(process.cwd(), "data", "llm-cache");
+  return resolveStudentTrackDataPath("llm-cache", "LLM_CACHE_ROOT");
 }
 
 function cacheLimitBytes() {

@@ -13,6 +13,17 @@ npm run dev
 
 启动后访问 `http://127.0.0.1:3000`。
 
+运行数据默认继续保存在项目的 `data/` 目录。由其他本机进程启动后端、且工作目录不固定时，可以设置
+`STUDENT_TRACK_DATA_ROOT` 作为统一数据根目录；首批覆盖 LLM 设置、LLM 操作缓存和转写任务：
+
+```bash
+STUDENT_TRACK_DATA_ROOT="$HOME/Library/Application Support/Student Track/data" npm run start
+```
+
+组件专用变量 `LLM_SETTINGS_PATH`、`LLM_CACHE_ROOT` 和 `DIARIZE_DATA_DIR` 的优先级高于统一根目录。
+未配置统一根目录时保持原路径；设置变量也不会自动复制或迁移旧文件，切换前应先停止 Student Track，
+备份并核对目标目录。数据库、反馈附件和 WCG 交换目录继续使用各自现有配置，不受该变量影响。
+
 ## 课后反馈的分析与成稿模型
 
 先在“系统中心 → LLM 配置”保存可用的模型档案，再分别选择“分析模型”和“成稿与审核模型”。
@@ -36,6 +47,8 @@ npm run dev
 ## 测试隔离
 
 `npm test`、`npm run test:coverage` 和 `npm run test:e2e` 会在系统临时目录中建立独立 SQLite 数据库，自动执行 migrations 并写入固定测试 fixture。运行器会拒绝使用项目 `dev.db`、`archives/` 或 `data/` 中的路径。
+
+`npm run verify:quick`、`verify:quality`、`verify:browser` 和 `verify:release` 还会在整个验证前后自动比较真实 SQLite 主文件及 `-wal` 文件的 size、mtime 和 SHA-256。真实库原本不存在时，验证结束后也必须保持不存在；任何差异都会使验证失败。`-shm` 是 SQLite 运行期锁与共享内存文件，不作为业务内容指纹。生成指纹期间若仍有业务写入，验证会要求停止写入后重试。
 
 E2E 使用独立应用副本、端口、LLM 配置和转写目录，不复用已运行的开发服务，也不连接真实 LLM。
 
@@ -212,9 +225,11 @@ npm run docs:generate
 npm run verify:release
 ```
 
-`verify:release` 包含数据库升级演练；成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时按摘要指向的单个日志排查。也可以推送候选提交并等待同一提交的 CI `quality` 与 `browser` 全部通过，避免重复执行相同的全量验证。
+`verify:release` 包含完整 Git 历史隐私扫描、数据库升级演练和真实数据库未变化门禁；成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时按摘要指向的单个日志排查。也可以推送候选提交并等待同一提交的 CI `quality` 与 `browser` 全部通过，避免重复执行相同的全量验证。自动化通过后可以立即投入真实使用，不等待固定次数的人工课后流程。
 
-确认页面和只读接口正常后，再提交版本文件、创建带说明的 Git 标签并发布对应 GitHub Release。`package.json`、标签和 Release 使用同一版本号；运行数据和数据库备份不提交 Git。
+人工冒烟只由变化边界触发：WCG Accessibility、会话定位或草稿填入变化时做一次真实“不发送”验证；破坏性 migration 先创建并验证备份，再检查迁移后的完整性、行数和领域不变量；安装、签名或进程托管变化在干净账户验证。没有变化的边界不重复执行人工流程。
+
+验证通过后提交版本文件、创建带说明的 Git 标签并发布对应 GitHub Release。`package.json`、标签和 Release 使用同一版本号；运行数据和数据库备份不提交 Git。
 
 ```bash
 git commit -m "Archive vX.Y.Z"
