@@ -1,10 +1,9 @@
 "use client";
 
-import WorkHistoryButton from "@/components/WorkHistoryButton";
 import { Button } from "@/components/ui";
 import { SemesterDialog } from "@/features/courses";
 import ContextHeader from "./ContextHeader";
-import type { QuickScoreHistoryState, QuickScoreSemester } from "./types";
+import type { QuickScoreSemester } from "./types";
 import type { useQuickScorePage } from "./useQuickScorePage";
 
 type Workspace = ReturnType<typeof useQuickScorePage>;
@@ -16,7 +15,7 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
       <ContextHeader
         semesterName={workspace.selectedSemester?.name}
         sessionCount={workspace.selectedSemester?.sessionCount}
-        history={<WorkHistoryButton<QuickScoreHistoryState> module="quick-score" onRestore={workspace.restoreHistory} />}
+        history={undefined}
       >
         <div className="flex items-center gap-3 mb-2 flex-wrap">
           <select

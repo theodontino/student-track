@@ -24,7 +24,53 @@ function clientWith(...contents: string[]) {
 }
 
 describe("feedback generation review", () => {
-  it("corrects a plan until every confirmed teaching and assessment evidence item is covered", async () => {
+  it("keeps hard checks but skips the LLM review and polish call in fast mode", async () => {
+    const composition = {
+      version: 1,
+      closureType: "positive_recognition",
+      needParentAction: false,
+      parentAction: null,
+      modules: [
+        { key: "observed_moment", content: "课堂完成了基础题", evidenceRefs: ["event-1"], status: "included", reason: "课堂事实" },
+        { key: "teacher_interpretation", content: "方法正在稳定", evidenceRefs: ["event-1"], status: "included", reason: "教师判断" },
+      ],
+      evidenceCoverage: [{ evidenceId: "event-1", statement: "课堂完成了基础题" }],
+      draftFeedback: "课堂完成了基础题，方法正在稳定。",
+    };
+    const draft = clientWith(JSON.stringify(composition));
+    const review = clientWith(JSON.stringify({ ...composition, draftFeedback: "不应调用的审核结果" }));
+
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "event_micro",
+      outputRequirement: "自然表达。",
+      evidenceBundle: {
+        version: 1,
+        planType: "event_micro",
+        studentId: "student-1",
+        teachingEvidence: [{ id: "event-1", kind: "fact", content: "课堂完成了基础题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true }],
+        assessmentEvidence: [],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-fast-mode-fingerprint",
+      },
+      style: "gentle",
+      length: "standard",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: review.client,
+      reviewModel: "review-model",
+      generationMode: "fast",
+    });
+
+    expect(result.composition.draftFeedback).toBe("课堂完成了基础题，方法正在稳定。");
+    expect(result.audit.status).toBe("pass");
+    expect(draft.create).toHaveBeenCalledTimes(1);
+    expect(review.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps incomplete evidence coverage as a soft teacher-review reminder", async () => {
     const incomplete = {
       version: 1,
       closureType: "positive_recognition",
@@ -37,25 +83,13 @@ describe("feedback generation review", () => {
       evidenceCoverage: [{ evidenceId: "event-1", statement: "本次课堂完成了基础题" }],
       draftFeedback: "本次课堂完成了基础题，参与状态稳定。",
     };
-    const corrected = {
-      ...incomplete,
-      modules: [
-        { key: "observed_moment", content: "课堂完成了基础题，课堂状态4分", evidenceRefs: ["event-1", "score-b"], status: "included", reason: "课堂事实" },
-        { key: "teacher_interpretation", content: "出门测正确率50%，第二题需要订正", evidenceRefs: ["assessment-1"], status: "included", reason: "测评解读" },
-      ],
-      evidenceCoverage: [
-        { evidenceId: "event-1", statement: "本次课堂完成了基础题" },
-        { evidenceId: "score-b", statement: "课堂状态4分" },
-        { evidenceId: "assessment-1", statement: "出门测正确率50%，第二题需要订正" },
-      ],
-      draftFeedback: "本次课堂完成了基础题，课堂状态4分；出门测正确率50%，第二题需要订正，这只反映本次结果。",
-    };
     const draft = clientWith(JSON.stringify(incomplete));
-    const review = clientWith(JSON.stringify(corrected), JSON.stringify(corrected));
+    const review = clientWith(JSON.stringify(incomplete));
 
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "event_micro",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "event_micro",
@@ -78,13 +112,18 @@ describe("feedback generation review", () => {
       reviewModel: "review-model",
     });
 
-    expect(result.audit.status).toBe("pass");
-    expect(result.composition.modules.flatMap((module) => module.evidenceRefs)).toEqual(expect.arrayContaining(["event-1", "score-b", "assessment-1"]));
-    expect(result.draftComposition.evidenceCoverage.map((entry) => entry.evidenceId)).toEqual(expect.arrayContaining(["event-1", "score-b", "assessment-1"]));
-    expect(result.draftComposition.draftFeedback).toContain("出门测正确率50%");
-    expect(result.composition.draftFeedback).toContain("课堂状态4分");
-    expect(result.composition.draftFeedback).toContain("出门测正确率50%");
-    expect(review.create).toHaveBeenCalledTimes(2);
+    expect(result.audit.status).toBe("needs_review");
+    expect(result.audit.items).toContainEqual(expect.objectContaining({
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
+    }));
+    expect(result.composition.draftFeedback).toContain("参与状态稳定");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("教师自然语言反馈要求与补充事实（最高优先级）");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("自然表达,可以基于事实充分分析,但不要改写具体事实。");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("内部结构化默认值只在教师自然语言没有说明时生效");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("教师输入中的事实陈述视为教师已确认事实");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("充分联想");
+    expect(review.create).toHaveBeenCalledTimes(1);
   });
 
   it("keeps an incomplete model draft reviewable instead of dropping the student item", async () => {
@@ -101,12 +140,12 @@ describe("feedback generation review", () => {
       draftFeedback: "课堂完成了基础题，参与状态比较稳定。",
     };
     const draft = clientWith(JSON.stringify(incomplete));
-    const review = clientWith(JSON.stringify(incomplete), JSON.stringify(incomplete));
-    review.create.mockRejectedValueOnce(new Error("synthetic correction timeout"));
+    const review = clientWith(JSON.stringify(incomplete));
 
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "event_micro",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "event_micro",
@@ -131,7 +170,10 @@ describe("feedback generation review", () => {
 
     expect(result.composition.draftFeedback).toContain("课堂完成了基础题");
     expect(result.audit.status).toBe("needs_review");
-    expect(result.audit.items).toContainEqual(expect.objectContaining({ code: "confirmed_evidence_omitted" }));
+    expect(result.audit.items).toContainEqual(expect.objectContaining({
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
+    }));
   });
 
   it("repairs legacy module keys before a course-end plan is saved", async () => {
@@ -165,6 +207,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",
@@ -226,6 +269,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",
@@ -274,6 +318,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",
@@ -323,6 +368,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",

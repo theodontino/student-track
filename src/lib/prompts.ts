@@ -48,7 +48,7 @@ export const SYSTEM_PROMPT = `你是一名资深的高中化学教师助手。�
 - events: 提取的关键事件描述列表
 - communication: 仅当涉及家长沟通时填写 { "type": "电话/微信/面谈", "summary": "摘要" }，否则为 null
 - attentionSignals: 只根据文字事实提取内部关注信号。reason 只能是 academic-performance、learning-confidence、parent-concern、withdrawal-intent；每项包含 confidence=high|medium|low 和不超过120字的 evidenceSummary。明确出现成绩差/跟不上、没信心/畏难、家长担心/焦虑、退班意向时应输出；没有时为 []。多个原因分别输出，不要用分数推断。
-- teacherInterventions: 只在原文明确写出“发现了什么问题、老师采取了什么处理、处理后结果或证据”时提取。每项为 {"observedProblem":"…","teacherAction":"…","outcome":"…或空字符串","evidenceText":"原文中支持该处理的完整片段"}。不要根据一般课堂表现、评分或模型常识推测教师处理；没有明确处理时必须为 []。
+- teacherInterventions: 原文只要明确出现教师观察、教师处理或教师对学生的具体判断，就提取到这个字段，至少保留 observedProblem、teacherAction、outcome、evidenceText 中实际出现的一项，其余字段填空字符串。不要根据一般课堂表现、评分或模型常识补写；完全没有教师观察或教师处理时才返回 []。
 - alert_suggestion: 如果检测到异常（分数<=1、情绪低落、严重违纪等），给出简短的关注建议，否则为空字符串
 
 【注意事项】
@@ -113,6 +113,7 @@ export const REVIEW_PROMPT = `你是一名资深的高中化学教师，请对�
 4. **事件完整性**: 提取的事件是否准确、是否有遗漏？
 5. **逻辑一致性**: 是否有矛盾或不一致的地方？
 6. **内部关注信号**: attentionSignals 必须来自原文明确表达，不能仅根据分数猜测；成绩差、缺乏信心、家长担心或退班意向应按对应枚举提取。
+7. **教师观察保留**: teacherInterventions 中只要有一项明确教师观察或处理就保留，不要因为其他字段为空而删除；不要补写原文没有的处理结果或证据。
 
 特别注意：如果检查发现人名或人-事对应有问题，请在 name_issues 中列出，is_valid 设为 false。
 

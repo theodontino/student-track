@@ -1,18 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
-import { apiErrorBody, apiStreamErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
+import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
 import { FeedbackPlanAssessmentEvidenceSchema, FeedbackPlanItemPatchSchema } from "@/lib/feedback-plan";
 import {
   approveFeedbackPlanItems,
+  archiveFeedbackPlan,
+  continueFeedbackPlanGeneration,
   createTeacherTask,
   deleteFeedbackPlan,
-  generateFeedbackPlanItems,
   getFeedbackPlan,
   patchFeedbackPlanItem,
+  pauseFeedbackPlanGeneration,
   retainStaleFeedbackPlanItems,
+  retryFeedbackPlanGeneration,
+  startFeedbackPlanGeneration,
   toFeedbackPlanDetail,
   toFeedbackPlanItemView,
+  unarchiveFeedbackPlan,
   updateTeacherTaskStatus,
 } from "@/services/feedback-plan-service";
 
@@ -98,34 +103,33 @@ export async function POST(request: NextRequest, context: Context) {
         },
       });
     }
-    if (body.action === "generate") {
+    if (body.action === "start_generation") {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
-      const parsedAssessmentEvidence = body.assessmentEvidence === undefined
-        ? { success: true as const, data: undefined }
-        : FeedbackPlanAssessmentEvidenceSchema.safeParse(body.assessmentEvidence);
-      if (!parsedAssessmentEvidence.success) throw new ApiError("反馈计划测评证据参数无效", 400, "invalid_request", false);
-      if (body.stream === true) {
-        const encoder = new TextEncoder();
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            const write = (value: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`));
-            void generateFeedbackPlanItems({
-              planId: id,
-              itemIds,
-              assessmentEvidence: parsedAssessmentEvidence.data,
-              signal: request.signal,
-              onProgress: write,
-            }).then(() => controller.close()).catch((error) => {
-              write({ type: "error", ...apiStreamErrorBody(safeApiError(error, "反馈计划生成失败")) });
-              controller.close();
-            });
-          },
-        });
-        return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" } });
-      }
-      const items = await generateFeedbackPlanItems({ planId: id, itemIds, assessmentEvidence: parsedAssessmentEvidence.data, signal: request.signal });
+      const assessmentEvidence = FeedbackPlanAssessmentEvidenceSchema.safeParse(body.assessmentEvidence ?? {});
+      if (!assessmentEvidence.success) throw new ApiError("测评证据参数无效", 400, "invalid_request", false);
+      const generationMode = body.generationMode === "fast" ? "fast" : "standard";
+      const result = await startFeedbackPlanGeneration({ planId: id, itemIds, assessmentEvidence: assessmentEvidence.data, generationMode });
+      return NextResponse.json(result, { status: 202 });
+    }
+    if (body.action === "pause_generation") {
+      return NextResponse.json(await pauseFeedbackPlanGeneration(id), { status: 202 });
+    }
+    if (body.action === "continue_generation") {
+      return NextResponse.json(await continueFeedbackPlanGeneration(id), { status: 202 });
+    }
+    if (body.action === "retry_generation") {
+      const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
+      return NextResponse.json(await retryFeedbackPlanGeneration({ planId: id, itemIds }), { status: 202 });
+    }
+    if (body.action === "archive") {
+      await archiveFeedbackPlan(id);
       const plan = await getFeedbackPlan(id);
-      return NextResponse.json({ items: plan ? plan.items.map((item) => toFeedbackPlanItemView(item, plan.type)) : items });
+      return NextResponse.json({ plan: plan ? toFeedbackPlanDetail(plan) : null });
+    }
+    if (body.action === "unarchive") {
+      await unarchiveFeedbackPlan(id);
+      const plan = await getFeedbackPlan(id);
+      return NextResponse.json({ plan: plan ? toFeedbackPlanDetail(plan) : null });
     }
     if (body.action === "retain_stale") {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;

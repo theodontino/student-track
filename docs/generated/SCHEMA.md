@@ -116,19 +116,10 @@ erDiagram
     BOOLEAN isRepeat
     DATETIME createdAt
   }
-  FeedbackGenerationSelection {
-    TEXT id PK
-    TEXT sessionId FK
-    TEXT studentId FK
-    TEXT selectedGenerationId FK
-    DATETIME selectedAt
-    DATETIME createdAt
-    DATETIME updatedAt
-  }
   FeedbackPlan {
     TEXT id PK
     TEXT type
-    TEXT purpose
+    TEXT outputRequirement
     TEXT status
     TEXT semesterId FK
     TEXT classId FK
@@ -136,17 +127,25 @@ erDiagram
     TEXT rangeStartSessionId FK
     TEXT rangeEndSessionId FK
     TEXT inputFingerprint
+    TEXT inputSnapshot
+    TEXT generationMode
+    DATETIME generationStartedAt
+    DATETIME generationCompletedAt
+    INTEGER generationElapsedMs
+    DATETIME generationRunStartedAt
     INTEGER planRevision
     DATETIME createdAt
     DATETIME updatedAt
     DATETIME approvedAt
     DATETIME exportedAt
+    DATETIME archivedAt
   }
   FeedbackPlanItem {
     TEXT id PK
     TEXT planId FK
     TEXT studentId FK
     TEXT status
+    TEXT generationError
     TEXT evidenceSnapshot
     TEXT compositionSnapshot
     TEXT auditSnapshot
@@ -154,6 +153,9 @@ erDiagram
     TEXT finalTextHash
     TEXT selectedGenerationId FK
     TEXT reviewMode
+    DATETIME generationStartedAt
+    DATETIME generationCompletedAt
+    INTEGER generationDurationMs
     INTEGER itemRevision
     DATETIME createdAt
     DATETIME updatedAt
@@ -447,14 +449,6 @@ erDiagram
     DATETIME createdAt
     DATETIME updatedAt
   }
-  WorkHistory {
-    TEXT id PK
-    TEXT module
-    TEXT key
-    TEXT title
-    TEXT state
-    DATETIME createdAt
-  }
   Class o|--o{ ClassSession : "classId"
   Class ||--o{ FeedbackPlan : "classId"
   Class ||--o{ StudentClassEnrollment : "classId"
@@ -468,7 +462,6 @@ erDiagram
   ClassSession ||--o{ Attendance : "sessionId"
   ClassSession ||--o{ Communication : "sessionId"
   ClassSession ||--o{ Event : "sessionId"
-  ClassSession ||--o{ FeedbackGenerationSelection : "sessionId"
   Communication o|--o{ DraftRecord : "communicationId"
   Communication ||--o{ CommunicationRevision : "communicationId"
   Communication ||--o{ TeacherObservationSource : "communicationId"
@@ -484,7 +477,6 @@ erDiagram
   FeedbackPlanItem o|--o{ TeacherTask : "planItemId"
   GenerationRecord o|--o{ FeedbackPlanItem : "selectedGenerationId"
   GenerationRecord o|--o{ GenerationRecord : "parentGenerationId"
-  GenerationRecord ||--o{ FeedbackGenerationSelection : "selectedGenerationId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ Class : "semesterId"
   Semester ||--o{ ClassSession : "semesterId"
@@ -497,7 +489,6 @@ erDiagram
   Student ||--o{ Communication : "studentId"
   Student ||--o{ CommunicationPreferenceCandidate : "studentId"
   Student ||--o{ Event : "studentId"
-  Student ||--o{ FeedbackGenerationSelection : "studentId"
   Student ||--o{ SessionMetric : "studentId"
   Student ||--o{ StudentClassEnrollment : "studentId"
   Student ||--o{ StudentLabel : "studentId"
@@ -672,27 +663,13 @@ erDiagram
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
-### FeedbackGenerationSelection
-
-| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
-|---|---|---|---|
-| `id` | `TEXT` | 是 | PK |
-| `sessionId` | `TEXT` | 是 | FK |
-| `studentId` | `TEXT` | 是 | FK |
-| `selectedGenerationId` | `TEXT` | 是 | FK |
-| `selectedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
-| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
-| `updatedAt` | `DATETIME` | 是 |  |
-
-复合唯一约束：`sessionId + studentId`。
-
 ### FeedbackPlan
 
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
 | `type` | `TEXT` | 是 |  |
-| `purpose` | `TEXT` | 是 |  |
+| `outputRequirement` | `TEXT` | 是 |  |
 | `status` | `TEXT` | 是 | default: 'draft' |
 | `semesterId` | `TEXT` | 是 | FK |
 | `classId` | `TEXT` | 是 | FK |
@@ -700,11 +677,18 @@ erDiagram
 | `rangeStartSessionId` | `TEXT` | 否 | FK |
 | `rangeEndSessionId` | `TEXT` | 否 | FK |
 | `inputFingerprint` | `TEXT` | 是 |  |
+| `inputSnapshot` | `TEXT` | 是 | default: '{}' |
+| `generationMode` | `TEXT` | 是 | default: 'standard' |
+| `generationStartedAt` | `DATETIME` | 否 |  |
+| `generationCompletedAt` | `DATETIME` | 否 |  |
+| `generationElapsedMs` | `INTEGER` | 是 | default: 0 |
+| `generationRunStartedAt` | `DATETIME` | 否 |  |
 | `planRevision` | `INTEGER` | 是 | default: 1 |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `updatedAt` | `DATETIME` | 是 |  |
 | `approvedAt` | `DATETIME` | 否 |  |
 | `exportedAt` | `DATETIME` | 否 |  |
+| `archivedAt` | `DATETIME` | 否 |  |
 
 
 ### FeedbackPlanItem
@@ -715,6 +699,7 @@ erDiagram
 | `planId` | `TEXT` | 是 | FK |
 | `studentId` | `TEXT` | 否 | FK |
 | `status` | `TEXT` | 是 | default: 'evidence_ready' |
+| `generationError` | `TEXT` | 否 |  |
 | `evidenceSnapshot` | `TEXT` | 是 | default: '{}' |
 | `compositionSnapshot` | `TEXT` | 是 | default: '{}' |
 | `auditSnapshot` | `TEXT` | 是 | default: '{}' |
@@ -722,6 +707,9 @@ erDiagram
 | `finalTextHash` | `TEXT` | 否 |  |
 | `selectedGenerationId` | `TEXT` | 否 | FK |
 | `reviewMode` | `TEXT` | 是 | default: 'model' |
+| `generationStartedAt` | `DATETIME` | 否 |  |
+| `generationCompletedAt` | `DATETIME` | 否 |  |
+| `generationDurationMs` | `INTEGER` | 否 |  |
 | `itemRevision` | `INTEGER` | 是 | default: 1 |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `updatedAt` | `DATETIME` | 是 |  |
@@ -1112,15 +1100,3 @@ erDiagram
 | `updatedAt` | `DATETIME` | 是 |  |
 
 复合唯一约束：`conversationId + messageId`。
-
-### WorkHistory
-
-| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
-|---|---|---|---|
-| `id` | `TEXT` | 是 | PK |
-| `module` | `TEXT` | 是 |  |
-| `key` | `TEXT` | 否 |  |
-| `title` | `TEXT` | 是 |  |
-| `state` | `TEXT` | 是 |  |
-| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
-

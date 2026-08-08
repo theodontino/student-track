@@ -107,27 +107,6 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
       },
     });
 
-    await prisma.workHistory.create({
-      data: {
-        id: TEST_FIXTURE.feedbackHistory.id,
-        module: "feedback",
-        key: TEST_FIXTURE.sessions[0].code,
-        title: TEST_FIXTURE.feedbackHistory.title,
-        state: JSON.stringify({
-          kind: "batch",
-          semesterId: TEST_FIXTURE.semester.id,
-          sessionCode: TEST_FIXTURE.sessions[0].code,
-          className: TEST_FIXTURE.class.name,
-          students: TEST_FIXTURE.students.map((student) => ({
-            id: student.id,
-            name: student.name,
-            labels: student.id === TEST_FIXTURE.students[0].id ? ["#逻辑强", "#基础扎实"] : [],
-            feedback: `历史恢复反馈：${student.name}表现稳定。`,
-          })),
-          total: TEST_FIXTURE.students.length,
-        }),
-      },
-    });
   } finally {
     await prisma.$disconnect();
   }

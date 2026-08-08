@@ -125,39 +125,6 @@ function isoDay(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
-async function selectPrimaryFeedbackGeneration(
-  record: { id: string; finalText: string | null; sessionId: string | null; studentId: string | null },
-  input: RecordSuccessfulGenerationInput,
-  db: PrismaClient,
-) {
-  if (
-    input.taskType !== "feedback"
-    || input.selectIfFirst === false
-    || !record.finalText?.trim()
-    || !record.sessionId
-    || !record.studentId
-  ) return;
-  const selectedAt = new Date();
-  await db.feedbackGenerationSelection.upsert({
-    where: {
-      sessionId_studentId: {
-        sessionId: record.sessionId,
-        studentId: record.studentId,
-      },
-    },
-    create: {
-      sessionId: record.sessionId,
-      studentId: record.studentId,
-      selectedGenerationId: record.id,
-      selectedAt,
-    },
-    update: {
-      selectedGenerationId: record.id,
-      selectedAt,
-    },
-  });
-}
-
 export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerationInput, db: PrismaClient = prisma) {
   const resolvedProfileId = resolveLLMProfileId(
     input.modelRole ?? undefined,
@@ -172,7 +139,6 @@ export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerati
       where: { variantKey: input.variantKey },
     });
     if (existingVariant) {
-      await selectPrimaryFeedbackGeneration(existingVariant, input, db);
       return existingVariant;
     }
   }
@@ -219,7 +185,6 @@ export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerati
           ...data,
         },
       });
-  await selectPrimaryFeedbackGeneration(record, input, db);
   return record;
 }
 
@@ -240,11 +205,7 @@ export async function adoptFeedbackGenerationRecords(input: {
 }, db: PrismaClient = prisma) {
   const now = new Date();
   await Promise.all(input.students.filter((student) => student.feedback.trim()).map(async (student) => {
-    const selection = await db.feedbackGenerationSelection.findUnique({
-      where: { sessionId_studentId: { sessionId: input.sessionId, studentId: student.id } },
-      select: { selectedGenerationId: true },
-    });
-    const selectedId = selection?.selectedGenerationId ?? (await db.generationRecord.findFirst({
+    const selectedId = (await db.generationRecord.findFirst({
       where: { taskType: "feedback", sessionId: input.sessionId, studentId: student.id, lifecycle: "hot", stage: { in: ["routine", "review"] } },
       orderBy: { generatedAt: "desc" },
       select: { id: true },

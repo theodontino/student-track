@@ -9,6 +9,7 @@ import type {
 
 const boundedText = (max: number) => z.string().trim().min(1).max(max);
 const optionalBoundedText = (max: number) => z.string().trim().max(max).optional();
+const interventionText = (max: number) => z.string().trim().max(max).default("");
 const score = z.number().int().min(0).max(5).nullable();
 
 export const AttentionSignalCandidateSchema = z.object({
@@ -18,10 +19,15 @@ export const AttentionSignalCandidateSchema = z.object({
 });
 
 export const TeacherInterventionSchema: z.ZodType<TeacherIntervention> = z.object({
-  observedProblem: boundedText(1000),
-  teacherAction: boundedText(1000),
-  outcome: optionalBoundedText(1000),
-  evidenceText: boundedText(2000),
+  // A teacher observation is useful evidence even when it has not yet been
+  // expanded into a complete problem/action/outcome narrative. Missing parts
+  // stay empty rather than causing the whole observation to disappear.
+  observedProblem: interventionText(1000),
+  teacherAction: interventionText(1000),
+  outcome: interventionText(1000),
+  evidenceText: interventionText(2000),
+}).refine((value) => Boolean(value.observedProblem || value.teacherAction || value.outcome || value.evidenceText), {
+  message: "教师观察至少需要一项内容",
 });
 
 export const DraftStudentSchema = z.object({

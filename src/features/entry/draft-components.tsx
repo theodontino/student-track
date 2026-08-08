@@ -62,14 +62,14 @@ function InterventionEditor({ intervention, editable, onChange, onRemove }: {
   onRemove?: () => void;
 }) {
   if (!editable || !onChange) {
-    return <div className="entry-intervention"><strong>教师处理</strong><span>发现：{intervention.observedProblem}</span><span>处理：{intervention.teacherAction}</span>{intervention.outcome && <span>结果：{intervention.outcome}</span>}<small>证据：{intervention.evidenceText}</small></div>;
+    return <div className="entry-intervention"><strong>教师观察 / 处理</strong>{intervention.observedProblem && <span>发现：{intervention.observedProblem}</span>}{intervention.teacherAction && <span>处理：{intervention.teacherAction}</span>}{intervention.outcome && <span>结果：{intervention.outcome}</span>}{intervention.evidenceText && <small>证据：{intervention.evidenceText}</small>}</div>;
   }
   return <div className="entry-intervention entry-intervention--editable">
     <label>发现的问题<input value={intervention.observedProblem} onChange={(event) => onChange({ ...intervention, observedProblem: event.target.value })} /></label>
     <label>教师处理<input value={intervention.teacherAction} onChange={(event) => onChange({ ...intervention, teacherAction: event.target.value })} /></label>
     <label>处理结果<input value={intervention.outcome ?? ""} onChange={(event) => onChange({ ...intervention, outcome: event.target.value })} /></label>
     <label>原文证据<textarea value={intervention.evidenceText} onChange={(event) => onChange({ ...intervention, evidenceText: event.target.value })} /></label>
-    {onRemove && <Button variant="secondary" uiSize="sm" onClick={onRemove}>删除教师处理</Button>}
+    {onRemove && <Button variant="secondary" uiSize="sm" onClick={onRemove}>删除这条观察</Button>}
   </div>;
 }
 
@@ -91,8 +91,8 @@ export function DraftStudentCard({ student, review, onAttendanceChange, onScoreC
       </div>
       {student.events.length > 0 && <div className="entry-events"><span>事件</span><div>{student.events.map((event, index) => <Badge key={`${event}-${index}`} tone="info">{event}{editable && onRemoveEvent ? <button type="button" aria-label={`删除事件 ${event}`} onClick={() => onRemoveEvent(index)}>×</button> : null}</Badge>)}</div></div>}
       {student.communication && <div className="entry-communication"><strong>家校沟通 · {student.communication.type}</strong><p>{student.communication.summary}</p></div>}
-      {interventions.length > 0 && <div className="entry-interventions"><strong>已识别的教师处理（请确认）</strong>{interventions.map((intervention, index) => <InterventionEditor key={`${intervention.evidenceText}-${index}`} intervention={intervention} editable={editable} onChange={onInterventionsChange ? (value) => onInterventionsChange(interventions.map((item, itemIndex) => itemIndex === index ? value : item)) : undefined} onRemove={onInterventionsChange ? () => onInterventionsChange(interventions.filter((_, itemIndex) => itemIndex !== index)) : undefined} />)}</div>}
-      {editable && onInterventionsChange && <Button variant="secondary" uiSize="sm" onClick={() => onInterventionsChange([...interventions, { observedProblem: "", teacherAction: "", outcome: "", evidenceText: "" }])}>+ 补充教师处理证据</Button>}
+      {interventions.length > 0 && <div className="entry-interventions"><strong>教师观察 / 处理证据</strong>{interventions.map((intervention, index) => <InterventionEditor key={`${intervention.evidenceText}-${index}`} intervention={intervention} editable={editable} onChange={onInterventionsChange ? (value) => onInterventionsChange(interventions.map((item, itemIndex) => itemIndex === index ? value : item)) : undefined} onRemove={onInterventionsChange ? () => onInterventionsChange(interventions.filter((_, itemIndex) => itemIndex !== index)) : undefined} />)}</div>}
+      {editable && onInterventionsChange && <Button variant="secondary" uiSize="sm" onClick={() => onInterventionsChange([...interventions, { observedProblem: "", teacherAction: "", outcome: "", evidenceText: "" }])}>+ 补充教师观察</Button>}
     </article>
   );
 }

@@ -445,6 +445,5 @@ export function assessmentEvidencePrompt(evidence: StudentAssessmentEvidence | n
     weakPoints.length ? `尚未全部通过的知识点：${weakPoints.join("；")}` : "报告列出的知识点本次均已通过。",
     wrongItems.length ? `错题：${wrongItems.join("；")}` : "报告未列出错题。",
     evidence.similarPracticeCount > 0 ? `报告附带${evidence.similarPracticeCount}道相似练习。` : "",
-    "内部推断边界（不要写入家长反馈）：只将本报告视为本次答题证据，不据此推断长期能力或人格特征，也不要添加固定免责声明。",
   ].filter(Boolean).join("\n");
 }

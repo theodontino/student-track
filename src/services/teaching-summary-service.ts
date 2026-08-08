@@ -177,7 +177,7 @@ export async function buildTeachingSummaryContext(
   const classIds = sessions.flatMap((session) => session.classId ? [session.classId] : []);
   const hasSchoolSession = sessions.some((session) => !session.classId);
 
-  const [metrics, attendances, events, selectedCommunications, pendingDrafts, feedbackHistory, roster] = await Promise.all([
+  const [metrics, attendances, events, selectedCommunications, pendingDrafts, feedbackPlans, roster] = await Promise.all([
     db.sessionMetric.findMany({ where: { sessionId: { in: sessionIds } } }),
     db.attendance.findMany({ where: { sessionId: { in: sessionIds } } }),
     db.event.findMany({ where: { sessionId: { in: sessionIds } } }),
@@ -189,9 +189,15 @@ export async function buildTeachingSummaryContext(
       where: { sessionCode: { in: sessionCodes }, status: "pending" },
       select: { id: true, sessionCode: true, studentId: true },
     }),
-    db.workHistory.findMany({
-      where: { module: "feedback", key: { in: sessionCodes } },
-      select: { key: true },
+    db.feedbackPlan.findMany({
+      where: {
+        archivedAt: null,
+        OR: [
+          { sessionId: { in: sessionIds } },
+          { rangeEndSessionId: { in: sessionIds } },
+        ],
+      },
+      select: { sessionId: true, rangeEndSessionId: true },
     }),
     db.student.findMany({
       where: {
@@ -309,7 +315,7 @@ export async function buildTeachingSummaryContext(
   for (const attendance of attendances) attendancesBySession.set(attendance.sessionId, [...(attendancesBySession.get(attendance.sessionId) ?? []), attendance]);
   for (const event of events) eventsBySession.set(event.sessionId, [...(eventsBySession.get(event.sessionId) ?? []), event]);
   for (const communication of selectedCommunications) communicationsBySession.set(communication.sessionId, [...(communicationsBySession.get(communication.sessionId) ?? []), communication]);
-  const feedbackKeys = new Set(feedbackHistory.flatMap((history) => history.key ? [history.key] : []));
+  const feedbackSessionIds = new Set(feedbackPlans.flatMap((plan) => [plan.sessionId, plan.rangeEndSessionId].filter((id): id is string => Boolean(id))));
 
   const sessionFacts = sessions.map((session) => {
     const sessionMetrics = metricsBySession.get(session.id) ?? [];
@@ -338,7 +344,7 @@ export async function buildTeachingSummaryContext(
       communicationCount: sessionCommunications.length,
       averages: { A: average("scoreA"), B: average("scoreB"), C: average("scoreC"), D: average("scoreD") },
       pendingDraftCount: pendingDrafts.filter((draft) => draft.sessionCode === session.code).length,
-      feedbackHistoryFound: feedbackKeys.has(session.code),
+      feedbackHistoryFound: feedbackSessionIds.has(session.id),
       href: sessionHref(session),
     };
   });
@@ -389,8 +395,8 @@ export async function buildTeachingSummaryContext(
     const missingAttendance = Math.max(0, session.studentCount - session.attendanceRecordedCount);
     if (missingMetrics) pendingItems.push({ type: "missing-metrics", label: "评分未完整记录", count: missingMetrics, sessionCode: session.code, href: session.href });
     if (missingAttendance) pendingItems.push({ type: "missing-attendance", label: "考勤未完整记录", count: missingAttendance, sessionCode: session.code, href: session.href });
-    if (session.pendingDraftCount) pendingItems.push({ type: "pending-drafts", label: "存在待复核草案", count: session.pendingDraftCount, sessionCode: session.code, href: `/history?view=drafts` });
-    if (!session.feedbackHistoryFound) pendingItems.push({ type: "feedback-history-missing", label: "未发现反馈工作记录", count: 1, sessionCode: session.code, href: `/feedback?semesterId=${encodeURIComponent(resolved.semester.id)}&sessionCode=${encodeURIComponent(session.code)}` });
+    if (session.pendingDraftCount) pendingItems.push({ type: "pending-drafts", label: "存在待复核草案", count: session.pendingDraftCount, sessionCode: session.code, href: "/review" });
+    if (!session.feedbackHistoryFound) pendingItems.push({ type: "feedback-history-missing", label: "未发现反馈计划", count: 1, sessionCode: session.code, href: `/feedback?semesterId=${encodeURIComponent(resolved.semester.id)}&sessionCode=${encodeURIComponent(session.code)}` });
   }
 
   const facts: TeachingSummaryFacts = {

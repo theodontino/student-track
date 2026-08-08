@@ -1,30 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { saveWorkHistory } from "@/lib/history";
 import type { CardScore, SessionInfo } from "@/lib/types";
 import { saveQuickScores } from "./api";
 import type { QuickScoreNotice, QuickScoreSaveResult } from "./types";
 
 export function useQuickScoreSave({
-  cards,
   changedCards,
   date,
-  semesterId,
-  classId,
-  className,
   sessionCode,
   sessions,
   setNotice,
   setResult,
   reloadSession,
 }: {
-  cards: CardScore[];
   changedCards: CardScore[];
   date: string;
-  semesterId: string;
-  classId: string;
-  className: string;
   sessionCode: string;
   sessions: SessionInfo[];
   setNotice: (notice: QuickScoreNotice | null) => void;
@@ -52,18 +43,6 @@ export function useQuickScoreSave({
     try {
       const data = await saveQuickScores({ scores, sessionCode: sessionCode || undefined, attendances });
       setResult(data);
-      try {
-        await saveWorkHistory("quick-score", `${className} ${sessionCode || date} 手动评分`, {
-          semesterId,
-          classId,
-          className,
-          sessionCode,
-          date,
-          cards,
-        }, sessionCode || date);
-      } catch (historyError) {
-        console.error("save quick-score history failed:", historyError);
-      }
       if (sessionCode) {
         const session = sessions.find((item) => item.code === sessionCode);
         if (session) await reloadSession(session);

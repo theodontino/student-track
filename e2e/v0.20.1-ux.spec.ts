@@ -73,7 +73,7 @@ test.describe.serial("v0.20.1 interaction polish", () => {
 
     const reviewPage = await context.newPage();
     await reviewPage.goto("/review");
-    await expect(reviewPage).toHaveURL(/\/history\?view=drafts/);
+    await expect(reviewPage).toHaveURL(/\/review$/);
     await expect(reviewPage.getByRole("heading", { name: "复核中心" })).toBeVisible();
     await reviewPage.close();
   });
@@ -124,7 +124,7 @@ test.describe.serial("v0.20.1 interaction polish", () => {
         : { success: true } });
     });
 
-    await page.goto("/history?view=ai");
+    await page.goto("/system/maintenance");
     await expect(page.getByRole("heading", { name: "长期背景草案" })).toBeVisible();
     await expect(page.getByText("确认后的内容仅在教师工作区展示，不进入家长反馈 prompt、预览或导出。")).toBeVisible();
     await expect(page.getByRole("button", { name: "撤销压缩" })).toBeVisible();

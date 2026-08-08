@@ -2,14 +2,35 @@
 
 import { useState } from "react";
 import { Select } from "@/components/ui";
-import type { StudentDetail } from "./types";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-export function StudentTrendChart({ metrics }: { metrics: StudentDetail["sessionMetrics"] }) {
-  const [trendDays, setTrendDays] = useState(30);
-  const trendEnd = metrics[0]?.date ? new Date(metrics[0].date).getTime() : Date.now();
+export interface StudentTrendMetric {
+  id: string;
+  date: string;
+  scoreA: number | null;
+  scoreB: number | null;
+  scoreC: number | null;
+  scoreD: number | null;
+}
+
+export function StudentTrendChart({
+  metrics,
+  compact = false,
+  title = "本学期课次趋势",
+}: {
+  metrics: StudentTrendMetric[];
+  compact?: boolean;
+  title?: string;
+}) {
+  const [trendDays, setTrendDays] = useState(compact ? 0 : 30);
+  const validTimes = metrics.map((metric) => new Date(metric.date).getTime()).filter(Number.isFinite);
+  const trendEnd = validTimes.length ? Math.max(...validTimes) : Date.now();
   const trendData = [...metrics]
-    .filter((metric) => trendDays === 0 || (trendEnd - new Date(metric.date).getTime()) / 86400000 <= trendDays)
+    .filter((metric) => {
+      if (trendDays === 0) return true;
+      const timestamp = new Date(metric.date).getTime();
+      return !Number.isFinite(timestamp) || (trendEnd - timestamp) / 86400000 <= trendDays;
+    })
     .reverse()
     .map((metric) => ({
       date: metric.date.slice(5),
@@ -20,18 +41,18 @@ export function StudentTrendChart({ metrics }: { metrics: StudentDetail["session
     }));
 
   return (
-    <section className="student-chart-card">
+    <section className={`student-chart-card${compact ? " is-compact" : ""}`}>
       <header>
-        <div><h2>本学期课次趋势</h2><p>时间范围以本学期最新一条评价为终点。</p></div>
-        <Select aria-label="趋势时间范围" value={trendDays} onChange={(event) => setTrendDays(Number(event.target.value))} className="student-trend-range">
+        <div><h2>{title}</h2><p>{compact ? "与学生明细使用同一评价趋势窗格。" : "时间范围以本学期最新一条评价为终点。"}</p></div>
+        {!compact && <Select aria-label="趋势时间范围" value={trendDays} onChange={(event) => setTrendDays(Number(event.target.value))} className="student-trend-range">
           <option value={7}>近 7 天</option>
           <option value={30}>近 30 天</option>
           <option value={90}>近 90 天</option>
           <option value={0}>全部</option>
-        </Select>
+        </Select>}
       </header>
       {trendData.length > 0 ? (
-        <ResponsiveContainer width="100%" height={280}>
+        <ResponsiveContainer width="100%" height={compact ? 190 : 280}>
           <LineChart data={trendData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
             <XAxis dataKey="date" fontSize={11} />

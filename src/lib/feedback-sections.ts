@@ -11,8 +11,8 @@ export type FeedbackOutputSectionKey = typeof FEEDBACK_OUTPUT_SECTION_KEYS[numbe
 export const FEEDBACK_STYLES = [
   "gentle",
   "professional",
-  // Legacy values remain readable so 1.1.0-beta.1 WorkHistory and replay
-  // snapshots do not become invalid after the expression controls change.
+  // Legacy values remain readable so stored expression snapshots do not
+  // become invalid after the expression controls change.
   "concise_objective",
   "balanced",
   "encouraging",

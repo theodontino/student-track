@@ -13,6 +13,7 @@ import type { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 import { FeedbackScriptLibraryPanel } from "./FeedbackScriptLibraryPanel";
 
 type Workspace = ReturnType<typeof useFeedbackWorkspace>;
+type Props = { workspace: Workspace; assessmentOnly?: boolean };
 
 const statusCopy = {
   parsing: { label: "解析中", tone: "neutral" as const },
@@ -31,25 +32,26 @@ function arrayText(values: string[]) {
   return values.join("\n");
 }
 
-export function FeedbackMaterialsPanel({ workspace }: { workspace: Workspace }) {
+export function FeedbackMaterialsPanel({ workspace, assessmentOnly = false }: Props) {
   const classStudents = workspace.assessmentStudents;
   const material = workspace.lessonMaterial;
 
   return (
     <Section
-      title="本节反馈材料"
-      description="生成前，模型会按班级整理一次课程摘要；个人报告和现有记录仍只负责证明对应学生的真实表现。"
+      title={assessmentOnly ? "出门测证据" : "本节反馈材料"}
+      description={assessmentOnly ? "在录入阶段选择 Excel 和 PDF；PDF 只进入对应学生的证据篮子，不会成为公共课程事实。" : "准备阶段维护本节公共课程材料；个人报告和现有记录仍只负责证明对应学生的真实表现。"}
       className="feedback-materials"
       actions={<div className="feedback-stage-status">
-        <Badge tone={workspace.lessonMaterialNeedsOrganization ? "warning" : "info"}>
+        {!assessmentOnly && <Badge tone={workspace.lessonMaterialNeedsOrganization ? "warning" : "info"}>
           {workspace.lessonMaterialNeedsOrganization ? "文字待整理" : "课程材料已整理"}
-        </Badge>
-        <Badge tone={workspace.assessmentConfirmedCount ? "success" : "neutral"}>
+        </Badge>}
+        {assessmentOnly && <Badge tone={workspace.assessmentConfirmedCount ? "success" : "neutral"}>
           已采用 {workspace.assessmentConfirmedCount} 份报告
-        </Badge>
+        </Badge>}
       </div>}
     >
       <div className="feedback-materials__body">
+        {!assessmentOnly && <>
         <FeedbackScriptLibraryPanel workspace={workspace} />
         <div className="feedback-materials__copy">
           <div className="feedback-materials__field">
@@ -177,8 +179,9 @@ export function FeedbackMaterialsPanel({ workspace }: { workspace: Workspace }) 
             </small>
           </div>
         )}
+        </>}
 
-        <div className="feedback-pdf-import">
+        {assessmentOnly && <div className="feedback-pdf-import">
           <div className="feedback-pdf-import__heading">
             <div>
               <strong>学生出门测 PDF</strong>
@@ -334,7 +337,7 @@ export function FeedbackMaterialsPanel({ workspace }: { workspace: Workspace }) 
           <StatusBanner tone="info">
             课程材料绑定当前课次；一份代表性 PDF 可匿名帮助建立课程与母题结构认识。每名学生的成绩、答案和错题仍只进入其本人 Prompt。
           </StatusBanner>
-        </div>
+        </div>}
       </div>
     </Section>
   );

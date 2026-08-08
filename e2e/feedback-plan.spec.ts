@@ -2,14 +2,23 @@ import { expect, test } from "@playwright/test";
 import { TEST_FIXTURE } from "../scripts/test-fixture-data";
 
 const evidence = JSON.stringify({
-  version: 1,
+  version: 2,
   planType: "event_micro",
   studentId: TEST_FIXTURE.students[0].id,
   teachingEvidence: [{ id: "event-1", kind: "fact", content: "氧化还原反应测验完成稳定", sourceRefs: [{ type: "event", id: "test-event-1" }], confirmed: true }],
+  assessmentEvidence: [{ id: "assessment-1", kind: "fact", content: "出门测共 5 题，正确率 80%", sourceRefs: [{ type: "assessment-pdf", id: "test-assessment-1" }], confirmed: true }],
   communicationContext: [],
   executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
   sourceRefs: [{ type: "event", id: "test-event-1" }],
   sourceFingerprint: "e2e-feedback-plan-fingerprint-1",
+  teachingBackground: ["课程标题：氧化还原"],
+  historySnapshot: {
+    version: 1,
+    current: { metricId: "metric-current", sessionId: null, date: "本次课", semesterNumber: 0, scoreA: 5, scoreB: 4, scoreC: 4, scoreD: 3, present: true },
+    previous: { metricId: "metric-previous", sessionId: TEST_FIXTURE.sessions[0].id, date: "2026-06-24", semesterNumber: 4, scoreA: 4, scoreB: 4, scoreC: 3, scoreD: 3 },
+    recent: [{ metricId: "metric-previous", sessionId: TEST_FIXTURE.sessions[0].id, date: "2026-06-24", semesterNumber: 4, scoreA: 4, scoreB: 4, scoreC: 3, scoreD: 3 }],
+    semesterAverage: { A: 4.5, B: 4, C: 3.5, D: 3 },
+  },
 });
 
 const composition = JSON.stringify({
@@ -25,12 +34,17 @@ const composition = JSON.stringify({
   draftFeedback: "模型初稿：本次测验完成稳定。",
 });
 
-function plan(text = "模型初稿：本次测验完成稳定。", status = "needs_review") {
+function plan(text = "模型初稿：本次测验完成稳定。", status = "needs_review", planStatus = status === "approved" ? "approved" : "in_review", itemRevision = 2) {
+  const generated = planStatus !== "draft";
   return {
     id: "e2e-feedback-plan-1",
     type: "event_micro",
-    purpose: "E2E 反馈计划",
-    status: status === "approved" ? "approved" : "in_review",
+    outputRequirement: "E2E 反馈计划",
+    status: planStatus,
+    generationMode: "fast",
+    generationStartedAt: generated ? "2026-08-08T08:00:00.000Z" : null,
+    generationCompletedAt: generated ? "2026-08-08T08:00:12.000Z" : null,
+    generationTiming: generated ? { startedAt: "2026-08-08T08:00:00.000Z", completedAt: "2026-08-08T08:00:12.000Z", elapsedMs: 12_000, completedItems: 1, averageItemMs: 9_500, itemsPerMinute: 5, asOf: "2026-08-08T08:00:12.000Z" } : { startedAt: null, completedAt: null, elapsedMs: 0, completedItems: 0, averageItemMs: null, itemsPerMinute: null, asOf: "2026-08-08T08:00:00.000Z" },
     sessionId: TEST_FIXTURE.sessions[0].id,
     rangeEndSessionId: TEST_FIXTURE.sessions[0].id,
     items: [{
@@ -41,9 +55,12 @@ function plan(text = "模型初稿：本次测验完成稳定。", status = "nee
       finalTextHash: "e2e-final-hash",
       evidenceSnapshot: evidence,
       compositionSnapshot: composition,
-      auditSnapshot: JSON.stringify({ version: 1, status: "pass", items: [], textHash: "e2e-final-hash", semanticReviewRequired: false }),
+      auditSnapshot: JSON.stringify({ version: 1, status: "needs_review", items: [{ code: "final_evidence_omitted", severity: "requires_teacher", message: "当前正文未呈现测评证据 assessment-1" }], textHash: "e2e-final-hash", semanticReviewRequired: false }),
       selectedGeneration: { inputSnapshot: JSON.stringify({ draftComposition: JSON.parse(composition) }) },
-      itemRevision: 2,
+      itemRevision,
+      generationStartedAt: generated ? "2026-08-08T08:00:00.500Z" : null,
+      generationCompletedAt: generated ? "2026-08-08T08:00:12.000Z" : null,
+      generationDurationMs: generated ? 9_500 : null,
       student: { name: TEST_FIXTURE.students[0].name, studentId: TEST_FIXTURE.students[0].studentId },
       tasks: [],
       attachments: [],
@@ -52,47 +69,60 @@ function plan(text = "模型初稿：本次测验完成稳定。", status = "nee
   };
 }
 
-test("feedback plan supports create, streamed generation, teacher edit, approval and export", async ({ page }) => {
+test("feedback plan supports queued generation, teacher edit, approval and export", async ({ page }) => {
   let currentText = "模型初稿：本次测验完成稳定。";
   let currentStatus = "needs_review";
   let generated = false;
   let generatedItemIds: string[] = [];
+  let generationMode = "";
   let successfulExports = 0;
   let planCreated = false;
+  let currentPlanStatus = "draft";
+  let currentRevision = 2;
+  const mutationOrder: string[] = [];
   await page.route("**/api/report/feedback-plans**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
-      await route.fulfill({ json: { plans: planCreated ? [plan(currentText, currentStatus)] : [] } });
+      await route.fulfill({ json: { plans: planCreated ? [plan(currentText, currentStatus, currentPlanStatus, currentRevision)] : [] } });
       return;
     }
     if (request.method() === "POST" && url.pathname.endsWith("/feedback-plans")) {
       planCreated = true;
-      const created = plan("模型初稿：本次测验完成稳定。", "evidence_ready");
+      const created = plan("模型初稿：本次测验完成稳定。", "evidence_ready", "draft");
       await route.fulfill({ status: 201, json: { plan: { ...created, items: created.items.map((item) => ({ ...item, student: undefined })) } } });
       return;
     }
     if (url.pathname.endsWith("/e2e-feedback-plan-1") && request.method() === "GET") {
-      await route.fulfill({ json: { plan: plan(currentText, currentStatus) } });
+      await route.fulfill({ json: { plan: plan(currentText, currentStatus, currentPlanStatus, currentRevision) } });
       return;
     }
     if (url.pathname.endsWith("/e2e-feedback-plan-1") && request.method() === "PATCH") {
+      mutationOrder.push("save");
       const body = request.postDataJSON() as { patch?: { finalText?: string } };
       if (body.patch?.finalText) currentText = body.patch.finalText;
-      await route.fulfill({ json: { item: plan(currentText, "needs_review").items[0] } });
+      currentStatus = "needs_review";
+      currentPlanStatus = "in_review";
+      currentRevision = 3;
+      await route.fulfill({ json: { item: plan(currentText, "needs_review", currentPlanStatus, currentRevision).items[0] } });
       return;
     }
     if (url.pathname.endsWith("/e2e-feedback-plan-1") && request.method() === "POST") {
-      const body = request.postDataJSON() as { action?: string; allowRepeat?: boolean; itemIds?: string[] };
-      if (body.action === "generate") {
+      const body = request.postDataJSON() as { action?: string; allowRepeat?: boolean; itemIds?: string[]; generationMode?: string };
+      if (body.action === "start_generation") {
         generated = true;
         generatedItemIds = body.itemIds ?? [];
-        await route.fulfill({ status: 200, contentType: "application/x-ndjson; charset=utf-8", body: `{"type":"status","message":"开始生成 1 条反馈"}\n{"type":"item","itemId":"e2e-feedback-item-1","status":"needs_review"}\n` });
+        generationMode = typeof body.generationMode === "string" ? body.generationMode : "";
+        currentStatus = "needs_review";
+        currentPlanStatus = "in_review";
+        await route.fulfill({ status: 202, json: { accepted: true, status: "queued" } });
         return;
       }
       if (body.action === "approve") {
+        mutationOrder.push("approve");
         currentStatus = "approved";
-        await route.fulfill({ json: { plan: plan(currentText, "approved") } });
+        currentPlanStatus = "approved";
+        await route.fulfill({ json: { plan: plan(currentText, "approved", currentPlanStatus, currentRevision) } });
         return;
       }
       if (body.action === "export") {
@@ -109,7 +139,7 @@ test("feedback plan supports create, streamed generation, teacher edit, approval
   });
 
   await page.goto("/feedback");
-  // The shared context picker is also used by the legacy workflow. Use its
+  // The shared context picker is also used by the preparation step. Use its
   // stable select order here so this integration test does not depend on the
   // browser's nested-label accessible-name implementation.
   const contextSelects = page.locator(".feedback-context-section select");
@@ -117,26 +147,53 @@ test("feedback plan supports create, streamed generation, teacher edit, approval
   await contextSelects.nth(1).selectOption({ label: TEST_FIXTURE.class.name });
   await contextSelects.nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
 
+  await expect(page.getByText("学生出门测 PDF", { exact: true })).not.toBeVisible();
+  await page.getByRole("button", { name: "2 录入 录入与提取课堂记录" }).click();
+  await expect(page.getByText("学生出门测 PDF", { exact: true })).toBeVisible();
+  await expect(page.getByText("选择报告文件夹", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "3 复核 复核并确认" }).click();
   const studentOne = page.getByRole("checkbox", { name: `${TEST_FIXTURE.students[0].name} 本次有明确课堂事件` });
   const studentTwo = page.getByRole("checkbox", { name: `${TEST_FIXTURE.students[1].name} 有确认记录，可手动加入` });
   await expect(studentOne).toBeChecked();
   await expect(studentTwo).not.toBeChecked();
 
-  await page.getByRole("button", { name: "创建反馈计划" }).click();
-  await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-  await page.reload();
-  await expect(page.getByText("E2E 反馈计划", { exact: true })).toBeVisible();
-  await expect(page.getByText("初稿 1/1 · 成稿 1/1 · pass", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "重新组装/生成" }).click();
-  await expect(page.getByText("生成进度 1/1", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "进入生成", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "生成反馈" })).toBeVisible();
+  await expect(page.getByText("最多同时生成 2 条", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "标准生成" })).toBeVisible();
+  await page.getByRole("button", { name: "快速生成" }).click();
+  await expect(page.getByText("本轮生成已完成", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText("12秒", { exact: true })).toBeVisible();
+  await expect(page.getByText("5 生/分钟", { exact: true })).toBeVisible();
   expect(generated).toBe(true);
   expect(generatedItemIds).toEqual(["e2e-feedback-item-1"]);
+  expect(generationMode).toBe("fast");
+  await page.getByRole("button", { name: "查看并编辑反馈" }).click();
+  await expect(page.getByRole("heading", { name: "编辑与导出" })).toBeVisible();
 
   const editor = page.getByLabel(`${TEST_FIXTURE.students[0].name}反馈计划文本`);
   await editor.fill("教师修改后的反馈文本。");
-  await page.getByRole("button", { name: "保存修改" }).click();
   await page.getByRole("button", { name: "批准所选可通过项" }).click();
-  await page.getByRole("button", { name: "5 导出 编辑与导出" }).click();
+  await expect.poll(() => mutationOrder).toEqual(["save", "approve"]);
+  expect(currentText).toBe("教师修改后的反馈文本。");
+  await expect(page.getByText("本课事实", { exact: true })).toBeVisible();
+  await expect(page.getByText("模型建议（仅供参考）", { exact: true })).toBeVisible();
+  await expect(page.getByText("教师最终正文", { exact: true })).toBeVisible();
+  await expect(page.getByText("家庭沟通偏好", { exact: true })).toBeVisible();
+  await expect(page.getByText("最近课堂评价", { exact: true })).toBeVisible();
+  await expect(page.getByText("学期均值 A4.5 · B4 · C3.5 · D3", { exact: true })).toBeVisible();
+  await expect(page.getByText("程序核验", { exact: true })).toBeVisible();
+  await expect(page.getByText("教师最终正文：部分已确认证据没有写入正文", { exact: true })).toBeVisible();
+  await expect(page.getByText("处理建议：", { exact: true })).toBeVisible();
+  const feedbackCard = page.locator(".feedback-plan-item").first();
+  expect(await feedbackCard.evaluate((card) => {
+    const auditPanel = card.querySelector(".feedback-plan-audit-panel");
+    const reviewGrid = card.querySelector(".feedback-plan-review-grid");
+    return Boolean(auditPanel && reviewGrid && (auditPanel.compareDocumentPosition(reviewGrid) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
+  await expect(page.getByText("出门测详情", { exact: true })).toBeVisible();
+  await expect(page.locator("details.feedback-plan-assessment-detail")).not.toHaveAttribute("open", "");
   const exportButton = page.getByRole("button", { name: "仅导出新批准项" });
   await expect(exportButton).toBeEnabled();
   await exportButton.click();
@@ -157,6 +214,75 @@ test("feedback plan remains within the viewport at supported breakpoints", async
     await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
+});
+
+test("export never reports an unfinished queued item as program-check passed", async ({ page }) => {
+  const queuedPlan = plan("", "queued", "paused");
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
+      await route.fulfill({ json: { plans: [queuedPlan] } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      await route.fulfill({ json: { plan: queuedPlan } });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/feedback?step=export&planId=e2e-feedback-plan-1&semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  await expect(page.getByText("尚未完成核验", { exact: true })).toBeVisible();
+  await expect(page.getByText("本条仍在生成队列中，当前没有可供核验的最终正文。", { exact: true })).toBeVisible();
+  await expect(page.getByText("程序核验通过", { exact: true })).not.toBeVisible();
+});
+
+test("feedback history uses readable linked selectors instead of internal id inputs", async ({ page }) => {
+  await page.goto(`/history?semesterId=${TEST_FIXTURE.semester.id}`);
+  const semester = page.getByLabel("学期", { exact: true });
+  const classSelect = page.getByLabel("班级", { exact: true });
+  const session = page.getByLabel("课次", { exact: true });
+  const student = page.getByLabel("学生", { exact: true });
+  await expect(semester).toHaveValue(TEST_FIXTURE.semester.id);
+  await expect(classSelect.getByRole("option", { name: TEST_FIXTURE.class.name })).toBeAttached();
+  await expect(student.locator("option")).toHaveCount(3);
+  await classSelect.selectOption(TEST_FIXTURE.class.id);
+  await expect(session.getByRole("option", { name: new RegExp(TEST_FIXTURE.sessions[0].code) })).toBeAttached();
+  await expect(page.getByLabel("学期 ID", { exact: true })).toHaveCount(0);
+});
+
+test("review defaults to a new plan while history remains recoverable", async ({ page }) => {
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
+      await route.fulfill({ json: { plans: [plan("既有计划正文", "approved", "approved")] } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      await route.fulfill({ json: { plan: plan("既有计划正文", "approved", "approved") } });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/feedback");
+  const contextSelects = page.locator(".feedback-context-section select");
+  await contextSelects.nth(0).selectOption(TEST_FIXTURE.semester.id);
+  await contextSelects.nth(1).selectOption({ label: TEST_FIXTURE.class.name });
+  await contextSelects.nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+  await page.getByRole("button", { name: "3 复核 复核并确认" }).click();
+
+  await expect(page.getByLabel("反馈要求与补充事实")).toBeVisible();
+  await expect(page.getByText("已恢复反馈计划：事件型微反馈", { exact: false })).not.toBeVisible();
+  await page.getByRole("button", { name: "事件型微反馈 · 已批准 · 1条" }).click();
+  await expect(page.getByText("已恢复反馈计划：事件型微反馈", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("反馈要求与补充事实")).not.toBeVisible();
+
+  await page.getByRole("button", { name: "新建反馈计划" }).click();
+  await expect(page.getByLabel("反馈要求与补充事实")).toBeVisible();
+  await expect(page.getByText("已恢复反馈计划：事件型微反馈", { exact: false })).not.toBeVisible();
 });
 
 test("feedback preparation recommends and applies the current lesson script", async ({ page }) => {

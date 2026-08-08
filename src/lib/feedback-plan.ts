@@ -1,9 +1,12 @@
 import { z } from "zod";
-import { StudentAssessmentEvidenceSchema } from "@/lib/contracts/feedback";
-import { containsStudentDirectedAddress } from "@/lib/feedback-text-safety";
+import { LessonFeedbackMaterialSchema, StudentAssessmentEvidenceSchema } from "@/lib/contracts/feedback";
+import { containsStudentDirectedAddress, stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
 
 export const FEEDBACK_PLAN_TYPES = ["class_update", "event_micro", "stage_trend", "course_end"] as const;
 export type FeedbackPlanType = typeof FEEDBACK_PLAN_TYPES[number];
+
+export const FEEDBACK_GENERATION_MODES = ["standard", "fast"] as const;
+export type FeedbackGenerationMode = typeof FEEDBACK_GENERATION_MODES[number];
 
 export const FEEDBACK_CLOSURE_TYPES = [
   "informational",
@@ -48,8 +51,32 @@ const evidenceItemSchema = z.object({
   confirmed: z.boolean().default(false),
 });
 
-export const FeedbackEvidenceBundleSchema = z.object({
+const feedbackHistoryMetricSchema = z.object({
+  metricId: z.string().max(200).optional(),
+  sessionId: z.string().max(200).nullable().optional(),
+  date: z.string().max(64),
+  semesterNumber: z.number().int().min(0).max(10000),
+  scoreA: z.number().int().min(0).max(5).nullable(),
+  scoreB: z.number().int().min(0).max(5).nullable(),
+  scoreC: z.number().int().min(0).max(5).nullable(),
+  scoreD: z.number().int().min(0).max(5).nullable(),
+});
+
+export const FeedbackHistorySnapshotSchema = z.object({
   version: z.literal(1),
+  current: feedbackHistoryMetricSchema.extend({ present: z.boolean().nullable() }).nullable(),
+  previous: feedbackHistoryMetricSchema.nullable(),
+  recent: z.array(feedbackHistoryMetricSchema).max(6),
+  semesterAverage: z.object({
+    A: z.number().min(0).max(5).nullable(),
+    B: z.number().min(0).max(5).nullable(),
+    C: z.number().min(0).max(5).nullable(),
+    D: z.number().min(0).max(5).nullable(),
+  }),
+});
+export type FeedbackHistorySnapshot = z.infer<typeof FeedbackHistorySnapshotSchema>;
+
+const feedbackEvidenceBundleFields = {
   planType: z.enum(FEEDBACK_PLAN_TYPES),
   studentId: z.string().max(200).nullable(),
   teachingEvidence: z.array(evidenceItemSchema).max(100),
@@ -62,8 +89,54 @@ export const FeedbackEvidenceBundleSchema = z.object({
   }),
   sourceRefs: z.array(sourceRefSchema).max(100),
   sourceFingerprint: z.string().min(16).max(128),
+};
+
+export const FeedbackEvidenceBundleV1Schema = z.object({
+  version: z.literal(1),
+  ...feedbackEvidenceBundleFields,
 });
+
+export const FeedbackEvidenceBundleV2Schema = z.object({
+  version: z.literal(2),
+  ...feedbackEvidenceBundleFields,
+  // 课程公共材料只作为教学背景，不能被当成学生个人表现证据。
+  teachingBackground: z.array(z.string().max(3000)).max(100).default([]),
+  historySnapshot: FeedbackHistorySnapshotSchema.nullable(),
+});
+
+export const FeedbackEvidenceBundleSchema = z.union([
+  FeedbackEvidenceBundleV1Schema,
+  FeedbackEvidenceBundleV2Schema,
+]);
 export type FeedbackEvidenceBundle = z.infer<typeof FeedbackEvidenceBundleSchema>;
+
+export const FeedbackPlanInputSnapshotSchema = z.object({
+  version: z.literal(1),
+  semesterId: z.string().max(200).optional(),
+  classId: z.string().max(200).optional(),
+  sessionId: z.string().max(200).optional(),
+  rangeStartSessionId: z.string().max(200).optional(),
+  rangeEndSessionId: z.string().max(200).optional(),
+  sessionCode: z.string().max(128).optional(),
+  sourceFingerprint: z.string().max(128).optional(),
+  lessonMaterial: LessonFeedbackMaterialSchema,
+});
+export type FeedbackPlanInputSnapshot = z.infer<typeof FeedbackPlanInputSnapshotSchema>;
+
+export function sanitizeFeedbackEvidenceBundle(bundle: FeedbackEvidenceBundle): FeedbackEvidenceBundle {
+  const clean = (items: FeedbackEvidenceBundle["teachingEvidence"]) => items
+    .map((item) => ({
+      ...item,
+      content: stripFeedbackInternalBoundary(item.content),
+    }))
+    .filter((item) => item.content.length > 0);
+  return {
+    ...bundle,
+    teachingEvidence: clean(bundle.teachingEvidence),
+    assessmentEvidence: clean(bundle.assessmentEvidence),
+    communicationContext: clean(bundle.communicationContext),
+  };
+}
 
 const moduleStatusSchema = z.enum(["included", "omitted", "blocked"]);
 
@@ -96,6 +169,27 @@ export const FeedbackCompositionPlanSchema = z.object({
 });
 export type FeedbackCompositionPlan = z.infer<typeof FeedbackCompositionPlanSchema>;
 
+export function sanitizeFeedbackComposition(composition: FeedbackCompositionPlan): FeedbackCompositionPlan {
+  return {
+    ...composition,
+    parentAction: composition.parentAction ? {
+      ...composition.parentAction,
+      action: stripFeedbackInternalBoundary(composition.parentAction.action),
+      successCriteria: stripFeedbackInternalBoundary(composition.parentAction.successCriteria),
+      notNeeded: stripFeedbackInternalBoundary(composition.parentAction.notNeeded),
+    } : null,
+    modules: composition.modules.map((module) => ({
+      ...module,
+      content: stripFeedbackInternalBoundary(module.content),
+      reason: stripFeedbackInternalBoundary(module.reason),
+    })),
+    evidenceCoverage: composition.evidenceCoverage
+      .map((coverage) => ({ ...coverage, statement: stripFeedbackInternalBoundary(coverage.statement) }))
+      .filter((coverage) => coverage.statement.length >= 2),
+    draftFeedback: stripFeedbackInternalBoundary(composition.draftFeedback),
+  };
+}
+
 export const FeedbackAuditItemSchema = z.object({
   code: z.string().min(1).max(100),
   severity: z.enum(["info", "requires_teacher", "blocked"]),
@@ -106,11 +200,8 @@ export const FeedbackAuditItemSchema = z.object({
 
 export const HARD_FEEDBACK_AUDIT_CODES = new Set([
   "empty_text",
-  "recipient_mismatch",
   "cross_student_content",
   "unconfirmed_evidence",
-  "teacher_intervention_unconfirmed",
-  "intervention_outcome_without_action",
 ]);
 
 export function isHardFeedbackAuditIssue(code: string) {
@@ -153,7 +244,7 @@ export type FeedbackPlanAssessmentEvidenceInput = z.infer<typeof FeedbackPlanAss
 
 export const FeedbackPlanCreateSchema = z.object({
   type: z.enum(FEEDBACK_PLAN_TYPES),
-  purpose: z.string().trim().min(1).max(500),
+  outputRequirement: z.string().trim().min(1).max(2000),
   semesterId: z.string().trim().min(1).max(200),
   classId: z.string().trim().min(1).max(200),
   sessionId: z.string().trim().max(200).optional(),
@@ -161,6 +252,7 @@ export const FeedbackPlanCreateSchema = z.object({
   rangeEndSessionId: z.string().trim().max(200).optional(),
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
   assessmentEvidence: FeedbackPlanAssessmentEvidenceSchema.optional(),
+  lessonMaterial: LessonFeedbackMaterialSchema.optional(),
 });
 export type FeedbackPlanCreateInput = z.infer<typeof FeedbackPlanCreateSchema>;
 
@@ -214,7 +306,7 @@ export function validateCompositionForBundle(
   bundle: FeedbackEvidenceBundle,
   taskIds: Set<string> = new Set(bundle.executionConstraints.existingTaskIds),
   identity?: { studentName?: string; otherStudentNames?: string[] },
-  options: { requireAllEvidenceInText?: boolean; enforceParentAudience?: boolean } = {},
+  options: { enforceParentAudience?: boolean } = {},
 ): { status: FeedbackAuditSnapshot["status"]; issues: z.infer<typeof FeedbackAuditItemSchema>[] } {
   const issues: z.infer<typeof FeedbackAuditItemSchema>[] = [];
   const included = composition.modules.filter((module) => module.status === "included");
@@ -249,13 +341,7 @@ export function validateCompositionForBundle(
     .map((item) => item.id));
   const includedEvidenceIds = new Set(included.flatMap((module) => module.evidenceRefs));
   const omittedEvidenceIds = [...requiredEvidenceIds].filter((id) => !includedEvidenceIds.has(id));
-  if (options.requireAllEvidenceInText && omittedEvidenceIds.length > 0) {
-    issues.push({
-      code: "confirmed_evidence_omitted",
-      severity: "blocked",
-      message: `反馈尚未覆盖全部已确认的教学与测评证据：${omittedEvidenceIds.join("、")}`,
-    });
-  }
+  const softOmittedEvidenceIds = new Set(omittedEvidenceIds);
   const coverageByEvidenceId = new Map<string, string>();
   const duplicateCoverageIds = new Set<string>();
   for (const coverage of composition.evidenceCoverage) {
@@ -277,45 +363,34 @@ export function validateCompositionForBundle(
       message: `正文覆盖声明引用了非教学/测评证据：${unknownCoverageIds.join("、")}`,
     });
   }
-  const missingTextCoverageIds: string[] = [];
   const invalidTextCoverageIds: string[] = [];
   const normalizedDraft = coverageText(composition.draftFeedback);
   for (const evidenceItem of bundle.teachingEvidence.concat(bundle.assessmentEvidence)
     .filter((item) => item.confirmed && item.kind !== "model_candidate")) {
     const statement = coverageByEvidenceId.get(evidenceItem.id);
     if (!statement) {
-      if (options.requireAllEvidenceInText) missingTextCoverageIds.push(evidenceItem.id);
+      softOmittedEvidenceIds.add(evidenceItem.id);
       continue;
     }
     if (!normalizedDraft.includes(coverageText(statement))) {
-      missingTextCoverageIds.push(evidenceItem.id);
+      softOmittedEvidenceIds.add(evidenceItem.id);
       continue;
     }
     if (!evidenceStatementMatches(evidenceItem.content, statement)) invalidTextCoverageIds.push(evidenceItem.id);
   }
-  if (missingTextCoverageIds.length > 0) {
-    issues.push({
-      code: "confirmed_evidence_text_omitted",
-      severity: "blocked",
-      message: `以下已确认教学与测评证据没有对应到最终反馈正文：${missingTextCoverageIds.join("、")}`,
-    });
-  }
   if (invalidTextCoverageIds.length > 0) {
     issues.push({
       code: "evidence_coverage_unsubstantiated",
-      severity: "blocked",
+      severity: "requires_teacher",
       message: `以下正文覆盖句与对应证据缺少可追溯的关键词关联：${invalidTextCoverageIds.join("、")}`,
     });
   }
-  if (!options.requireAllEvidenceInText) {
-    const intentionallyOmittedIds = [...requiredEvidenceIds].filter((id) => !coverageByEvidenceId.has(id));
-    if (intentionallyOmittedIds.length > 0) {
-      issues.push({
-        code: "final_evidence_omitted",
-        severity: "requires_teacher",
-        message: `最终成稿未保留以下初稿证据，请教师确认是否接受本次删减：${intentionallyOmittedIds.join("、")}`,
-      });
-    }
+  if (softOmittedEvidenceIds.size > 0) {
+    issues.push({
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
+      message: `当前正文未呈现以下已确认证据，教师可选择补入或接受删减：${[...softOmittedEvidenceIds].join("、")}`,
+    });
   }
   const unconfirmedRef = included.flatMap((module) => module.evidenceRefs).find((ref) => evidence.some((item) => item.id === ref && (!item.confirmed || item.kind === "model_candidate")));
   if (unconfirmedRef) {

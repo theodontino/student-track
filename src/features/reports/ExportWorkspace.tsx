@@ -1,16 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import WorkHistoryButton from "@/components/WorkHistoryButton";
 import { Button, FormField, Input, PageHeader, Section, StatusBanner } from "@/components/ui";
 import { downloadFile } from "@/lib/api-client";
-import { saveWorkHistory } from "@/lib/history";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 
-interface ExportHistoryState { startDate: string; endDate: string; includeInactive?: boolean; }
-function isExportHistoryState(value: unknown): value is ExportHistoryState {
+interface ExportWorkspaceState { startDate: string; endDate: string; includeInactive?: boolean; }
+function isExportWorkspaceState(value: unknown): value is ExportWorkspaceState {
   if (!value || typeof value !== "object") return false;
-  const state = value as Partial<ExportHistoryState>;
+  const state = value as Partial<ExportWorkspaceState>;
   return typeof state.startDate === "string" && typeof state.endDate === "string";
 }
 
@@ -23,24 +21,21 @@ export default function ExportWorkspace() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
-  const workspaceValue = useMemo<ExportHistoryState>(() => ({ startDate, endDate, includeInactive }), [endDate, includeInactive, startDate]);
+  const workspaceValue = useMemo<ExportWorkspaceState>(() => ({ startDate, endDate, includeInactive }), [endDate, includeInactive, startDate]);
 
-  function restore(state: ExportHistoryState) { setStartDate(state.startDate); setEndDate(state.endDate); setIncludeInactive(state.includeInactive ?? false); setError(""); setStatus(""); }
-  useSessionWorkspace({ key: "export", value: workspaceValue, validate: isExportHistoryState, restore: (saved) => { if (saved) restore(saved); } });
+  useSessionWorkspace({ key: "export", value: workspaceValue, validate: isExportWorkspaceState, restore: (saved) => { if (saved) { setStartDate(saved.startDate); setEndDate(saved.endDate); setIncludeInactive(saved.includeInactive ?? false); setError(""); setStatus(""); } } });
 
   async function handleExport() {
     setLoading(true); setError(""); setStatus("");
     try {
       await downloadFile("/api/export", `Student-Track_${startDate}_${endDate}.xlsx`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ startDate, endDate, includeInactive }) });
       setStatus("Excel 已生成并下载。");
-      try { await saveWorkHistory("export", `${startDate} 至 ${endDate} 数据导出`, { startDate, endDate, includeInactive }, `${startDate}:${endDate}`); }
-      catch (historyError) { console.error("save export history failed:", historyError); }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "导出失败"); }
     finally { setLoading(false); }
   }
 
   return <main className="export-workspace">
-    <PageHeader title="数据导出" description="选择时间范围，导出学生数据的 Excel 文件。" actions={<WorkHistoryButton<ExportHistoryState> module="export" onRestore={restore} />} />
+    <PageHeader title="数据导出" description="选择时间范围，导出学生数据的 Excel 文件。" />
     <Section title="导出范围" description="文件包含学生档案、指标历史、关键事件、家校沟通和考勤五个工作表。">
       <div className="export-form">
         <FormField id="export-start" label="开始日期"><Input id="export-start" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></FormField>

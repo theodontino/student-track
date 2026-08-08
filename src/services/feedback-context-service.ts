@@ -24,6 +24,9 @@ export interface FeedbackContextPreview {
 export interface StudentRawMetrics {
   current: {
     metricId?: string;
+    sessionId: string;
+    date: string;
+    semesterNumber: number;
     scoreA: number | null;
     scoreB: number | null;
     scoreC: number | null;
@@ -54,6 +57,9 @@ export interface StudentRawMetrics {
     semesterValidCount: number;
     recentValidCount: number;
     semesterAverageA: number | null;
+    semesterAverageB: number | null;
+    semesterAverageC: number | null;
+    semesterAverageD: number | null;
     recentAverageA: number | null;
     personalDifference: number | null;
     classComparisonCount: number;
@@ -370,6 +376,9 @@ export async function buildFeedbackContext(
           studentId: true,
           sessionId: true,
           scoreA: true,
+          scoreB: true,
+          scoreC: true,
+          scoreD: true,
           session: { select: { date: true, semesterNumber: true } },
         },
         orderBy: [
@@ -427,6 +436,9 @@ export async function buildFeedbackContext(
     const studentSemesterMetrics = semesterMetricsByStudent.get(student.id) ?? [];
     const recentStudentMetrics = studentSemesterMetrics.slice(0, 2);
     const semesterAverageA = average(studentSemesterMetrics.map((metric) => metric.scoreA));
+    const semesterAverageB = average(studentSemesterMetrics.map((metric) => metric.scoreB));
+    const semesterAverageC = average(studentSemesterMetrics.map((metric) => metric.scoreC));
+    const semesterAverageD = average(studentSemesterMetrics.map((metric) => metric.scoreD));
     const recentAverageA = average(recentStudentMetrics.map((metric) => metric.scoreA));
     const classDifferences = recentStudentMetrics.flatMap((metric) => {
       if (!metric.sessionId) return [];
@@ -439,6 +451,9 @@ export async function buildFeedbackContext(
       semesterValidCount: studentSemesterMetrics.length,
       recentValidCount: recentStudentMetrics.length,
       semesterAverageA: rounded(semesterAverageA),
+      semesterAverageB: rounded(semesterAverageB),
+      semesterAverageC: rounded(semesterAverageC),
+      semesterAverageD: rounded(semesterAverageD),
       recentAverageA: rounded(recentAverageA),
       personalDifference: semesterAverageA === null || recentAverageA === null
         ? null
@@ -451,6 +466,9 @@ export async function buildFeedbackContext(
     const rawMetrics: StudentRawMetrics = {
       current: {
         metricId: currentMetric?.id,
+        sessionId: session.id,
+        date: session.date,
+        semesterNumber: session.semesterNumber,
         scoreA: currentMetric?.scoreA ?? null,
         scoreB: currentMetric?.scoreB ?? null,
         scoreC: currentMetric?.scoreC ?? null,

@@ -78,7 +78,8 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await studentCard.getByText("学习", { exact: true }).locator("..").getByRole("button", { name: "4", exact: true }).click();
     await expect(page.getByText("已修改 1/", { exact: false })).toBeVisible();
 
-    await page.getByRole("link", { name: "工作历史" }).click();
+    await page.getByRole("link", { name: "反馈历史" }).click();
+    await expect(page.getByRole("heading", { name: "反馈历史" })).toBeVisible();
     await page.getByRole("link", { name: "手动评分" }).click();
     const restoredCard = page.getByText(TEST_FIXTURE.students[1].name, { exact: true }).locator("..").locator("..");
     await expect(restoredCard.getByText("学习", { exact: true }).locator("..").getByRole("button", { name: "4", exact: true })).toHaveClass(/scale-110/);
@@ -116,7 +117,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     const review = page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。");
     await review.fill("E2E 未生成反馈的课堂回顾");
 
-    await page.getByRole("link", { name: "工作历史" }).click();
+    await page.getByRole("link", { name: "反馈历史" }).click();
     await page.getByRole("link", { name: "课后工作台" }).click();
     await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未生成反馈的课堂回顾");
     await page.getByRole("button", { name: "1 准备 选择课次与准备材料" }).click();
@@ -198,7 +199,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("remaining management pages use stable narrow layouts", async ({ context }) => {
-    for (const [path, heading] of [["/history", "工作历史"], ["/export", "数据导出"], ["/semesters", "学期 / 课次"]] as const) {
+    for (const [path, heading] of [["/history", "反馈历史"], ["/export", "数据导出"], ["/semesters", "学期 / 课次"]] as const) {
       const page = await context.newPage();
       await page.setViewportSize({ width: 720, height: 900 });
       await page.goto(path);

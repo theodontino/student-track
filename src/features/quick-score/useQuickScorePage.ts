@@ -30,12 +30,8 @@ export function useQuickScorePage() {
     setNotice,
   });
   const save = useQuickScoreSave({
-    cards: scoreCards.cards,
     changedCards: scoreCards.changedCards,
     date: session.date,
-    semesterId: selectedSemesterId,
-    classId: selectedClassId,
-    className: selectedClass,
     sessionCode: selectedSessionCode,
     sessions: session.sessions,
     setNotice,

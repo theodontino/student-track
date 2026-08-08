@@ -4,8 +4,11 @@ import {
   FeedbackCompositionPlanSchema,
   FeedbackEvidenceBundleSchema,
   FeedbackPlanAssessmentEvidenceSchema,
+  sanitizeFeedbackComposition,
+  sanitizeFeedbackEvidenceBundle,
   validateCompositionForBundle,
 } from "@/lib/feedback-plan";
+import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
 import { createAuditSnapshot } from "@/services/feedback-plan-audit";
 import {
   communicationPreferenceFromSignals,
@@ -99,13 +102,14 @@ describe("feedback plan composition gate", () => {
         confirmed: true,
       }],
     });
-    const result = validateCompositionForBundle(composition(), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    const result = validateCompositionForBundle(composition(), evidence);
     expect(result.status).toBe("needs_review");
     expect(result.issues).toContainEqual(expect.objectContaining({
-      code: "confirmed_evidence_omitted",
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
       message: expect.stringContaining("score-a"),
     }));
-    expect(result.issues.find((issue) => issue.code === "confirmed_evidence_omitted")?.message).toContain("assessment-1");
+    expect(result.issues.find((issue) => issue.code === "final_evidence_omitted")?.message).toContain("assessment-1");
 
     const fullyCovered = validateCompositionForBundle(composition({
       modules: [
@@ -118,7 +122,7 @@ describe("feedback plan composition gate", () => {
         { evidenceId: "assessment-1", statement: "本次出门测反映出部分内容还没有消化" },
       ],
       draftFeedback: "第二道同类题能够独立完成。本次学习测验反映出基础步骤比较稳定，但本次出门测反映出部分内容还没有消化。",
-    }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    }), evidence);
     expect(fullyCovered.status).toBe("pass");
   });
 
@@ -136,10 +140,11 @@ describe("feedback plan composition gate", () => {
       ],
       evidenceCoverage: [{ evidenceId: "event-1", statement: "第二道同类题已经能够独立完成" }],
       draftFeedback: "今天第二道同类题已经能够独立完成，这个处理过程比较稳。",
-    }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    }), evidence);
     expect(refOnly.status).toBe("needs_review");
     expect(refOnly.issues).toContainEqual(expect.objectContaining({
-      code: "confirmed_evidence_text_omitted",
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
       message: expect.stringContaining("score-a"),
     }));
 
@@ -153,7 +158,7 @@ describe("feedback plan composition gate", () => {
         { evidenceId: "score-a", statement: "这个处理过程比较稳" },
       ],
       draftFeedback: "今天第二道同类题已经能够独立完成，这个处理过程比较稳。",
-    }), evidence, undefined, undefined, { requireAllEvidenceInText: true });
+    }), evidence);
     expect(unrelatedSentence.status).toBe("needs_review");
     expect(unrelatedSentence.issues).toContainEqual(expect.objectContaining({ code: "evidence_coverage_unsubstantiated" }));
   });
@@ -177,7 +182,19 @@ describe("feedback plan composition gate", () => {
     expect(result.issues).toEqual([]);
   });
 
-  it("blocks student-directed language only while auditing model-generated parent text", () => {
+  it("keeps internal boundary notes out of evidence and draft text", () => {
+    const boundary = "证据边界：只能解释本次结果，不据此推断长期能力或人格特征";
+    expect(stripFeedbackInternalBoundary(`本次结果如下。${boundary}`)).toBe("本次结果如下。");
+    expect(sanitizeFeedbackEvidenceBundle(bundle({
+      teachingEvidence: [{
+        ...bundle().teachingEvidence[0],
+        content: `本次表现稳定。${boundary}`,
+      }],
+    })).teachingEvidence[0]?.content).toBe("本次表现稳定。");
+    expect(sanitizeFeedbackComposition(composition({ draftFeedback: `本次表现稳定。${boundary}` })).draftFeedback).toBe("本次表现稳定。");
+  });
+
+  it("warns about student-directed language only while auditing model-generated parent text", () => {
     const studentDirected = composition({ draftFeedback: "你今天第二道同类题已经能够独立完成，继续加油。" });
     const generatedAudit = validateCompositionForBundle(
       studentDirected,
@@ -186,7 +203,7 @@ describe("feedback plan composition gate", () => {
       undefined,
       { enforceParentAudience: true },
     );
-    expect(generatedAudit.status).toBe("blocked");
+    expect(generatedAudit.status).toBe("needs_review");
     expect(generatedAudit.issues).toContainEqual(expect.objectContaining({ code: "recipient_mismatch" }));
 
     const teacherEditAudit = validateCompositionForBundle(studentDirected, bundle());
@@ -281,7 +298,7 @@ describe("feedback plan composition gate", () => {
     expect(result.issues.some((issue) => issue.code === "promise_requires_teacher")).toBe(true);
   });
 
-  it("does not allow teacher intervention modules without confirmed evidence", () => {
+  it("sends teacher intervention modules without confirmed evidence to teacher review", () => {
     const result = validateCompositionForBundle(composition({
       closureType: "teacher_resolved",
       modules: [{
@@ -293,7 +310,7 @@ describe("feedback plan composition gate", () => {
       }],
       draftFeedback: "我在课堂上补做了一道同类题，第二次已经能够完成。",
     }), bundle());
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_review");
     expect(result.issues.some((issue) => issue.code === "teacher_intervention_unconfirmed")).toBe(true);
   });
 

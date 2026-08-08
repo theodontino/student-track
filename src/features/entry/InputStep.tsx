@@ -1,12 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import WorkHistoryButton from "@/components/WorkHistoryButton";
 import SemesterPicker from "@/components/SemesterPicker";
 import { Button, Section, StatusBanner, Textarea } from "@/components/ui";
 import type { AiWorkflowController } from "@/features/ai-workflow";
 import { ParseResultPreview, ReviewSummary } from "./draft-components";
-import { useInputWorkspace, type InputHistoryState } from "./useInputWorkspace";
+import { useInputWorkspace } from "./useInputWorkspace";
 
 const INPUT_PLACEHOLDER = "例如：今天张三测验氧化还原全对，但上课走神。李四作业没交，情绪低落。给王五的妈妈打了电话讨论近况。";
 
@@ -24,7 +23,6 @@ export default function InputStep({ workflow, onReview }: { workflow: AiWorkflow
     <div className="entry-input-workspace">
       <div className="entry-step-heading">
         <div><h2>自然语言录入</h2><p>用自然语言描述学生表现，系统会生成待人工确认的结构化草案。</p></div>
-        <WorkHistoryButton<InputHistoryState> module="input" onRestore={workspace.restoreHistory} />
       </div>
 
       <Section title="教学上下文" description="草案会绑定到所选课次；未提及学生将按现有规则补齐考勤。">
