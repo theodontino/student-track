@@ -14,22 +14,15 @@
 | `/api/feedback/assessment-pdf` | `POST` |
 | `/api/feedback/assistant-roster` | `POST` |
 | `/api/feedback/script-library` | `GET`, `POST` |
-| `/api/history` | `DELETE`, `GET`, `POST` |
 | `/api/input/parse` | `POST` |
 | `/api/integrations/wecomcatch/v1/directory` | `GET` |
 | `/api/quick-score` | `GET`, `POST` |
 | `/api/report/daily` | `POST` |
-| `/api/report/feedback-batch` | `GET`, `POST` |
 | `/api/report/feedback-context` | `GET` |
 | `/api/report/feedback-plans/[id]/attachments` | `DELETE`, `POST` |
 | `/api/report/feedback-plans/[id]` | `DELETE`, `GET`, `PATCH`, `POST` |
 | `/api/report/feedback-plans` | `GET`, `POST` |
 | `/api/report/feedback-plans/task/[id]` | `PATCH` |
-| `/api/report/feedback-versions/profiles` | `GET` |
-| `/api/report/feedback-versions/regenerate` | `POST` |
-| `/api/report/feedback-versions` | `GET` |
-| `/api/report/feedback-versions/selection` | `PUT` |
-| `/api/report/feedback` | `POST` |
 | `/api/report/teaching-summary` | `GET`, `POST` |
 | `/api/review` | `GET`, `POST` |
 | `/api/semesters/[id]/classes` | `GET`, `POST` |
@@ -53,6 +46,7 @@
 | `/api/teacher-observations` | `GET` |
 | `/api/teacher-tasks` | `GET` |
 | `/api/teaching-memory` | `GET`, `PATCH`, `POST` |
+| `/api/v1/system/health` | `GET` |
 | `/api/wecom/handoff/[id]` | `GET`, `PATCH` |
 | `/api/wecom/handoff/alignment-recovery` | `GET`, `POST` |
 | `/api/wecom/handoff/batch-retry` | `POST` |

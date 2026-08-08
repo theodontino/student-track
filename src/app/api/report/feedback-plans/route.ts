@@ -14,6 +14,11 @@ export async function GET(request: NextRequest) {
     const plans = await listFeedbackPlans({
       classId: params.get("classId") ?? undefined,
       semesterId: params.get("semesterId") ?? undefined,
+      sessionId: params.get("sessionId") ?? undefined,
+      studentId: params.get("studentId") ?? undefined,
+      date: params.get("date") ?? undefined,
+      status: params.get("status") ?? undefined,
+      archived: params.has("archived") ? params.get("archived") === "true" : false,
       type: params.get("type") ?? undefined,
     });
     return NextResponse.json({ plans });

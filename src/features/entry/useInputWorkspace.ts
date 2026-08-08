@@ -5,25 +5,16 @@ import { useTeachingContext } from "@/features/teaching-context/use-teaching-con
 import { teachingContextWorkspaceKey } from "@/features/teaching-context/url-context";
 import type { AiWorkflowController } from "@/features/ai-workflow";
 import { requestJson } from "@/lib/api-client";
-import { saveWorkHistory } from "@/lib/history";
 import type { DraftParseResult } from "@/lib/types";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
 import { isInputWorkspaceState, type InputWorkspaceState } from "./workspace-state";
-
-export interface InputHistoryState {
-  rawText: string;
-  semesterId: string;
-  className: string;
-  sessionCode: string;
-  result: DraftParseResult;
-}
 
 export function useInputWorkspace(workflow: AiWorkflowController) {
   const [rawText, setRawText] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DraftParseResult | null>(null);
   const [error, setError] = useState("");
-  const { context, hydrated: contextHydrated, setContext, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
+  const { context, hydrated: contextHydrated, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
   const workspaceValue = useMemo<InputWorkspaceState>(() => ({ context, rawText, result, workflow: workflow.state }), [context, rawText, result, workflow.state]);
   const workspace = useSessionWorkspace({
     key: teachingContextWorkspaceKey("entry-input", context),
@@ -63,17 +54,6 @@ export function useInputWorkspace(workflow: AiWorkflowController) {
       });
       setResult(data);
       workflow.transition("reviewing", "草案已生成，请人工核对后再写入学生档案。");
-      try {
-        await saveWorkHistory("input", `${context.className} ${context.sessionCode} NL录入`, {
-          rawText,
-          semesterId: context.semesterId,
-          className: context.className,
-          sessionCode: context.sessionCode,
-          result: data,
-        }, context.sessionCode);
-      } catch (historyError) {
-        console.error("save input history failed:", historyError);
-      }
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "解析失败";
       setError(message);
@@ -81,14 +61,6 @@ export function useInputWorkspace(workflow: AiWorkflowController) {
     } finally {
       setLoading(false);
     }
-  }
-
-  function restoreHistory(state: InputHistoryState) {
-    setRawText(state.rawText);
-    setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
-    setResult(state.result);
-    workflow.reset();
-    setError("");
   }
 
   return {
@@ -101,7 +73,6 @@ export function useInputWorkspace(workflow: AiWorkflowController) {
     error,
     workflow: workflow.state,
     submit,
-    restoreHistory,
     setSemesterId,
     setClassName,
     setSessionCode,

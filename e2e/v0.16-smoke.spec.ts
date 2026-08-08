@@ -97,120 +97,45 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     expect(externalRequests).toEqual([]);
   });
 
-  test("feedback loads context, uses a browser mock, and restores work history", async ({ page }) => {
+  test("feedback history reads FeedbackPlan and restores with plan context", async ({ page }) => {
     const externalRequests = await blockExternalRequests(page);
-    const feedbackRequests: Array<Record<string, unknown>> = [];
-    await page.route("**/api/feedback/assessment-pdf", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          fileName: "04示例报告（张三）.pdf",
-          reportStudentName: TEST_FIXTURE.students[0].name,
-          reportStudentId: TEST_FIXTURE.students[0].studentId,
-          matchedStudentId: TEST_FIXTURE.students[0].id,
-          matchedStudentName: TEST_FIXTURE.students[0].name,
-          matchStatus: "matched",
-          evidence: {
-            sessionCode: TEST_FIXTURE.sessions[0].code,
-            studentId: TEST_FIXTURE.students[0].id,
-            reportTitle: "04示例基础",
-            reportDate: "2099-07-13",
-            totalQuestions: 5,
-            correctRate: 80,
-            cohortAverageRate: 72.2,
-            knowledgePoints: [],
-            wrongItems: [],
-            similarPracticeCount: 1,
-          },
-        }),
-      });
-    });
-    await page.route("**/api/report/feedback-batch", async (route) => {
-      if (route.request().method() !== "POST") {
+    await page.route("**/api/report/feedback-plans**", async (route) => {
+      if (route.request().method() !== "GET") {
         await route.continue();
         return;
       }
-      feedbackRequests.push(route.request().postDataJSON());
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          kind: "batch",
-          semesterId: TEST_FIXTURE.semester.id,
-          sessionCode: TEST_FIXTURE.sessions[0].code,
-          className: TEST_FIXTURE.class.name,
-          total: TEST_FIXTURE.students.length,
-          cached: false,
-          students: TEST_FIXTURE.students.map((student) => ({
-            id: student.id,
-            name: student.name,
-            labels: [],
-            feedback: `模拟反馈：${student.name}本节课表现稳定。`,
-            draftFeedback: `模拟反馈：${student.name}本节课表现稳定。`,
-            reviewStatus: "passed",
-            reviewIssues: [],
-          })),
-        }),
-      });
+      await route.fulfill({ json: { plans: [{
+        id: "e2e-plan-history",
+        type: "event_micro",
+        status: "needs_review",
+        archivedAt: null,
+        createdAt: "2026-07-13T08:00:00.000Z",
+        updatedAt: "2026-07-13T09:00:00.000Z",
+        outputRequirement: "历史筛选测试",
+        session: { id: TEST_FIXTURE.sessions[0].id, code: TEST_FIXTURE.sessions[0].code, date: TEST_FIXTURE.sessions[0].date, semesterNumber: 1 },
+        rangeEndSession: null,
+        class: { id: TEST_FIXTURE.class.id, code: TEST_FIXTURE.class.code, name: TEST_FIXTURE.class.name },
+        semester: { id: TEST_FIXTURE.semester.id, name: TEST_FIXTURE.semester.name },
+        studentSummaries: [{ id: TEST_FIXTURE.students[0].id, name: TEST_FIXTURE.students[0].name, studentId: TEST_FIXTURE.students[0].studentId }],
+        itemStatusCounts: { total: 1, queued: 0, running: 0, completed: 0, failed: 0, stale: 0 },
+      }] } });
     });
-
-    await page.goto("/feedback");
-    await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
-    await page.locator("select").nth(0).selectOption(TEST_FIXTURE.semester.id);
-    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
-    await expect(page.getByRole("heading", { name: "生成前上下文预览" })).toBeVisible();
-    await expect(page.getByText(TEST_FIXTURE.students[0].name, { exact: true }).first()).toBeVisible();
-    await page.getByLabel("群反馈原文").fill("高一化学群反馈《示例课程》\n【课堂内容】\n1. 示例内容\n【课堂重点】\n1. 示例重点");
-    await page.getByLabel("出门测统一说明").fill("这次出门测主要考察以下内容：\n1. 示例概念\n孩子这次存在一定错误。\n请结合视频订正。");
-    await page.getByRole("button", { name: "一键整理全部" }).click();
-    await expect(page.getByLabel("课程主题")).toHaveValue("示例课程");
-    await page.locator('label:has-text("补选 PDF") input[type="file"]').setInputFiles({
-      name: "04示例报告（张三）.pdf",
-      mimeType: "application/pdf",
-      buffer: Buffer.from("%PDF-1.4 synthetic"),
-    });
-    await expect(page.getByText("待确认", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "批量确认匹配" }).click();
-    await expect(page.getByText("已采用 1 份报告", { exact: true })).toBeVisible();
-
-    await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-    await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "温和" })).toHaveCount(0);
-
-    await page.getByRole("button", { name: "历史", exact: true }).click();
-    const historyRow = page.getByText(TEST_FIXTURE.feedbackHistory.title, { exact: true }).locator("..").locator("..");
-    await historyRow.getByRole("button", { name: "恢复" }).click();
-    await expect(page.getByText("已恢复历史反馈结果。", { exact: true })).toBeVisible();
-    await expect(page.getByText("历史兼容流程：当前内容来自旧批量反馈记录，仅用于恢复、检查和兼容导出。", { exact: true })).toBeVisible();
-    await expect(page.getByText(`历史恢复反馈：${TEST_FIXTURE.students[0].name}表现稳定。`, { exact: true })).toBeVisible();
+    await page.goto(`/history?semesterId=${TEST_FIXTURE.semester.id}`);
+    await expect(page.getByRole("heading", { name: "反馈历史" })).toBeVisible();
+    await expect(page.getByText("历史筛选测试", { exact: true })).toBeVisible();
+    await expect(page.getByText(`学生：${TEST_FIXTURE.students[0].name}`, { exact: false })).toBeVisible();
+    await page.getByRole("button", { name: "恢复" }).click();
+    await expect(page).toHaveURL(/\/feedback\?.*step=review.*planId=e2e-plan-history/);
     expect(externalRequests).toEqual([]);
   });
 
-  test("new feedback plans replace the legacy batch controls in a normal workflow", async ({ page }) => {
+  test("feedback workbench exposes the plan flow without legacy batch controls", async ({ page }) => {
     const externalRequests = await blockExternalRequests(page);
-    await page.goto("/feedback");
-    await page.locator("select").nth(0).selectOption(TEST_FIXTURE.semester.id);
-    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
-    await page.getByRole("button", { name: "4 生成 生成反馈" }).click();
-    await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
+    await page.goto("/feedback?step=review");
+    await expect(page.getByRole("heading", { name: "复核与反馈计划" })).toBeVisible();
     await expect(page.getByRole("button", { name: "生成班级反馈" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
     expect(externalRequests).toEqual([]);
-  });
-
-  test("legacy batch controls stay available only after restoring history", async ({ page }) => {
-    await page.goto("/feedback");
-    await page.locator("select").nth(0).selectOption(TEST_FIXTURE.semester.id);
-    await page.locator("select").nth(1).selectOption({ label: TEST_FIXTURE.class.name });
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
-    await page.getByRole("button", { name: "历史", exact: true }).click();
-    const historyRow = page.getByText(TEST_FIXTURE.feedbackHistory.title, { exact: true }).locator("..").locator("..");
-    await historyRow.getByRole("button", { name: "恢复" }).click();
-    await expect(page.getByText("历史兼容流程：当前内容来自旧批量反馈记录，仅用于恢复、检查和兼容导出。", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "重新生成" })).toBeVisible();
   });
 
   test("system UI exposes the WeCom extraction role and safe LLM cache maintenance", async ({ page }) => {

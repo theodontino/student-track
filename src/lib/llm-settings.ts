@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveStudentTrackDataPath } from "@/lib/runtime-paths";
 
 export interface LLMSettings {
   apiBaseUrl: string;
@@ -47,7 +48,7 @@ const DEFAULT_API_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-4o-mini";
 
 function settingsPath() {
-  return process.env.LLM_SETTINGS_PATH || path.join(process.cwd(), "data", "llm-settings.json");
+  return resolveStudentTrackDataPath("llm-settings.json", "LLM_SETTINGS_PATH");
 }
 
 function nowIso() {

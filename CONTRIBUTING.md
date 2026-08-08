@@ -28,7 +28,7 @@
 2. 阅读 `AGENTS.md` 与相关稳定文档。
 3. 检查现有代码和测试。
 4. 实现最小充分改动。
-5. 本地运行 `npm run verify:quick`；高风险或发布改动运行对应专项测试或 `npm run verify:release`，其余完整覆盖率、构建与浏览器回归由 CI 兜底。
+5. 本地运行 `npm run verify:quick`；高风险或发布改动运行对应专项测试或 `npm run verify:release`。自动化通过后即可进入真实使用，不等待固定次数的人工流程；完整覆盖率、构建与浏览器回归由 CI 兜底。
 6. Commit 中引用 Issue，例如 `Refs #12`；完成时使用 `Closes #12`。
 7. 只有稳定认知变化时才更新 `docs/`。
 
@@ -40,7 +40,9 @@
 - `npm run test:e2e:chromium`：保留的 Chromium 兼容性回归入口，仅在需要时手动运行，不属于日常 CI 门禁。
 - `npm run verify:release`：正式发布前执行 quality 与 browser 的完整合集。
 
-这些命令成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时先查看输出中的有限日志末尾，再按需打开单个日志。CI 会上传完整日志 artifact，已通过同一提交的 CI 时无需重复本地全量验证。
+这些命令都会在运行前后自动比较真实 SQLite 主文件和 WAL 的 size、mtime 与 SHA-256，任何变化都使验证失败；实际测试仍只使用系统临时目录中的隔离数据库。成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时先查看输出中的有限日志末尾，再按需打开单个日志。CI 会上传完整日志 artifact，已通过同一提交的 CI 时无需重复本地全量验证。
+
+人工冒烟按变化边界触发，而不是每次发布重复执行：WCG Accessibility、会话定位或草稿填入变化时做一次真实“不发送”验证；破坏性 migration 先备份并验证；安装、签名和进程托管变化在干净环境验证。其余真实使用属于自动化通过后的持续产品验证，发现问题再进入 Issue。
 
 ## 文档职责
 

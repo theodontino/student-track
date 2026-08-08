@@ -8,8 +8,6 @@ import { DraftConfirmationPanel } from "./DraftConfirmationPanel";
 import { FeedbackContextSection } from "./FeedbackContextSection";
 import { FeedbackMaterialsPanel } from "./FeedbackMaterialsPanel";
 import { FeedbackPlanPanel } from "./FeedbackPlanPanel";
-import { FeedbackGenerationPanel } from "./FeedbackGenerationPanel";
-import { StatusBanner } from "@/components/ui";
 import type { FeedbackStep } from "./types";
 import type { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 
@@ -24,17 +22,13 @@ const steps: Array<{ id: FeedbackStep; label: string; short: string }> = [
 
 export function FeedbackWorkflow({ workspace }: { workspace: Workspace }) {
   const index = steps.findIndex((step) => step.id === workspace.activeStep);
-  const legacyRestored = workspace.feedbackCards.length > 0;
   return <div className="feedback-flow">
     <nav className="feedback-stepper" aria-label="反馈工作流步骤">{steps.map((step, stepIndex) => <button type="button" key={step.id} aria-current={step.id === workspace.activeStep ? "step" : undefined} className={step.id === workspace.activeStep ? "is-active" : stepIndex < index ? "is-complete" : ""} onClick={() => workspace.setActiveStep(step.id)}><span>{stepIndex + 1}</span><strong>{step.short}</strong><small>{step.label}</small></button>)}</nav>
     <div className="feedback-stage">
       {workspace.activeStep === "prepare" && <><FeedbackContextSection workspace={workspace} /><FeedbackMaterialsPanel workspace={workspace} /><div className="feedback-integration-note"><span>企微家校沟通由独立工作区统一同步、复核和导入。</span><Link href="/wecom">前往企微家校</Link></div><FeedbackContextPreview students={workspace.contextStudents} loading={workspace.contextLoading} error={workspace.contextError} /></>}
-      {workspace.activeStep === "extract" && <div className="feedback-stage-split"><ClassroomReviewComposer workspace={workspace} /><AiWorkflowStatus state={workspace.workflow} /></div>}
+      {workspace.activeStep === "extract" && <div className="feedback-stage-split"><ClassroomReviewComposer workspace={workspace} /><FeedbackMaterialsPanel workspace={workspace} assessmentOnly /><AiWorkflowStatus state={workspace.workflow} /></div>}
       {workspace.activeStep === "review" && <DraftConfirmationPanel workspace={workspace} />}
-      {(workspace.activeStep === "generate" || workspace.activeStep === "export") && (legacyRestored
-        ? <div className="feedback-legacy-compat"><StatusBanner tone="warning">历史兼容流程：当前内容来自旧批量反馈记录，仅用于恢复、检查和兼容导出。</StatusBanner><FeedbackGenerationPanel workspace={workspace} mode={workspace.activeStep === "generate" ? "generate" : "export"} /></div>
-        : <AiWorkflowStatus state={workspace.workflow} />)}
     </div>
-    {!legacyRestored && <FeedbackPlanPanel workspace={workspace} />}
+    <FeedbackPlanPanel workspace={workspace} />
   </div>;
 }

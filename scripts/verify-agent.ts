@@ -1,7 +1,14 @@
+import "dotenv/config";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import {
+  assertDatabaseFingerprintUnchanged,
+  fingerprintDatabaseFiles,
+  type DatabaseFileFingerprint,
+} from "./database-fingerprint";
+import { resolveDatabasePath } from "../src/services/database-backup-service";
 
 type VerificationMode = "quick" | "quality" | "browser" | "release";
 
@@ -44,6 +51,7 @@ const plans: Record<VerificationMode, VerificationStep[]> = {
     { name: "docs-check", args: ["run", "docs:check"] },
     { name: "docs-links", args: ["run", "docs:links"] },
     { name: "privacy-check", args: ["run", "privacy:check"] },
+    { name: "privacy-history", args: ["run", "privacy:history"] },
     { name: "database-upgrade", args: ["run", "db:verify-upgrade"] },
     { name: "coverage", args: ["run", "test:coverage"] },
     { name: "build", args: ["run", "build"] },
@@ -185,9 +193,43 @@ function writeSummary(results: StepResult[], success: boolean) {
   return relativeLogPath(summaryPath);
 }
 
+async function verifyRealDatabaseUnchanged(
+  databasePath: string,
+  before: DatabaseFileFingerprint,
+  startedAt: number,
+): Promise<StepResult> {
+  const logPath = path.join(runDir, "real-database-guard.log");
+  try {
+    const after = await fingerprintDatabaseFiles(databasePath);
+    assertDatabaseFingerprintUnchanged(before, after);
+    const summary = "真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化";
+    fs.writeFileSync(logPath, `${summary}\n`, { flag: "wx", mode: 0o600 });
+    return {
+      name: "real-database-guard",
+      status: "passed",
+      durationMs: Date.now() - startedAt,
+      log: relativeLogPath(logPath),
+      summary,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "真实数据库指纹验证失败";
+    fs.writeFileSync(logPath, `${message}\n`, { flag: "wx", mode: 0o600 });
+    return {
+      name: "real-database-guard",
+      status: "failed",
+      durationMs: Date.now() - startedAt,
+      log: relativeLogPath(logPath),
+      summary: message,
+    };
+  }
+}
+
 async function main() {
   fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
   const results: StepResult[] = [];
+  const databasePath = resolveDatabasePath(process.env.DATABASE_URL ?? "file:./dev.db");
+  const databaseGuardStartedAt = Date.now();
+  const databaseFingerprint = await fingerprintDatabaseFiles(databasePath);
 
   for (const step of plans[mode]) {
     const result = await runStep(step);
@@ -203,10 +245,31 @@ async function main() {
         .join("\n");
       console.error(`\n失败日志末尾（最多 ${failureTailLines} 行）：\n${tail}`);
       console.error(`\n完整日志：${result.log}`);
+      const databaseGuard = await verifyRealDatabaseUnchanged(
+        databasePath,
+        databaseFingerprint,
+        databaseGuardStartedAt,
+      );
+      results.push(databaseGuard);
+      console.error(`${databaseGuard.status === "passed" ? "✓" : "✗"} ${databaseGuard.name} (${formatDuration(databaseGuard.durationMs)}) — ${databaseGuard.summary}`);
       console.error(`摘要：${writeSummary(results, false)}`);
       process.exitCode = 1;
       return;
     }
+  }
+
+  const databaseGuard = await verifyRealDatabaseUnchanged(
+    databasePath,
+    databaseFingerprint,
+    databaseGuardStartedAt,
+  );
+  results.push(databaseGuard);
+  console.log(`${databaseGuard.status === "passed" ? "✓" : "✗"} ${databaseGuard.name} (${formatDuration(databaseGuard.durationMs)}) — ${databaseGuard.summary}`);
+  if (databaseGuard.status === "failed") {
+    console.error(`\n完整日志：${databaseGuard.log}`);
+    console.error(`摘要：${writeSummary(results, false)}`);
+    process.exitCode = 1;
+    return;
   }
 
   console.log(`✓ verification:${mode} (${results.length} steps)`);

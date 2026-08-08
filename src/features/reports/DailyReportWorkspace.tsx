@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import SemesterPicker from "@/components/SemesterPicker";
-import WorkHistoryButton from "@/components/WorkHistoryButton";
 import {
   Badge,
   Button,
@@ -22,13 +21,7 @@ import type {
   TeachingEvidenceItem,
   TeachingSummaryBundle,
 } from "@/lib/contracts/teaching-summary";
-import { saveWorkHistory } from "@/lib/history";
 import { requestJson } from "@/lib/api-client";
-import {
-  isDailyHistoryState,
-  type DailyHistoryState,
-  type TeachingSummaryHistoryState,
-} from "./history-adapters";
 import {
   type SemesterSummary,
   type TeachingContext,
@@ -107,7 +100,7 @@ function FactsView({ bundle }: { bundle: TeachingSummaryBundle }) {
 }
 
 export default function DailyReportWorkspace() {
-  const { context, hydrated: contextHydrated, setContext, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
+  const { context, hydrated: contextHydrated, setSemesterId, setClassName, setSessionCode } = useTeachingContext();
   const { semesterId, className, sessionCode } = context;
   const [semesters, setSemesters] = useState<SemesterSummary[]>([]);
   const [view, setView] = useState<SummaryView>("session");
@@ -207,22 +200,6 @@ export default function DailyReportWorkspace() {
       });
       setBundle(result);
       setLegacyReport("");
-      const history: TeachingSummaryHistoryState = {
-        kind: "teaching-summary",
-        view,
-        semesterId,
-        className,
-        sessionCode,
-        date,
-        includeCommunications,
-        bundle: result,
-      };
-      await saveWorkHistory(
-        "report",
-        view === "session" ? `${className} ${sessionCode} 教学总结` : `${date} 教学总结`,
-        history,
-        view === "session" ? sessionCode : `${semesterId}:${date}`,
-      ).catch((historyError) => console.error("save teaching summary history failed:", historyError));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "生成教学总结失败");
     } finally {
@@ -242,32 +219,10 @@ export default function DailyReportWorkspace() {
     } : current);
   }
 
-  function restore(state: DailyHistoryState) {
-    if (state.kind === "daily") {
-      setContext({ semesterId: state.semesterId, className: state.className, sessionCode: state.sessionCode });
-      setView("session");
-      setLegacyReport(state.report);
-      setBundle(null);
-    } else {
-      setContext({
-        semesterId: state.semesterId,
-        className: state.className,
-        sessionCode: state.sessionCode,
-      });
-      setView(state.view);
-      setDate(state.date);
-      setIncludeCommunications(state.includeCommunications);
-      setBundle(state.bundle);
-      setLegacyReport("");
-    }
-    setError("");
-  }
-
   return <div className="mx-auto max-w-6xl space-y-5">
     <PageHeader
       title="教学总结"
       description="先查看可验证的课堂事实，再按需生成教师内部 AI 解读与家校沟通观察。"
-      actions={<WorkHistoryButton<DailyHistoryState> module="report" accept={isDailyHistoryState} onRestore={restore} />}
     />
     <Card className="space-y-5 p-6">
       <SegmentedControl label="教学总结范围" items={[{ value: "session", label: "按课次" }, { value: "date", label: "按日期" }]} value={view} onChange={(value) => setView(value as SummaryView)} />

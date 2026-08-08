@@ -79,7 +79,6 @@ model Student {
   attendances     Attendance[]
   teacherObservations TeacherObservation[]
   weComHandoffPackages WeComHandoffPackage[]
-  feedbackGenerationSelections FeedbackGenerationSelection[]
   feedbackPlanItems FeedbackPlanItem[]
   teacherTasks TeacherTask[]
   communicationPreference CommunicationPreference?
@@ -345,7 +344,6 @@ model ClassSession {
   events         Event[]
   communications  Communication[]
   observationSources TeacherObservationSource[]
-  feedbackGenerationSelections FeedbackGenerationSelection[]
   feedbackPlans FeedbackPlan[] @relation("FeedbackPlanSession")
   feedbackPlanRangeStarts FeedbackPlan[] @relation("FeedbackPlanRangeStart")
   feedbackPlanRangeEnds FeedbackPlan[] @relation("FeedbackPlanRangeEnd")
@@ -377,20 +375,7 @@ model Attendance {
   @@unique([sessionId, studentId])
 }
 
-// 10. 工作状态历史（长期保存，由用户主动清理）
-model WorkHistory {
-  id        String   @id @default(cuid())
-  module    String   // "quick-score" | "input" | "report" | "export" | "feedback"
-  key       String?  // 可选业务键，如课次编码
-  title     String
-  state     String   // JSON，保存页面可恢复状态
-  createdAt DateTime @default(now())
-
-  @@index([module, createdAt])
-  @@index([module, key, createdAt])
-}
-
-// 11. 教师教学总结缓存（确定性事实实时计算，仅缓存结构化 LLM 解读）
+// 10. 教师教学总结缓存（确定性事实实时计算，仅缓存结构化 LLM 解读）
 model TeachingSummaryCache {
   id                    String   @id @default(cuid())
   scopeType             String   // "session" | "date"
@@ -408,7 +393,7 @@ model TeachingSummaryCache {
   @@index([generatedAt])
 }
 
-// 12. 教师内部家校沟通观察；不参与评分、风险与家长反馈
+// 12. 教师内部家校沟通观察待办；复核页教师观察不写入本表，而是沿用 Event(type="教师处理")
 model TeacherObservation {
   id              String   @id @default(cuid())
   studentId       String
@@ -484,7 +469,6 @@ model GenerationRecord {
 
   parentGeneration  GenerationRecord?  @relation("GenerationVariants", fields: [parentGenerationId], references: [id], onDelete: SetNull)
   derivedGenerations GenerationRecord[] @relation("GenerationVariants")
-  feedbackSelections FeedbackGenerationSelection[]
   feedbackPlanItem   FeedbackPlanItem? @relation("FeedbackPlanItemGenerations", fields: [feedbackPlanItemId], references: [id], onDelete: SetNull)
   selectedPlanItems  FeedbackPlanItem[] @relation("FeedbackPlanItemSelectedGeneration")
 
@@ -497,30 +481,12 @@ model GenerationRecord {
   @@index([feedbackPlanItemId])
 }
 
-// 12c. 当前采用的反馈版本。派生版本只有教师显式选择后才进入导出。
-model FeedbackGenerationSelection {
-  id                   String   @id @default(cuid())
-  sessionId            String
-  studentId            String
-  selectedGenerationId String
-  selectedAt           DateTime @default(now())
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-
-  session            ClassSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  student            Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  selectedGeneration GenerationRecord @relation(fields: [selectedGenerationId], references: [id], onDelete: Cascade)
-
-  @@unique([sessionId, studentId])
-  @@index([selectedGenerationId])
-}
-
-// 12d. 反馈计划：统一承载班级公共、事件微反馈、阶段趋势和结课教学总结。
+// 12c. 反馈计划：统一承载班级公共、事件微反馈、阶段趋势和结课教学总结。
 // 业务快照使用版本化 JSON，最终批准文本和导出状态独立于模型原始输出。
 model FeedbackPlan {
   id                  String   @id @default(cuid())
   type                String   // "class_update" | "event_micro" | "stage_trend" | "course_end"
-  purpose             String
+  outputRequirement   String
   status              String   @default("draft")
   semesterId          String
   classId             String
@@ -528,11 +494,18 @@ model FeedbackPlan {
   rangeStartSessionId String?
   rangeEndSessionId   String?
   inputFingerprint    String
+  inputSnapshot       String   @default("{}") // 版本化课程材料与计划输入快照
+  generationMode      String   @default("standard") // "standard" | "fast"
+  generationStartedAt DateTime?
+  generationCompletedAt DateTime?
+  generationElapsedMs Int      @default(0)
+  generationRunStartedAt DateTime?
   planRevision        Int      @default(1)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   approvedAt          DateTime?
   exportedAt          DateTime?
+  archivedAt          DateTime?
 
   semester          Semester      @relation(fields: [semesterId], references: [id], onDelete: Cascade)
   class             Class          @relation(fields: [classId], references: [id], onDelete: Restrict)
@@ -544,6 +517,7 @@ model FeedbackPlan {
   attachments       FeedbackAttachment[]
   exportRuns        FeedbackExportRun[]
 
+  @@index([classId, semesterId, archivedAt, updatedAt])
   @@index([classId, semesterId, type, createdAt])
   @@index([status, updatedAt])
 }
@@ -553,6 +527,7 @@ model FeedbackPlanItem {
   planId               String
   studentId            String?
   status               String   @default("evidence_ready")
+  generationError      String?
   evidenceSnapshot     String   @default("{}")
   compositionSnapshot  String   @default("{}")
   auditSnapshot        String   @default("{}")
@@ -560,6 +535,9 @@ model FeedbackPlanItem {
   finalTextHash        String?
   selectedGenerationId String?
   reviewMode           String   @default("model") // "model" | "teacher_edited"
+  generationStartedAt  DateTime?
+  generationCompletedAt DateTime?
+  generationDurationMs Int?
   itemRevision         Int      @default(1)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt

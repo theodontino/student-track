@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { lessonMaterialPrompt, parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import {
-  FEEDBACK_LENGTH_OPTIONS,
   FEEDBACK_LENGTHS,
   FEEDBACK_STYLES,
   visibleFeedbackLength,
@@ -25,7 +24,53 @@ function clientWith(...contents: string[]) {
 }
 
 describe("feedback generation review", () => {
-  it("corrects a plan until every confirmed teaching and assessment evidence item is covered", async () => {
+  it("keeps hard checks but skips the LLM review and polish call in fast mode", async () => {
+    const composition = {
+      version: 1,
+      closureType: "positive_recognition",
+      needParentAction: false,
+      parentAction: null,
+      modules: [
+        { key: "observed_moment", content: "课堂完成了基础题", evidenceRefs: ["event-1"], status: "included", reason: "课堂事实" },
+        { key: "teacher_interpretation", content: "方法正在稳定", evidenceRefs: ["event-1"], status: "included", reason: "教师判断" },
+      ],
+      evidenceCoverage: [{ evidenceId: "event-1", statement: "课堂完成了基础题" }],
+      draftFeedback: "课堂完成了基础题，方法正在稳定。",
+    };
+    const draft = clientWith(JSON.stringify(composition));
+    const review = clientWith(JSON.stringify({ ...composition, draftFeedback: "不应调用的审核结果" }));
+
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "event_micro",
+      outputRequirement: "自然表达。",
+      evidenceBundle: {
+        version: 1,
+        planType: "event_micro",
+        studentId: "student-1",
+        teachingEvidence: [{ id: "event-1", kind: "fact", content: "课堂完成了基础题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true }],
+        assessmentEvidence: [],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-fast-mode-fingerprint",
+      },
+      style: "gentle",
+      length: "standard",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: review.client,
+      reviewModel: "review-model",
+      generationMode: "fast",
+    });
+
+    expect(result.composition.draftFeedback).toBe("课堂完成了基础题，方法正在稳定。");
+    expect(result.audit.status).toBe("pass");
+    expect(draft.create).toHaveBeenCalledTimes(1);
+    expect(review.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps incomplete evidence coverage as a soft teacher-review reminder", async () => {
     const incomplete = {
       version: 1,
       closureType: "positive_recognition",
@@ -38,25 +83,13 @@ describe("feedback generation review", () => {
       evidenceCoverage: [{ evidenceId: "event-1", statement: "本次课堂完成了基础题" }],
       draftFeedback: "本次课堂完成了基础题，参与状态稳定。",
     };
-    const corrected = {
-      ...incomplete,
-      modules: [
-        { key: "observed_moment", content: "课堂完成了基础题，课堂状态4分", evidenceRefs: ["event-1", "score-b"], status: "included", reason: "课堂事实" },
-        { key: "teacher_interpretation", content: "出门测正确率50%，第二题需要订正", evidenceRefs: ["assessment-1"], status: "included", reason: "测评解读" },
-      ],
-      evidenceCoverage: [
-        { evidenceId: "event-1", statement: "本次课堂完成了基础题" },
-        { evidenceId: "score-b", statement: "课堂状态4分" },
-        { evidenceId: "assessment-1", statement: "出门测正确率50%，第二题需要订正" },
-      ],
-      draftFeedback: "本次课堂完成了基础题，课堂状态4分；出门测正确率50%，第二题需要订正，这只反映本次结果。",
-    };
     const draft = clientWith(JSON.stringify(incomplete));
-    const review = clientWith("{\"version\":1,", JSON.stringify(corrected));
+    const review = clientWith(JSON.stringify(incomplete));
 
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "event_micro",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "event_micro",
@@ -79,15 +112,68 @@ describe("feedback generation review", () => {
       reviewModel: "review-model",
     });
 
-    expect(result.audit.status).toBe("pass");
-    expect(result.composition.modules.flatMap((module) => module.evidenceRefs)).toEqual(expect.arrayContaining(["event-1", "score-b", "assessment-1"]));
-    expect(result.draftComposition.evidenceCoverage.map((entry) => entry.evidenceId)).toEqual(expect.arrayContaining(["event-1", "score-b", "assessment-1"]));
-    expect(result.draftComposition.draftFeedback).toContain("出门测正确率50%");
-    expect(result.composition.draftFeedback).toContain("课堂状态4分");
-    expect(result.composition.draftFeedback).toContain("出门测正确率50%");
-    expect(review.create).toHaveBeenCalledTimes(2);
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("全证据初稿纠错模型");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("反馈尚未覆盖全部已确认的教学与测评证据");
+    expect(result.audit.status).toBe("needs_review");
+    expect(result.audit.items).toContainEqual(expect.objectContaining({
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
+    }));
+    expect(result.composition.draftFeedback).toContain("参与状态稳定");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("教师自然语言反馈要求与补充事实（最高优先级）");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("自然表达,可以基于事实充分分析,但不要改写具体事实。");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("内部结构化默认值只在教师自然语言没有说明时生效");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("教师输入中的事实陈述视为教师已确认事实");
+    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("充分联想");
+    expect(review.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an incomplete model draft reviewable instead of dropping the student item", async () => {
+    const incomplete = {
+      version: 1,
+      closureType: "positive_recognition",
+      needParentAction: false,
+      parentAction: null,
+      modules: [
+        { key: "observed_moment", content: "课堂完成了基础题", evidenceRefs: ["event-1"], status: "included", reason: "课堂事实" },
+        { key: "teacher_interpretation", content: "本次课堂参与稳定", evidenceRefs: ["event-1"], status: "included", reason: "课堂解读" },
+      ],
+      evidenceCoverage: [{ evidenceId: "event-1", statement: "课堂完成了基础题" }],
+      draftFeedback: "课堂完成了基础题，参与状态比较稳定。",
+    };
+    const draft = clientWith(JSON.stringify(incomplete));
+    const review = clientWith(JSON.stringify(incomplete));
+
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "event_micro",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
+      evidenceBundle: {
+        version: 1,
+        planType: "event_micro",
+        studentId: "student-1",
+        teachingEvidence: [
+          { id: "event-1", kind: "fact", content: "课堂完成了基础题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true },
+          { id: "score-1", kind: "fact", content: "本次课堂状态较稳定", sourceRefs: [{ type: "metric", id: "metric-1" }], confirmed: true },
+        ],
+        assessmentEvidence: [],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-incomplete-draft-fingerprint",
+      },
+      style: "gentle",
+      length: "standard",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: review.client,
+      reviewModel: "review-model",
+    });
+
+    expect(result.composition.draftFeedback).toContain("课堂完成了基础题");
+    expect(result.audit.status).toBe("needs_review");
+    expect(result.audit.items).toContainEqual(expect.objectContaining({
+      code: "final_evidence_omitted",
+      severity: "requires_teacher",
+    }));
   });
 
   it("repairs legacy module keys before a course-end plan is saved", async () => {
@@ -121,6 +207,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",
@@ -147,12 +234,10 @@ describe("feedback generation review", () => {
     expect(result.composition.closureType).toBe("positive_recognition");
     expect(result.composition.modules.map((module) => module.key)).toEqual(["starting_state", "evidence_backed_change"]);
     expect(review.create).toHaveBeenCalledTimes(2);
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("current_performance");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("starting_state");
     expect(draft.create.mock.calls[0][0]).toMatchObject({
-      temperature: 0,
       response_format: { type: "json_object" },
     });
+    expect(draft.create.mock.calls[0][0]).not.toHaveProperty("temperature");
   });
 
   it("repairs an incomplete structured draft before review", async () => {
@@ -184,6 +269,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",
@@ -208,7 +294,6 @@ describe("feedback generation review", () => {
 
     expect(result.audit.status).toBe("pass");
     expect(review.create).toHaveBeenCalledTimes(2);
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("结构修复模型");
     expect(review.create.mock.calls[0][0]).toMatchObject({ reasoning_effort: "none" });
   });
 
@@ -233,6 +318,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",
@@ -282,6 +368,7 @@ describe("feedback generation review", () => {
     const result = await generateFeedbackPlanComposition({
       studentName: "合成学生",
       planType: "course_end",
+      outputRequirement: "自然表达，可以基于事实充分分析，但不要改写具体事实。",
       evidenceBundle: {
         version: 1,
         planType: "course_end",
@@ -307,10 +394,9 @@ describe("feedback generation review", () => {
     expect(result.audit.status).toBe("pass");
     expect(review.create).toHaveBeenCalledTimes(2);
     expect(review.create.mock.calls[1][0]).toMatchObject({ reasoning_effort: "none" });
-    expect(review.create.mock.calls[1][0].messages[0].content).toContain("审核结果结构修复模型");
   });
 
-  it("uses one short final pass for routine feedback without inventing advice", async () => {
+  it("uses one structured completion for routine feedback", async () => {
     const routine = clientWith(JSON.stringify({
       verdict: "pass",
       feedback: "今天课堂跟得比较稳，电离方程式的基础书写完成得顺利，能够按照条件逐步核对符号和配平；遇到不确定的地方也愿意停下来检查，这种处理方式比较扎实。",
@@ -330,9 +416,6 @@ describe("feedback generation review", () => {
       draftFeedback: "",
     });
     expect(routine.create).toHaveBeenCalledTimes(1);
-    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("不追求固定字符数");
-    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("孩子被看见");
-    expect(routine.create.mock.calls[0][0].messages[0].content).toContain("不得用空泛夸奖代替事实");
     expect(routine.create.mock.calls[0][0]).toMatchObject({ max_tokens: 2048 });
     expect(routine.create.mock.calls[0][0]).not.toHaveProperty("reasoning_effort");
   });
@@ -360,7 +443,7 @@ describe("feedback generation review", () => {
     expect(create.mock.calls[1][0]).toMatchObject({ max_tokens: 4096 });
   });
 
-  it("supports every persisted style and both qualitative detail levels without character boundaries", async () => {
+  it("accepts every persisted style and qualitative detail option", async () => {
     for (const style of FEEDBACK_STYLES) {
       for (const length of FEEDBACK_LENGTHS) {
         const feedback = length === "short" ? "本次步骤清楚。" : "本次步骤清楚，能够依据条件逐项核对并完成修正。";
@@ -375,8 +458,6 @@ describe("feedback generation review", () => {
         });
         expect(result.reviewStatus, `${style}/${length}`).toBe("passed");
         expect(result.feedback).toBe(feedback);
-        expect(routine.create.mock.calls[0][0].messages[0].content)
-          .toContain(FEEDBACK_LENGTH_OPTIONS[length].instruction);
       }
     }
   });
@@ -408,7 +489,6 @@ describe("feedback generation review", () => {
       ),
     });
     expect(context).toContain("本班本课课程摘要");
-    expect(context).toContain("不得据此断言该生掌握或失误");
     expect(context).not.toContain("存在一定错误");
   });
 
@@ -559,7 +639,7 @@ describe("feedback generation review", () => {
     expect(context).not.toContain("旧上下文");
   });
 
-  it("turns an internal analysis into a separately reviewed parent message", async () => {
+  it("uses separate draft and review clients", async () => {
     const draft = clientWith("本次主动订正错题；近期记录显示学习投入较稳定，可建议继续复盘。 ");
     const review = clientWith(JSON.stringify({ verdict: "pass", feedback: "今天孩子能够主动订正错题，近期学习投入也比较稳定。建议继续保持课后复盘的习惯，把订正过程中的思路及时整理下来，下次遇到相近问题时再按同样步骤核对。", issues: [] }));
 
@@ -580,20 +660,14 @@ describe("feedback generation review", () => {
       reviewStatus: "passed",
       reviewIssues: [],
     });
-    expect(draft.create).toHaveBeenCalledWith(expect.objectContaining({ model: "draft-model", temperature: 0.5 }));
-    expect(review.create).toHaveBeenCalledWith(expect.objectContaining({ model: "review-model", temperature: 0 }));
-    expect(draft.create.mock.calls[0][0].messages[0].content).toContain("内部分析草稿");
+    expect(draft.create).toHaveBeenCalledWith(expect.objectContaining({ model: "draft-model" }));
+    expect(review.create).toHaveBeenCalledWith(expect.objectContaining({ model: "review-model" }));
+    expect(draft.create.mock.calls[0][0]).not.toHaveProperty("temperature");
+    expect(review.create.mock.calls[0][0]).not.toHaveProperty("temperature");
     expect(draft.create.mock.calls[0][0]).toMatchObject({
       max_tokens: 2048,
       reasoning_effort: "none",
     });
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("内部分析只是辅助材料");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("三种真实感受");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("只突出一个核心结论");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("只有明确的前后证据");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("不得将全学期常态对照改写");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("普通情况可直接结束");
-    expect(review.create.mock.calls[0][0].messages[0].content).toContain("整体表现优异");
   });
 
   it("retries a truncated analysis draft without reasoning and with a larger budget", async () => {
@@ -725,5 +799,45 @@ describe("feedback generation review", () => {
     expect(result.reviewStatus).toBe("needs_review");
     expect(result.feedback).toBe("");
     expect(result.reviewIssues).toContain("反馈中出现了家长称呼占位符");
+  });
+
+  it("blocks routine output that directly addresses the student", async () => {
+    const routine = clientWith(JSON.stringify({
+      verdict: "pass",
+      feedback: "你今天完成了基础概念判断，继续加油。",
+      issues: [],
+    }));
+    const result = await generateRoutineFeedback({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成基础概念判断。",
+      style: "balanced",
+      length: "short",
+      client: routine.client,
+      model: "routine-model",
+    });
+
+    expect(result.reviewStatus).toBe("needs_review");
+    expect(result.feedback).toBe("");
+    expect(result.reviewIssues).toContain("家长反馈错误地直接面向学生");
+  });
+
+  it("blocks reviewed output that directly addresses the student", async () => {
+    const result = await reviewFeedbackDraft({
+      studentName: "学生甲",
+      promptContext: "学生甲本节课完成练习。",
+      style: "balanced",
+      length: "short",
+      draftFeedback: "本次完成练习。",
+      client: clientWith(JSON.stringify({
+        verdict: "pass",
+        feedback: "希望你下次继续保持今天的状态。",
+        issues: [],
+      })).client,
+      model: "review-model",
+    });
+
+    expect(result.reviewStatus).toBe("needs_review");
+    expect(result.feedback).toBe("");
+    expect(result.reviewIssues).toContain("家长反馈错误地直接面向学生");
   });
 });

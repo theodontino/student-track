@@ -95,68 +95,6 @@ afterEach(async () => {
 });
 
 describe("generation memory retention", () => {
-  it("selects each new primary feedback generation but never an explicit derived variant", async () => {
-    const shared = {
-      taskType: "feedback" as const,
-      stage: "routine",
-      semesterId: TEST_FIXTURE.semester.id,
-      classId: TEST_FIXTURE.class.id,
-      sessionId: TEST_FIXTURE.sessions[0].id,
-      studentId: TEST_FIXTURE.students[0].id,
-      sourceRefs: [{ type: "session" as const, id: TEST_FIXTURE.sessions[0].id }],
-      promptVersion: "test-selection-v1",
-      finalText: "学".repeat(90),
-    };
-    const first = await recordSuccessfulGeneration({
-      ...shared,
-      variantKey: "test-primary-version-1",
-      inputRevision: "input-1",
-      inputSnapshot: { revision: 1 },
-      outputSnapshot: { revision: 1 },
-    });
-    const second = await recordSuccessfulGeneration({
-      ...shared,
-      variantKey: "test-primary-version-2",
-      inputRevision: "input-2",
-      inputSnapshot: { revision: 2 },
-      outputSnapshot: { revision: 2 },
-    });
-    const derived = await recordSuccessfulGeneration({
-      ...shared,
-      variantKey: "test-derived-version",
-      inputRevision: "input-2",
-      parentGenerationId: second.id,
-      selectIfFirst: false,
-      inputSnapshot: { revision: 2 },
-      outputSnapshot: { revision: 2, derived: true },
-    });
-    await prisma.feedbackGenerationSelection.update({
-      where: {
-        sessionId_studentId: {
-          sessionId: TEST_FIXTURE.sessions[0].id,
-          studentId: TEST_FIXTURE.students[0].id,
-        },
-      },
-      data: { selectedGenerationId: derived.id },
-    });
-    await recordSuccessfulGeneration({
-      ...shared,
-      variantKey: "test-primary-version-2",
-      inputRevision: "input-2",
-      inputSnapshot: { revision: 2 },
-      outputSnapshot: { revision: 2 },
-    });
-    await expect(prisma.feedbackGenerationSelection.findUniqueOrThrow({
-      where: {
-        sessionId_studentId: {
-          sessionId: TEST_FIXTURE.sessions[0].id,
-          studentId: TEST_FIXTURE.students[0].id,
-        },
-      },
-    })).resolves.toMatchObject({ selectedGenerationId: second.id });
-    expect(first.id).not.toBe(second.id);
-  });
-
   it("keeps the latest five completed sessions hot, compacts older adopted output, and can undo", async () => {
     for (let index = 0; index < extraSessionIds.length; index += 1) {
       const number = index + 3;
@@ -244,6 +182,7 @@ describe("generation memory retention", () => {
     const request = mocks.completionCreate.mock.calls[0]?.[0];
     expect(request.messages[1].content).toContain("受控学期摘要：氧化还原反应的证据表达逐步稳定。");
     expect(request.messages[1].content).not.toContain("\"snapshot\":{\"version\":1");
+    expect(request).not.toHaveProperty("temperature");
 
     const draft = await prisma.teachingMemory.findFirstOrThrow({ where: { memoryTier: "long-term" } });
     expect(JSON.parse(draft.sourceRefs)).toEqual(expect.arrayContaining([

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { processDraftReview } from "@/services/review-service";
 import { assignWccDraftSession } from "@/services/wecom-handoff-consumer-service";
-import { readPreReviewSuggestion } from "@/services/wecom-prereview-service";
+import { readPreReviewError, readPreReviewSuggestion } from "@/services/wecom-prereview-service";
 
 function parsed(value: string) {
   try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
@@ -83,6 +83,7 @@ export async function GET(request: NextRequest) {
       sessions,
       createdAt: draft.createdAt,
       preReview: suggestion,
+      preReviewError: readPreReviewError(draft.reviewResult),
     };
     if (query) {
       const haystack = [

@@ -170,12 +170,65 @@ describe("core transactional workflows", () => {
       status: 409,
     });
 
+    const amended = JSON.parse(draft.parsedResult);
+    amended.students[0].teacherInterventions = [{
+      observedProblem: "答题时漏看了一个条件",
+      teacherAction: "",
+      outcome: "",
+      evidenceText: "",
+    }];
+    await expect(processDraftReview({ draftId: draft.id, action: "confirm", edits: amended })).resolves.toMatchObject({
+      success: true,
+      status: "confirmed",
+      warnings: expect.arrayContaining(["已更新教师确认后的结构化记录"]),
+    });
+
     await expect(prisma.draftRecord.findUnique({ where: { id: draft.id } })).resolves.toMatchObject({
       status: "confirmed",
     });
-    expect(await prisma.event.count({ where: { sessionId, studentId: students[0].id } })).toBe(1);
+    expect(await prisma.event.count({ where: { sessionId, studentId: students[0].id } })).toBe(2);
+    await expect(prisma.event.findFirst({
+      where: { sessionId, studentId: students[0].id, type: "教师处理" },
+    })).resolves.toMatchObject({ description: "观察问题：答题时漏看了一个条件" });
     expect(await prisma.communication.count({ where: { sessionId, studentId: students[0].id } })).toBe(1);
     await expect(prisma.studentLabel.findFirst({ where: { studentId: students[0].id, label: { name: "AI内部关注：学习信心" } }, include: { label: true } })).resolves.toMatchObject({ label: { name: "AI内部关注：学习信心" } });
+  });
+
+  it("keeps a partial teacher observation in the existing teacher-handling event", async () => {
+    const student = await prisma.student.findUniqueOrThrow({ where: { id: studentIds[0] } });
+    const draft = await prisma.draftRecord.create({
+      data: {
+        rawText: `${student.name} 后半节开始漏看题目条件，老师当场提醒`,
+        sessionCode,
+        parsedResult: JSON.stringify({
+          students: [{
+            name: student.name,
+            scores: { A: null, B: null, C: null },
+            events: [],
+            communication: null,
+            present: true,
+            teacherInterventions: [{
+              observedProblem: "后半节开始漏看题目条件",
+              teacherAction: "",
+              outcome: "",
+              evidenceText: "老师当场提醒",
+            }],
+          }],
+          alert_suggestion: "",
+        }),
+      },
+    });
+    draftIds.push(draft.id);
+
+    await expect(processDraftReview({ draftId: draft.id, action: "confirm" })).resolves.toMatchObject({
+      success: true,
+      status: "confirmed",
+    });
+
+    await expect(prisma.event.findMany({
+      where: { sessionId, studentId: student.id, type: "教师处理" },
+      select: { description: true },
+    })).resolves.toEqual([{ description: "观察问题：后半节开始漏看题目条件；证据：老师当场提醒" }]);
   });
 
   it("validates class selection and archives metrics before deleting a session", async () => {

@@ -7,10 +7,11 @@ import { WeComExtractionError } from "@/services/wecom-handoff-extraction-servic
 import {
   callLlmWithSchemaFallback,
   parsePreReviewText,
+  readPreReviewError,
   type PreReviewSuggestion,
 } from "@/services/wecom-prereview-service";
 
-type CompletionResponse = { choices: Array<{ message: { content: string | null } }> };
+type CompletionResponse = { choices: Array<{ message: { content: string | null; reasoning_content?: string | null } }> };
 
 function clientWith(...responses: Array<CompletionResponse | Error>): {
   client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } };
@@ -99,6 +100,12 @@ describe("parsePreReviewText", () => {
   it("throws when no verdict keyword can be recovered", () => {
     expect(() => parsePreReviewText("not even close to JSON")).toThrow(WeComExtractionError);
   });
+
+  it("exposes persisted pre-review errors instead of treating them as unreviewed", () => {
+    expect(readPreReviewError(JSON.stringify({ verdict: "review", error: "schema_invalid: empty content" })))
+      .toBe("schema_invalid: empty content");
+    expect(readPreReviewError(JSON.stringify({ verdict: "review" }))).toBeNull();
+  });
 });
 
 describe("callLlmWithSchemaFallback", () => {
@@ -120,6 +127,7 @@ describe("callLlmWithSchemaFallback", () => {
     expect(payload.response_format.type).toBe("json_schema");
     expect(payload.response_format.json_schema.strict).toBe(true);
     expect(payload.reasoning_effort).toBe("low");
+    expect(payload).not.toHaveProperty("temperature");
   });
 
   it("downgrades to json_object when the provider rejects json_schema", async () => {
@@ -207,5 +215,19 @@ describe("callLlmWithSchemaFallback", () => {
     // 首次携带低思考强度；兼容重试会明确去掉该字段。
     expect(create.mock.calls[0][0].reasoning_effort).toBe("low");
     expect(create.mock.calls[1][0].reasoning_effort).toBeUndefined();
+  });
+
+  it("uses reasoning_content when a local reasoning model leaves content empty", async () => {
+    const { client } = clientWith({ choices: [{ message: {
+      content: "",
+      reasoning_content: okText,
+    } }] });
+    const result = await callLlmWithSchemaFallback(
+      client as never,
+      "local-reasoning-model",
+      basePrompt.system,
+      basePrompt.user,
+    );
+    expect(result.text).toBe(okText);
   });
 });

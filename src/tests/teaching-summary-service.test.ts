@@ -21,6 +21,7 @@ import {
 } from "@/services/teacher-observation-service";
 
 afterEach(async () => {
+  await prisma.feedbackPlan.deleteMany({ where: { id: "test-summary-feedback-plan" } });
   await prisma.teacherObservation.deleteMany();
   await prisma.teachingSummaryCache.deleteMany();
   await prisma.communication.deleteMany({ where: { sourceKey: { startsWith: "test-summary-" } } });
@@ -32,6 +33,19 @@ beforeEach(() => {
 
 describe("teaching summary facts", () => {
   it("builds deterministic session and date facts without calling an LLM", async () => {
+    await prisma.feedbackPlan.create({
+      data: {
+        id: "test-summary-feedback-plan",
+        type: "event_micro",
+        outputRequirement: "测试摘要反馈历史",
+        status: "in_review",
+        semesterId: TEST_FIXTURE.semester.id,
+        classId: TEST_FIXTURE.class.id,
+        sessionId: TEST_FIXTURE.sessions[0].id,
+        rangeEndSessionId: TEST_FIXTURE.sessions[0].id,
+        inputFingerprint: "test-summary-feedback-fingerprint",
+      },
+    });
     const sessionRequest = TeachingSummaryRequestSchema.parse({
       scope: { type: "session", sessionCode: TEST_FIXTURE.sessions[0].code },
       includeCommunications: true,
@@ -148,6 +162,7 @@ describe("teaching summary facts", () => {
       response_format: expect.objectContaining({ type: "json_schema" }),
       reasoning_effort: "low",
     }));
+    expect(mocks.completionCreate.mock.calls[0][0]).not.toHaveProperty("temperature");
 
     const cached = await generateTeachingSummary(request);
     expect(cached.cache.status).toBe("hit");

@@ -28,7 +28,7 @@ const baseGroups: Array<{ label: string; items: NavigationItem[] }> = [
   ] },
   { label: "报告与数据", items: [
     { href: "/daily-report", label: "教学总结", icon: "report", context: "full" },
-    { href: "/history", label: "工作历史", icon: "history" },
+    { href: "/history", label: "反馈历史", icon: "history" },
     { href: "/export", label: "数据导出", icon: "export" },
   ] },
   { label: "系统", items: [{ href: "/system/configuration", label: "系统中心", icon: "system" }] },

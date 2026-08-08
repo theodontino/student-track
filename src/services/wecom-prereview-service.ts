@@ -39,7 +39,6 @@ export interface PreReviewBatchStatus {
 const PRE_REVIEW_VERSION = "wecom-prereview.v1";
 const PRE_REVIEW_CONCURRENCY = 2;
 const PRE_REVIEW_MAX_TOKENS = 1024;
-const PRE_REVIEW_TEMPERATURE = 0;
 // 默认走 low，节省 reasoning tokens；模型不支持时自动降级到不传（默认 high）。
 
 const preReviewSchema = {
@@ -91,6 +90,18 @@ export function readPreReviewSuggestion(
       reason: typeof data.reason === "string" ? data.reason : "",
       flags: Array.isArray(data.flags) ? data.flags.map(String) : [],
     };
+  } catch {
+    return null;
+  }
+}
+
+export function readPreReviewError(
+  serialized: string | null | undefined,
+): string | null {
+  if (!serialized) return null;
+  try {
+    const data = JSON.parse(serialized) as Partial<PreReviewStored> & { error?: unknown };
+    return typeof data.error === "string" && data.error.trim() ? data.error : null;
   } catch {
     return null;
   }
@@ -323,14 +334,15 @@ async function callLlmWithSchemaFallback(
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
-  const completionOptions = getLLMCompletionOptions("feedbackReview", PRE_REVIEW_MAX_TOKENS, true);
+  // 预审只需要短 JSON；部分本地 reasoning 模型会把最终 JSON 放到 reasoning_content，
+  // 并让 message.content 为空。未显式开启 reasoning 时不主动传 reasoning_effort。
+  const completionOptions = getLLMCompletionOptions("feedbackReview", PRE_REVIEW_MAX_TOKENS, false);
 
   // Level 1: strict json_schema
   try {
     const response = await createWithReasoningFallback(client, {
       model,
       messages,
-      temperature: PRE_REVIEW_TEMPERATURE,
       ...completionOptions,
       response_format: {
         type: "json_schema",
@@ -347,7 +359,6 @@ async function callLlmWithSchemaFallback(
     const response = await createWithReasoningFallback(client, {
       model,
       messages,
-      temperature: PRE_REVIEW_TEMPERATURE,
       ...completionOptions,
       response_format: { type: "json_object" },
     });
@@ -365,7 +376,6 @@ async function callLlmWithSchemaFallback(
   const response = await createWithReasoningFallback(client, {
     model,
     messages: freeTextMessages,
-    temperature: PRE_REVIEW_TEMPERATURE,
     ...completionOptions,
   });
   return { text: extractRaw(response), protocol: "plain", model };
@@ -374,7 +384,6 @@ async function callLlmWithSchemaFallback(
 type ChatCompletionPayload = {
   model: string;
   messages: ChatMessage[];
-  temperature: number;
   max_tokens: number;
   reasoning_effort?: "none" | "low" | "medium" | "high";
   response_format?: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } } | { type: "json_object" };
@@ -580,8 +589,11 @@ function stripFence(text: string): string {
   return fenceMatch ? fenceMatch[1].trim() : trimmed;
 }
 
-function extractRaw(response: { choices?: Array<{ message?: { content?: string | null } }> }): string {
-  return response.choices?.[0]?.message?.content ?? "";
+function extractRaw(response: { choices?: Array<{ message?: { content?: string | null; reasoning_content?: string | null; reasoning?: string | null } }> }): string {
+  const message = response.choices?.[0]?.message;
+  const content = message?.content?.trim();
+  if (content) return content;
+  return message?.reasoning_content?.trim() || message?.reasoning?.trim() || "";
 }
 
 function errorMessage(error: unknown): string {

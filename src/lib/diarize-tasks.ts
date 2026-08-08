@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveStudentTrackDataPath } from "@/lib/runtime-paths";
 
 export type DiarizeEngine = "auto" | "local" | "tingwu";
 export type DiarizeTaskStatus = "queued" | "running" | "succeeded" | "failed";
@@ -60,7 +61,7 @@ function readJsonFallbackText(jsonPath: string | null) {
 }
 
 export function diarizeDataDir() {
-  return process.env.DIARIZE_DATA_DIR || path.join(process.cwd(), "data", "diarize");
+  return resolveStudentTrackDataPath("diarize", "DIARIZE_DATA_DIR");
 }
 
 export function diarizeTasksDir() {

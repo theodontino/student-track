@@ -5,12 +5,14 @@ import type { useLLMConfiguration } from "./useLLMConfiguration";
 
 type Workspace = ReturnType<typeof useLLMConfiguration>;
 
-export function LLMRoleAssignmentsPanel({ workspace }: { workspace: Workspace }) {
+export function LLMRoleAssignmentsPanel({ workspace, showWecom = true }: { workspace: Workspace; showWecom?: boolean }) {
   return (
     <Section
       className="llm-role-assignments"
       title="模型角色分工"
-      description="反馈分析、反馈成稿审核和企微结构化提取可分别指定模型；未指定时跟随当前启用配置。"
+      description={showWecom
+        ? "反馈分析、反馈成稿审核和企微结构化提取可分别指定模型；未指定时跟随当前启用配置。"
+        : "分析模型和成稿与审核模型可分别指定；未指定时跟随当前启用配置。"}
     >
       <div className="llm-role-assignments__body">
         <FormField id="llm-feedback-draft-role" label="分析模型（副 Agent）">
@@ -33,7 +35,7 @@ export function LLMRoleAssignmentsPanel({ workspace }: { workspace: Workspace })
             {workspace.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} / {profile.model}</option>)}
           </Select>
         </FormField>
-        <FormField id="llm-wecom-extraction-role" label="企微提取模型">
+        {showWecom && <FormField id="llm-wecom-extraction-role" label="企微提取模型">
           <Select
             id="llm-wecom-extraction-role"
             value={workspace.roleAssignments.wecomExtractionProfileId ?? ""}
@@ -42,7 +44,7 @@ export function LLMRoleAssignmentsPanel({ workspace }: { workspace: Workspace })
             <option value="">跟随当前启用配置</option>
             {workspace.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} / {profile.model}</option>)}
           </Select>
-        </FormField>
+        </FormField>}
         {workspace.roleStatus && <StatusBanner tone="success">{workspace.roleStatus}</StatusBanner>}
         {workspace.roleError && <StatusBanner tone="danger">{workspace.roleError}</StatusBanner>}
         <Button onClick={() => void workspace.saveRoles()} disabled={workspace.roleSaving || workspace.loading}>

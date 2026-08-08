@@ -5,6 +5,7 @@ import { Badge, Button, EmptyState, ErrorState, FormField, Input, LoadingState, 
 import { ACTION_LABELS, formatLogDetail, TARGET_LABELS } from "./maintenance-types";
 import { useMaintenanceLogs } from "./useMaintenanceLogs";
 import LLMCachePanel from "./LLMCachePanel";
+import { GenerationHistoryPanel } from "@/features/reports/GenerationHistoryPanel";
 
 export default function MaintenancePanel() {
   const workspace = useMaintenanceLogs();
@@ -13,6 +14,7 @@ export default function MaintenancePanel() {
       <PageHeader title="维护与操作日志" description="集中管理本机备份、模型缓存和关键操作记录。" />
       <Section title="数据库备份" description="创建一致性备份并记录校验信息，不改变业务数据。"><div className="system-backup-action"><ArchiveButton /></div></Section>
       <LLMCachePanel />
+      <Section title="AI 生成审计与教学记忆" description="这里保留模型生成账本和教学记忆维护；教师日常反馈恢复请使用反馈历史。"><GenerationHistoryPanel /></Section>
       <Section className="system-log-section" title="操作日志" description={`记录评分变更、预警触发和数据删除等关键操作，共 ${workspace.total} 条；保留 90 天。`}>
         <div className="system-log-section__body">
           <div className="system-log-filters">

@@ -45,7 +45,10 @@ function normalizeTeacherInterventions(value: unknown): TeacherIntervention[] {
     const teacherAction = typeof item.teacherAction === "string" ? item.teacherAction.trim() : "";
     const evidenceText = typeof item.evidenceText === "string" ? item.evidenceText.trim() : "";
     const outcome = typeof item.outcome === "string" ? item.outcome.trim() : "";
-    if (!observedProblem || !teacherAction || !evidenceText) return [];
+    // A confirmed teacher observation may contain only the part the teacher
+    // actually knows. Keep any non-empty observation; do not silently require
+    // a complete intervention narrative before it can enter the evidence set.
+    if (!observedProblem && !teacherAction && !outcome && !evidenceText) return [];
     return [{ observedProblem, teacherAction, ...(outcome ? { outcome } : {}), evidenceText }];
   });
   const seen = new Set<string>();
@@ -84,6 +87,7 @@ function normalizeStudent(value: unknown): ParsedStudent {
     };
   }
 
+  const teacherInterventions = normalizeTeacherInterventions(value.teacherInterventions);
   return {
     name: value.name.trim(),
     scores: {
@@ -94,8 +98,8 @@ function normalizeStudent(value: unknown): ParsedStudent {
     events,
     communication,
     attentionSignals: normalizeAttentionSignalCandidates(value.attentionSignals),
-    ...(normalizeTeacherInterventions(value.teacherInterventions).length > 0
-      ? { teacherInterventions: normalizeTeacherInterventions(value.teacherInterventions) }
+    ...(teacherInterventions.length > 0
+      ? { teacherInterventions }
       : {}),
     ...(typeof value.present === "boolean" ? { present: value.present } : {}),
   };
@@ -145,7 +149,16 @@ export async function processDraftReview(input: ProcessDraftInput) {
         logs: [],
       };
     }
-    if (draft.status !== "pending") throw new ServiceError("草稿已经处理，不能重复提交", 409);
+    const isConfirmedAmendment = (
+      draft.status === "confirmed"
+      && draft.kind !== "correction"
+      && !draft.id.startsWith("wcc-")
+      && input.action === "confirm"
+      && input.edits !== undefined
+    );
+    if (draft.status !== "pending" && !isConfirmedAmendment) {
+      throw new ServiceError("草稿已经处理，不能重复提交", 409);
+    }
 
     if (input.action === "reject") {
       await tx.draftRecord.update({
@@ -325,8 +338,12 @@ export async function processDraftReview(input: ProcessDraftInput) {
           const existing = await tx.sessionMetric.findUnique({
             where: { studentId_sessionId: { studentId: student.id, sessionId: session.id } },
           });
-          if (existing) await archiveMetricBeforeUpdate(existing.id, "update", tx);
-          await tx.sessionMetric.upsert({
+          const metricChanged = !existing
+            || existing.scoreA !== scoreA
+            || existing.scoreB !== scoreB
+            || existing.scoreC !== scoreC;
+          if (existing && metricChanged) await archiveMetricBeforeUpdate(existing.id, "update", tx);
+          if (metricChanged) await tx.sessionMetric.upsert({
             where: { studentId_sessionId: { studentId: student.id, sessionId: session.id } },
             create: {
               studentId: student.id,
@@ -407,10 +424,10 @@ export async function processDraftReview(input: ProcessDraftInput) {
         } else {
           for (const intervention of parsedStudent.teacherInterventions) {
             const description = [
-              `观察问题：${intervention.observedProblem}`,
-              `教师处理：${intervention.teacherAction}`,
+              intervention.observedProblem ? `观察问题：${intervention.observedProblem}` : "",
+              intervention.teacherAction ? `教师处理：${intervention.teacherAction}` : "",
               intervention.outcome ? `处理结果：${intervention.outcome}` : "",
-              `证据：${intervention.evidenceText}`,
+              intervention.evidenceText ? `证据：${intervention.evidenceText}` : "",
             ].filter(Boolean).join("；");
             await tx.event.upsert({
               where: {
@@ -526,7 +543,13 @@ export async function processDraftReview(input: ProcessDraftInput) {
       },
     });
 
-    return { status: "confirmed" as const, warnings, logs };
+    return {
+      status: "confirmed" as const,
+      warnings: isConfirmedAmendment
+        ? ["已更新教师确认后的结构化记录", ...warnings]
+        : warnings,
+      logs,
+    };
   }, { timeout: 15_000 });
 
   for (const entry of result.logs) {

@@ -22,9 +22,10 @@ const PRESERVED_COLUMNS: Record<string, string[]> = {
   Event: ["id", "studentId", "type", "description", "rawText", "createdAt"],
   Communication: ["id", "studentId", "target", "summary", "sourceKey", "createdAt"],
   DraftRecord: ["id", "rawText", "parsedResult", "reviewResult", "status", "sessionCode", "studentId", "createdAt"],
-  WorkHistory: ["id", "module", "key", "title", "state", "createdAt"],
   SystemLog: ["id", "action", "targetType", "targetId", "targetName", "detail", "createdAt"],
-  FeedbackPlan: ["id", "type", "purpose", "status", "semesterId", "sessionId", "rangeStartSessionId", "rangeEndSessionId", "inputFingerprint", "planRevision", "createdAt", "updatedAt", "approvedAt", "exportedAt"],
+  // `purpose` is renamed to `outputRequirement` by a later migration; use
+  // common columns here and assert the renamed value separately.
+  FeedbackPlan: ["id", "type", "status", "semesterId", "sessionId", "rangeStartSessionId", "rangeEndSessionId", "inputFingerprint", "planRevision", "createdAt", "updatedAt", "approvedAt", "exportedAt"],
   FeedbackPlanItem: ["id", "planId", "studentId", "status", "evidenceSnapshot", "compositionSnapshot", "auditSnapshot", "finalText", "finalTextHash", "selectedGenerationId", "reviewMode", "itemRevision", "createdAt", "updatedAt", "approvedAt", "exportedAt"],
   TeacherTask: ["id", "planId", "planItemId", "studentId", "action", "promiseExcerpt", "dueType", "dueDate", "estimatedMinutes", "status", "sourceHash", "createdAt", "approvedAt", "completedAt", "updatedAt"],
   GenerationRecord: ["id", "taskType", "stage", "lifecycle", "studentId", "operationKey", "sourceRefs", "sourceFingerprint", "promptVersion", "modelName", "modelRole", "modelProfileId", "modelSettings", "inputRevision", "parentGenerationId", "feedbackPlanItemId", "variantKey", "inputSnapshot", "outputSnapshot", "finalText", "warmSnapshot", "generatedAt", "adoptedAt", "compactedAt", "purgedAt", "staleAt", "createdAt", "updatedAt"],
@@ -53,6 +54,11 @@ function stableValue(value: unknown) {
 async function existingTables(client: ReturnType<typeof createClient>) {
   const result = await client.execute("SELECT name FROM sqlite_master WHERE type='table'");
   return new Set(result.rows.map((row) => String(row.name)));
+}
+
+async function tableRowCount(client: ReturnType<typeof createClient>, table: string) {
+  const result = await client.execute(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)}`);
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 async function inspect(databasePath: string): Promise<Inspection> {
@@ -111,6 +117,17 @@ async function assertNewSchema(databasePath: string) {
     const classColumns = new Set((await client.execute("PRAGMA table_info(\"Class\")")).rows.map((row) => String(row.name)));
     if (studentColumns.has("classId") || studentColumns.has("rosterStatus") || studentColumns.has("statusEffectiveAt")) throw new Error("Student 仍包含全局班级或花名册字段");
     if (!classColumns.has("semesterId")) throw new Error("Class 缺少 semesterId");
+    const planColumns = new Set((await client.execute("PRAGMA table_info(\"FeedbackPlan\")")).rows.map((row) => String(row.name)));
+    const planItemColumns = new Set((await client.execute("PRAGMA table_info(\"FeedbackPlanItem\")")).rows.map((row) => String(row.name)));
+    if (!["outputRequirement", "inputSnapshot", "archivedAt", "generationMode", "generationStartedAt", "generationCompletedAt", "generationElapsedMs", "generationRunStartedAt"].every((column) => planColumns.has(column))) {
+      throw new Error("FeedbackPlan 缺少 1.1.1 快照、归档、生成模式或计时字段");
+    }
+    if (!["generationError", "generationStartedAt", "generationCompletedAt", "generationDurationMs"].every((column) => planItemColumns.has(column))) {
+      throw new Error("FeedbackPlanItem 缺少生成失败或计时字段");
+    }
+    for (const retiredTable of ["WorkHistory", "FeedbackGenerationSelection"]) {
+      if (tables.has(retiredTable)) throw new Error(`旧表 ${retiredTable} 未删除`);
+    }
     const mismatched = await client.execute(`
       SELECT COUNT(*) AS count
       FROM StudentClassEnrollment e JOIN Class c ON c.id = e.classId
@@ -184,6 +201,8 @@ async function seedSyntheticLegacyDatabase(databasePath: string) {
         ('task-old', 'plan-old', 'plan-item-old', 'student-history', 'class-shared', '固定历史跟进', 'session', 'session-old', 'pending', '2026-03-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z');
       INSERT INTO "GenerationRecord" ("id", "taskType", "stage", "lifecycle", "semesterId", "classId", "sessionId", "studentId", "sourceFingerprint", "promptVersion", "modelName", "modelSettings", "sourceRefs", "inputSnapshot", "outputSnapshot", "finalText", "generatedAt", "createdAt", "updatedAt") VALUES
         ('generation-old', 'feedback', 'draft', 'hot', 'semester-old', 'class-shared', 'session-old', 'student-history', 'fixed-generation-fingerprint', 'fixed-prompt', 'fixed-model', '{}', '[]', '{"source":"固定"}', '{"output":"固定"}', '固定生成文本', '2026-03-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z');
+      INSERT INTO "FeedbackGenerationSelection" ("id", "sessionId", "studentId", "selectedGenerationId", "selectedAt", "createdAt", "updatedAt") VALUES
+        ('selection-old', 'session-old', 'student-history', 'generation-old', '2026-03-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z');
       INSERT INTO "TeachingMemory" ("id", "scopeType", "scopeId", "semesterKey", "semesterId", "memoryTier", "status", "content", "sourceFingerprint", "createdAt", "updatedAt") VALUES
         ('memory-old', 'class', 'class-shared', 'semester-old', 'semester-old', 'semester', 'confirmed', '{"summary":"固定旧班记忆"}', 'fixed-memory-fingerprint', '2026-03-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z'),
         ('memory-only', 'class', 'class-memory-only', 'semester-old', 'semester-old', 'semester', 'confirmed', '{"summary":"固定仅记忆班"}', 'fixed-memory-only-fingerprint', '2026-03-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z');
@@ -223,6 +242,11 @@ async function assertSyntheticSemantics(databasePath: string) {
     if (String(memory.rows[0]?.scopeId) !== "class-shared--semester-old" || String(memory.rows[0]?.status) !== "stale") throw new Error("跨学期班级记忆未标记 stale");
     const memoryOnly = await client.execute(`SELECT scopeId FROM TeachingMemory WHERE id = 'memory-only'`);
     if (String(memoryOnly.rows[0]?.scopeId) !== "class-memory-only") throw new Error("仅由教学记忆引用的班级学期映射错误");
+    const plans = await client.execute(`SELECT outputRequirement, inputSnapshot, archivedAt FROM FeedbackPlan WHERE id = 'plan-old'`);
+    if (String(plans.rows[0]?.outputRequirement) !== "固定历史反馈计划") throw new Error("反馈计划要求字段未从旧 purpose 保留");
+    if (String(plans.rows[0]?.inputSnapshot) !== "{}" || plans.rows[0]?.archivedAt !== null) throw new Error("反馈计划新字段默认值不正确");
+    const retired = await client.execute(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('WorkHistory', 'FeedbackGenerationSelection')`);
+    if (retired.rows.length !== 0) throw new Error("旧反馈历史表仍然存在");
   } finally {
     client.close();
   }
@@ -233,12 +257,16 @@ async function verifySyntheticUpgrade(projectRoot: string, temporaryDirectory: s
   const names = await migrationNames(projectRoot);
   const migrationName = "20260803123000_add_semester_classes_and_student_enrollments";
   const oldNames = names.filter((name) => name < migrationName);
-  const newMigration = names.filter((name) => name === migrationName);
-  if (newMigration.length !== 1) throw new Error("找不到学期班级迁移");
+  const newMigrations = names.filter((name) => name >= migrationName);
+  if (!newMigrations.length) throw new Error("找不到学期班级迁移");
   await applyMigrationFiles(projectRoot, databasePath, oldNames);
   await seedSyntheticLegacyDatabase(databasePath);
+  const legacyClient = createClient({ url: `file:${databasePath}` });
+  const workHistoryCount = await tableRowCount(legacyClient, "WorkHistory");
+  legacyClient.close();
+  if (workHistoryCount !== 1) throw new Error(`合成旧库 WorkHistory 行数异常：${workHistoryCount}`);
   const before = await inspect(databasePath);
-  await applyMigrationFiles(projectRoot, databasePath, newMigration);
+  await applyMigrationFiles(projectRoot, databasePath, newMigrations);
   const after = await inspect(databasePath);
   assertPreserved(before, after, "固定合成旧库");
   await assertNewSchema(databasePath);

@@ -6,6 +6,7 @@
 |---|---|
 | [`DOMAIN.md`](DOMAIN.md) | 系统里有哪些核心概念，它们分别代表什么？ |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 代码如何分层，稳定业务规则在哪里？ |
+| [`PROMPTING.md`](PROMPTING.md) | LLM 提示词如何维护，哪些是硬边界，哪些应保留生成空间？ |
 | [`OPERATIONS.md`](OPERATIONS.md) | 如何启动、迁移、备份、恢复和验证？ |
 | [`DECISIONS.md`](DECISIONS.md) | 为什么做出少数重要且长期有效的设计选择？ |
 | [`PRIVACY.md`](PRIVACY.md) | 哪些数据不得进入 Git，开发与公开发布如何检查？ |

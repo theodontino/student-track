@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateLLMProfile,
   clearLLMSettings,
@@ -12,7 +12,7 @@ import {
   saveLLMRoleAssignments,
   validateLLMSettings,
 } from "@/lib/llm-settings";
-import { getLLMCompletionOptions } from "@/lib/llm";
+import { createLLMClient, getLLMCompletionOptions } from "@/lib/llm";
 
 let tempDir = "";
 const originalEnv = {
@@ -31,6 +31,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   fs.rmSync(tempDir, { recursive: true, force: true });
   process.env.LLM_SETTINGS_PATH = originalEnv.LLM_SETTINGS_PATH;
   process.env.LLM_API_BASE_URL = originalEnv.LLM_API_BASE_URL;
@@ -39,6 +40,47 @@ afterEach(() => {
 });
 
 describe("llm-settings", () => {
+  it("limits feedback requests to three minutes without SDK retries", () => {
+    const client = createLLMClient("feedbackDraft");
+
+    expect(client.timeout).toBe(180_000);
+    expect(client.maxRetries).toBe(0);
+  });
+
+  it("retries without temperature when a compatible model only accepts its default", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { type: "invalid_request_error", message: "invalid temperature: only 1 is allowed for this model" },
+      }), { status: 400, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "chatcmpl-test",
+        object: "chat.completion",
+        created: 0,
+        model: "env-model",
+        choices: [{
+          index: 0,
+          finish_reason: "stop",
+          message: { role: "assistant", content: "{\"ok\":true}" },
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await createLLMClient().chat.completions.create({
+      model: "env-model",
+      messages: [{ role: "user", content: "Return JSON" }],
+      temperature: 0,
+      response_format: { type: "json_object" },
+    });
+
+    expect(response.choices[0]?.message.content).toBe("{\"ok\":true}");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstRequest = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body));
+    const retryRequest = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit)?.body));
+    expect(firstRequest.temperature).toBe(0);
+    expect(retryRequest).not.toHaveProperty("temperature");
+    expect(retryRequest.response_format).toEqual({ type: "json_object" });
+  });
+
   it("uses active Web UI profile before environment values", () => {
     saveLLMProfile({
       name: "Local",

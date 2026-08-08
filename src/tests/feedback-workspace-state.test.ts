@@ -14,14 +14,6 @@ function workspaceState() {
     corrections: [],
     confirmed: false,
     status: "",
-    feedbackCards: [],
-    feedbackTotal: 0,
-    feedbackDone: 0,
-    feedbackDirty: false,
-    forceRegenerate: false,
-    singleStudentId: "",
-    singleDays: 14,
-    singleFeedback: "",
   };
 }
 
@@ -30,7 +22,7 @@ describe("feedback workspace state", () => {
     expect(isFeedbackWorkspace(workspaceState())).toBe(true);
     expect(isFeedbackWorkspace({ ...workspaceState(), activeStep: "review" })).toBe(true);
     expect(isFeedbackWorkspace({ ...workspaceState(), activeStep: "unknown" })).toBe(false);
-    expect(isFeedbackWorkspace({ ...workspaceState(), feedbackDone: "0" })).toBe(false);
+    expect(isFeedbackWorkspace({ ...workspaceState(), rawText: 0 })).toBe(false);
   });
 
   it("restores a draft before the teacher selects a semester, class or session", () => {
