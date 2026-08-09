@@ -27,6 +27,7 @@ describe("/api/alerts", () => {
     const body = await res.json();
     expect(body.classOverview.length).toBeGreaterThan(0);
     const first = body.classOverview[0];
+    expect(first).toHaveProperty("classId");
     expect(first).toHaveProperty("name");
     expect(first).toHaveProperty("avgA");
     expect(first).toHaveProperty("avgB");

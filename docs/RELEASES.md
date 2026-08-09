@@ -4,7 +4,7 @@
 
 | 组件 | 版本 | 与另一端的关系 |
 |---|---:|---|
-| Student Track | 1.1.2 | FeedbackPlan 统一流程保持稳定；增加版本化健康/能力契约、统一错误基线、可重定位数据目录和真实数据库指纹门禁。 |
+| Student Track | 1.1.3 | 学生/班级双仪表、警告与教师待办优先级、稳定班级身份和学期上下文；保持 FeedbackPlan 与 handoff v1 稳定。 |
 | WCG（WeComCatch GUI） | 0.4.0 | 发布 `wcc.student-track-file.v1`，只读 receipt v1。 |
 
 两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
@@ -13,7 +13,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.1.2 | FeedbackPlan 统一反馈流程与历史，数据库队列生成、持久计时、标准/快速生成、暂停恢复、失败重试、课程材料快照、教师最终文本自动保存和历史筛选；handoff v1 保持兼容。 |
+| Student Track | 1.1.3 | 双仪表导航、任务分组与历史、同名班级排序、窄屏回归，以及既有 FeedbackPlan 统一反馈流程与历史；handoff v1 保持兼容。 |
 | WCG | 0.5.0-beta.5 | handoff 谱系、已批准反馈草稿不发送填入、逐条实时会话定位、前 50→前 150 降级和输入框安全复核。 |
 
 Student Track 的日常和稳定版门禁以自动化为准：普通改动通过 `verify:quick`，高风险与发布改动通过 `verify:release`，随后即可进入真实使用。所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化；固定次数的真实课后流程和重复人工合成演练不再阻断发布。

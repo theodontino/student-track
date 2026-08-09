@@ -28,6 +28,7 @@ import {
 export type DashboardSemester = ResolvedSemester;
 
 export interface ClassOverview {
+  classId: string;
   name: string;
   avgA: number;
   avgB: number;
@@ -61,6 +62,7 @@ export interface AlertDashboard {
   semester: DashboardSemester | null;
   classOverview: ClassOverview[];
   classAlerts: Array<{
+    classId: string;
     className: string;
     dimension: string;
     avgScore: number;
@@ -207,6 +209,7 @@ export async function getAlertDashboard(
         : +(latestMetrics.reduce((sum, metric) => sum + metric[key], 0) / latestMetrics.length).toFixed(1)
     );
     const overview: ClassOverview = {
+      classId: classKey,
       name: classNames.get(classKey) ?? "全校",
       avgA: average("scoreA"),
       avgB: average("scoreB"),
@@ -222,7 +225,7 @@ export async function getAlertDashboard(
       for (const dimension of ["A", "B", "C"] as const) {
         const avgScore = overview[`avg${dimension}`];
         const severity = evaluateClassAverageAlert(avgScore);
-        if (severity) classAlerts.push({ className: overview.name, dimension: DIM_LABEL[dimension], avgScore, severity });
+        if (severity) classAlerts.push({ classId: overview.classId, className: overview.name, dimension: DIM_LABEL[dimension], avgScore, severity });
       }
     }
   }

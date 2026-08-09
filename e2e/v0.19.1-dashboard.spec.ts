@@ -2,14 +2,27 @@ import { expect, test } from "@playwright/test";
 
 test.describe("v0.19.1 dashboard risk separation", () => {
   test("warning attention attendance and class status remain visibly separate", async ({ page }) => {
+    const formatDate = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const later = new Date(today);
+    later.setDate(later.getDate() + 3);
     await page.setViewportSize({ width: 720, height: 1000 });
     await page.route("**/api/alerts**", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         semester: { id: "semester-test", name: "测试学期", startDate: "2026-01-01", endDate: "2026-12-31" },
-        classOverview: [{ name: "测试一班", avgA: 3.2, avgB: 3.4, avgC: 3.1, avgD: 4.8, studentCount: 3, lastActivityAt: "2026-07-15T00:00:00.000Z" }],
-        classAlerts: [],
+        classOverview: [
+          { classId: "class-one", name: "测试一班", avgA: 3.2, avgB: 3.4, avgC: 3.1, avgD: 4.8, studentCount: 3, lastActivityAt: "2026-07-15T00:00:00.000Z" },
+          { classId: "class-two", name: "测试二班", avgA: 2.1, avgB: 3.4, avgC: 3.1, avgD: 4.8, studentCount: 2, lastActivityAt: "2026-07-14T00:00:00.000Z" },
+          { classId: "class-three", name: "测试一班", avgA: 3.6, avgB: 3.4, avgC: 3.1, avgD: 4.8, studentCount: 1, lastActivityAt: "2026-07-13T00:00:00.000Z" },
+        ],
+        classAlerts: [
+          { classId: "class-two", className: "测试二班", dimension: "学习&测验", avgScore: 2.1, severity: "red" },
+          { classId: "class-three", className: "测试一班", dimension: "精神&纪律", avgScore: 2.4, severity: "yellow" },
+        ],
         studentAlerts: [],
         studentRisks: [
           { studentId: "warning-student", studentName: "警告学生", className: "测试一班", level: "warning", signals: [{ type: "sustained-decline", label: "持续状态回落", evidence: "最近三次综合表现连续下降" }, { type: "qualitative-feedback", label: "定性反馈关注", evidence: "内部反馈：学习信心" }], qualitativeReasons: ["learning-confidence"], lastActivityAt: "2026-07-15T00:00:00.000Z" },
@@ -32,10 +45,21 @@ test.describe("v0.19.1 dashboard risk separation", () => {
         attentionCount: 10,
       }),
     }));
+    await page.route("**/api/teacher-tasks**", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ tasks: [
+        { id: "task-overdue", action: "处理逾期任务", status: "pending", dueDate: "2020-01-01", student: { name: "警告学生" } },
+        { id: "task-today", action: "完成今日任务", status: "pending", dueDate: formatDate(today), student: { name: "警告学生" } },
+        { id: "task-next", action: "下次课复核", status: "pending", dueSession: { id: "next-session", code: "NEXT-01", date: formatDate(tomorrow), semesterNumber: 2 }, student: { name: "关注学生" } },
+        { id: "task-later", action: "更晚跟进", status: "pending", dueDate: formatDate(later), student: { name: "关注学生" } },
+        { id: "task-completed", action: "已完成跟进", status: "completed", dueDate: "2026-07-14", student: { name: "关注学生" } },
+      ] }),
+    }));
 
     await page.goto("/");
     const warning = page.locator(".dashboard-risk-section--warning");
-    const attention = page.locator(".dashboard-alerts .dashboard-risk-section--attention");
+    const attention = page.locator(".dashboard-student-attention .dashboard-risk-section--attention");
     const attendance = page.locator(".dashboard-risk-section--attendance");
     await expect(warning).toContainText("警告——需要优先处理");
     await expect(warning).toContainText("警告学生");
@@ -56,11 +80,44 @@ test.describe("v0.19.1 dashboard risk separation", () => {
     await expect(attention.locator(".dashboard-alert-list--compact .dashboard-alert-row")).toHaveCount(9);
     await expect(attendance).toContainText("考勤提醒");
     await expect(attendance).toContainText("考勤学生");
+    const overview = page.locator(".dashboard-overview");
+    const sections = overview.locator(":scope > *");
+    await expect(sections.nth(0)).toContainText("警告——需要优先处理");
+    await expect(sections.nth(1)).toContainText("教师待办");
+    await expect(sections.nth(1)).toContainText("逾期（1）");
+    await expect(sections.nth(1)).toContainText("今日（1）");
+    await expect(sections.nth(1)).toContainText("下次课（1）");
+    await expect(sections.nth(1)).toContainText("更晚待办（1）");
+    await expect(sections.nth(2)).toContainText("持续关注");
+    await expect(sections.nth(3)).toContainText("考勤提醒");
+    await expect(sections.nth(4)).toContainText("家校沟通观察");
+    await expect(sections.nth(5)).toContainText("本学期学生");
+    await expect(page.getByText("任务历史（1）")).toBeVisible();
+    await expect(page.getByText("已完成跟进")).toBeHidden();
+    await page.getByText("任务历史（1）").click();
+    await expect(page.getByText("已完成跟进")).toBeVisible();
+    await expect(page.getByText("继续完成课后反馈")).toHaveCount(0);
+    await page.getByRole("button", { name: "打开导航" }).click();
+    await expect(page.getByRole("link", { name: "课后工作台", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+    await page.getByRole("link", { name: "班级仪表", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "班级仪表" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "班级状态" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "警告——需要优先处理" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "教师待办" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "考勤提醒" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "家校沟通观察" })).toHaveCount(0);
+    await expect(page.locator(".dashboard-class-card").first()).toContainText("测试二班");
+    await expect(page.locator(".dashboard-class-card")).toHaveCount(3);
+    await expect(page.getByRole("heading", { name: "测试一班" })).toHaveCount(2);
+    await expect(page.locator(".dashboard-class-card").nth(1)).toContainText("1 项预警");
+    await expect(page.locator(".dashboard-class-card").nth(2)).not.toContainText("项预警");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
     await page.setViewportSize({ width: 1440, height: 1000 });
-    const columns = attention.locator(".dashboard-attention-column");
+    await page.goto("/");
+    const columns = page.locator(".dashboard-attention-column");
     await expect(columns).toHaveCount(3);
     const boxes = await Promise.all([0, 1, 2].map((index) => columns.nth(index).boundingBox()));
     expect(boxes.every(Boolean)).toBe(true);

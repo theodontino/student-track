@@ -1,4 +1,5 @@
 export interface ClassOverview {
+  classId: string;
   name: string;
   avgA: number;
   avgB: number;
@@ -9,6 +10,7 @@ export interface ClassOverview {
 }
 
 export interface ClassAlert {
+  classId: string;
   className: string;
   dimension: string;
   avgScore: number;

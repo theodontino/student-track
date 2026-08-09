@@ -1139,20 +1139,41 @@ export async function invalidateFeedbackPlans(input: {
 }
 
 export async function listTeacherTasks(input: { semesterId?: string; classId?: string; status?: string }, db: PrismaClient = prisma) {
-  return db.teacherTask.findMany({
-    where: {
-      ...(input.status ? { status: input.status } : {}),
-      ...(input.classId ? { classId: input.classId } : {}),
-      ...(input.semesterId ? { plan: { semesterId: input.semesterId } } : {}),
-    },
-    include: {
-      student: { select: { id: true, name: true } },
-      dueSession: { select: { id: true, code: true, date: true, semesterNumber: true } },
-      plan: { select: { id: true, type: true, outputRequirement: true } },
-    },
-    orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
-    take: 200,
-  });
+  const baseWhere: Prisma.TeacherTaskWhereInput = {
+    ...(input.classId ? { classId: input.classId } : {}),
+    ...(input.semesterId ? { plan: { semesterId: input.semesterId } } : {}),
+  };
+  const include = {
+    student: { select: { id: true, name: true } },
+    dueSession: { select: { id: true, code: true, date: true, semesterNumber: true } },
+    plan: { select: { id: true, type: true, outputRequirement: true } },
+  } as const;
+
+  if (input.status) {
+    return db.teacherTask.findMany({
+      where: { ...baseWhere, status: input.status },
+      include,
+      orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
+      ...(input.status === "pending" ? {} : { take: 200 }),
+    });
+  }
+
+  // Pending work is the dashboard's actionable surface and must not be pushed
+  // out by an old history tail. Keep history bounded independently.
+  const [pending, history] = await Promise.all([
+    db.teacherTask.findMany({
+      where: { ...baseWhere, status: "pending" },
+      include,
+      orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
+    }),
+    db.teacherTask.findMany({
+      where: { ...baseWhere, status: { not: "pending" } },
+      include,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: 200,
+    }),
+  ]);
+  return [...pending, ...history];
 }
 
 function feedbackAttachmentRoot() {

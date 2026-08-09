@@ -39,7 +39,7 @@ export default function DashboardTeacherObservations({ semesterId }: { semesterI
     ));
   }
 
-  return <GlowSurface tone="attention" active={items.length > 0} className="dashboard-risk-glow dashboard-risk-glow--attention">
+  return <GlowSurface tone="attention" active={items.length > 0} className="dashboard-risk-glow dashboard-risk-glow--attention dashboard-teacher-observations">
     <Section
       className="dashboard-risk-section dashboard-risk-section--attention"
       title="家校沟通观察"

@@ -16,7 +16,10 @@ type NavigationItem = {
 };
 
 const baseGroups: Array<{ label: string; items: NavigationItem[] }> = [
-  { label: "概览", items: [{ href: "/", label: "仪表盘", icon: "dashboard", context: "semester" }] },
+  { label: "概览", items: [
+    { href: "/", label: "学生仪表", icon: "dashboard", context: "semester" },
+    { href: "/dashboard/classes", label: "班级仪表", icon: "courses", context: "semester" },
+  ] },
   { label: "教学工作", items: [
     { href: "/feedback", label: "课后工作台", icon: "feedback", context: "full" },
     { href: "/quick-score", label: "手动评分", icon: "score", context: "full" },
