@@ -59,6 +59,13 @@ Student Track 正在向 1.0 收敛：默认只接受维护、稳定性、兼容�
 
 修改 Markdown、Schema 或 API 路由后运行 `npm run docs:check` 和 `npm run docs:links`；CI 使用相同命令阻止过期生成物与失效本地链接进入主分支。
 
+## 跨仓库协议治理
+
+Student Track 与 WCG 的跨仓库契约以独立的 `student-track-wcg-protocols` 仓库为唯一规范来源。
+涉及跨仓 JSON、HTTP、交换目录、哈希、错误码、能力、授权、no-send 或发布顺序的 Feature，
+必须先在协议仓库建立并接受 Issue/RFC，再在本仓库实现。`docs/contracts/` 中已登记的 Schema
+与示例是生成快照，不得在本仓库单独编辑；边界和同步方式见 `docs/contracts/README.md`。
+
 ## 完成标准
 
 验证采用“本地精简输出、CI 全量兜底、失败时按需展开”的流程。测试运行时间本身不是问题，默认禁止为了汇报成功而读取或回传完整测试日志。
