@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 const generationMocks = vi.hoisted(() => ({ generate: vi.fn() }));
 vi.mock("@/lib/llm", async (importOriginal) => ({
@@ -14,7 +15,7 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/feedback-generation-service")>(),
   generateFeedbackPlanComposition: generationMocks.generate,
 }));
-import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, listFeedbackPlans, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, removeFeedbackAttachment, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, startFeedbackPlanGeneration, unarchiveFeedbackPlan } from "@/services/feedback-plan-service";
+import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, listFeedbackPlans, listTeacherTasks, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, removeFeedbackAttachment, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, startFeedbackPlanGeneration, unarchiveFeedbackPlan } from "@/services/feedback-plan-service";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 
 const suffix = "PLAN-SERVICE";
@@ -51,6 +52,20 @@ afterEach(async () => {
 });
 
 describe("feedback plan service", () => {
+  it("keeps pending teacher tasks ahead of a bounded history tail", async () => {
+    const pending = [{ id: "pending-task", status: "pending" }];
+    const history = [{ id: "completed-task", status: "completed" }];
+    const findMany = vi.fn()
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValueOnce(history);
+    const db = { teacherTask: { findMany } } as unknown as PrismaClient;
+
+    await expect(listTeacherTasks({ semesterId: "semester-test" }, db)).resolves.toEqual([...pending, ...history]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany.mock.calls[0]![0]).toMatchObject({ where: { plan: { semesterId: "semester-test" }, status: "pending" } });
+    expect(findMany.mock.calls[1]![0]).toMatchObject({ where: { plan: { semesterId: "semester-test" }, status: { not: "pending" } }, take: 200 });
+  });
+
   it("puts a partial teacher observation event into the feedback evidence basket", async () => {
     const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
     const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "教师观察证据测试班" } });

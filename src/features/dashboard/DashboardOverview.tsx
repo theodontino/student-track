@@ -1,22 +1,32 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui";
 import ClassOverviewGrid from "./ClassOverviewGrid";
-import DashboardAlerts from "./DashboardAlerts";
-import DashboardMetrics from "./DashboardMetrics";
+import { DashboardAttentionPanel, DashboardAttendancePanel, DashboardWarningPanel } from "./DashboardAlerts";
+import { ClassDashboardMetrics, StudentDashboardMetrics } from "./DashboardMetrics";
 import DashboardTeacherObservations from "./DashboardTeacherObservations";
+import TeacherTaskPanel from "./TeacherTaskPanel";
 import type { DashboardData } from "./types";
 
-export default function DashboardOverview({ data, showFeedbackShortcut = false }: { data: DashboardData; showFeedbackShortcut?: boolean }) {
-  const router = useRouter();
-  const feedbackUrl = data.semester ? `/feedback?semesterId=${encodeURIComponent(data.semester.id)}` : "/feedback";
+type DashboardViewProps = {
+  data: DashboardData;
+  semesterId?: string;
+};
 
+export function StudentDashboardOverview({ data, semesterId }: DashboardViewProps) {
+  const resolvedSemesterId = semesterId ?? data.semester?.id;
   return <div className="dashboard-overview">
-    <DashboardAlerts semesterId={data.semester?.id} totalStudents={data.totalStudents} studentRisks={data.studentRisks} attendanceReminders={data.attendanceReminders} />
-    <DashboardTeacherObservations semesterId={data.semester?.id} />
-    <DashboardMetrics data={data} />
+    <DashboardWarningPanel semesterId={resolvedSemesterId} studentRisks={data.studentRisks} />
+    <TeacherTaskPanel semesterId={resolvedSemesterId} />
+    <DashboardAttentionPanel semesterId={resolvedSemesterId} studentRisks={data.studentRisks} />
+    <DashboardAttendancePanel semesterId={resolvedSemesterId} attendanceReminders={data.attendanceReminders} />
+    <DashboardTeacherObservations semesterId={resolvedSemesterId} />
+    <StudentDashboardMetrics data={data} />
+  </div>;
+}
+
+export function ClassDashboardOverview({ data }: DashboardViewProps) {
+  return <div className="dashboard-overview">
     <ClassOverviewGrid classes={data.classOverview} alerts={data.classAlerts} />
-    {showFeedbackShortcut && <section className="dashboard-shortcut"><div><span>课堂记录 → 人工复核 → 家校反馈</span><h2>继续完成课后反馈</h2><p>沿用当前学期，选择班级和课次后生成可编辑反馈。</p></div><Button onClick={() => router.push(feedbackUrl)}>进入反馈工作台</Button></section>}
+    <ClassDashboardMetrics data={data} />
   </div>;
 }

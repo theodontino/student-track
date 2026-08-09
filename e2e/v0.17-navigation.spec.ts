@@ -4,10 +4,31 @@ import { TEST_FIXTURE } from "../scripts/test-fixture-data";
 test.describe.serial("v0.17.0 information architecture", () => {
   test("dashboard persists the selected semester in the URL", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "学生仪表" })).toBeVisible();
     await page.getByLabel("查看学期").selectOption(TEST_FIXTURE.semester.id);
     await expect(page).toHaveURL(new RegExp(`semesterId=${TEST_FIXTURE.semester.id}`));
-    await expect(page.getByText(`${TEST_FIXTURE.semester.name} · 学期概览与风险提示`)).toBeVisible();
+    await expect(page.getByText(`${TEST_FIXTURE.semester.name} · 学生警告、教师待办与学习状态`)).toBeVisible();
+  });
+
+  test("dashboard navigation separates student and class views", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("link", { name: "学生仪表", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("link", { name: "班级仪表", exact: true })).toBeVisible();
+    await page.getByLabel("查看学期").selectOption(TEST_FIXTURE.semester.id);
+    await page.getByRole("link", { name: "班级仪表", exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/dashboard/classes\\?semesterId=${TEST_FIXTURE.semester.id}`));
+    await expect(page.getByRole("heading", { name: "班级仪表" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "班级仪表", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("heading", { name: "学生仪表" })).toHaveCount(0);
+    const classUrl = new URL(page.url());
+    expect(classUrl.searchParams.has("class")).toBe(false);
+    expect(classUrl.searchParams.has("classId")).toBe(false);
+    expect(classUrl.searchParams.has("sessionCode")).toBe(false);
+
+    await page.setViewportSize({ width: 720, height: 900 });
+    await expect(page.locator(".app-mobile-bar strong")).toHaveText("班级仪表");
+    await page.goto("/");
+    await expect(page.locator(".app-mobile-bar strong")).toHaveText("学生仪表");
   });
 
   test("legacy routes open their v0.17 workspaces", async ({ context }) => {
@@ -212,7 +233,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
   test("all remaining core workspaces avoid page-level narrow overflow", async ({ context }) => {
     test.setTimeout(90_000);
     const paths = [
-      "/", "/quick-score", "/feedback?step=extract", "/daily-report", "/diarize",
+      "/", "/dashboard/classes", "/quick-score", "/feedback?step=extract", "/daily-report", "/diarize",
       `/students/${TEST_FIXTURE.students[0].id}?semesterId=${TEST_FIXTURE.semester.id}`,
       `/semesters/${TEST_FIXTURE.semester.id}`, "/system/integrations",
     ];

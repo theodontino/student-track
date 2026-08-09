@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Badge, EmptyState, GlowSurface, Section, StatusBanner, StatusDot } from "@/components/ui";
+import { Badge, GlowSurface, Section, StatusBanner, StatusDot } from "@/components/ui";
 import type { AttendanceReminder, StudentRisk } from "./types";
 
 function RiskRows({ risks, semesterId, compact = false }: { risks: StudentRisk[]; semesterId?: string; compact?: boolean }) {
@@ -66,36 +66,41 @@ function AttendanceRows({ reminders, semesterId }: { reminders: AttendanceRemind
   return <div className="dashboard-alert-list">{reminders.map((reminder) => <button type="button" key={reminder.studentId} className="dashboard-alert-row dashboard-alert-row--button" onClick={() => router.push(`/students/${reminder.studentId}${semesterId ? `?semesterId=${encodeURIComponent(semesterId)}` : ""}`)}><StatusDot tone={reminder.level === "warning" ? "danger" : "warning"} label={reminder.level === "warning" ? "考勤警告" : "考勤关注"} /><div><strong>{reminder.studentName}<span>{reminder.className}</span></strong><p>本学期累计缺勤 {reminder.absenceCount} 次；考勤提醒不参与学习状态风险叠加。</p></div><span className="dashboard-alert-row__action">查看档案 →</span></button>)}</div>;
 }
 
-export default function DashboardAlerts({ semesterId, totalStudents, studentRisks, attendanceReminders }: { semesterId?: string; totalStudents: number; studentRisks: StudentRisk[]; attendanceReminders: AttendanceReminder[] }) {
-  const [attentionExpanded, setAttentionExpanded] = useState(false);
+type StudentRiskPanelProps = {
+  semesterId?: string;
+  studentRisks: StudentRisk[];
+};
+
+export function DashboardWarningPanel({ semesterId, studentRisks }: StudentRiskPanelProps) {
   const warnings = studentRisks.filter((risk) => risk.level === "warning");
+  return <GlowSurface tone="danger" active={warnings.length > 0} breathe={warnings.length > 0} className="dashboard-risk-glow dashboard-risk-glow--warning">
+    <Section className="dashboard-risk-section dashboard-risk-section--warning" title="警告——需要优先处理" description="同时命中至少两项独立条件" actions={<Badge tone={warnings.length > 0 ? "danger" : "neutral"}>{warnings.length} 人</Badge>}>
+      {warnings.length > 0 ? <RiskRows risks={warnings} semesterId={semesterId} /> : <div className="p-4"><StatusBanner tone="success">当前没有需要优先处理的警告学生。</StatusBanner></div>}
+    </Section>
+  </GlowSurface>;
+}
+
+export function DashboardAttentionPanel({ semesterId, studentRisks }: StudentRiskPanelProps) {
+  const [attentionExpanded, setAttentionExpanded] = useState(false);
   const attention = studentRisks.filter((risk) => risk.level === "attention");
   const collapsedAttentionCount = ATTENTION_GROUPS.reduce((count, group) => (
     count + Math.max(0, attention.filter(group.accepts).length - 5)
   ), 0);
 
-  if (totalStudents === 0) return <Section title="学生状态"><EmptyState title="暂无学生状态记录" description="完成本学期课次录入后，这里会显示关注、警告和考勤提醒。" /></Section>;
+  return <GlowSurface tone="attention" active={attention.length > 0} breathe={attention.length > 0} className="dashboard-risk-glow dashboard-risk-glow--attention dashboard-student-attention">
+    <Section className="dashboard-risk-section dashboard-risk-section--attention" title="持续关注" description="按触发原因分为状态回落、表现观察和定性反馈" actions={<Badge tone={attention.length > 0 ? "warning" : "neutral"}>{attention.length} 人</Badge>}>
+      {attention.length > 0 ? <>
+        <AttentionColumns risks={attention} expanded={attentionExpanded} semesterId={semesterId} />
+        {collapsedAttentionCount > 0 && <div className="dashboard-alert-footer"><button type="button" onClick={() => setAttentionExpanded((current) => !current)}>{attentionExpanded ? "同时收起三栏" : `同时展开三栏（其余 ${collapsedAttentionCount} 人）`}</button></div>}
+      </> : <div className="p-4"><StatusBanner tone="success">当前没有需要持续关注的学生。</StatusBanner></div>}
+    </Section>
+  </GlowSurface>;
+}
 
-  return <div className="dashboard-risk-layout">
-    <div className="dashboard-alerts">
-      <GlowSurface tone="danger" active={warnings.length > 0} breathe={warnings.length > 0} className="dashboard-risk-glow dashboard-risk-glow--warning">
-        <Section className="dashboard-risk-section dashboard-risk-section--warning" title="警告——需要优先处理" description="同时命中至少两项独立条件" actions={<Badge tone={warnings.length > 0 ? "danger" : "neutral"}>{warnings.length} 人</Badge>}>
-          {warnings.length > 0 ? <RiskRows risks={warnings} semesterId={semesterId} /> : <div className="p-4"><StatusBanner tone="success">当前没有需要优先处理的警告学生。</StatusBanner></div>}
-        </Section>
-      </GlowSurface>
-      <GlowSurface tone="attention" active={attention.length > 0} breathe={attention.length > 0} className="dashboard-risk-glow dashboard-risk-glow--attention">
-        <Section className="dashboard-risk-section dashboard-risk-section--attention" title="持续关注" description="按触发原因分为状态回落、表现观察和定性反馈" actions={<Badge tone={attention.length > 0 ? "warning" : "neutral"}>{attention.length} 人</Badge>}>
-          {attention.length > 0 ? <>
-            <AttentionColumns risks={attention} expanded={attentionExpanded} semesterId={semesterId} />
-            {collapsedAttentionCount > 0 && <div className="dashboard-alert-footer"><button type="button" onClick={() => setAttentionExpanded((current) => !current)}>{attentionExpanded ? "同时收起三栏" : `同时展开三栏（其余 ${collapsedAttentionCount} 人）`}</button></div>}
-          </> : <div className="p-4"><StatusBanner tone="success">当前没有需要持续关注的学生。</StatusBanner></div>}
-        </Section>
-      </GlowSurface>
-    </div>
-    <GlowSurface tone="attendance" active={attendanceReminders.length > 0} breathe={attendanceReminders.length > 0} className="dashboard-risk-glow dashboard-risk-glow--attendance">
-      <Section className="dashboard-risk-section dashboard-risk-section--attendance" title="考勤提醒" description="独立于学习状态风险，不参与关注和警告叠加" actions={<Badge tone={attendanceReminders.some((item) => item.level === "warning") ? "danger" : attendanceReminders.length > 0 ? "info" : "neutral"}>{attendanceReminders.length} 人</Badge>}>
-        {attendanceReminders.length > 0 ? <AttendanceRows reminders={attendanceReminders} semesterId={semesterId} /> : <div className="p-4"><StatusBanner tone="success">本学期没有触发考勤提醒。</StatusBanner></div>}
-      </Section>
-    </GlowSurface>
-  </div>;
+export function DashboardAttendancePanel({ semesterId, attendanceReminders }: { semesterId?: string; attendanceReminders: AttendanceReminder[] }) {
+  return <GlowSurface tone="attendance" active={attendanceReminders.length > 0} breathe={attendanceReminders.length > 0} className="dashboard-risk-glow dashboard-risk-glow--attendance">
+    <Section className="dashboard-risk-section dashboard-risk-section--attendance" title="考勤提醒" description="独立于学习状态风险，不参与关注和警告叠加" actions={<Badge tone={attendanceReminders.some((item) => item.level === "warning") ? "danger" : attendanceReminders.length > 0 ? "info" : "neutral"}>{attendanceReminders.length} 人</Badge>}>
+      {attendanceReminders.length > 0 ? <AttendanceRows reminders={attendanceReminders} semesterId={semesterId} /> : <div className="p-4"><StatusBanner tone="success">本学期没有触发考勤提醒。</StatusBanner></div>}
+    </Section>
+  </GlowSurface>;
 }
