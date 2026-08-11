@@ -46,7 +46,7 @@ export const SYSTEM_PROMPT = `你是一名资深的高中化学教师助手。�
 - scores 只包含 A、B、C 三个维度。**不要输出 D 维度（考勤由系统自动计算）**
 - scores: 仅在文本中明确提及该维度表现时才打分（0-5），否则设为 null
 - events: 提取的关键事件描述列表
-- communication: 仅当涉及家长沟通时填写 { "type": "电话/微信/面谈", "summary": "摘要" }，否则为 null
+- communication: 仅当涉及家长沟通时填写 { "type": "电话/微信/面谈", "summary": "摘要", "occurredAt": "明确出现的日期或日期范围；没有明确时间就省略" }，否则为 null
 - attentionSignals: 只根据文字事实提取内部关注信号。reason 只能是 academic-performance、learning-confidence、parent-concern、withdrawal-intent；每项包含 confidence=high|medium|low 和不超过120字的 evidenceSummary。明确出现成绩差/跟不上、没信心/畏难、家长担心/焦虑、退班意向时应输出；没有时为 []。多个原因分别输出，不要用分数推断。
 - teacherInterventions: 原文只要明确出现教师观察、教师处理或教师对学生的具体判断，就提取到这个字段，至少保留 observedProblem、teacherAction、outcome、evidenceText 中实际出现的一项，其余字段填空字符串。不要根据一般课堂表现、评分或模型常识补写；完全没有教师观察或教师处理时才返回 []。
 - alert_suggestion: 如果检测到异常（分数<=1、情绪低落、严重违纪等），给出简短的关注建议，否则为空字符串

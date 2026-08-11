@@ -8,23 +8,30 @@ import os from "node:os";
 import path from "node:path";
 import {
   CommunicationPreferenceSchema,
+  FEEDBACK_PLAN_TYPES,
+  STUDENT_FEEDBACK_PLAN_TYPES,
   FeedbackAuditSnapshotSchema,
   FeedbackCompositionPlanSchema,
   FeedbackEvidenceBundleSchema,
   FeedbackHistorySnapshotSchema,
   FeedbackPlanInputSnapshotSchema,
+  FeedbackPlanItemGenerationConfigSchema,
   FeedbackPlanCreateSchema,
   FeedbackPlanItemPatchSchema,
   isHardFeedbackAuditIssue,
+  normalizeFeedbackGenerationPreferences,
   sanitizeFeedbackComposition,
   sanitizeFeedbackEvidenceBundle,
   type CommunicationPreference,
   type FeedbackEvidenceBundle,
   type FeedbackGenerationMode,
+  type FeedbackGenerationPreferences,
   type FeedbackHistorySnapshot,
   type FeedbackPlanInputSnapshot,
   type FeedbackPlanAssessmentEvidenceInput,
   type FeedbackPlanCreateInput,
+  type FeedbackPlanItemGenerationConfig,
+  type FeedbackPlanStudentOverride,
   type FeedbackPlanItemPatch,
 } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
@@ -43,6 +50,89 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
 
 function json(value: unknown) {
   return JSON.stringify(value);
+}
+
+function generationPreferencesFromSnapshot(planType: string, inputSnapshot: string): FeedbackGenerationPreferences | undefined {
+  if (!FEEDBACK_PLAN_TYPES.includes(planType as typeof FEEDBACK_PLAN_TYPES[number])) return undefined;
+  const parsed = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(inputSnapshot, null));
+  if (!parsed.success || !parsed.data.generationPreferences) return undefined;
+  return normalizeFeedbackGenerationPreferences(
+    planType as typeof FEEDBACK_PLAN_TYPES[number],
+    parsed.data.generationPreferences,
+  );
+}
+
+function parseGenerationConfigSnapshot(value: string | null | undefined): FeedbackPlanItemGenerationConfig | null {
+  if (!value) return null;
+  const raw = parseJson(value, null);
+  if (!raw || typeof raw !== "object" || Object.keys(raw).length === 0) return null;
+  const parsed = FeedbackPlanItemGenerationConfigSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+function normalizeStudentGenerationConfig(value: unknown): FeedbackPlanItemGenerationConfig {
+  const parsed = FeedbackPlanItemGenerationConfigSchema.parse(value);
+  if (!STUDENT_FEEDBACK_PLAN_TYPES.includes(parsed.type as typeof STUDENT_FEEDBACK_PLAN_TYPES[number])) {
+    throw new ApiError("学生独立计划不能使用班级公共反馈类型", 400, "invalid_request", false);
+  }
+  try {
+    return {
+      ...parsed,
+      generationPreferences: normalizeFeedbackGenerationPreferences(parsed.type, parsed.generationPreferences),
+    };
+  } catch (error) {
+    throw new ApiError(error instanceof Error ? error.message : "学生独立计划结构无效", 400, "invalid_request", false);
+  }
+}
+
+type EffectiveFeedbackPlanConfig = {
+  type: typeof FEEDBACK_PLAN_TYPES[number];
+  outputRequirement: string;
+  generationPreferences?: FeedbackGenerationPreferences;
+  independent: boolean;
+};
+
+function effectiveFeedbackPlanConfig(plan: { type: string; outputRequirement: string; inputSnapshot: string }, item: { studentId: string | null; generationConfigSnapshot?: string | null }): EffectiveFeedbackPlanConfig {
+  const baseType = plan.type as typeof FEEDBACK_PLAN_TYPES[number];
+  const override = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
+  if (!override) {
+    return {
+      type: baseType,
+      outputRequirement: plan.outputRequirement,
+      generationPreferences: generationPreferencesFromSnapshot(baseType, plan.inputSnapshot),
+      independent: false,
+    };
+  }
+  if (!item.studentId) throw new ApiError("班级公共反馈条目不能使用学生独立计划", 400, "invalid_request", false);
+  return {
+    type: override.type,
+    outputRequirement: override.outputRequirement,
+    generationPreferences: override.generationPreferences,
+    independent: true,
+  };
+}
+
+function bundleForPlanConfig(bundle: FeedbackEvidenceBundle, config: EffectiveFeedbackPlanConfig): FeedbackEvidenceBundle {
+  return bundle.planType === config.type ? bundle : { ...bundle, planType: config.type } as FeedbackEvidenceBundle;
+}
+
+function normalizedStudentOverrides(input: {
+  overrides?: FeedbackPlanStudentOverride[];
+  selectedIds: Array<string | null>;
+  contextStudentIds: Set<string>;
+}) {
+  const selectedStudentIds = new Set(input.selectedIds.filter((studentId): studentId is string => Boolean(studentId)));
+  const result = new Map<string, FeedbackPlanItemGenerationConfig>();
+  for (const override of input.overrides ?? []) {
+    if (!selectedStudentIds.has(override.studentId)) {
+      throw new ApiError(`学生 ${override.studentId} 不属于本次反馈对象`, 400, "invalid_request", false);
+    }
+    if (!input.contextStudentIds.has(override.studentId)) {
+      throw new ApiError(`学生 ${override.studentId} 不属于当前课次上下文`, 400, "invalid_request", false);
+    }
+    result.set(override.studentId, normalizeStudentGenerationConfig(override.generationConfig));
+  }
+  return result;
 }
 
 function normalizedCoverageText(value: string) {
@@ -237,6 +327,7 @@ export function toFeedbackPlanItemView<T extends {
   compositionSnapshot: string;
   auditSnapshot: string;
   finalText?: string | null;
+  generationConfigSnapshot?: string | null;
 }>(item: T, planType: string) {
   const evidence = FeedbackEvidenceBundleSchema.safeParse(parseJson(item.evidenceSnapshot, null));
   const composition = FeedbackCompositionPlanSchema.safeParse(parseJson(item.compositionSnapshot, null));
@@ -247,6 +338,7 @@ export function toFeedbackPlanItemView<T extends {
     evidence: evidence.success ? sanitizeFeedbackEvidenceBundle(evidence.data) : null,
     composition: composition.success ? sanitizeFeedbackComposition(composition.data) : parseCompositionSnapshot(item.compositionSnapshot, planType, item.finalText ?? ""),
     audit: audit.success ? audit.data : null,
+    generationConfig: parseGenerationConfigSnapshot(item.generationConfigSnapshot),
   };
 }
 
@@ -258,6 +350,7 @@ export function toFeedbackPlanDetail<T extends {
     compositionSnapshot: string;
     auditSnapshot: string;
     finalText?: string | null;
+    generationConfigSnapshot?: string | null;
     generationDurationMs?: number | null;
   }>;
   generationElapsedMs?: number;
@@ -472,9 +565,9 @@ function evidenceFromStudent(input: {
   const communicationContext = student?.rawMetrics.communications.map((item) => ({
     id: `communication-${item.id}`,
     kind: "fact" as const,
-    content: `${item.date} 与${item.target}：${item.summary}`,
+    content: `${item.occurredAt || item.date} 与${item.target}：${item.summary}`,
     sourceRefs: [{ type: "communication", id: item.id!, label: "近期家校沟通" }],
-    occurredAt: item.date,
+    occurredAt: item.occurredAt || item.date,
     confirmed: true,
   })) ?? [];
   const assessmentEvidence = input.assessmentEvidence
@@ -592,10 +685,17 @@ function candidateStudentIds(input: FeedbackPlanCreateInput, context: Awaited<Re
 
 export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: PrismaClient = prisma) {
   const parsedInput = FeedbackPlanCreateSchema.parse(rawInput);
+  let generationPreferences: FeedbackGenerationPreferences;
+  try {
+    generationPreferences = normalizeFeedbackGenerationPreferences(parsedInput.type, parsedInput.generationPreferences);
+  } catch (error) {
+    throw new ApiError(error instanceof Error ? error.message : "生成结构设置无效", 400, "invalid_request", false);
+  }
   await assertPlanScope(db, parsedInput);
   const lessonMaterial = parsedInput.lessonMaterial ?? defaultLessonMaterial();
   const input = {
     ...parsedInput,
+    generationPreferences,
     lessonMaterial,
     sessionId: (await resolveSession(db, parsedInput.sessionId))?.id ?? parsedInput.sessionId,
     rangeStartSessionId: (await resolveSession(db, parsedInput.rangeStartSessionId))?.id ?? parsedInput.rangeStartSessionId,
@@ -664,6 +764,11 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     allowedStudentIds: selectedIds.filter((studentId): studentId is string => Boolean(studentId)),
   });
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);
+  const studentOverridesById = normalizedStudentOverrides({
+    overrides: input.studentOverrides,
+    selectedIds,
+    contextStudentIds: new Set(context?.students.map((student) => student.id) ?? []),
+  });
   const existingTasks = await db.teacherTask.findMany({
     where: {
       classId: input.classId,
@@ -695,6 +800,7 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     },
     assessmentEvidence: assessmentByStudent,
     lessonMaterial,
+    studentOverrides: Object.fromEntries(studentOverridesById),
   }));
 
   const inputSnapshot: FeedbackPlanInputSnapshot = {
@@ -707,6 +813,7 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     sessionCode: context?.session.code,
     sourceFingerprint,
     lessonMaterial,
+    generationPreferences,
   };
 
   const created = await db.$transaction(async (tx) => {
@@ -734,7 +841,13 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
                 assessmentEvidence: studentId ? assessmentByStudent[studentId] : undefined,
                 lessonMaterial,
               });
-            return { studentId, evidenceSnapshot: json(bundle) };
+            return {
+              studentId,
+              evidenceSnapshot: json(bundle),
+              generationConfigSnapshot: studentId && studentOverridesById.has(studentId)
+                ? json({ ...studentOverridesById.get(studentId), version: 1 })
+                : "{}",
+            };
           }),
         },
       },
@@ -829,8 +942,44 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
     throw new ApiError("反馈正在生成，请刷新计划后重试", 409, "conflict", false);
   }
   if (patch.expectedItemRevision && patch.expectedItemRevision !== item.itemRevision) throw new ApiError("反馈计划条目已被其他操作更新", 409, "conflict", false);
-  const bundle = FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
-  const composition = sanitizeFeedbackComposition(patch.composition ?? parseCompositionSnapshot(item.compositionSnapshot, item.plan.type, patch.finalText ?? item.finalText ?? ""));
+  if (Object.hasOwn(patch, "generationConfig")) {
+    if (patch.composition || patch.finalText !== undefined || patch.reviewMode) {
+      throw new ApiError("独立计划配置不能和正文修改合并提交", 400, "invalid_request", false);
+    }
+    if (item.reviewMode === "teacher_edited") {
+      throw new ApiError("教师已修改的反馈不能直接更换生成配置，请新建反馈计划保留当前版本", 409, "conflict", false);
+    }
+    const nextGenerationConfig = patch.generationConfig === null
+      ? null
+      : normalizeStudentGenerationConfig(patch.generationConfig);
+    if (nextGenerationConfig && !item.studentId) {
+      throw new ApiError("班级公共反馈条目不能设置学生独立计划", 400, "invalid_request", false);
+    }
+    const currentGenerationConfig = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
+    if (JSON.stringify(currentGenerationConfig ?? {}) === JSON.stringify(nextGenerationConfig ?? {})) return item;
+    return db.feedbackPlanItem.update({
+      where: { id, itemRevision: item.itemRevision },
+      data: {
+        generationConfigSnapshot: json(nextGenerationConfig ?? {}),
+        compositionSnapshot: "{}",
+        auditSnapshot: "{}",
+        finalText: null,
+        finalTextHash: null,
+        selectedGeneration: { disconnect: true },
+        generationError: null,
+        reviewMode: "model" as const,
+        status: "evidence_ready" as const,
+        approvedAt: null,
+        exportedAt: null,
+        itemRevision: { increment: 1 },
+        plan: { update: { planRevision: { increment: 1 }, status: "draft" as const, approvedAt: null, exportedAt: null } },
+      },
+      include: { tasks: true },
+    });
+  }
+  const effectiveConfig = effectiveFeedbackPlanConfig(item.plan, item);
+  const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
+  const composition = sanitizeFeedbackComposition(patch.composition ?? parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, patch.finalText ?? item.finalText ?? ""));
   const finalText = stripFeedbackInternalBoundary(patch.finalText ?? composition.draftFeedback);
   const normalizedFinalText = normalizedCoverageText(finalText);
   const evidenceCoverage = patch.finalText === undefined
@@ -839,7 +988,13 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
   const nextComposition = FeedbackCompositionPlanSchema.parse({ ...composition, evidenceCoverage, draftFeedback: finalText });
   const taskIds = activeTaskIds(item.tasks);
   const otherStudentNames = item.plan.items.flatMap((entry) => entry.id !== item.id && entry.student?.name ? [entry.student.name] : []);
-  const audit = createAuditSnapshot(nextComposition, bundle, taskIds, { studentName: item.student?.name ?? undefined, otherStudentNames });
+  const audit = createAuditSnapshot(
+    nextComposition,
+    bundle,
+    taskIds,
+    { studentName: item.student?.name ?? undefined, otherStudentNames },
+    { generationPreferences: effectiveConfig.generationPreferences },
+  );
   const reviewMode = patch.reviewMode ?? (patch.finalText !== undefined ? "teacher_edited" : item.reviewMode);
   const status = audit.status === "blocked" ? "needs_review" : "needs_review";
 
@@ -964,8 +1119,9 @@ export async function createTeacherTask(input: {
         approvedAt: new Date(),
       },
     });
-    const bundle = FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
-    const composition = parseCompositionSnapshot(item.compositionSnapshot, item.plan.type, item.finalText ?? "");
+    const effectiveConfig = effectiveFeedbackPlanConfig(item.plan, item);
+    const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
+    const composition = parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, item.finalText ?? "");
     const audit = createAuditSnapshot(
       composition,
       bundle,
@@ -974,6 +1130,7 @@ export async function createTeacherTask(input: {
         studentName: item.student?.name ?? undefined,
         otherStudentNames: item.plan.items.flatMap((entry) => entry.studentId && entry.studentId !== item.studentId && entry.student?.name ? [entry.student.name] : []),
       },
+      { generationPreferences: effectiveConfig.generationPreferences },
     );
     await tx.feedbackPlanItem.update({
       where: { id: item.id },
@@ -1004,13 +1161,15 @@ export async function approveFeedbackPlanItems(input: { planId: string; itemIds?
         continue;
       }
       const audit = parseJson(item.auditSnapshot, null as ReturnType<typeof createAuditSnapshot> | null);
-      const bundle = FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
-      const composition = parseCompositionSnapshot(item.compositionSnapshot, plan.type, item.finalText ?? "");
+      const effectiveConfig = effectiveFeedbackPlanConfig(plan, item);
+      const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
+      const composition = parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, item.finalText ?? "");
       const recalculatedAudit = createAuditSnapshot(
         composition,
         bundle,
         activeTaskIds(item.tasks),
         { studentName: item.student?.name ?? undefined, otherStudentNames: plan.items.flatMap((entry) => entry.studentId && entry.studentId !== item.studentId && entry.student?.name ? [entry.student.name] : []) },
+        { generationPreferences: effectiveConfig.generationPreferences },
       );
       const hardBlocked = recalculatedAudit.items.filter((issue) => isHardFeedbackAuditIssue(issue.code));
       if (!item.finalText?.trim() || !item.finalTextHash || !audit || audit.textHash !== item.finalTextHash || recalculatedAudit.textHash !== item.finalTextHash || hardBlocked.length > 0) {
@@ -1053,8 +1212,9 @@ export async function updateTeacherTaskStatus(id: string, status: "pending" | "c
     });
     const item = task.planItem;
     if (item && ["evidence_ready", "needs_review"].includes(item.status)) {
-      const bundle = FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}));
-      const composition = parseCompositionSnapshot(item.compositionSnapshot, item.plan.type, item.finalText ?? "");
+      const effectiveConfig = effectiveFeedbackPlanConfig(item.plan, item);
+      const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
+      const composition = parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, item.finalText ?? "");
       const currentTasks = item.tasks.map((entry) => entry.id === task.id ? { ...entry, status } : entry);
       const audit = createAuditSnapshot(
         composition,
@@ -1064,6 +1224,7 @@ export async function updateTeacherTaskStatus(id: string, status: "pending" | "c
           studentName: item.student?.name ?? undefined,
           otherStudentNames: item.plan.items.flatMap((entry) => entry.studentId && entry.studentId !== item.studentId && entry.student?.name ? [entry.student.name] : []),
         },
+        { generationPreferences: effectiveConfig.generationPreferences },
       );
       await tx.feedbackPlanItem.update({
         where: { id: item.id },
@@ -1355,6 +1516,7 @@ export async function generateFeedbackPlanItems(input: {
   if (!selected.length) throw new ApiError("没有要生成的反馈条目", 400, "invalid_request", false);
   const planInputSnapshot = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));
   const lessonMaterial = planInputSnapshot.success ? planInputSnapshot.data.lessonMaterial : undefined;
+  const generationPreferences = generationPreferencesFromSnapshot(plan.type, plan.inputSnapshot);
   const immutable = selected.filter((item) => (
     item.status === "approved"
     || item.status === "exported"
@@ -1374,6 +1536,7 @@ export async function generateFeedbackPlanItems(input: {
     rangeEndSessionId: plan.rangeEndSessionId ?? undefined,
     studentIds: selected.flatMap((item) => item.studentId ? [item.studentId] : []),
     lessonMaterial,
+    generationPreferences,
   };
   const context = await findContextForPlan(db, planInput);
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);
@@ -1531,13 +1694,14 @@ export async function generateFeedbackPlanItems(input: {
       const student = item.studentId ? contextByStudent.get(item.studentId) ?? null : null;
       const itemName = student?.name ?? "班级公共反馈";
       try {
-        const bundle = sanitizeFeedbackEvidenceBundle(assessmentBundleOverrides.get(item.id)
-          ?? FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})));
+        const effectiveConfig = effectiveFeedbackPlanConfig(plan, item);
+        const bundle = bundleForPlanConfig(sanitizeFeedbackEvidenceBundle(assessmentBundleOverrides.get(item.id)
+          ?? FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}))), effectiveConfig);
         const preference = student?.communicationPreference;
         const generated = await generateFeedbackPlanComposition({
           studentName: student?.name ?? "班级家长",
-          planType: plan.type as FeedbackPlanCreateInput["type"],
-          outputRequirement: plan.outputRequirement,
+          planType: effectiveConfig.type,
+          outputRequirement: effectiveConfig.outputRequirement,
           evidenceBundle: bundle,
           style: preference?.terminology === "professional" ? "professional" : "gentle",
           length: preference?.length === "short" ? "short" : "standard",
@@ -1546,6 +1710,8 @@ export async function generateFeedbackPlanItems(input: {
           reviewClient,
           reviewModel,
           generationMode,
+          generationPreferences: effectiveConfig.generationPreferences,
+          referenceDate: context?.session.date,
           existingTaskIds: activeTaskIds(item.tasks),
           signal: input.signal,
         });
@@ -1555,7 +1721,7 @@ export async function generateFeedbackPlanItems(input: {
           bundle,
           activeTaskIds(item.tasks),
           { studentName: student?.name ?? undefined, otherStudentNames },
-          { enforceParentAudience: true },
+          { enforceParentAudience: true, generationPreferences: effectiveConfig.generationPreferences },
         );
         const generation = await recordSuccessfulGeneration({
           taskType: "feedback",
@@ -1569,7 +1735,7 @@ export async function generateFeedbackPlanItems(input: {
           promptVersion: generationMode === "fast" ? "feedback-plan-v2-fast" : "feedback-plan-v2",
           modelRole: generationMode === "fast" ? "feedbackDraft" : "feedbackReview",
           inputRevision: String(plan.planRevision),
-          inputSnapshot: { evidenceBundle: bundle, draftComposition: generated.draftComposition, generationMode },
+          inputSnapshot: { evidenceBundle: bundle, draftComposition: generated.draftComposition, generationMode, generationConfig: effectiveConfig },
           outputSnapshot: { composition: generated.composition, audit, generationMode },
           finalText: generated.composition.draftFeedback,
         }, db);
@@ -1758,6 +1924,7 @@ async function prepareQueuedGenerationEvidence(input: {
     rangeEndSessionId: plan.rangeEndSessionId ?? undefined,
     studentIds: selected.flatMap((item) => item.studentId ? [item.studentId] : []),
     lessonMaterial,
+    generationPreferences: generationPreferencesFromSnapshot(plan.type, plan.inputSnapshot),
   };
   const context = await findContextForPlan(db, planInput);
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);

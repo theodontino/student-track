@@ -63,6 +63,50 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     })).toBeVisible();
   });
 
+  test("student transfer is a separate row action and refreshes the class grouping", async ({ page }) => {
+    const created = await page.request.post(`/api/semesters/${TEST_FIXTURE.semester.id}/classes`, {
+      data: { code: "E2E-TRANSFER-TARGET", name: "E2E转入班" },
+    });
+    expect(created.ok()).toBeTruthy();
+    const targetClass = await created.json() as { id: string; name: string };
+    const studentId = TEST_FIXTURE.students[0].id;
+    try {
+      await page.goto(`/students?semesterId=${TEST_FIXTURE.semester.id}`);
+      const studentRow = page.getByRole("button", {
+        name: `打开${TEST_FIXTURE.students[0].name}的学生档案`,
+      }).locator("xpath=ancestor::article[1]");
+      await studentRow.getByRole("button", { name: "转班" }).click();
+      const dialog = page.getByRole("dialog", { name: `转班：${TEST_FIXTURE.students[0].name}` });
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("button", { name: "取消" }).click();
+      await expect(dialog).toHaveCount(0);
+
+      await studentRow.getByRole("button", { name: "转班" }).click();
+      const reopened = page.getByRole("dialog", { name: `转班：${TEST_FIXTURE.students[0].name}` });
+      await reopened.getByLabel("目标班级").selectOption(targetClass.id);
+      await page.route(`**/api/students/${studentId}/enrollment`, (route) => route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "学生班级归属已变化，请刷新后重试" }),
+      }));
+      await reopened.getByRole("button", { name: "确认转班" }).click();
+      await expect(reopened.getByText("学生班级归属已变化，请刷新后重试")).toBeVisible();
+      await page.unroute(`**/api/students/${studentId}/enrollment`);
+
+      await reopened.getByRole("button", { name: "确认转班" }).click();
+      await expect(reopened).toHaveCount(0);
+      await expect(page.locator(".student-class-group__toggle").filter({ hasText: targetClass.name })).toBeVisible();
+    } finally {
+      await page.unroute(`**/api/students/${studentId}/enrollment`);
+      const restored = await page.request.patch(`/api/students/${studentId}/enrollment`, {
+        data: { semesterId: TEST_FIXTURE.semester.id, classId: TEST_FIXTURE.class.id },
+      });
+      expect(restored.ok()).toBeTruthy();
+      const deleted = await page.request.delete(`/api/classes/${targetClass.id}`);
+      expect(deleted.ok()).toBeTruthy();
+    }
+  });
+
   test("feedback is the single entry workbench and links to the dedicated WeCom workspace", async ({ context, page }) => {
     await page.goto("/entry?step=input");
     await expect(page).toHaveURL(/\/feedback\?.*step=extract/);

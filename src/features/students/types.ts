@@ -5,6 +5,7 @@ export interface StudentListItem {
   name: string;
   class: string;
   classCode: string;
+  classId?: string | null;
   studentId: string;
   gender: string;
   rosterStatus: "ACTIVE" | "INACTIVE";

@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { logStudentEnrollmentTransfer } from "@/lib/logger";
 import * as XLSX from "xlsx";
 import { ServiceError } from "@/services/service-error";
-import { requireSemesterId } from "@/services/student-enrollment-service";
+import { changeStudentEnrollmentClass, requireSemesterId } from "@/services/student-enrollment-service";
 
 interface RosterRow {
   rowNumber: number;
@@ -108,6 +109,12 @@ export async function POST(request: NextRequest) {
       }
       let studentsCreated = 0;
       let enrollmentsUpdated = 0;
+      const transfers: Array<{
+        studentId: string;
+        studentName: string;
+        previousClass: { id: string; code: string; name: string | null };
+        currentClass: { id: string; code: string; name: string | null };
+      }> = [];
       for (const row of parsed.rows) {
         const klass = classByCode.get(row.classCode)!;
         const existing = await tx.student.findUnique({ where: { studentId: row.studentId }, select: { id: true } });
@@ -115,16 +122,27 @@ export async function POST(request: NextRequest) {
           ? await tx.student.update({ where: { id: existing.id }, data: { name: row.name, gender: row.gender }, select: { id: true } })
           : await tx.student.create({ data: { name: row.name, studentId: row.studentId, gender: row.gender }, select: { id: true } });
         if (!existing) studentsCreated++;
-        await tx.studentClassEnrollment.upsert({
-          where: { studentId_semesterId: { studentId: student.id, semesterId } },
-          create: { studentId: student.id, semesterId, classId: klass.id },
-          update: { classId: klass.id, rosterStatus: "ACTIVE" },
-        });
+        const transition = await changeStudentEnrollmentClass(
+          tx,
+          { studentId: student.id, semesterId, classId: klass.id },
+          { createIfMissing: true, activateExisting: true },
+        );
+        if (transition.changed && transition.previousClass) {
+          transfers.push({
+            studentId: student.id,
+            studentName: row.name,
+            previousClass: transition.previousClass,
+            currentClass: transition.enrollment.class,
+          });
+        }
         enrollmentsUpdated++;
       }
-      return { studentsCreated, enrollmentsUpdated, classesTouched: classByCode.size };
+      return { summary: { studentsCreated, enrollmentsUpdated, classesTouched: classByCode.size }, transfers };
     });
-    return NextResponse.json({ success: true, mode: "committed", semesterId, fingerprint, total: parsed.rows.length, ...result });
+    for (const transfer of result.transfers) {
+      await logStudentEnrollmentTransfer({ semesterId, ...transfer });
+    }
+    return NextResponse.json({ success: true, mode: "committed", semesterId, fingerprint, total: parsed.rows.length, ...result.summary });
   } catch (error) {
     console.error("[/api/students/import] error:", error);
     if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });

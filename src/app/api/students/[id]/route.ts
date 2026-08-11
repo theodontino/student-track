@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { logAction } from "@/lib/logger";
+import { logAction, logStudentEnrollmentTransfer } from "@/lib/logger";
 import { ServiceError } from "@/services/service-error";
 import { localDate } from "@/services/semester-service";
 import { getStudentSemesterSummaries } from "@/services/student-semester-summary-service";
 import {
   assertClassInSemester,
+  changeStudentEnrollmentClass,
   projectStudentEnrollment,
   requireSemesterId,
 } from "@/services/student-enrollment-service";
@@ -124,6 +125,7 @@ export async function PUT(
         },
       });
 
+      let enrollmentChange: Awaited<ReturnType<typeof changeStudentEnrollmentClass>> | null = null;
       const classId = typeof body.classId === "string" ? body.classId : undefined;
       const classCode = typeof (body.classCode || body.class) === "string" ? String(body.classCode || body.class).trim() : "";
       if (classId || classCode) {
@@ -137,11 +139,7 @@ export async function PUT(
           selectedClass = matches[0] ?? null;
         }
         if (!selectedClass) throw new ServiceError("班级不存在", 404);
-        await tx.studentClassEnrollment.upsert({
-          where: { studentId_semesterId: { studentId: id, semesterId } },
-          create: { studentId: id, semesterId, classId: selectedClass.id },
-          update: { classId: selectedClass.id },
-        });
+        enrollmentChange = await changeStudentEnrollmentClass(tx, { studentId: id, semesterId, classId: selectedClass.id }, { createIfMissing: true });
       }
 
       if (body.labelNames !== undefined) {
@@ -153,9 +151,21 @@ export async function PUT(
           await tx.studentLabel.create({ data: { studentId: id, labelId: label.id } });
         }
       }
-      return tx.student.findUniqueOrThrow({ where: { id }, include: studentInclude(semesterId) });
+      return {
+        student: await tx.student.findUniqueOrThrow({ where: { id }, include: studentInclude(semesterId) }),
+        enrollmentChange,
+      };
     });
-    return NextResponse.json(serializeStudent(result));
+    if (result.enrollmentChange?.changed && result.enrollmentChange.previousClass) {
+      await logStudentEnrollmentTransfer({
+        studentId: result.student.id,
+        studentName: result.student.name,
+        semesterId,
+        previousClass: result.enrollmentChange.previousClass,
+        currentClass: result.enrollmentChange.enrollment.class,
+      });
+    }
+    return NextResponse.json(serializeStudent(result.student));
   } catch (error: any) {
     if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error?.code === "P2002") return NextResponse.json({ error: "学号已存在" }, { status: 409 });

@@ -105,6 +105,15 @@ afterEach(async () => {
 
 describe("buildFeedbackContext", () => {
   it("combines current session, trends, communications and labels for feedback generation", async () => {
+    await prisma.communication.create({
+      data: {
+        sessionId: currentSessionId,
+        studentId: studentIds[0]!,
+        target: "母亲",
+        occurredAt: "2099-03-07至2099-03-08",
+        summary: "家长跨日沟通需要保留学习进度的时间范围。",
+      },
+    });
     const result = await buildFeedbackContext(prisma, currentSessionCode);
     const student = result.students.find((item) => item.id === studentIds[0]);
 
@@ -117,6 +126,11 @@ describe("buildFeedbackContext", () => {
     expect(student?.promptContext).toContain(labelName);
     expect(student?.promptContext).not.toContain(internalLabelName);
     expect(student?.promptContext).toContain("近期家校沟通");
+    expect(student?.rawMetrics.communications.find((item) => item.summary.includes("跨日沟通"))).toMatchObject({
+      occurredAt: "2099-03-07至2099-03-08",
+    });
+    expect(student?.promptContext).toContain("昨天至今天");
+    expect(student?.promptContext).not.toContain("2099-03-07");
   });
 
   it("keeps students without historical records in the context without throwing", async () => {

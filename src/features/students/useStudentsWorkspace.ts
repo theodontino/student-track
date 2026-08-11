@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
+import { useClasses } from "@/features/teaching-context/use-options";
 import { requestJson } from "@/lib/api-client";
 import { filterStudents, groupStudentsByClass, sortStudents, type StudentSort } from "./student-list-utils";
 import type {
@@ -24,6 +25,7 @@ export function useStudentsWorkspace() {
   const router = useRouter();
   const { context, hydrated, setSemesterId } = useTeachingContext();
   const selectedSemesterId = context.semesterId;
+  const semesterClasses = useClasses(selectedSemesterId);
   const [students, setStudents] = useState<StudentListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -47,6 +49,10 @@ export function useStudentsWorkspace() {
   const [sort, setSort] = useState<StudentSort>("score-desc");
   const [rosterFilter, setRosterFilter] = useState<"all" | "active" | "inactive">("all");
   const [statusUpdatingId, setStatusUpdatingId] = useState("");
+  const [transferTarget, setTransferTarget] = useState<StudentListItem | null>(null);
+  const [transferClassId, setTransferClassId] = useState("");
+  const [transferring, setTransferring] = useState(false);
+  const [transferError, setTransferError] = useState("");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeGraceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -280,6 +286,51 @@ export function useStudentsWorkspace() {
     }
   }
 
+  function openTransfer(student: StudentListItem) {
+    setTransferTarget(student);
+    setTransferClassId("");
+    setTransferError("");
+  }
+
+  function closeTransfer() {
+    if (transferring) return;
+    setTransferTarget(null);
+    setTransferClassId("");
+    setTransferError("");
+  }
+
+  async function submitTransfer() {
+    if (!transferTarget) return;
+    if (!selectedSemesterId) {
+      setTransferError("请先选择学期");
+      return;
+    }
+    if (!transferClassId) {
+      setTransferError("请选择目标班级");
+      return;
+    }
+    if (transferClassId === transferTarget.classId) {
+      setTransferError("目标班级与当前班级相同");
+      return;
+    }
+    setTransferring(true);
+    setTransferError("");
+    try {
+      await requestJson(`/api/students/${transferTarget.id}/enrollment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ semesterId: selectedSemesterId, classId: transferClassId }),
+      });
+      setTransferTarget(null);
+      setTransferClassId("");
+      await fetchStudents();
+    } catch (reason) {
+      setTransferError(reason instanceof Error ? reason.message : "转班失败");
+    } finally {
+      setTransferring(false);
+    }
+  }
+
   function openImport() {
     setImportFile(null);
     setImportResult(null);
@@ -370,6 +421,15 @@ export function useStudentsWorkspace() {
     setRosterStatus,
     sort,
     statusUpdatingId,
+    semesterClasses,
+    openTransfer,
+    closeTransfer,
+    submitTransfer,
+    transferTarget,
+    transferClassId,
+    setTransferClassId,
+    transferError,
+    transferring,
     setSort,
     selectedStudent,
     previewPhase,

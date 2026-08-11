@@ -18,6 +18,11 @@ import {
   parseFeedbackCommunicationSummary,
 } from "@/lib/feedback-communication";
 import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
+import {
+  extractFeedbackDateRange,
+  feedbackDateRangeLabel,
+  replaceFeedbackDatesWithRelativeLabels,
+} from "@/lib/feedback-time";
 import { prisma } from "@/lib/prisma";
 import { withLLMCacheOperation } from "@/services/llm-cache-service";
 import {
@@ -27,7 +32,7 @@ import {
 } from "@/services/teacher-observation-service";
 import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 
-const PROMPT_VERSION = "teaching-summary-v2";
+const PROMPT_VERSION = "teaching-summary-v3";
 const OBSERVATION_VERSION = "teacher-observation-v1";
 const MAX_COMMUNICATIONS_PER_STUDENT = 5;
 const MAX_COMMUNICATION_INPUT = 120;
@@ -122,12 +127,14 @@ function composite(metric: { scoreA: number; scoreB: number; scoreC: number }) {
 
 function effectiveCommunicationDate(input: {
   summary: string;
+  occurredAt?: string | null;
   createdAt: Date;
   session: { date: string };
 }) {
   const parsed = parseFeedbackCommunicationSummary(input.summary);
-  const occurredAt = parsed.occurredAt.slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(occurredAt)) return occurredAt;
+  const occurredAt = input.occurredAt?.trim() || parsed.occurredAt;
+  const range = extractFeedbackDateRange(occurredAt);
+  if (range) return feedbackDateRangeLabel(range);
   return input.session.date || input.createdAt.toISOString().slice(0, 10);
 }
 
@@ -141,6 +148,15 @@ function sessionHref(session: { code: string; semesterId: string }) {
 
 function stableHash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function replaceDatesInValue<T>(value: T, referenceDate: string): T {
+  if (typeof value === "string") return replaceFeedbackDatesWithRelativeLabels(value, referenceDate) as T;
+  if (Array.isArray(value)) return value.map((item) => replaceDatesInValue(item, referenceDate)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceDatesInValue(item, referenceDate)])) as T;
+  }
+  return value;
 }
 
 async function resolveScope(db: PrismaClient, scope: TeachingSummaryScope) {
@@ -713,7 +729,9 @@ export async function generateTeachingSummary(
     };
   }
 
+  const modelPromptPayload = replaceDatesInValue(context.promptPayload, context.facts.date);
   const prompt = `你是教师内部教学分析助手。只能依据输入中的确定性事实和已确认沟通摘要工作。
+本次分析的目标日期作为“今天”的时间锚点。沟通和课堂历史中的时间由程序按实际发生时间换成今天、昨天、前天或更早；不要把历史证据归入今天，也不要在分析文字中附带精确日期。需要表达先后时使用相对时间。
 所有数字必须照抄，不得自行计算或补写。每条分析必须引用提供的 S/X/C 短编号。
 一般观察不是警告。只有沟通内容与课堂事实有明确呼应、冲突、重复关切、关注升级或未兑现教师承诺时，才输出 observationCandidates。
 没有证据时返回空数组。不要输出家长话术，不要评价人格。
@@ -737,12 +755,12 @@ export async function generateTeachingSummary(
 每个 classComparisons、noteworthyChanges、suggestedActions 项至少引用一个真实短编号。每个 observationCandidates 项必须引用至少一条真实 C 编号；未纳入沟通时 observationCandidates 必须为空数组。
 
 输入：
-${JSON.stringify(context.promptPayload)}`;
+${JSON.stringify(modelPromptPayload)}`;
 
   const resolved = await withLLMCacheOperation("daily-report", "生成教师教学总结", async () => {
     const first = await generateStructuredInterpretation(prompt, modelName);
     try {
-      return resolveInterpretation(first, context.references);
+      return replaceDatesInValue(resolveInterpretation(first, context.references), context.facts.date);
     } catch (error) {
       if (!(error instanceof z.ZodError) && !(error instanceof Error && error.message === "llm_reference_invalid")) {
         throw error;
@@ -754,7 +772,7 @@ ${JSON.stringify(context.promptPayload)}`;
         modelName,
         true,
       );
-      return resolveInterpretation(corrected, context.references);
+      return replaceDatesInValue(resolveInterpretation(corrected, context.references), context.facts.date);
     }
   });
   if (request.includeCommunications) {

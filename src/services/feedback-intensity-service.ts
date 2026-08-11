@@ -7,6 +7,7 @@ import type {
   FeedbackRoutingDecision,
   FeedbackRoutingReason,
 } from "@/lib/feedback-intensity";
+import { extractFeedbackDateRange } from "@/lib/feedback-time";
 
 const ACTIVE_OBSERVATION_STATUSES = ["new", "read", "deferred"] as const;
 const OBSERVATION_WINDOW_DAYS = 21;
@@ -16,7 +17,8 @@ function localDay(value: string) {
 }
 
 function hasRecentObservation(occurredAt: string, sessionDate: string) {
-  const delta = localDay(sessionDate) - localDay(occurredAt.slice(0, 10));
+  const effectiveDate = extractFeedbackDateRange(occurredAt)?.end ?? occurredAt.slice(0, 10);
+  const delta = localDay(sessionDate) - localDay(effectiveDate);
   return delta >= 0 && delta < OBSERVATION_WINDOW_DAYS;
 }
 

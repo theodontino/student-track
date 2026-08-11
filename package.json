@@ -1,6 +1,6 @@
 {
   "name": "student-track",
-  "version": "1.1.4",
+  "version": "1.1.5-beta",
   "license": "AGPL-3.0-only",
   "private": true,
   "engines": {
@@ -27,6 +27,7 @@
     "privacy:check": "node --import tsx scripts/privacy-check.ts",
     "privacy:history": "node --import tsx scripts/privacy-history-check.ts",
     "test": "node --import tsx scripts/run-isolated-tests.ts vitest-run",
+    "release:check-version": "node --import tsx scripts/check-zhuiver-release.ts",
     "test:watch": "node --import tsx scripts/run-isolated-tests.ts vitest-watch",
     "test:coverage": "node --import tsx scripts/run-isolated-tests.ts vitest-coverage",
     "test:e2e": "node --import tsx scripts/run-isolated-tests.ts playwright --project=webkit",

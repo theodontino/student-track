@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   CommunicationPreferenceSchema,
+  defaultFeedbackGenerationPreferences,
   FeedbackCompositionPlanSchema,
   FeedbackEvidenceBundleSchema,
   FeedbackPlanAssessmentEvidenceSchema,
+  FEEDBACK_MODULES,
+  normalizeFeedbackGenerationPreferences,
   sanitizeFeedbackComposition,
   sanitizeFeedbackEvidenceBundle,
   validateCompositionForBundle,
@@ -66,6 +69,53 @@ function composition(overrides: Record<string, unknown> = {}) {
 }
 
 describe("feedback plan composition gate", () => {
+  it("binds closure and module choices to the plan generation phase", () => {
+    expect(defaultFeedbackGenerationPreferences("event_micro")).toEqual({
+      closureType: "positive_recognition",
+      moduleKeys: ["observed_moment", "teacher_interpretation"],
+    });
+    expect(normalizeFeedbackGenerationPreferences("stage_trend", {
+      closureType: "continued_observation",
+      moduleKeys: ["recent_trend", "followup_observation"],
+    })).toMatchObject({ closureType: "continued_observation" });
+    expect(() => normalizeFeedbackGenerationPreferences("event_micro", {
+      closureType: "continued_observation",
+      moduleKeys: ["observed_moment", "teacher_interpretation"],
+    })).toThrow("后续观察模块");
+  });
+
+  it("accepts empty, small, large, and complete module scopes without a count gate", () => {
+    const scopes = [
+      [],
+      ["observed_moment"],
+      [...FEEDBACK_MODULES.event_micro].slice(0, 5),
+      [...FEEDBACK_MODULES.event_micro],
+    ];
+    for (const moduleKeys of scopes) {
+      expect(normalizeFeedbackGenerationPreferences("event_micro", {
+        closureType: "positive_recognition",
+        moduleKeys,
+      }).moduleKeys).toEqual(moduleKeys);
+    }
+    expect(normalizeFeedbackGenerationPreferences("event_micro", {
+      closureType: "continued_observation",
+      moduleKeys: [],
+    }).moduleKeys).toEqual([]);
+    expect(() => normalizeFeedbackGenerationPreferences("event_micro", {
+      closureType: "positive_recognition",
+      moduleKeys: ["not-a-current-module"],
+    })).toThrow("不允许模块");
+
+    const audit = validateCompositionForBundle(
+      composition(),
+      bundle(),
+      new Set(),
+      undefined,
+      { generationPreferences: { closureType: "positive_recognition", moduleKeys: [] } },
+    );
+    expect(audit.issues.some((issue) => issue.code === "module_count_invalid")).toBe(false);
+  });
+
   it("keeps old evidence snapshots compatible and accepts multiple assessment sources", () => {
     expect(bundle().assessmentEvidence).toEqual([]);
     const evidence = {

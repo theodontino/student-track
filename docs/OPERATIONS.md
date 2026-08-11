@@ -214,6 +214,22 @@ Student Track 不管理或删除 LM Studio 自身日志。LM Studio 的开发日
 
 ## 发布与封档
 
+### Zhuiver 产品版本分类
+
+发布前先在版本记录中声明上一版本、本版本和 `PATCH`、`MINOR` 或 `MAJOR`，并说明用户产品
+主张、核心工作流、领域模型、部署/数据所有权和协议契约是否变化。该分类遵循协议仓库
+`Zhuiver.md`，不改变协议 `contractVersion`，也不替代本节的质量、隐私、迁移和真实使用
+门禁。页面、文件和代码量不能单独决定版本级别。
+
+先从 `docs/release-evidence/TEMPLATE.md` 复制记录，再运行：
+
+```bash
+npm run release:check-version -- docs/release-evidence/X.Y.Z.md
+```
+
+检查器通过只表示版本字段和证据结构完整；正式发布仍必须完成下面的 `verify:release`、
+同一提交 CI 或适用的人工边界验收。
+
 正式检查点按以下顺序执行：
 
 ```bash

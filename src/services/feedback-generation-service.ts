@@ -24,6 +24,7 @@ import {
   sanitizeFeedbackPromptText,
   stripFeedbackInternalBoundary,
 } from "@/lib/feedback-text-safety";
+import { replaceFeedbackDatesWithRelativeLabels, relativeFeedbackDateLabel } from "@/lib/feedback-time";
 import {
   FEEDBACK_CLOSURES_BY_TYPE,
   FEEDBACK_MODULES,
@@ -35,6 +36,7 @@ import {
   type FeedbackEvidenceBundle,
   type FeedbackPlanType,
   type FeedbackGenerationMode,
+  type FeedbackGenerationPreferences,
 } from "@/lib/feedback-plan";
 import { ApiError } from "@/lib/api-errors";
 import { createAuditSnapshot } from "@/services/feedback-plan-audit";
@@ -72,6 +74,7 @@ export interface FeedbackDraftInput {
   profileId?: string;
   client: LLMClient;
   model: string;
+  referenceDate?: string;
   signal?: AbortSignal;
 }
 
@@ -91,6 +94,7 @@ export interface GenerateReviewedFeedbackInput {
   draftModel: string;
   reviewClient: LLMClient;
   reviewModel: string;
+  referenceDate?: string;
   signal?: AbortSignal;
 }
 
@@ -103,6 +107,7 @@ export interface GenerateRoutineFeedbackInput {
   profileId?: string;
   client: LLMClient;
   model: string;
+  referenceDate?: string;
   signal?: AbortSignal;
 }
 
@@ -126,6 +131,7 @@ export function composeFeedbackPromptContext(input: {
   assessmentEvidence?: StudentAssessmentEvidence | null;
   sections?: FeedbackSections;
   outputStrategy?: FeedbackOutputStrategy;
+  referenceDate?: string;
 }) {
   const selectedSections = input.sections && input.outputStrategy
     ? [
@@ -136,7 +142,7 @@ export function composeFeedbackPromptContext(input: {
         input.outputStrategy.strategySuggestion && input.sections.strategySuggestion ? `【教师策略】${input.sections.strategySuggestion.content}` : "",
       ].filter(Boolean).join("\n")
     : input.studentContext.trim();
-  return sanitizeFeedbackPromptText([
+  const prompt = [
     input.sessionCode
       ? `【本次生成边界】课次：${input.sessionCode}${input.studentId ? `；学生ID：${input.studentId}` : ""}。以下课堂信息、评价、助教记录、家长沟通和 PDF 证据统一作为本次背景；不得使用其他课次或其他学生的材料。`
       : "",
@@ -144,14 +150,17 @@ export function composeFeedbackPromptContext(input: {
     assessmentEvidencePrompt(input.assessmentEvidence),
     privateFeedbackTemplatePrompt(input.lessonMaterial, input.assessmentEvidence),
     lessonMaterialPrompt(input.lessonMaterial),
-    `【证据使用顺序】
+    `【时间语义协议】本次目标课次作为“今天”的时间锚点。证据中的时间标签由程序按实际发生时间转换为今天、昨天、前天或更早；不要把更早的证据改写成本次发生，也不要在成稿中补写或重复精确日期。需要表达先后时使用相对时间；跨日沟通保持时间范围，不压成某一天。
+
+【证据使用顺序】
 1. 个人出门测报告、已确认的本课评价、考勤、事件和助教备注必须同时符合上述课次与学生身份，才属于该生证据。
 2. 学期对照只描述最近两次相对个人常态和同期班均的位置，不得改写成排名。
 3. 仅使用上方已确认事实；不得根据未提供的家校沟通、内部观察、风险或续班信息补充内容。
 4. 课程公共材料和统一出门测说明只能描述全班学习内容、考查范围与统一建议，不得据此断言该生掌握或失误。
 5. 多项证据冲突或依据不足时必须保守表达，并交给人工确认。
 6. “教师策略”是内部处理方向，不得直接写入家长文本，除非它本身已由明确课堂证据支持。`,
-  ].filter(Boolean).join("\n\n"));
+  ].filter(Boolean).join("\n\n");
+  return sanitizeFeedbackPromptText(replaceFeedbackDatesWithRelativeLabels(prompt, input.referenceDate));
 }
 
 function cleanJsonText(value: string) {
@@ -481,6 +490,7 @@ export async function generateReviewedFeedback(
     style: input.style,
     length: input.length,
     profileId: input.profileId,
+    referenceDate: input.referenceDate,
     client: input.draftClient,
     model: input.draftModel,
     signal: input.signal,
@@ -492,6 +502,7 @@ export async function generateReviewedFeedback(
     style: input.style,
     length: input.length,
     profileId: input.profileId,
+    referenceDate: input.referenceDate,
     draftFeedback,
     client: input.reviewClient,
     model: input.reviewModel,
@@ -504,9 +515,12 @@ export async function generateRoutineFeedback(input: GenerateRoutineFeedbackInpu
   const forbiddenNames = [...new Set((input.forbiddenStudentNames ?? [])
     .map((name) => name.trim())
     .filter((name) => name && name !== input.studentName))];
+  const promptContext = replaceFeedbackDatesWithRelativeLabels(input.promptContext, input.referenceDate);
   const prompt = `你是 Student Track 的课后反馈模型。请仅根据以下确定性背景，写一条可直接发给${input.studentName}家长的短反馈。
 
-${input.promptContext}
+${promptContext}
+
+【时间语义协议】本次目标课次作为“今天”的时间锚点。使用今天、昨天、前天或更早描述先后；不要把历史证据归入今天，也不要在成稿中附带精确日期。
 
 ${PARENT_RECIPIENT_PROTOCOL}
 
@@ -557,7 +571,9 @@ ${PARENT_RECIPIENT_PROTOCOL}
       reviewIssues: [failureReason || "常规反馈模型未返回合法结果，请人工填写"],
     };
   }
-  let feedback = typeof payload.feedback === "string" ? stripFeedbackInternalBoundary(payload.feedback.trim()) : "";
+  let feedback = typeof payload.feedback === "string"
+    ? replaceFeedbackDatesWithRelativeLabels(stripFeedbackInternalBoundary(payload.feedback.trim()), input.referenceDate)
+    : "";
   let reviewStatus = normalizeVerdict(payload.verdict);
   const reviewIssues = normalizeIssues(payload.issues);
   if (!feedback) {
@@ -588,9 +604,12 @@ ${PARENT_RECIPIENT_PROTOCOL}
 }
 
 export async function generateFeedbackDraft(input: FeedbackDraftInput) {
+  const promptContext = replaceFeedbackDatesWithRelativeLabels(input.promptContext, input.referenceDate);
   const draftPrompt = `你是 Student Track 的内部反馈分析模型。请严格依据以下确定性背景，为${input.studentName}生成一份仅供后续成稿模型使用的内部分析草稿，不要写成给家长直接发送的话术。
 
-${input.promptContext}
+${promptContext}
+
+【时间语义协议】本次目标课次作为“今天”的时间锚点。使用今天、昨天、前天或更早描述先后；不要把历史证据归入今天，也不要在成稿中附带精确日期。
 
 分析要求：
 1. 以确定性背景为事实底座，不补充其中不存在的成绩、考勤、事件、沟通、教师动作或家庭情况。
@@ -603,18 +622,21 @@ ${input.promptContext}
 8. 只有现有证据确实支持时才提出家长动作、教师承诺或具体课后任务；不要把建议写成已经发生的事实。
 9. 只分析该生本人。可以从最重要的判断、一个课堂瞬间或家长关心的问题自然展开，不预设“事实—分析—建议”的固定顺序；证据较多时自然分句，允许完整主语、连接词、适度重复、自然省略和不完全对称的句式。表达风格参考：${feedbackStyleInstruction(input.style)}`;
   const draft = await generateDraft(input.client, input.model, draftPrompt, input.signal, input.profileId);
-  return stripFeedbackInternalBoundary(draft);
+  return replaceFeedbackDatesWithRelativeLabels(stripFeedbackInternalBoundary(draft), input.referenceDate);
 }
 
 export async function reviewFeedbackDraft(input: FeedbackReviewInput): Promise<ReviewedFeedback> {
   const draftFeedback = stripFeedbackInternalBoundary(input.draftFeedback);
+  const promptContext = replaceFeedbackDatesWithRelativeLabels(input.promptContext, input.referenceDate);
   const forbiddenNames = [...new Set((input.forbiddenStudentNames ?? [])
     .map((name) => name.trim())
     .filter((name) => name && name !== input.studentName))];
   const reviewPrompt = `你是 Student Track 的反馈成稿与审核模型。请先逐项对照“确定性反馈背景”复核内部分析草稿，再把可靠内容改写成可以直接发给家长的话术。内部分析只是辅助材料，不是新的事实来源。
 
 确定性反馈背景：
-${input.promptContext}
+${promptContext}
+
+【时间语义协议】本次目标课次作为“今天”的时间锚点。优先使用今天、昨天、前天或更早描述先后；不要把历史证据归入今天，也不要在成稿中附带精确日期。
 
 内部分析草稿（仅供参考，不得原样发送）：
 ${draftFeedback}
@@ -644,7 +666,9 @@ ${PARENT_RECIPIENT_PROTOCOL}
 
   let reviewStatus = normalizeVerdict(reviewed.verdict);
   const reviewIssues = normalizeIssues(reviewed.issues);
-  const revisedFeedback = typeof reviewed.feedback === "string" ? stripFeedbackInternalBoundary(reviewed.feedback.trim()) : "";
+  const revisedFeedback = typeof reviewed.feedback === "string"
+    ? replaceFeedbackDatesWithRelativeLabels(stripFeedbackInternalBoundary(reviewed.feedback.trim()), input.referenceDate)
+    : "";
   let feedback = revisedFeedback;
   if (!revisedFeedback) {
     reviewStatus = "needs_review";
@@ -689,6 +713,8 @@ export interface FeedbackPlanGenerationInput {
   reviewClient: LLMClient;
   reviewModel: string;
   generationMode?: FeedbackGenerationMode;
+  generationPreferences?: FeedbackGenerationPreferences;
+  referenceDate?: string;
   profileId?: string;
   existingTaskIds?: Set<string>;
   signal?: AbortSignal;
@@ -733,6 +759,62 @@ function normalizeCompositionDependencies(composition: FeedbackCompositionPlan) 
   };
 }
 
+function modelEvidenceBundle(bundle: FeedbackEvidenceBundle, referenceDate?: string): FeedbackEvidenceBundle {
+  if (!referenceDate) return bundle;
+  const mapEvidence = (item: FeedbackEvidenceBundle["teachingEvidence"][number]) => ({
+    ...item,
+    content: replaceFeedbackDatesWithRelativeLabels(item.content, referenceDate),
+    ...(item.occurredAt ? { occurredAt: relativeFeedbackDateLabel(referenceDate, item.occurredAt) } : {}),
+  });
+  const result: FeedbackEvidenceBundle = {
+    ...bundle,
+    teachingEvidence: bundle.teachingEvidence.map(mapEvidence),
+    assessmentEvidence: bundle.assessmentEvidence.map(mapEvidence),
+    communicationContext: bundle.communicationContext.map(mapEvidence),
+    ...("teachingBackground" in bundle
+      ? { teachingBackground: bundle.teachingBackground.map((value) => replaceFeedbackDatesWithRelativeLabels(value, referenceDate)) }
+      : {}),
+    ...("historySnapshot" in bundle
+      ? {
+          historySnapshot: bundle.historySnapshot
+            ? {
+                ...bundle.historySnapshot,
+                current: bundle.historySnapshot.current ? { ...bundle.historySnapshot.current, date: relativeFeedbackDateLabel(referenceDate, bundle.historySnapshot.current.date) } : null,
+                previous: bundle.historySnapshot.previous ? { ...bundle.historySnapshot.previous, date: relativeFeedbackDateLabel(referenceDate, bundle.historySnapshot.previous.date) } : null,
+                recent: bundle.historySnapshot.recent.map((metric) => ({ ...metric, date: relativeFeedbackDateLabel(referenceDate, metric.date) })),
+              }
+            : null,
+        }
+      : {}),
+  } as FeedbackEvidenceBundle;
+  return result;
+}
+
+function normalizeCompositionDates(composition: FeedbackCompositionPlan, referenceDate?: string) {
+  if (!referenceDate) return composition;
+  const text = (value: string) => replaceFeedbackDatesWithRelativeLabels(value, referenceDate);
+  return sanitizeFeedbackComposition({
+    ...composition,
+    parentAction: composition.parentAction ? {
+      ...composition.parentAction,
+      action: text(composition.parentAction.action),
+      successCriteria: text(composition.parentAction.successCriteria),
+      notNeeded: text(composition.parentAction.notNeeded),
+    } : null,
+    modules: composition.modules.map((module) => ({
+      ...module,
+      content: text(module.content),
+      reason: text(module.reason),
+    })),
+    evidenceCoverage: composition.evidenceCoverage.map((coverage) => ({ ...coverage, statement: text(coverage.statement) })),
+    draftFeedback: text(composition.draftFeedback),
+  });
+}
+
+function parseModelComposition(value: string, stage: "draft" | "review" | "correction", referenceDate?: string) {
+  return normalizeCompositionDates(normalizeCompositionDependencies(parseComposition(value, stage)), referenceDate);
+}
+
 function normalizedCoverageText(value: string) {
   return value.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "");
 }
@@ -757,16 +839,29 @@ export async function generateFeedbackPlanComposition(input: FeedbackPlanGenerat
   // Older persisted plans may still contain internal boundary metadata. Clean
   // it at the generation boundary without rewriting historical database rows.
   const evidence = sanitizeFeedbackEvidenceBundle(FeedbackEvidenceBundleSchema.parse(input.evidenceBundle));
-  const evidenceText = JSON.stringify(evidence);
-  const allowedModules = [...FEEDBACK_MODULES[input.planType]];
-  const allowedClosures = [...FEEDBACK_CLOSURES_BY_TYPE[input.planType]];
+  const modelEvidence = modelEvidenceBundle(evidence, input.referenceDate);
+  const evidenceText = JSON.stringify(modelEvidence);
+  const configuredModules = input.generationPreferences?.moduleKeys;
+  const allowedModules = configuredModules?.length ? configuredModules : [...FEEDBACK_MODULES[input.planType]];
+  const allowedClosures = input.generationPreferences
+    ? [input.generationPreferences.closureType]
+    : [...FEEDBACK_CLOSURES_BY_TYPE[input.planType]];
   const outputRequirement = sanitizeFeedbackPromptText(input.outputRequirement).trim();
   const evidenceIds = evidence.teachingEvidence.concat(evidence.assessmentEvidence, evidence.communicationContext)
     .filter((item) => item.confirmed && item.kind !== "model_candidate")
     .map((item) => item.id);
+  const generationPreferenceBoundary = input.generationPreferences
+    ? input.generationPreferences.moduleKeys.length
+      ? `本计划在创建阶段已确定生成结构：只能使用结尾 ${input.generationPreferences.closureType}，只能在以下模块中选择：${input.generationPreferences.moduleKeys.join(", ")}。不得在本阶段改选其他结尾或模块。`
+      : `本计划在创建阶段没有预选模块；可以在当前反馈类型的完整模块目录中自然取舍，不要为了凑数量填充模块。结尾仍固定为 ${input.generationPreferences.closureType}。`
+    : "本计划没有保存生成结构偏好，按反馈类型的完整允许目录选择。";
   const baseProtocolBoundary = `当前类型允许的 module key 只有：${allowedModules.join(", ")}。
 当前类型允许的 closureType 只有：${allowedClosures.join(", ")}。
 evidenceRefs 只能逐字使用以下证据 ID：${evidenceIds.join(", ")}。
+
+${generationPreferenceBoundary}
+
+【时间语义协议】本次计划的目标课次作为“今天”的时间锚点。证据中的时间已经按实际发生时间分层为今天、昨天、前天或更早；不得把历史证据归入今天，不得在成稿中补写或重复精确日期。跨日沟通保留时间范围，不压成单日。
 
 教师自然语言反馈要求与补充事实（最高优先级）：
 ${outputRequirement}
@@ -783,7 +878,6 @@ ${outputRequirement}
   const fullEvidenceStructuralCodes = new Set([
     "module_not_allowed",
     "evidence_ref_missing",
-    "module_count_invalid",
     "closure_not_allowed",
     "evidence_coverage_duplicate",
     "evidence_coverage_unknown",
@@ -799,11 +893,11 @@ ${evidenceText}
 ${draftProtocolBoundary}
 
 规则：
-1. 只能从上面明确列出的 module key 中选择两到四个有价值的模块，不得自造、翻译或使用旧版模块名。内容来自证据包时填写对应 evidenceRefs；内容来自教师补充事实时 evidenceRefs 可以为空，不要伪造证据 ID。
+1. modules 可以为空；如果纳入模块，只能从上面明确列出的 module key 中选择，不得自造、翻译或使用旧版模块名；若本计划已保存模块范围，只能从已选模块中选择。不要为了凑数量填充模块。内容来自证据包时填写对应 evidenceRefs；内容来自教师补充事实时 evidenceRefs 可以为空，不要伪造证据 ID。
 2. teachingEvidence 与 assessmentEvidence 中的 confirmed=true 证据优先进入 included 模块和 draftFeedback；多条证据可以共同支撑同一个自然判断，不必逐项报数。evidenceCoverage 是教师复核辅助信息，能覆盖时填写，暂未覆盖不阻断草稿。
 3. needParentAction 默认 false；教师要求需要家长配合时，再按自然表达填写 parentAction。
 4. teacher_intervention、teacher_support、intervention_outcome 和 followup_observation 按内部结构字段正常输出；教师要求已经明确相关内容时，不要因为证据字段不完整而删掉正文。
-5. closureType 只能从上面列出的当前类型选项中选择；不得因为示例中出现其他结尾就使用越界值。
+5. closureType 只能从上面列出的当前类型选项中选择；若本计划已保存生成结构，必须使用已确定的结尾，不得因为示例中出现其他结尾就改选。
 6. modules 和 evidenceCoverage 是审计元数据，不是正文模板。draftFeedback 应以教师判断为主体：从题目和课堂表现判断哪些内容已经能够使用、哪里还没有真正消化，以及问题更接近知识理解、条件识别、步骤习惯还是迁移能力。
 7. 数据只用作家长能理解的判断锚点。优先保留总正确率和有解释价值的变化；题号、分项分数和重复数字尽量转化为知识点、方法或能力判断。
 8. 主动分析教师输入和证据材料放在一起可能说明什么、当前更值得关注什么、哪些积极或风险信号正在出现。可以充分提出原文没有直接写出的解释、趋势和教学判断；不要凭空补出教师输入与证据包都没有的具体事件、人物、分数和已经发生的动作。
@@ -821,7 +915,7 @@ ${draftProtocolBoundary}
   const draftRaw = await generateDraft(input.draftClient, input.draftModel, draftPrompt, input.signal, input.profileId, "json");
   let draftComposition;
   try {
-    draftComposition = normalizeCompositionDependencies(parseComposition(draftRaw, "draft"));
+    draftComposition = parseModelComposition(draftRaw, "draft", input.referenceDate);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "llm_schema_invalid") throw error;
     const repairPrompt = `你是 Student Track 的结构修复模型。下面的反馈组装输出不是合法结构，请只做 JSON 结构修复，完整保留教师要求授权的内容与表达力度。
@@ -838,14 +932,14 @@ ${draftRaw.slice(0, 12000)}
     const repairedResponse = await createReviewCompletion(repairClient, repairModel, repairPrompt, input.signal, { disableReasoning: true, profileId: input.profileId });
     const repairedContent = repairedResponse.choices[0]?.message?.content?.trim();
     if (!repairedContent) throw error;
-    draftComposition = normalizeCompositionDependencies(parseComposition(repairedContent, "draft"));
+    draftComposition = parseModelComposition(repairedContent, "draft", input.referenceDate);
   }
   let draftAudit = createAuditSnapshot(
     draftComposition,
     evidence,
     input.existingTaskIds,
     undefined,
-    { enforceParentAudience: false },
+    { enforceParentAudience: false, generationPreferences: input.generationPreferences },
   );
   if (input.generationMode === "fast") {
     const composition = retainCoveragePresentInFinalText(draftComposition);
@@ -857,7 +951,7 @@ ${draftRaw.slice(0, 12000)}
         evidence,
         input.existingTaskIds,
         undefined,
-        { enforceParentAudience: false },
+        { enforceParentAudience: false, generationPreferences: input.generationPreferences },
       ),
       reviewRaw: null,
     };
@@ -883,13 +977,13 @@ ${draftCoverageIssues().map((issue) => `- ${issue.message}`).join("\n")}
     const correctedDraftContent = correctedDraftResponse.choices[0]?.message?.content?.trim();
     if (correctedDraftContent) {
       try {
-        draftComposition = normalizeCompositionDependencies(parseComposition(correctedDraftContent, "correction"));
+        draftComposition = parseModelComposition(correctedDraftContent, "correction", input.referenceDate);
         draftAudit = createAuditSnapshot(
           draftComposition,
           evidence,
           input.existingTaskIds,
           undefined,
-          { enforceParentAudience: false },
+          { enforceParentAudience: false, generationPreferences: input.generationPreferences },
         );
       } catch (error) {
         if (!(error instanceof ApiError) || error.code !== "llm_schema_invalid") throw error;
@@ -929,7 +1023,7 @@ ${unresolvedDraftIssues.length
   if (!reviewedContent) throw new Error("反馈审核模型返回空结果");
   let reviewedComposition;
   try {
-    reviewedComposition = normalizeCompositionDependencies(parseComposition(reviewedContent, "review"));
+    reviewedComposition = parseModelComposition(reviewedContent, "review", input.referenceDate);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "llm_schema_invalid") throw error;
     const repairReviewPrompt = `你是 Student Track 的审核结果结构修复模型。上一份审核输出不是合法 JSON。请只修复 JSON 结构，完整保留教师反馈要求授权的内容，不要借结构修复删减分析、联想、建议或承诺。
@@ -949,7 +1043,7 @@ ${reviewedContent.slice(0, 12000)}
     if (!repairedContent) throw error;
     try {
       reviewedContent = repairedContent;
-      reviewedComposition = normalizeCompositionDependencies(parseComposition(repairedContent, "review"));
+      reviewedComposition = parseModelComposition(repairedContent, "review", input.referenceDate);
     } catch (repairError) {
       if (!(repairError instanceof ApiError) || repairError.code !== "llm_schema_invalid") throw repairError;
       reviewedComposition = draftComposition;
@@ -962,7 +1056,7 @@ ${reviewedContent.slice(0, 12000)}
     evidence,
     input.existingTaskIds,
     undefined,
-    { enforceParentAudience: false },
+    { enforceParentAudience: false, generationPreferences: input.generationPreferences },
   );
   const blocked = audit.items.filter((issue) => issue.severity === "blocked");
   if (blocked.length) {
@@ -980,19 +1074,19 @@ ${JSON.stringify(reviewedComposition)}
 必须修正的问题：
 ${blocked.map((issue) => `- ${issue.message}`).join("\n")}
 
-只返回完整 JSON，字段为 version、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。modules 必须选两到四个，且 key 和 evidenceRefs 只能取上面允许的精确值；evidenceCoverage 只能保留 statement 仍逐字存在于 draftFeedback 的条目。`;
+只返回完整 JSON，字段为 version、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。modules 可以为空；如果存在 included 模块，key 和 evidenceRefs 只能取上面允许的精确值；evidenceCoverage 只能保留 statement 仍逐字存在于 draftFeedback 的条目。`;
     try {
       const correctedResponse = await createReviewCompletion(input.reviewClient, input.reviewModel, correctionPrompt, input.signal, { profileId: input.profileId });
       const correctedContent = correctedResponse.choices[0]?.message?.content?.trim();
       if (correctedContent) {
-        reviewedComposition = normalizeCompositionDependencies(parseComposition(correctedContent, "correction"));
+        reviewedComposition = parseModelComposition(correctedContent, "correction", input.referenceDate);
         reviewedComposition = retainCoveragePresentInFinalText(reviewedComposition);
         audit = createAuditSnapshot(
           reviewedComposition,
           evidence,
           input.existingTaskIds,
           undefined,
-          { enforceParentAudience: false },
+          { enforceParentAudience: false, generationPreferences: input.generationPreferences },
         );
       }
     } catch {

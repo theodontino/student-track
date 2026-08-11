@@ -5,6 +5,9 @@ import { containsStudentDirectedAddress, stripFeedbackInternalBoundary } from "@
 export const FEEDBACK_PLAN_TYPES = ["class_update", "event_micro", "stage_trend", "course_end"] as const;
 export type FeedbackPlanType = typeof FEEDBACK_PLAN_TYPES[number];
 
+export const STUDENT_FEEDBACK_PLAN_TYPES = ["event_micro", "stage_trend", "course_end"] as const;
+export type StudentFeedbackPlanType = typeof STUDENT_FEEDBACK_PLAN_TYPES[number];
+
 export const FEEDBACK_GENERATION_MODES = ["standard", "fast"] as const;
 export type FeedbackGenerationMode = typeof FEEDBACK_GENERATION_MODES[number];
 
@@ -35,6 +38,82 @@ export const FEEDBACK_MODULES = {
 } as const;
 
 export type FeedbackModuleKey = (typeof FEEDBACK_MODULES)[FeedbackPlanType][number];
+
+export const FeedbackGenerationPreferencesSchema = z.object({
+  closureType: z.enum(FEEDBACK_CLOSURE_TYPES),
+  // An empty selection means that the current feedback type's full module
+  // catalog is available. The upper bound is only a payload safety bound;
+  // it is intentionally above every current type's catalog size.
+  moduleKeys: z.array(z.string().trim().min(1).max(100)).max(12),
+}).superRefine((value, ctx) => {
+  if (new Set(value.moduleKeys).size !== value.moduleKeys.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["moduleKeys"], message: "生成模块不能重复" });
+  }
+});
+export type FeedbackGenerationPreferences = z.infer<typeof FeedbackGenerationPreferencesSchema>;
+
+export const FeedbackPlanItemGenerationConfigSchema = z.object({
+  version: z.literal(1),
+  type: z.enum(FEEDBACK_PLAN_TYPES),
+  outputRequirement: z.string().trim().min(1).max(2000),
+  generationPreferences: FeedbackGenerationPreferencesSchema,
+});
+export type FeedbackPlanItemGenerationConfig = z.infer<typeof FeedbackPlanItemGenerationConfigSchema>;
+
+export const FeedbackPlanStudentOverrideSchema = z.object({
+  studentId: z.string().trim().min(1).max(200),
+  generationConfig: FeedbackPlanItemGenerationConfigSchema,
+});
+export type FeedbackPlanStudentOverride = z.infer<typeof FeedbackPlanStudentOverrideSchema>;
+
+const DEFAULT_FEEDBACK_GENERATION_PREFERENCES: Record<FeedbackPlanType, FeedbackGenerationPreferences> = {
+  class_update: {
+    closureType: "informational",
+    moduleKeys: ["lesson_scope", "key_difficulty", "class_handling"],
+  },
+  event_micro: {
+    closureType: "positive_recognition",
+    moduleKeys: ["observed_moment", "teacher_interpretation"],
+  },
+  stage_trend: {
+    closureType: "positive_recognition",
+    moduleKeys: ["recent_trend", "stable_capability", "unresolved_issue"],
+  },
+  course_end: {
+    closureType: "positive_recognition",
+    moduleKeys: ["starting_state", "evidence_backed_change", "remaining_gap"],
+  },
+};
+
+export function defaultFeedbackGenerationPreferences(planType: FeedbackPlanType): FeedbackGenerationPreferences {
+  const defaults = DEFAULT_FEEDBACK_GENERATION_PREFERENCES[planType];
+  return { closureType: defaults.closureType, moduleKeys: [...defaults.moduleKeys] };
+}
+
+export function normalizeFeedbackGenerationPreferences(
+  planType: FeedbackPlanType,
+  value?: unknown,
+): FeedbackGenerationPreferences {
+  const parsed = FeedbackGenerationPreferencesSchema.parse(value ?? defaultFeedbackGenerationPreferences(planType));
+  const allowedClosures = FEEDBACK_CLOSURES_BY_TYPE[planType] as readonly string[];
+  const allowedModules = FEEDBACK_MODULES[planType] as readonly string[];
+  if (!allowedClosures.includes(parsed.closureType)) {
+    throw new Error(`反馈类型 ${planType} 不允许结尾 ${parsed.closureType}`);
+  }
+  const unsupportedModule = parsed.moduleKeys.find((key) => !allowedModules.includes(key));
+  if (unsupportedModule) throw new Error(`反馈类型 ${planType} 不允许模块 ${unsupportedModule}`);
+  const hasExplicitModuleSelection = parsed.moduleKeys.length > 0;
+  if (hasExplicitModuleSelection && parsed.closureType === "continued_observation" && !parsed.moduleKeys.includes("followup_observation")) {
+    throw new Error("继续观察结尾必须选择后续观察模块");
+  }
+  if (hasExplicitModuleSelection && parsed.closureType === "teacher_resolved" && !parsed.moduleKeys.includes("teacher_intervention")) {
+    throw new Error("教师已处理结尾必须选择教师处理模块");
+  }
+  if (hasExplicitModuleSelection && parsed.closureType === "home_cooperation" && !parsed.moduleKeys.includes("parent_action")) {
+    throw new Error("家庭配合结尾必须选择家长动作模块");
+  }
+  return parsed;
+}
 
 const sourceRefSchema = z.object({
   type: z.string().min(1).max(80),
@@ -120,6 +199,7 @@ export const FeedbackPlanInputSnapshotSchema = z.object({
   sessionCode: z.string().max(128).optional(),
   sourceFingerprint: z.string().max(128).optional(),
   lessonMaterial: LessonFeedbackMaterialSchema,
+  generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
 });
 export type FeedbackPlanInputSnapshot = z.infer<typeof FeedbackPlanInputSnapshotSchema>;
 
@@ -253,6 +333,16 @@ export const FeedbackPlanCreateSchema = z.object({
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
   assessmentEvidence: FeedbackPlanAssessmentEvidenceSchema.optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
+  generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
+  studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200).superRefine((overrides, ctx) => {
+    const ids = new Set<string>();
+    overrides.forEach((override, index) => {
+      if (ids.has(override.studentId)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "studentId"], message: "同一学生不能重复设置独立计划" });
+      }
+      ids.add(override.studentId);
+    });
+  }).optional(),
 });
 export type FeedbackPlanCreateInput = z.infer<typeof FeedbackPlanCreateSchema>;
 
@@ -261,6 +351,7 @@ export const FeedbackPlanItemPatchSchema = z.object({
   finalText: z.string().max(10000).optional(),
   reviewMode: z.enum(["model", "teacher_edited"]).optional(),
   expectedItemRevision: z.number().int().positive().optional(),
+  generationConfig: FeedbackPlanItemGenerationConfigSchema.nullable().optional(),
 });
 export type FeedbackPlanItemPatch = z.infer<typeof FeedbackPlanItemPatchSchema>;
 
@@ -285,7 +376,13 @@ const PROMISE_PATTERNS = [
 const PARENT_ACTION_PATTERNS = /(?:请(?:您|家长)|麻烦(?:您|家长)|(?:希望|建议)家长|家长(?:可以|只需要|只需|需要|需|这边))/u;
 
 function coverageText(value: string) {
-  return value.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "").toLocaleLowerCase("zh-CN");
+  return value.normalize("NFKC")
+    // 时间标签是表达层信息；比较证据时不应因为程序把精确日期换成
+    // “昨天/今天”就误判为无依据。
+    .replace(/(?<!\d)\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:日)?(?!\d)/gu, "")
+    .replace(/今天|昨天|前天|更早|之后|时间未知/gu, "")
+    .replace(/[\s\p{P}\p{S}]+/gu, "")
+    .toLocaleLowerCase("zh-CN");
 }
 
 function evidenceStatementMatches(evidenceContent: string, statement: string) {
@@ -306,14 +403,17 @@ export function validateCompositionForBundle(
   bundle: FeedbackEvidenceBundle,
   taskIds: Set<string> = new Set(bundle.executionConstraints.existingTaskIds),
   identity?: { studentName?: string; otherStudentNames?: string[] },
-  options: { enforceParentAudience?: boolean } = {},
+  options: { enforceParentAudience?: boolean; generationPreferences?: FeedbackGenerationPreferences } = {},
 ): { status: FeedbackAuditSnapshot["status"]; issues: z.infer<typeof FeedbackAuditItemSchema>[] } {
   const issues: z.infer<typeof FeedbackAuditItemSchema>[] = [];
   const included = composition.modules.filter((module) => module.status === "included");
   const evidence = bundle.teachingEvidence.concat(bundle.assessmentEvidence, bundle.communicationContext);
   const evidenceIds = new Set(evidence.filter((item) => item.confirmed && item.kind !== "model_candidate").map((item) => item.id));
-  const allowedModules = new Set(FEEDBACK_MODULES[bundle.planType]);
-  const allowedClosures = new Set<FeedbackClosureType>(FEEDBACK_CLOSURES_BY_TYPE[bundle.planType]);
+  const configuredModules = options.generationPreferences?.moduleKeys;
+  const allowedModules = new Set(configuredModules?.length ? configuredModules : FEEDBACK_MODULES[bundle.planType]);
+  const allowedClosures = new Set<FeedbackClosureType>(options.generationPreferences
+    ? [options.generationPreferences.closureType]
+    : FEEDBACK_CLOSURES_BY_TYPE[bundle.planType]);
 
   if (!composition.draftFeedback.trim()) {
     issues.push({ code: "empty_text", severity: "blocked", message: "最终反馈文本为空" });
@@ -324,9 +424,6 @@ export function validateCompositionForBundle(
       severity: "blocked",
       message: "家长反馈直接对学生使用了第二人称或学生式鼓励语",
     });
-  }
-  if (included.length < 2 || included.length > 4) {
-    issues.push({ code: "module_count_invalid", severity: "blocked", message: "每条反馈必须选择两到四个有价值的模块" });
   }
   for (const section of included) {
     if (!allowedModules.has(section.key as never)) {

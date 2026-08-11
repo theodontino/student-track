@@ -13,6 +13,34 @@ export interface StudentSemesterProjection {
   statusEffectiveAt: Date | null;
 }
 
+export type EnrollmentClassProjection = NonNullable<StudentSemesterProjection["class"]>;
+
+export interface StudentEnrollmentClassChange {
+  changed: boolean;
+  created: boolean;
+  statusChanged: boolean;
+  previousClass: EnrollmentClassProjection | null;
+  enrollment: {
+    id: string;
+    studentId: string;
+    semesterId: string;
+    classId: string;
+    rosterStatus: StudentRosterStatus;
+    statusEffectiveAt: Date;
+    class: EnrollmentClassProjection;
+  };
+}
+
+const enrollmentWithClassSelect = {
+  id: true,
+  studentId: true,
+  semesterId: true,
+  classId: true,
+  rosterStatus: true,
+  statusEffectiveAt: true,
+  class: { select: { id: true, code: true, name: true, semesterId: true } },
+} as const;
+
 /** Resolve an explicit semester, or the same current/latest fallback used by the app. */
 export async function requireSemesterId(
   db: EnrollmentDb,
@@ -79,6 +107,85 @@ export async function getStudentEnrollment(
     where: { studentId_semesterId: { studentId, semesterId } },
     include: { class: true, semester: true },
   });
+}
+
+/**
+ * Change the current class affiliation for one student and semester.
+ *
+ * The strict transfer path never creates an enrollment and never changes the
+ * roster status. The import/profile path can opt into creating an enrollment
+ * and preserving the import's existing reactivation behavior. All paths use
+ * the same semester validation and optimistic old-class guard.
+ */
+export async function changeStudentEnrollmentClass(
+  db: EnrollmentDb,
+  input: { studentId: string; semesterId: string; classId: string },
+  options: { createIfMissing?: boolean; activateExisting?: boolean } = {},
+): Promise<StudentEnrollmentClassChange> {
+  const student = await db.student.findUnique({ where: { id: input.studentId }, select: { id: true } });
+  if (!student) throw new ServiceError("学生不存在", 404);
+  const targetClass = await assertClassInSemester(db, input.classId, input.semesterId);
+  const current = await db.studentClassEnrollment.findUnique({
+    where: { studentId_semesterId: { studentId: input.studentId, semesterId: input.semesterId } },
+    select: enrollmentWithClassSelect,
+  });
+
+  if (!current) {
+    if (!options.createIfMissing) throw new ServiceError("学生在所选学期没有班级归属，不能转班", 409);
+    const created = await db.studentClassEnrollment.create({
+      data: { studentId: input.studentId, semesterId: input.semesterId, classId: targetClass.id },
+      select: enrollmentWithClassSelect,
+    });
+    return {
+      changed: false,
+      created: true,
+      statusChanged: false,
+      previousClass: null,
+      enrollment: created,
+    };
+  }
+
+  const classChanged = current.classId !== targetClass.id;
+  const statusChanged = options.activateExisting === true && current.rosterStatus !== "ACTIVE";
+  if (!classChanged && !statusChanged) {
+    return { changed: false, created: false, statusChanged: false, previousClass: current.class, enrollment: current };
+  }
+
+  const guardedWhere = {
+    studentId: input.studentId,
+    semesterId: input.semesterId,
+    classId: current.classId,
+    ...(statusChanged ? { rosterStatus: current.rosterStatus } : {}),
+  };
+  const data = classChanged
+    ? (options.activateExisting
+      ? { classId: targetClass.id, rosterStatus: "ACTIVE" as const }
+      : { classId: targetClass.id })
+    : { rosterStatus: "ACTIVE" as const };
+  const updated = await db.studentClassEnrollment.updateMany({ where: guardedWhere, data });
+  if (updated.count !== 1) {
+    throw new ServiceError("学生班级归属已变化，请刷新后重试", 409);
+  }
+
+  const enrollment = await db.studentClassEnrollment.findUniqueOrThrow({
+    where: { studentId_semesterId: { studentId: input.studentId, semesterId: input.semesterId } },
+    select: enrollmentWithClassSelect,
+  });
+  return {
+    changed: classChanged,
+    created: false,
+    statusChanged,
+    previousClass: current.class,
+    enrollment,
+  };
+}
+
+/** Strict one-person transfer: an existing current-semester enrollment is required. */
+export async function transferStudentEnrollment(
+  db: EnrollmentDb,
+  input: { studentId: string; semesterId: string; classId: string },
+) {
+  return changeStudentEnrollmentClass(db, input);
 }
 
 export async function upsertStudentEnrollment(

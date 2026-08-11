@@ -51,6 +51,13 @@ export function StudentClassGroups({ workspace }: { workspace: Workspace }) {
             <small>生效：{new Date(student.statusEffectiveAt).toLocaleString("zh-CN")}</small>
             <Button
               uiSize="sm"
+              variant="secondary"
+              onClick={(event) => { event.stopPropagation(); workspace.openTransfer(student); }}
+            >
+              转班
+            </Button>
+            <Button
+              uiSize="sm"
               variant={student.rosterStatus === "ACTIVE" ? "warning" : "secondary"}
               disabled={workspace.statusUpdatingId === student.id}
               onClick={() => void workspace.setRosterStatus(student, student.rosterStatus === "ACTIVE" ? "inactive" : "active")}

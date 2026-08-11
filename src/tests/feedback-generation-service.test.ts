@@ -24,6 +24,51 @@ function clientWith(...contents: string[]) {
 }
 
 describe("feedback generation review", () => {
+  it("normalizes exact evidence and model dates at the generation boundary", async () => {
+    const composition = {
+      version: 1,
+      closureType: "positive_recognition",
+      needParentAction: false,
+      parentAction: null,
+      modules: [
+        { key: "observed_moment", content: "2026-07-20 完成了同类题", evidenceRefs: ["event-1"], status: "included", reason: "课堂事实" },
+        { key: "teacher_interpretation", content: "2026-07-20 的方法较稳", evidenceRefs: ["event-1"], status: "included", reason: "教师判断" },
+      ],
+      evidenceCoverage: [{ evidenceId: "event-1", statement: "2026-07-20 完成了同类题" }],
+      draftFeedback: "2026-07-20 完成了同类题，方法较稳。",
+    };
+    const draft = clientWith(JSON.stringify(composition));
+    const result = await generateFeedbackPlanComposition({
+      studentName: "合成学生",
+      planType: "event_micro",
+      outputRequirement: "自然表达",
+      evidenceBundle: {
+        version: 1,
+        planType: "event_micro",
+        studentId: "student-1",
+        teachingEvidence: [{ id: "event-1", kind: "fact", content: "2026-07-20 完成了同类题", sourceRefs: [{ type: "event", id: "source-1" }], confirmed: true }],
+        assessmentEvidence: [],
+        communicationContext: [],
+        executionConstraints: { existingTaskIds: [], fixedArrangementRefs: [], teacherInterventionPresent: false },
+        sourceRefs: [{ type: "student", id: "student-1" }],
+        sourceFingerprint: "feedback-plan-relative-date-fingerprint",
+      },
+      style: "gentle",
+      length: "standard",
+      draftClient: draft.client,
+      draftModel: "draft-model",
+      reviewClient: clientWith().client,
+      reviewModel: "review-model",
+      generationMode: "fast",
+      referenceDate: "2026-07-21",
+      generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment", "teacher_interpretation"] },
+    });
+
+    expect(result.composition.draftFeedback).toBe("昨天 完成了同类题，方法较稳。");
+    expect(result.composition.draftFeedback).not.toContain("2026-07-20");
+    expect(result.audit.status).toBe("pass");
+  });
+
   it("keeps hard checks but skips the LLM review and polish call in fast mode", async () => {
     const composition = {
       version: 1,

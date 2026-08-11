@@ -4,6 +4,7 @@ import {
   type FeedbackAuditSnapshot,
   type FeedbackCompositionPlan,
   type FeedbackEvidenceBundle,
+  type FeedbackGenerationPreferences,
 } from "@/lib/feedback-plan";
 
 export function sha256(value: string) {
@@ -15,7 +16,7 @@ export function createAuditSnapshot(
   bundle: FeedbackEvidenceBundle,
   taskIds?: Set<string>,
   identity?: { studentName?: string; otherStudentNames?: string[] },
-  options?: { enforceParentAudience?: boolean },
+  options?: { enforceParentAudience?: boolean; generationPreferences?: FeedbackGenerationPreferences },
 ): FeedbackAuditSnapshot {
   const result = validateCompositionForBundle(composition, bundle, taskIds, identity, options);
   return {

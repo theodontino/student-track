@@ -5,6 +5,11 @@ import {
   isUsefulLegacyFeedbackCommunication,
   parseFeedbackCommunicationSummary,
 } from "@/lib/feedback-communication";
+import {
+  extractFeedbackDateRange,
+  feedbackDateRangeLabel,
+  relativeFeedbackDateLabel,
+} from "@/lib/feedback-time";
 import { safeFeedbackCommunicationTarget } from "@/lib/feedback-text-safety";
 import { CommunicationPreferenceSchema, type CommunicationPreference } from "@/lib/feedback-plan";
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
@@ -50,6 +55,7 @@ export interface StudentRawMetrics {
     id?: string;
     sessionId?: string | null;
     date: string;
+    occurredAt?: string;
     target: string;
     summary: string;
   }>;
@@ -131,18 +137,28 @@ function groupByStudent<T extends { studentId: string }>(items: T[]) {
 
 function feedbackCommunicationDate(input: {
   summary: string;
+  occurredAt?: string | null;
   createdAt: Date;
   session: { date: string } | null;
 }) {
   const parsed = parseFeedbackCommunicationSummary(input.summary);
-  const occurredAt = parsed.occurredAt.slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(occurredAt)) return occurredAt;
+  const occurredAt = input.occurredAt?.trim() || parsed.occurredAt;
+  const range = extractFeedbackDateRange(occurredAt);
+  if (range) return feedbackDateRangeLabel(range);
   if (input.session?.date) return input.session.date;
   return input.createdAt.toISOString().slice(0, 10);
 }
 
+function feedbackCommunicationSortDate(input: {
+  feedbackDate: string;
+  session: { date: string } | null;
+}) {
+  return extractFeedbackDateRange(input.feedbackDate)?.end ?? input.session?.date ?? "";
+}
+
 function rankFeedbackCommunications<T extends {
   summary: string;
+  occurredAt?: string | null;
   createdAt: Date;
   session: { date: string } | null;
 }>(items: T[]) {
@@ -151,10 +167,17 @@ function rankFeedbackCommunications<T extends {
     .filter((item) => isUsefulLegacyFeedbackCommunication(item.summary))
     .map((item) => {
       const parsed = parseFeedbackCommunicationSummary(item.summary);
-      return { ...item, feedbackSummary: parsed.summary, feedbackDecision: parsed.decision, feedbackDate: feedbackCommunicationDate(item) };
+      const feedbackDate = feedbackCommunicationDate(item);
+      return {
+        ...item,
+        feedbackSummary: parsed.summary,
+        feedbackDecision: parsed.decision,
+        feedbackDate,
+        feedbackSortDate: feedbackCommunicationSortDate({ feedbackDate, session: item.session }),
+      };
     })
     .sort((left, right) => (
-      right.feedbackDate.localeCompare(left.feedbackDate)
+      right.feedbackSortDate.localeCompare(left.feedbackSortDate)
       || (priority[right.feedbackDecision?.priority ?? "medium"] - priority[left.feedbackDecision?.priority ?? "medium"])
       || right.createdAt.getTime() - left.createdAt.getTime()
     ));
@@ -164,13 +187,17 @@ function feedbackCommunicationPromptLine(input: {
   target: string;
   feedbackSummary: string;
   feedbackDate: string;
+  referenceDate?: string;
   feedbackDecision: ReturnType<typeof parseFeedbackCommunicationSummary>["decision"];
 }) {
   const decision = input.feedbackDecision;
   const context = decision
     ? `｜${decision.priority === "high" ? "高" : "中"}优先级｜${FEEDBACK_COMMUNICATION_CATEGORY_LABELS[decision.category]}`
     : "";
-  return `${input.feedbackDate}${context} 与${safeFeedbackCommunicationTarget(input.target)}：${shortSummary(input.feedbackSummary)}`;
+  const dateLabel = input.referenceDate
+    ? relativeFeedbackDateLabel(input.referenceDate, input.feedbackDate)
+    : input.feedbackDate;
+  return `${dateLabel}${context} 与${safeFeedbackCommunicationTarget(input.target)}：${shortSummary(input.feedbackSummary)}`;
 }
 
 function buildTodayPreview(input: {
@@ -194,13 +221,13 @@ function buildTrendPreview(metrics: Array<{
   scoreC: number;
   scoreD: number;
   session: { code: string; date: string; semesterNumber: number } | null;
-}>) {
+}>, referenceDate?: string) {
   if (metrics.length === 0) return "暂无近期评分趋势";
 
   const chronological = [...metrics].reverse();
   return chronological.map((metric) => {
     const label = metric.session
-      ? `${metric.session.date} 第${metric.session.semesterNumber}次`
+      ? `${referenceDate ? relativeFeedbackDateLabel(referenceDate, metric.session.date) : metric.session.date} 第${metric.session.semesterNumber}次`
       : "未知课次";
     return `${label}: A${metric.scoreA}/B${metric.scoreB}/C${metric.scoreC}/D${metric.scoreD}`;
   }).join("；");
@@ -220,7 +247,7 @@ function buildPromptContext(input: {
   const communications = input.communications.length > 0 ? input.communications.join("；") : "无";
   const baseline = buildBaselineText(input.baseline);
   return [
-    `${input.studentName}，${input.sessionDate}第${input.semesterNumber}次课。`,
+    `${input.studentName}，本次目标课次作为“今天”的时间锚点，是第${input.semesterNumber}次课。`,
     `学生标签：${labels}`,
     `今日表现：${input.today.join("；")}`,
     `近期趋势：${input.trend}`,
@@ -394,7 +421,14 @@ export async function buildFeedbackContext(
   const currentEventsByStudent = groupByStudent(currentEvents);
   const recentMetricsByStudent = groupByStudent(recentMetrics);
   const recentEventsByStudent = groupByStudent(recentEvents);
-  const communicationsByStudent = groupByStudent(communications);
+  const communicationsAtTarget = communications.filter((communication) => {
+    const parsed = parseFeedbackCommunicationSummary(communication.summary);
+    const range = extractFeedbackDateRange(communication.occurredAt || parsed.occurredAt);
+    // sessionId is lineage, not proof that the conversation happened on the
+    // lesson date. A range ending after the target lesson is future evidence.
+    return !range || range.end <= session.date;
+  });
+  const communicationsByStudent = groupByStudent(communicationsAtTarget);
   const semesterMetricsByStudent = groupByStudent(semesterMetrics);
   const semesterMetricsBySession = new Map<string, typeof semesterMetrics>();
   for (const metric of semesterMetrics) {
@@ -414,10 +448,18 @@ export async function buildFeedbackContext(
     });
 
     const trend = buildTrendPreview(recentMetricsByStudent.get(student.id) ?? []);
+    const promptTrend = buildTrendPreview(recentMetricsByStudent.get(student.id) ?? [], session.date);
     const feedbackCommunications = rankFeedbackCommunications(communicationsByStudent.get(student.id) ?? []);
     const promptCommunicationLines = feedbackCommunications
       .slice(0, COMMUNICATION_PROMPT_LIMIT)
-      .map(feedbackCommunicationPromptLine);
+      .map((communication) => feedbackCommunicationPromptLine({
+        ...communication,
+        target: communication.target,
+        feedbackSummary: communication.feedbackSummary,
+        feedbackDate: communication.feedbackDate,
+        feedbackDecision: communication.feedbackDecision,
+        referenceDate: session.date,
+      }));
     const communicationLines = feedbackCommunications
       .slice(0, COMMUNICATION_PREVIEW_LIMIT)
       .map((communication) => (
@@ -427,6 +469,10 @@ export async function buildFeedbackContext(
       .filter((event) => event.sessionId !== session.id)
       .slice(0, EVENT_LIMIT)
       .map((event) => `${event.session?.date ?? "未知日期"} ${shortSummary(event.description, 80)}`);
+    const promptRecentEventLines = (recentEventsByStudent.get(student.id) ?? [])
+      .filter((event) => event.sessionId !== session.id)
+      .slice(0, EVENT_LIMIT)
+      .map((event) => `${event.session?.date ? relativeFeedbackDateLabel(session.date, event.session.date) : "时间未知"} ${shortSummary(event.description, 80)}`);
     const preview: FeedbackContextPreview = {
       today,
       trend: recentEventLines.length > 0 ? `${trend}；近期事件：${recentEventLines.join("；")}` : trend,
@@ -493,6 +539,7 @@ export async function buildFeedbackContext(
           id: communication.id,
           sessionId: communication.sessionId,
           date: communication.feedbackDate,
+          occurredAt: communication.occurredAt || communication.feedbackDate,
           target: communication.target,
           summary: shortSummary(communication.feedbackSummary),
         })),
@@ -538,7 +585,7 @@ export async function buildFeedbackContext(
         semesterNumber: session.semesterNumber,
         labels,
         today,
-        trend: preview.trend,
+        trend: promptRecentEventLines.length > 0 ? `${promptTrend}；近期事件：${promptRecentEventLines.join("；")}` : promptTrend,
         communications: promptCommunicationLines,
         baseline,
       }),

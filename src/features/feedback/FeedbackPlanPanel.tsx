@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Section, StatusBanner, Textarea } from "@/components/ui";
 import {
-  FEEDBACK_CLOSURE_TYPES,
   FEEDBACK_CLOSURES_BY_TYPE,
   FEEDBACK_MODULES,
+  defaultFeedbackGenerationPreferences,
   isHardFeedbackAuditIssue,
   type FeedbackCompositionPlan,
   type FeedbackModule,
+  type FeedbackClosureType,
   type FeedbackPlanType,
+  type FeedbackPlanItemGenerationConfig,
   type FeedbackAuditSnapshot,
   type FeedbackEvidenceBundle,
 } from "@/lib/feedback-plan";
@@ -19,6 +21,7 @@ import type { StudentAssessmentEvidence } from "@/lib/feedback-materials";
 import { LLMRoleAssignmentsPanel } from "@/features/system/LLMRoleAssignmentsPanel";
 import { useLLMConfiguration } from "@/features/system/useLLMConfiguration";
 import { StudentTrendChart, type StudentTrendMetric } from "@/features/students/StudentTrendChart";
+import { FeedbackPlanGenerationConfigDialog, independentConfigFromCommon } from "./FeedbackPlanGenerationConfigDialog";
 
 type Workspace = {
   activeStep: string;
@@ -38,6 +41,7 @@ interface PlanItem {
   finalText: string | null;
   finalTextHash: string | null;
   generationError?: string | null;
+  generationConfig?: FeedbackPlanItemGenerationConfig | null;
   evidenceSnapshot: string;
   compositionSnapshot: string;
   auditSnapshot: string;
@@ -72,6 +76,7 @@ interface Plan {
   sessionId?: string | null;
   rangeStartSessionId?: string | null;
   rangeEndSessionId?: string | null;
+  input?: { generationPreferences?: { closureType: string; moduleKeys: string[] } } | null;
   items: PlanItem[];
   generationProgress?: { total: number; queued: number; running: number; completed: number; failed: number; stale: number };
   generationTiming?: { startedAt: string | null; completedAt: string | null; elapsedMs: number; completedItems: number; averageItemMs: number | null; itemsPerMinute: number | null; asOf: string };
@@ -143,6 +148,30 @@ const moduleLabels: Record<string, string> = {
   starting_state: "起点状态",
   evidence_backed_change: "有证据的变化",
   remaining_gap: "剩余断点",
+  next_stage_learning_path: "下一阶段学习路径",
+};
+
+const moduleDescriptions: Record<string, string> = {
+  lesson_scope: "本课讲了什么",
+  key_difficulty: "最需要理解的难点",
+  class_handling: "课堂如何处理",
+  homework_review: "作业或复习建议",
+  next_lesson_link: "与下次课如何衔接",
+  observed_moment: "学生本次具体表现",
+  teacher_interpretation: "教师对表现的判断",
+  teacher_intervention: "老师已经采取的处理",
+  intervention_outcome: "处理后的结果",
+  parent_action: "家长可以做的最低动作",
+  followup_observation: "后续需要观察什么",
+  starting_point: "阶段开始时的状态",
+  recent_trend: "近期变化趋势",
+  stable_capability: "已经稳定的能力",
+  unresolved_issue: "尚未稳定的问题",
+  teacher_support: "阶段内已有的教师支持",
+  next_stage_focus: "下一阶段重点",
+  starting_state: "学习阶段的起点",
+  evidence_backed_change: "有证据支持的变化",
+  remaining_gap: "仍然存在的断点",
   next_stage_learning_path: "下一阶段学习路径",
 };
 
@@ -254,25 +283,24 @@ type AuditIssue = FeedbackAuditSnapshot["items"][number];
 const auditIssueGuidance: Record<string, { area: string; title: string; impact: string; action: string }> = {
   empty_text: { area: "教师最终正文", title: "正文为空", impact: "没有可供教师批准和导出的反馈文本。", action: "在正文编辑框补充反馈并保存。" },
   recipient_mismatch: { area: "正文称呼", title: "反馈对象可能写错", impact: "面向家长的反馈使用了直接对学生说话的表达。", action: "把“你要……”等学生式称呼改为面向家长的表述。" },
-  module_count_invalid: { area: "高级设置 → 模块", title: "正文结构数量不符合规则", impact: "当前选择的反馈模块少于 2 个或多于 4 个。", action: "展开高级设置，将有效模块调整为 2—4 个。" },
-  module_not_allowed: { area: "高级设置 → 模块", title: "反馈类型与模块不匹配", impact: "当前计划类型不允许使用其中一个模块。", action: "展开高级设置，取消提示中不适用的模块。" },
-  evidence_ref_missing: { area: "模块引用证据", title: "模块引用的证据已经不存在", impact: "正文结构无法追溯到本计划冻结的证据。", action: "重新生成本条，或在高级设置中移除对应模块。" },
+  module_not_allowed: { area: "生成阶段结构 → 模块", title: "反馈类型与模块不匹配", impact: "当前计划类型不允许使用其中一个模块。", action: "新建计划时选择当前类型允许的模块。" },
+  evidence_ref_missing: { area: "模块引用证据", title: "模块引用的证据已经不存在", impact: "正文结构无法追溯到本计划冻结的证据。", action: "重新生成本条，或新建计划重新确定生成模块。" },
   evidence_coverage_duplicate: { area: "正文证据覆盖", title: "同一证据被重复登记", impact: "系统无法准确判断正文是否完整保留证据。", action: "重新生成本条；如果仍出现，请保留正文并反馈此错误代码。" },
   evidence_coverage_unknown: { area: "正文证据覆盖", title: "覆盖声明指向了无效证据", impact: "模型声明使用了不属于本课教学或测评的材料。", action: "对照本课事实和出门测详情修改正文，然后保存；必要时重新生成。" },
   evidence_coverage_unsubstantiated: { area: "教师最终正文", title: "正文表述与原始证据对应不清", impact: "程序没有在正文中找到足够关键词来证明这句话来自对应证据。", action: "对照左侧本课事实和出门测详情，确认无误后可保留；否则改写为更贴近原始事实的表述。" },
   final_evidence_omitted: { area: "教师最终正文", title: "部分已确认证据没有写入正文", impact: "反馈可能遗漏本课事实或出门测结果，但教师可以有意删减。", action: "查看提示中的证据和下方出门测详情；需要时补入正文，不重要时可直接确认。" },
   unconfirmed_evidence: { area: "证据来源", title: "正文使用了尚未确认的材料", impact: "存在把模型猜测或未复核材料当成学生事实的风险，因此禁止批准。", action: "回到复核步骤确认对应记录，或从正文和模块中移除这项材料后重新核验。" },
-  parent_action_mismatch: { area: "家长任务", title: "家长任务开关与内容不一致", impact: "正文结构无法确定是否真的要求家庭配合。", action: "展开高级设置，统一家长动作模块、开关和具体内容。" },
+  parent_action_mismatch: { area: "生成阶段结构 → 家长任务", title: "家长任务开关与内容不一致", impact: "正文结构无法确定是否真的要求家庭配合。", action: "新建计划时选择家长动作模块，并由教师复核具体内容。" },
   parent_action_disabled: { area: "家长任务", title: "未启用家长任务却写入了任务", impact: "导出文本可能意外要求家长执行动作。", action: "启用家长动作模块，或删除家庭任务内容。" },
-  parent_action_module_missing: { area: "高级设置 → 家长动作", title: "家长任务没有对应模块", impact: "任务内容没有进入受控的反馈结构。", action: "在高级设置中加入家长动作模块。" },
-  parent_action_content_missing: { area: "高级设置 → 家长动作", title: "家长动作模块缺少具体内容", impact: "正文提出了家庭配合，但没有明确动作或完成标准。", action: "补充具体、可执行的家长动作，或取消该模块。" },
+  parent_action_module_missing: { area: "生成阶段结构 → 家长动作", title: "家长任务没有对应模块", impact: "任务内容没有进入受控的反馈结构。", action: "新建计划时加入家长动作模块。" },
+  parent_action_content_missing: { area: "生成阶段结构 → 家长动作", title: "家长动作模块缺少具体内容", impact: "正文提出了家庭配合，但没有明确动作或完成标准。", action: "补充具体、可执行的家长动作，或新建计划取消该模块。" },
   teacher_intervention_unconfirmed: { area: "教师处理证据", title: "写了教师处理，但没有确认记录", impact: "正文可能把未发生的教师介入写成事实。", action: "回到复核补充并确认教师处理，或删除对应模块和表述。" },
   intervention_outcome_without_action: { area: "教师处理结果", title: "只有处理结果，没有处理动作", impact: "家长看不到结果是由什么措施产生的。", action: "补充教师处理模块，或删除孤立的处理结果。" },
   followup_without_task: { area: "后续观察", title: "承诺跟进但没有教师任务", impact: "反馈形成了未来承诺，但系统没有可追踪的执行任务。", action: "在卡片底部创建教师任务并设置截止课次或日期。" },
-  closure_requires_followup: { area: "高级设置 → 结尾类型", title: "“继续观察”结尾缺少跟进内容", impact: "结尾承诺继续观察，但正文结构没有后续观察模块。", action: "加入后续观察模块，或改用不承诺跟进的结尾。" },
-  closure_requires_intervention: { area: "高级设置 → 结尾类型", title: "“教师已处理”结尾缺少处理证据", impact: "结尾声称已经处理，但没有已确认的教师处理模块。", action: "补充并确认教师处理，或更换结尾类型。" },
-  closure_requires_parent_action: { area: "高级设置 → 结尾类型", title: "“家庭配合”结尾缺少家长动作", impact: "结尾要求配合，但没有可执行的家庭任务。", action: "启用并填写家长动作，或更换结尾类型。" },
-  closure_not_allowed: { area: "高级设置 → 结尾类型", title: "当前反馈类型不能使用这个结尾", impact: "反馈类型和收尾方式不符合既定规则。", action: "在高级设置中选择当前类型允许的结尾。" },
+  closure_requires_followup: { area: "生成阶段结构 → 结尾类型", title: "“继续观察”结尾缺少跟进内容", impact: "结尾承诺继续观察，但正文结构没有后续观察模块。", action: "新建计划时同时选择后续观察模块。" },
+  closure_requires_intervention: { area: "生成阶段结构 → 结尾类型", title: "“教师已处理”结尾缺少处理证据", impact: "结尾声称已经处理，但没有已确认的教师处理模块。", action: "新建计划时选择教师处理模块，并确认对应事实。" },
+  closure_requires_parent_action: { area: "生成阶段结构 → 结尾类型", title: "“家庭配合”结尾缺少家长动作", impact: "结尾要求配合，但没有可执行的家庭任务。", action: "新建计划时同时选择家长动作模块。" },
+  closure_not_allowed: { area: "生成阶段结构 → 结尾类型", title: "当前反馈类型不能使用这个结尾", impact: "反馈类型和收尾方式不符合既定规则。", action: "新建计划时选择当前类型允许的结尾。" },
   internal_content_leak: { area: "教师最终正文", title: "正文包含内部工作信息", impact: "家长可能看到续班研判、内部标签、模型过程或教师任务等内部内容。", action: "删除内部信息，只保留可面向家长的教学事实和建议。" },
   cross_student_content: { area: "教师最终正文", title: "正文出现了其他学生姓名", impact: "存在错发学生信息和隐私泄露风险，因此禁止批准。", action: "删除或改正其他学生姓名，并重新核对整段正文。" },
   implicit_parent_action: { area: "教师最终正文", title: "正文要求家长行动，但结构中未登记", impact: "家长任务绕过了可控模块，可能造成未经确认的要求。", action: "启用家长动作模块并确认内容，或删除要求家长执行的句子。" },
@@ -312,6 +340,8 @@ function canRegenerate(item: PlanItem) {
 export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   const showPanel = workspace.activeStep === "review" || workspace.activeStep === "generate" || workspace.activeStep === "export";
   const [type, setType] = useState<FeedbackPlanType>("event_micro");
+  const [generationClosureType, setGenerationClosureType] = useState<string>(defaultFeedbackGenerationPreferences("event_micro").closureType);
+  const [generationModuleKeys, setGenerationModuleKeys] = useState<string[]>(defaultFeedbackGenerationPreferences("event_micro").moduleKeys);
   const [outputRequirement, setOutputRequirement] = useState("自然地记录本次最值得家长了解的教学信息，默认采用家庭已确认的表达偏好。");
   const [sessionMeta, setSessionMeta] = useState<{ classId: string; sessionId: string } | null>(null);
   const [rangeSessions, setRangeSessions] = useState<Array<{ id: string; code: string; date: string; semesterNumber: number }>>([]);
@@ -322,6 +352,9 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   const [plansLoaded, setPlansLoaded] = useState(false);
   const [activePlan, setActivePlan] = useState<Plan | null>(null);
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [studentOverrides, setStudentOverrides] = useState<Record<string, FeedbackPlanItemGenerationConfig>>({});
+  const [independentStudentTarget, setIndependentStudentTarget] = useState<{ id: string; name: string } | null>(null);
+  const [independentItemTarget, setIndependentItemTarget] = useState<{ item: PlanItem; studentName: string } | null>(null);
   const [inactiveCandidates, setInactiveCandidates] = useState<RosterCandidate[]>([]);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, { text: string; revision: number }>>({});
@@ -335,6 +368,53 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   const autosaveTimers = useRef(new Map<string, number>());
   const llmWorkspace = useLLMConfiguration();
   const requestedPlanId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("planId");
+
+  function changePlanType(nextType: FeedbackPlanType) {
+    setType(nextType);
+    const defaults = defaultFeedbackGenerationPreferences(nextType);
+    setGenerationClosureType(defaults.closureType);
+    setGenerationModuleKeys(defaults.moduleKeys);
+  }
+
+  function commonGenerationConfig(planType: FeedbackPlanType, requirement: string, preferences?: { closureType: string; moduleKeys: string[] } | null): FeedbackPlanItemGenerationConfig {
+    const defaults = defaultFeedbackGenerationPreferences(planType);
+    return {
+      version: 1,
+      type: planType,
+      outputRequirement: requirement,
+      generationPreferences: {
+        closureType: (preferences?.closureType ?? defaults.closureType) as FeedbackClosureType,
+        moduleKeys: [...(preferences?.moduleKeys ?? defaults.moduleKeys)],
+      },
+    };
+  }
+
+  function openIndependentStudent(student: { id: string; name: string }) {
+    setIndependentStudentTarget(student);
+  }
+
+  function saveIndependentStudent(config: FeedbackPlanItemGenerationConfig) {
+    if (!independentStudentTarget) return;
+    setStudentOverrides((current) => ({ ...current, [independentStudentTarget.id]: config }));
+    setSelectedStudentIds((current) => [...new Set([...current, independentStudentTarget.id])]);
+    setIndependentStudentTarget(null);
+  }
+
+  function resetIndependentStudent() {
+    if (!independentStudentTarget) return;
+    setStudentOverrides((current) => {
+      const next = { ...current };
+      delete next[independentStudentTarget.id];
+      return next;
+    });
+    setIndependentStudentTarget(null);
+  }
+
+  function toggleGenerationModule(key: string, enabled: boolean) {
+    setGenerationModuleKeys((current) => enabled
+      ? [...new Set([...current, key])]
+      : current.filter((candidate) => candidate !== key));
+  }
 
   const assessmentEvidenceForStudentIds = (studentIds: string[]) => Object.fromEntries(
     studentIds.flatMap((studentId) => workspace.confirmedAssessmentEvidence[studentId]
@@ -412,6 +492,9 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     setPlans([]);
     setPlansLoaded(false);
     setInactiveCandidates([]);
+    setStudentOverrides({});
+    setIndependentStudentTarget(null);
+    setIndependentItemTarget(null);
     setDrafts({});
     setSelectedItemIds([]);
     setRepeatExportRequest(null);
@@ -546,7 +629,16 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
           rangeEndSessionId: type === "stage_trend" || type === "course_end" ? (rangeEndSessionId || sessionMeta.sessionId) : sessionMeta.sessionId,
           ...(type === "class_update" ? {} : { studentIds: selectedStudentIds }),
           ...(type === "class_update" ? {} : { assessmentEvidence: assessmentEvidenceForStudentIds(selectedStudentIds) }),
+          ...(type === "class_update" ? {} : {
+            studentOverrides: Object.entries(studentOverrides)
+              .filter(([studentId]) => selectedStudentIds.includes(studentId))
+              .map(([studentId, generationConfig]) => ({ studentId, generationConfig })),
+          }),
           lessonMaterial: workspace.lessonMaterial,
+          generationPreferences: {
+            closureType: generationClosureType,
+            moduleKeys: generationModuleKeys,
+          },
         }),
       });
       const payload = await response.json() as { plan?: Plan } & ApiFailurePayload;
@@ -670,6 +762,29 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     finally { setBusy(false); }
   }
 
+  function openIndependentItem(item: PlanItem) {
+    if (!item.studentId || !item.student) return;
+    setIndependentItemTarget({ item, studentName: item.student.name });
+  }
+
+  async function saveIndependentItem(config: FeedbackPlanItemGenerationConfig | null) {
+    if (!activePlan || !independentItemTarget) return;
+    const item = independentItemTarget.item;
+    if (item.finalText?.trim() && item.reviewMode !== "teacher_edited") {
+      const confirmed = window.confirm("修改独立计划会清除这位学生当前未批准的模型草稿，并需要重新生成。是否继续？");
+      if (!confirmed) return;
+    }
+    const response = await fetch(`/api/report/feedback-plans/${activePlan.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "item", itemId: item.id, patch: { generationConfig: config, expectedItemRevision: item.itemRevision } }),
+    });
+    const payload = await response.json().catch(() => null) as ApiFailurePayload | null;
+    if (!response.ok) throw new Error(apiFailureMessage(payload, "保存学生独立计划失败"));
+    await openPlan(activePlan.id);
+    setIndependentItemTarget(null);
+  }
+
   function scheduleAutosave(item: PlanItem, text: string, revision: number) {
     const previous = autosaveTimers.current.get(item.id);
     if (previous !== undefined) window.clearTimeout(previous);
@@ -724,21 +839,6 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       if (!response.ok) throw new Error(apiFailureMessage(payload, "重试失败反馈失败"));
       await openPlan(plan.id);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "重试失败反馈失败"); }
-    finally { setBusy(false); }
-  }
-
-  async function saveComposition(item: PlanItem, composition: FeedbackCompositionPlan) {
-    if (!activePlan) return;
-    setBusy(true); setError("");
-    try {
-      const response = await fetch(`/api/report/feedback-plans/${activePlan.id}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "item", itemId: item.id, patch: { composition, expectedItemRevision: item.itemRevision } }),
-      });
-      const payload = await response.json() as ApiFailurePayload;
-      if (!response.ok) throw new Error(apiFailureMessage(payload, "保存模块选择失败"));
-      await openPlan(activePlan.id);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "保存模块选择失败"); }
     finally { setBusy(false); }
   }
 
@@ -935,7 +1035,42 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
 
   const hasUnconfirmedDraft = Boolean(workspace.draftId && !workspace.confirmed);
 
-  return <Section title={title} description={description} className="feedback-plan-panel" actions={isReview ? <div className="feedback-plan-header-actions">{activePlan && <Button uiSize="sm" variant="secondary" onClick={startNewPlan} disabled={busy}>新建反馈计划</Button>}<Button onClick={() => activePlan ? workspace.setActiveStep("generate") : void createPlan()} disabled={busy || (!activePlan && (hasUnconfirmedDraft || !sessionMeta || !outputRequirement.trim() || (type !== "class_update" && selectedStudentIds.length === 0)))}>{busy ? "处理中…" : activePlan ? "前往生成" : "进入生成"}</Button>{activePlan && !archivedReadOnly && activePlan.status === "draft" && <Button uiSize="sm" variant="ghost" onClick={() => void deletePlan(activePlan)} disabled={busy}>删除草稿</Button>}</div> : activePlan ? <div className="feedback-plan-header-actions">{isGenerate && ["queued", "generating", "pause_requested"].includes(activePlan.status) && <Button uiSize="sm" variant="secondary" onClick={() => void pausePlan(activePlan)} disabled={busy || archivedReadOnly || activePlan.status === "pause_requested"}>暂停</Button>}{isGenerate && activePlan.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void continuePlan(activePlan)} disabled={busy || archivedReadOnly}>继续</Button>}{isGenerate && activePlan.status === "generation_failed" && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly}>重试失败条目</Button>}{isExport && staleTextCount > 0 && <Button uiSize="sm" variant="secondary" onClick={() => void retainStaleText(activePlan)} disabled={busy || archivedReadOnly}>保留现有正文（{staleTextCount}）</Button>}{isExport && <><Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || archivedReadOnly || selectedItemIds.length === 0}>批准所选可通过项</Button><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button><Button uiSize="sm" variant="secondary" onClick={() => void exportWeComDrafts(activePlan)} disabled={busy || !activePlan.items.some((item) => item.studentId && ["approved", "exported"].includes(item.status) && item.finalText?.trim())}>导出企微草稿 JSON</Button>{!archivedReadOnly && <Button uiSize="sm" variant="ghost" onClick={() => void archivePlan(activePlan)} disabled={busy}>归档计划</Button>}</>}</div> : null}>
+  const publicGenerationConfig = commonGenerationConfig(type, outputRequirement, {
+    closureType: generationClosureType,
+    moduleKeys: generationModuleKeys,
+  });
+  const independentStudentConfig = independentStudentTarget
+    ? independentConfigFromCommon(publicGenerationConfig, studentOverrides[independentStudentTarget.id] ?? null)
+    : publicGenerationConfig;
+  const independentItemConfig = independentItemTarget && activePlan
+    ? independentConfigFromCommon(
+      commonGenerationConfig(activePlan.type, activePlan.outputRequirement, activePlan.input?.generationPreferences),
+      independentItemTarget.item.generationConfig,
+    )
+    : publicGenerationConfig;
+
+  const sectionActions = isReview
+    ? <div className="feedback-plan-header-actions">
+      {activePlan && <Button uiSize="sm" variant="secondary" onClick={startNewPlan} disabled={busy}>新建反馈计划</Button>}
+      <Button onClick={() => activePlan ? workspace.setActiveStep("generate") : void createPlan()} disabled={busy || (!activePlan && (hasUnconfirmedDraft || !sessionMeta || !outputRequirement.trim() || (type !== "class_update" && selectedStudentIds.length === 0)))}>{busy ? "处理中…" : activePlan ? "前往生成" : "进入生成"}</Button>
+      {activePlan && !archivedReadOnly && activePlan.status === "draft" && <Button uiSize="sm" variant="ghost" onClick={() => void deletePlan(activePlan)} disabled={busy}>删除草稿</Button>}
+    </div>
+    : activePlan ? <div className="feedback-plan-header-actions">
+      {isGenerate && ["queued", "generating", "pause_requested"].includes(activePlan.status) && <Button uiSize="sm" variant="secondary" onClick={() => void pausePlan(activePlan)} disabled={busy || archivedReadOnly || activePlan.status === "pause_requested"}>暂停</Button>}
+      {isGenerate && activePlan.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void continuePlan(activePlan)} disabled={busy || archivedReadOnly}>继续</Button>}
+      {isGenerate && activePlan.status === "generation_failed" && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly}>重试失败条目</Button>}
+      {isExport && staleTextCount > 0 && <Button uiSize="sm" variant="secondary" onClick={() => void retainStaleText(activePlan)} disabled={busy || archivedReadOnly}>保留现有正文（{staleTextCount}）</Button>}
+      {isExport && <>
+        <Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || archivedReadOnly || selectedItemIds.length === 0}>批准所选可通过项</Button>
+        <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button>
+        <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button>
+        <Button uiSize="sm" variant="secondary" onClick={() => void exportWeComDrafts(activePlan)} disabled={busy || !activePlan.items.some((item) => item.studentId && ["approved", "exported"].includes(item.status) && item.finalText?.trim())}>导出企微草稿 JSON</Button>
+        {!archivedReadOnly && <Button uiSize="sm" variant="ghost" onClick={() => void archivePlan(activePlan)} disabled={busy}>归档计划</Button>}
+      </>}
+    </div> : null;
+
+  return <Section title={title} description={description} className="feedback-plan-panel" actions={sectionActions}>
+
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {isReview && !activePlan && hasUnconfirmedDraft && <StatusBanner tone="warning">当前结构化记录尚未写入，生成入口已锁定。请先在上方完成“确认写入”；之后候选学生和证据会自动刷新。</StatusBanner>}
     {contextMetaError && <StatusBanner tone="danger"><span>当前课次信息读取失败：{contextMetaError}</span><Button uiSize="sm" variant="secondary" onClick={() => setContextMetaReloadKey((key) => key + 1)}>重试读取课次</Button></StatusBanner>}
@@ -944,14 +1079,29 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     {repeatExportRequest && activePlan?.id === repeatExportRequest.planId && <StatusBanner tone="warning"><span>相同文本已经导出过。只有确实需要重新下载时才继续。</span><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, repeatExportRequest.mode, true)} disabled={busy}>确认重复导出</Button><Button uiSize="sm" variant="ghost" onClick={() => setRepeatExportRequest(null)} disabled={busy}>取消</Button></StatusBanner>}
     {isReview && !activePlan && <div className="feedback-plan-create">
       <div className="feedback-plan-form-grid">
-        <label><span>反馈类型</span><select aria-label="反馈类型" value={type} onChange={(event) => setType(event.target.value as FeedbackPlanType)}>{Object.entries(typeLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        <label><span>反馈类型</span><select aria-label="反馈类型" value={type} onChange={(event) => changePlanType(event.target.value as FeedbackPlanType)}>{Object.entries(typeLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
         <label><span>反馈要求与补充事实</span><textarea rows={3} value={outputRequirement} onChange={(event) => setOutputRequirement(event.target.value)} placeholder="告诉模型这次怎么写，也可以补充或纠正事实；老师在这里写出的事实会直接视为已确认。" /></label>
       </div>
+      <fieldset className="feedback-plan-generation-preferences">
+        <legend>生成阶段结构</legend>
+        <p>结尾类型和可选模块在创建计划时确定，并写入计划快照；生成与审核会遵守这里的选择，导出阶段只负责使用已批准正文。不选择模块时，按当前反馈类型自然组织，不会因数量阻断。</p>
+        <div className="feedback-plan-form-grid">
+          <label><span>结尾类型</span><select aria-label="生成结尾类型" value={generationClosureType} onChange={(event) => setGenerationClosureType(event.target.value)}>{FEEDBACK_CLOSURES_BY_TYPE[type].map((closure) => <option key={closure} value={closure}>{closureLabels[closure] || closure}</option>)}</select></label>
+          <div className="feedback-plan-modules" aria-label="公共计划可选模块"><span className="feedback-plan-label">生成模块（可选）</span>{FEEDBACK_MODULES[type].map((key) => {
+            const label = moduleLabels[key] || key;
+            const descriptionId = `feedback-public-${key}-description`;
+            return <label key={key} className={`feedback-plan-module ${generationModuleKeys.includes(key) ? "is-selected" : ""}`}>
+              <input type="checkbox" checked={generationModuleKeys.includes(key)} aria-label={`选择公共模块：${label}`} aria-describedby={descriptionId} onChange={(event) => toggleGenerationModule(key, event.target.checked)} />
+              <span><strong>{label}</strong><small id={descriptionId}>{moduleDescriptions[key] || "决定这条反馈关注的内容"}</small></span>
+            </label>;
+          })}</div>
+        </div>
+      </fieldset>
       {type !== "class_update" && <fieldset className="feedback-plan-candidates">
         <legend>反馈对象</legend>
         <div className="feedback-plan-candidate-toolbar"><span>{selectedStudentIds.length} 人已选择</span><div><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds(candidateStudents.map((student) => student.id))}>全选在读</Button><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds([])}>清空</Button>{type === "event_micro" && <Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds(recommendedStudents.map((student) => student.id))}>仅推荐</Button>}</div></div>
-        <div className="feedback-plan-candidate-grid">{candidateStudents.length ? candidateStudents.map((student) => { const recommended = recommendedStudents.some((candidate) => candidate.id === student.id); const hasAssessment = confirmedAssessmentStudentIds.has(student.id); return <label key={student.id} className={selectedStudentIds.includes(student.id) ? "is-selected" : ""}><input type="checkbox" checked={selectedStudentIds.includes(student.id)} onChange={(event) => setSelectedStudentIds((ids) => event.target.checked ? [...new Set([...ids, student.id])] : ids.filter((id) => id !== student.id))} /><span><strong>{student.name}</strong><small>{recommended ? student.feedbackRecommendationReasons?.join("、") : hasAssessment ? "已有确认 PDF 证据" : "有确认记录，可手动加入"}</small></span></label>; }) : <span>当前上下文暂无候选学生</span>}</div>
-        {(type === "stage_trend" || type === "course_end") && inactiveCandidates.length > 0 && <details className="feedback-plan-inactive-candidates"><summary>停读学生（仅手动加入）</summary><div className="feedback-plan-candidate-grid">{inactiveCandidates.map((student) => <label key={student.id} className={selectedStudentIds.includes(student.id) ? "is-selected" : ""}><input type="checkbox" checked={selectedStudentIds.includes(student.id)} onChange={(event) => setSelectedStudentIds((ids) => event.target.checked ? [...new Set([...ids, student.id])] : ids.filter((id) => id !== student.id))} /><span><strong>{student.name}</strong><small>停读 · 手动加入后按历史范围取证</small></span></label>)}</div></details>}
+        <div className="feedback-plan-candidate-grid">{candidateStudents.length ? candidateStudents.map((student) => { const recommended = recommendedStudents.some((candidate) => candidate.id === student.id); const hasAssessment = confirmedAssessmentStudentIds.has(student.id); const independent = Boolean(studentOverrides[student.id]); return <div key={student.id} className={`feedback-plan-candidate ${selectedStudentIds.includes(student.id) ? "is-selected" : ""}`}><label><input type="checkbox" checked={selectedStudentIds.includes(student.id)} onChange={(event) => setSelectedStudentIds((ids) => event.target.checked ? [...new Set([...ids, student.id])] : ids.filter((id) => id !== student.id))} /><span><strong>{student.name}</strong><small>{recommended ? student.feedbackRecommendationReasons?.join("、") : hasAssessment ? "已有确认 PDF 证据" : "有确认记录，可手动加入"}</small></span></label><Button type="button" uiSize="sm" variant={independent ? "secondary" : "ghost"} onClick={() => openIndependentStudent({ id: student.id, name: student.name })}>{independent ? "独立计划" : "单独设置"}</Button></div>; }) : <span>当前上下文暂无候选学生</span>}</div>
+        {(type === "stage_trend" || type === "course_end") && inactiveCandidates.length > 0 && <details className="feedback-plan-inactive-candidates"><summary>停读学生（仅手动加入）</summary><div className="feedback-plan-candidate-grid">{inactiveCandidates.map((student) => { const independent = Boolean(studentOverrides[student.id]); return <div key={student.id} className={`feedback-plan-candidate ${selectedStudentIds.includes(student.id) ? "is-selected" : ""}`}><label><input type="checkbox" checked={selectedStudentIds.includes(student.id)} onChange={(event) => setSelectedStudentIds((ids) => event.target.checked ? [...new Set([...ids, student.id])] : ids.filter((id) => id !== student.id))} /><span><strong>{student.name}</strong><small>停读 · 手动加入后按历史范围取证</small></span></label><Button type="button" uiSize="sm" variant={independent ? "secondary" : "ghost"} onClick={() => openIndependentStudent({ id: student.id, name: student.name })}>{independent ? "独立计划" : "单独设置"}</Button></div>; })}</div></details>}
       </fieldset>}
       {(type === "stage_trend" || type === "course_end") && <fieldset className="feedback-plan-range"><legend>{type === "stage_trend" ? "阶段范围" : "学期范围"}</legend><p>{type === "stage_trend" ? "首次默认最近四次已完成课次，后续从上一份已批准阶段反馈之后开始。" : "默认覆盖当前学期截至当前课次的全部范围。"}</p><div className="feedback-plan-form-grid"><label><span>起始课次</span><select aria-label="反馈计划起始课次" value={rangeStartSessionId} onChange={(event) => setRangeStartSessionId(event.target.value)}><option value="">自动</option>{rangeSessions.map((session) => <option key={session.id} value={session.id}>{session.code} · {session.date} · 第{session.semesterNumber}次</option>)}</select></label><label><span>截止课次</span><select aria-label="反馈计划截止课次" value={rangeEndSessionId} onChange={(event) => setRangeEndSessionId(event.target.value)}>{rangeSessions.map((session) => <option key={session.id} value={session.id}>{session.code} · {session.date} · 第{session.semesterNumber}次</option>)}</select></label></div></fieldset>}
     </div>}
@@ -989,7 +1139,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       {["in_review", "approved", "partially_approved", "exported", "partially_exported"].includes(activePlan.status) && <div className="feedback-generation-complete"><div><strong>本轮生成已完成</strong><span>计时和每条耗时已保存，稍后从计划历史恢复仍可查看。</span></div><Button onClick={() => workspace.setActiveStep("export")}>查看并编辑反馈</Button></div>}
     </div>}
     {isExport && activePlan && <div className="feedback-plan-detail"><header className="feedback-plan-detail__heading"><div><strong>{typeLabels[activePlan.type]}</strong><span>{activePlan.outputRequirement}</span></div><Badge tone={activePlan.status === "stale" ? "danger" : activePlan.status === "approved" || activePlan.status === "exported" ? "success" : "warning"}>{planStatusLabel(activePlan.status)}</Badge></header><div className="feedback-plan-selection-toolbar"><span>已选择 {selectedItemIds.length}/{activePlan.items.length} 条</span><div><Button uiSize="sm" variant="ghost" disabled={archivedReadOnly} onClick={() => setSelectedItemIds(activePlan.items.filter((item) => !["approved", "exported", "stale", "generating", "queued"].includes(item.status)).map((item) => item.id))}>选择可批准项</Button><Button uiSize="sm" variant="ghost" disabled={archivedReadOnly} onClick={() => setSelectedItemIds([])}>清空</Button></div></div>{activePlan.items.map((item) => {
-      const composition = parseComposition(item.compositionSnapshot, activePlan.type, item.composition);
+      const composition = parseComposition(item.compositionSnapshot, item.generationConfig?.type ?? activePlan.type, item.composition);
       const audit = item.audit ?? parseObject(item.auditSnapshot);
       const evidence = item.evidence ?? parseObject(item.evidenceSnapshot);
       const assessmentEvidence = evidence.assessmentEvidence || [];
@@ -998,9 +1148,8 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
         ...assessmentEvidence,
       ].filter((entry: { confirmed?: boolean; kind?: string }) => entry.confirmed !== false && entry.kind !== "model_candidate")
         .map((entry: { id: string }) => entry.id));
-      const allowedModules = FEEDBACK_MODULES[activePlan.type] as readonly string[];
-      const moduleMap = new Map<string, FeedbackModule>(composition.modules.map((module) => [module.key, module]));
-      const moduleRows: FeedbackModule[] = allowedModules.map((key) => moduleMap.get(key) ?? { key, content: "", evidenceRefs: [], status: "omitted", reason: "模型未选择" });
+      const generationPreferences = activePlan.input?.generationPreferences ?? null;
+      const effectiveGenerationPreferences = item.generationConfig?.generationPreferences ?? generationPreferences;
       const draft = drafts[item.id] ?? { text: item.finalText ?? composition.draftFeedback ?? "", revision: item.itemRevision };
       const normalizedDraftText = draft.text.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "");
       const coveredEvidenceIds = new Set((composition.evidenceCoverage || [])
@@ -1018,14 +1167,6 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
           && normalizedInitialDraftText.includes(coverage.statement!.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, ""))
         ))
         .map((coverage: { evidenceId: string }) => coverage.evidenceId));
-      const updateModule = (key: string, enabled: boolean) => {
-        const current = moduleMap.get(key);
-        if (!current || current.status === "blocked") return;
-        void saveComposition(item, { ...composition, modules: [...composition.modules.filter((module) => module.key !== key), { ...current, status: enabled ? "included" : "omitted", reason: enabled ? "教师选择" : "教师省略" }] });
-      };
-      const updateClosure = (closureType: string) => {
-        if (FEEDBACK_CLOSURE_TYPES.includes(closureType as never)) void saveComposition(item, { ...composition, closureType: closureType as FeedbackCompositionPlan["closureType"] });
-      };
       const auditIssues = audit.items || [];
       const blockedIssues = auditIssues.filter((issue: { code: string }) => isHardFeedbackAuditIssue(issue.code));
       const preference = parseObject(item.student?.communicationPreference?.preferenceSnapshot);
@@ -1072,9 +1213,10 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
           : []
       ));
       const itemImmutable = archivedReadOnly || ["approved", "exported", "generating", "queued", "pause_requested"].includes(item.status);
+      const generationConfigImmutable = itemImmutable || item.reviewMode === "teacher_edited";
       const auditPending = pendingAuditMessage(item.status);
       return <article key={item.id} className="feedback-plan-item">
-        <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 版本 {item.itemRevision}</small></span></label><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge></header>
+        <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 版本 {item.itemRevision}</small></span></label><div className="feedback-plan-item__badges"><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge>{item.generationConfig && <Badge tone="info">独立计划</Badge>}</div></header>
         <section className="feedback-plan-audit-panel" aria-label={`${itemLabel}程序核验结果`}>
           <header><div><strong>程序核验</strong><span>先处理这里，再核对证据和正文 · 初稿覆盖 {initialDraftCoveredEvidenceIds.size}/{requiredEvidenceIds.size} · 成稿保留 {coveredEvidenceIds.size}/{requiredEvidenceIds.size}</span></div><Badge tone={auditPending ? "warning" : blockedIssues.length ? "danger" : auditIssues.length ? "warning" : "success"}>{auditPending ? "尚未完成核验" : auditStatusLabel(auditStatus(item))}</Badge></header>
           <p className="feedback-plan-audit-mode">{auditPending ? "本条尚无有效的最终核验结果。" : `LLM 审核与润色：${activePlan.generationMode === "fast" ? "未执行（快速生成）" : "已执行（标准生成）"}；以下结果来自最终的程序规则核验。`}</p>
@@ -1120,9 +1262,83 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
         </div>
         {assessmentEvidence.length > 0 && <details className="feedback-plan-assessment-detail"><summary><span><strong>出门测详情</strong><small>{assessmentEvidence.length} 条已确认测评证据</small></span><Badge tone="neutral">默认折叠</Badge></summary><div>{assessmentEvidence.map((entry: { id?: string; content: string }, index: number) => <p key={entry.id ?? index}>{entry.content}</p>)}</div></details>}
         {pendingPreferenceCandidate && <details className="feedback-plan-preference" open><summary>发现新的家庭沟通偏好，等待确认</summary><div className="feedback-plan-preference__candidate"><p>待确认：长度 {preferenceLabel(pendingPreference.length)} · 形式 {preferenceLabel(pendingPreference.deliveryChannel)} · 电话 {preferenceLabel(pendingPreference.phoneContact)} · 频率 {preferenceLabel(pendingPreference.frequency)}</p><div><Button uiSize="sm" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "confirmed")} disabled={busy || archivedReadOnly}>确认并用于反馈</Button><Button uiSize="sm" variant="ghost" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "rejected")} disabled={busy || archivedReadOnly}>不是偏好</Button></div></div></details>}
-        <details className="feedback-plan-advanced"><summary>高级：结构、任务与附件</summary><div className="feedback-plan-item__controls"><label><span>结尾类型</span><select value={composition.closureType || "positive_recognition"} onChange={(event) => updateClosure(event.target.value)} disabled={busy || itemImmutable}>{FEEDBACK_CLOSURES_BY_TYPE[activePlan.type].map((closure) => <option key={closure} value={closure}>{closureLabels[closure] || closure}</option>)}</select></label><div className="feedback-plan-modules"><span className="feedback-plan-label">可选模块</span>{moduleRows.map((module) => <label key={module.key} className={`feedback-plan-module feedback-plan-module--${module.status}`}><input type="checkbox" checked={module.status === "included"} disabled={busy || itemImmutable || module.status === "blocked" || !module.content} onChange={(event) => updateModule(module.key, event.target.checked)} /><span><strong>{moduleLabels[module.key] || module.key}</strong><small>{module.status === "blocked" ? `阻断：${module.reason || "缺证据"}` : !module.content ? "暂无可用证据" : module.reason || ""}</small></span></label>)}</div></div>{item.tasks?.map((task) => <p className="feedback-plan-task" key={task.id}>教师任务：{task.action} · {task.status}</p>)}{item.attachments?.map((attachment) => <div className={`feedback-plan-attachment ${attachment.status === "missing" ? "is-missing" : ""}`} key={attachment.id}><span>发送附件：{attachment.displayName} · {attachment.sizeBytes}B · {attachment.status === "missing" ? "文件缺失，不能导出" : attachment.status}</span><Button uiSize="sm" variant="ghost" onClick={() => void removeAttachment(activePlan, attachment.id)} disabled={busy || itemImmutable}>移除</Button></div>)}<div className="feedback-plan-item__footer">{auditIssues.some((issue: { code: string }) => ["followup_without_task", "promise_without_task"].includes(issue.code)) && <div className="feedback-plan-task-form"><input aria-label={`${itemLabel}教师任务`} value={taskDraft.action} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, action: event.target.value } }))} /><select aria-label={`${itemLabel}任务截止方式`} value={taskDraft.dueType} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueType: event.target.value as TaskDraft["dueType"] } }))}><option value="session" disabled={futureSessions.length === 0}>按课次</option><option value="date">按日期</option></select>{taskDraft.dueType === "session" ? <select aria-label={`${itemLabel}教师任务截止课次`} value={taskDraft.dueSessionId} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueSessionId: event.target.value } }))}>{futureSessions.map((session) => <option key={session.id} value={session.id}>{session.date} · {session.code}</option>)}</select> : <input aria-label={`${itemLabel}任务截止日期`} type="date" value={taskDraft.dueDate} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueDate: event.target.value } }))} />}<Button uiSize="sm" variant="secondary" onClick={() => void createTask(activePlan, item)} disabled={busy || itemImmutable || !taskDraft.action.trim() || (taskDraft.dueType === "date" && !taskDraft.dueDate)}>批准并创建教师任务</Button></div>}{isExport && <label className="feedback-plan-attachment-picker">标记发送附件<input type="file" onChange={(event) => void uploadAttachment(activePlan, item, event.target.files?.[0])} disabled={busy || item.status === "stale" || itemImmutable} /></label>}</div></details>
+        <details className="feedback-plan-advanced">
+          <summary>计划结构、任务与附件</summary>
+          <div className="feedback-plan-item__controls">
+            <div className="feedback-plan-generation-preferences feedback-plan-generation-preferences--readonly">
+              {item.generationConfig
+                ? <>
+                  <strong>学生独立计划</strong>
+                  <span>反馈类型：{typeLabels[item.generationConfig.type]}</span>
+                  <span>特殊处理：{item.generationConfig.outputRequirement}</span>
+                  <span>结尾：{closureLabels[item.generationConfig.generationPreferences.closureType] || item.generationConfig.generationPreferences.closureType}</span>
+                  <span>模块：{item.generationConfig.generationPreferences.moduleKeys.length ? item.generationConfig.generationPreferences.moduleKeys.map((key) => moduleLabels[key] || key).join("、") : "未预选，按当前类型自然组织"}</span>
+                  <small>本条不遵循公共计划的模块和要求；课次、证据与导出仍属于当前批次。</small>
+                </>
+                : generationPreferences
+                ? <>
+                  <strong>沿用公共计划</strong>
+                  <span>结尾：{closureLabels[effectiveGenerationPreferences?.closureType ?? ""] || effectiveGenerationPreferences?.closureType}</span>
+                  <span>模块：{effectiveGenerationPreferences?.moduleKeys.length ? effectiveGenerationPreferences.moduleKeys.map((key) => moduleLabels[key] || key).join("、") : "未预选，按当前类型自然组织"}</span>
+                  <small>公共结构已随计划快照固定；当前导出只使用已审核正文。</small>
+                </>
+                : <>
+                  <strong>旧计划兼容模式</strong>
+                  <span>该计划创建时未保存生成结构偏好，仍按当前反馈类型的完整允许目录审核。</span>
+                  <small>当前导出只使用已审核正文。</small>
+                </>}
+              {item.studentId && item.student && <Button uiSize="sm" variant="secondary" onClick={() => openIndependentItem(item)} disabled={busy || generationConfigImmutable} title={generationConfigImmutable ? "已编辑、批准或正在处理的条目不能覆盖计划配置" : undefined}>{item.generationConfig ? "调整独立计划" : "设置独立计划"}</Button>}
+            </div>
+            {item.tasks?.map((task) => <p className="feedback-plan-task" key={task.id}>教师任务：{task.action} · {task.status}</p>)}
+            {item.attachments?.map((attachment) => (
+              <div className={`feedback-plan-attachment ${attachment.status === "missing" ? "is-missing" : ""}`} key={attachment.id}>
+                <span>发送附件：{attachment.displayName} · {attachment.sizeBytes}B · {attachment.status === "missing" ? "文件缺失，不能导出" : attachment.status}</span>
+                <Button uiSize="sm" variant="ghost" onClick={() => void removeAttachment(activePlan, attachment.id)} disabled={busy || itemImmutable}>移除</Button>
+              </div>
+            ))}
+            <div className="feedback-plan-item__footer">
+              {auditIssues.some((issue: { code: string }) => ["followup_without_task", "promise_without_task"].includes(issue.code)) && (
+                <div className="feedback-plan-task-form">
+                  <input aria-label={`${itemLabel}教师任务`} value={taskDraft.action} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, action: event.target.value } }))} />
+                  <select aria-label={`${itemLabel}任务截止方式`} value={taskDraft.dueType} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueType: event.target.value as TaskDraft["dueType"] } }))}>
+                    <option value="session" disabled={futureSessions.length === 0}>按课次</option>
+                    <option value="date">按日期</option>
+                  </select>
+                  {taskDraft.dueType === "session" ? (
+                    <select aria-label={`${itemLabel}教师任务截止课次`} value={taskDraft.dueSessionId} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueSessionId: event.target.value } }))}>
+                      {futureSessions.map((session) => <option key={session.id} value={session.id}>{session.date} · {session.code}</option>)}
+                    </select>
+                  ) : (
+                    <input aria-label={`${itemLabel}任务截止日期`} type="date" value={taskDraft.dueDate} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueDate: event.target.value } }))} />
+                  )}
+                  <Button uiSize="sm" variant="secondary" onClick={() => void createTask(activePlan, item)} disabled={busy || itemImmutable || !taskDraft.action.trim() || (taskDraft.dueType === "date" && !taskDraft.dueDate)}>批准并创建教师任务</Button>
+                </div>
+              )}
+              {isExport && <label className="feedback-plan-attachment-picker">标记发送附件<input type="file" onChange={(event) => void uploadAttachment(activePlan, item, event.target.files?.[0])} disabled={busy || item.status === "stale" || itemImmutable} /></label>}
+            </div>
+          </div>
+        </details>
       </article>;
     })}</div>}
     {isExport && activePlan?.exportRuns && activePlan.exportRuns.length > 0 && <div className="feedback-plan-exports"><strong>导出记录</strong>{activePlan.exportRuns.slice(0, 5).map((run, index) => { const isFirst = index === activePlan.exportRuns!.length - 1; const label = run.isRepeat ? "重复导出" : isFirst ? "首次导出" : run.mode === "approved_only" ? "补导" : "完整导出"; return <span key={run.id}>{label} · {new Date(run.createdAt).toLocaleString("zh-CN")} · {run.manifestHash.slice(0, 10)}…</span>; })}</div>}
+    <FeedbackPlanGenerationConfigDialog
+      open={Boolean(independentStudentTarget)}
+      studentName={independentStudentTarget?.name ?? ""}
+      initialConfig={independentStudentConfig}
+      onClose={() => setIndependentStudentTarget(null)}
+      onSave={saveIndependentStudent}
+      onReset={studentOverrides[independentStudentTarget?.id ?? ""] ? resetIndependentStudent : undefined}
+      busy={busy}
+    />
+    <FeedbackPlanGenerationConfigDialog
+      open={Boolean(independentItemTarget)}
+      studentName={independentItemTarget?.studentName ?? ""}
+      initialConfig={independentItemConfig}
+      onClose={() => setIndependentItemTarget(null)}
+      onSave={saveIndependentItem}
+      onReset={independentItemTarget?.item.generationConfig ? () => saveIndependentItem(null) : undefined}
+      busy={busy}
+      error={error}
+    />
   </Section>;
 }

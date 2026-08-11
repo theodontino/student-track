@@ -34,6 +34,7 @@ erDiagram
     TEXT sessionId FK
     TEXT target
     TEXT summary
+    TEXT occurredAt
     TEXT sourceKey UK
     DATETIME createdAt
   }
@@ -66,6 +67,8 @@ erDiagram
     TEXT nextTarget
     TEXT previousSummary
     TEXT nextSummary
+    TEXT previousOccurredAt
+    TEXT nextOccurredAt
     TEXT previousSessionId
     TEXT nextSessionId
     DATETIME confirmedAt
@@ -146,6 +149,7 @@ erDiagram
     TEXT studentId FK
     TEXT status
     TEXT generationError
+    TEXT generationConfigSnapshot
     TEXT evidenceSnapshot
     TEXT compositionSnapshot
     TEXT auditSnapshot
@@ -549,10 +553,11 @@ erDiagram
 | `sessionId` | `TEXT` | 是 | FK |
 | `target` | `TEXT` | 是 |  |
 | `summary` | `TEXT` | 是 |  |
+| `occurredAt` | `TEXT` | 是 | default: '' |
 | `sourceKey` | `TEXT` | 否 | unique |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
-复合唯一约束：`studentId + sessionId + summary`。
+复合唯一约束：`studentId + sessionId + summary + occurredAt`。
 
 ### CommunicationPreference
 
@@ -594,6 +599,8 @@ erDiagram
 | `nextTarget` | `TEXT` | 是 |  |
 | `previousSummary` | `TEXT` | 是 |  |
 | `nextSummary` | `TEXT` | 是 |  |
+| `previousOccurredAt` | `TEXT` | 否 |  |
+| `nextOccurredAt` | `TEXT` | 否 |  |
 | `previousSessionId` | `TEXT` | 是 |  |
 | `nextSessionId` | `TEXT` | 是 |  |
 | `confirmedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
@@ -700,6 +707,7 @@ erDiagram
 | `studentId` | `TEXT` | 否 | FK |
 | `status` | `TEXT` | 是 | default: 'evidence_ready' |
 | `generationError` | `TEXT` | 否 |  |
+| `generationConfigSnapshot` | `TEXT` | 是 | default: '{}' |
 | `evidenceSnapshot` | `TEXT` | 是 | default: '{}' |
 | `compositionSnapshot` | `TEXT` | 是 | default: '{}' |
 | `auditSnapshot` | `TEXT` | 是 | default: '{}' |

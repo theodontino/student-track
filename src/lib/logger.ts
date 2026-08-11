@@ -4,6 +4,7 @@ export type LogAction =
   | "score.updated"
   | "alert.triggered"
   | "student.deleted"
+  | "student.enrollment.transferred"
   | "student.roster-status.updated"
   | "session.created"
   | "session.deleted"
@@ -37,4 +38,24 @@ export async function logAction(entry: LogEntry): Promise<void> {
   } catch (err) {
     console.error("[SystemLog] Failed to write log:", err);
   }
+}
+
+export async function logStudentEnrollmentTransfer(input: {
+  studentId: string;
+  studentName?: string;
+  semesterId: string;
+  previousClass: { id: string; code: string; name: string | null };
+  currentClass: { id: string; code: string; name: string | null };
+}): Promise<void> {
+  await logAction({
+    action: "student.enrollment.transferred",
+    targetType: "Student",
+    targetId: input.studentId,
+    targetName: input.studentName,
+    detail: {
+      semesterId: input.semesterId,
+      fromClass: input.previousClass,
+      toClass: input.currentClass,
+    },
+  });
 }

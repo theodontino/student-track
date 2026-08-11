@@ -168,6 +168,8 @@ model Communication {
   sessionId String   // 关联课次（必填）
   target    String   // 沟通对象，如 "父亲"、"母亲"
   summary   String   // 内容摘要
+  // 实际沟通发生日期或日期范围；空字符串表示旧数据没有可靠的发生时间。
+  occurredAt String   @default("")
   sourceKey String?  @unique // 外部导入的稳定去重键；手工记录为 null
   createdAt DateTime @default(now())
 
@@ -177,7 +179,7 @@ model Communication {
   drafts DraftRecord[]
   revisions CommunicationRevision[]
 
-  @@unique([studentId, sessionId, summary])
+  @@unique([studentId, sessionId, summary, occurredAt])
 }
 
 // 4b. 企微增量处理账本（不复制原始聊天正文）
@@ -528,6 +530,7 @@ model FeedbackPlanItem {
   studentId            String?
   status               String   @default("evidence_ready")
   generationError      String?
+  generationConfigSnapshot String  @default("{}") // 版本化学生独立反馈计划配置；空对象表示沿用批次公共配置
   evidenceSnapshot     String   @default("{}")
   compositionSnapshot  String   @default("{}")
   auditSnapshot        String   @default("{}")
@@ -744,6 +747,8 @@ model CommunicationRevision {
   nextTarget           String
   previousSummary      String
   nextSummary          String
+  previousOccurredAt   String?
+  nextOccurredAt       String?
   previousSessionId    String
   nextSessionId        String
   confirmedAt          DateTime @default(now())

@@ -34,6 +34,7 @@
 | `/api/settings/llm` | `DELETE`, `GET`, `PATCH`, `POST`, `PUT` |
 | `/api/students/[id]/communication-preference/candidates/[candidateId]` | `PATCH` |
 | `/api/students/[id]/communication-preference` | `GET`, `POST` |
+| `/api/students/[id]/enrollment` | `PATCH` |
 | `/api/students/[id]/history` | `GET` |
 | `/api/students/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/students/[id]/status` | `PATCH` |

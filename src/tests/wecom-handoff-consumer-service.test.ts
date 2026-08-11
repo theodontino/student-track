@@ -130,6 +130,11 @@ describe("WCC handoff consumer", () => {
     ]), student.id);
 
     expect(upsert.mock.calls[0][0].create.sessionCode).toBeNull();
+    const parsedResult = JSON.parse(upsert.mock.calls[0][0].create.parsedResult) as {
+      students: Array<{ communication?: { summary?: string; occurredAt?: string } }>;
+    };
+    expect(parsedResult.students[0]?.communication?.occurredAt).toBe("2026-07-20至2026-07-21");
+    expect(parsedResult.students[0]?.communication?.summary).toContain("实际沟通: 2026-07-20至2026-07-21");
   });
 
   it("rejects a selected student that no longer exists", async () => {

@@ -5,6 +5,7 @@ import {
   formatFeedbackCommunicationSummary,
   normalizeFeedbackUseDecision,
 } from "@/lib/feedback-communication";
+import { feedbackDateRangeLabel } from "@/lib/feedback-time";
 import { inferGroundedCommunicationPreferenceSignals } from "@/lib/communication-preference";
 import { generateWeComBridgeJson } from "@/services/wecom-handoff-extraction-service";
 import {
@@ -148,10 +149,9 @@ export async function consumeWccHandoffPackage(
         : uniqueMessageIds;
     const evidenceMessages = payload.messages.filter((message) => messageIds.includes(message.id));
     const evidenceRange = summarizeMessageDateRange(evidenceMessages.map((message) => message.sentAt));
-    const occurredAt = evidenceMessages
-      .map((message) => message.sentAt || "")
-      .sort()
-      .at(-1) ?? "";
+    const occurredAt = evidenceRange
+      ? feedbackDateRangeLabel({ start: evidenceRange.min, end: evidenceRange.max })
+      : "";
     const id = stableDraftId(payload.packageId, student.id, messageIds);
     const communicationSummary = formatFeedbackCommunicationSummary(
       summary,
@@ -177,7 +177,11 @@ export async function consumeWccHandoffPackage(
         name: student.name,
         scores: { A: null, B: null, C: null },
         events: [],
-        communication: { type: String(record.target || "家长"), summary: communicationSummary },
+        communication: {
+          type: String(record.target || "家长"),
+          summary: communicationSummary,
+          ...(occurredAt ? { occurredAt } : {}),
+        },
         attentionSignals: Array.isArray(record.attentionSignals) ? record.attentionSignals : [],
       }],
       alert_suggestion: "",

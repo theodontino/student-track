@@ -79,6 +79,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
   let planCreated = false;
   let currentPlanStatus = "draft";
   let currentRevision = 2;
+  let createBody: Record<string, unknown> | null = null;
   const mutationOrder: string[] = [];
   await page.route("**/api/report/feedback-plans**", async (route) => {
     const request = route.request();
@@ -88,6 +89,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
       return;
     }
     if (request.method() === "POST" && url.pathname.endsWith("/feedback-plans")) {
+      createBody = request.postDataJSON() as Record<string, unknown>;
       planCreated = true;
       const created = plan("模型初稿：本次测验完成稳定。", "evidence_ready", "draft");
       await route.fulfill({ status: 201, json: { plan: { ...created, items: created.items.map((item) => ({ ...item, student: undefined })) } } });
@@ -158,7 +160,26 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
   await expect(studentOne).toBeChecked();
   await expect(studentTwo).not.toBeChecked();
 
+  await expect(page.getByText("具体表现", { exact: true })).toBeVisible();
+  await expect(page.getByText("学生本次具体表现", { exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: "选择公共模块：具体表现" }).uncheck();
+  await page.getByRole("checkbox", { name: "选择公共模块：教师判断" }).uncheck();
+  await expect(page.getByRole("button", { name: "进入生成", exact: true })).toBeEnabled();
+
+  const secondStudentCard = page.locator(".feedback-plan-candidate").filter({ hasText: TEST_FIXTURE.students[1].name });
+  await secondStudentCard.getByRole("button", { name: "单独设置", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("该学生仍属于本批次");
+  await page.getByLabel("这位学生的反馈类型").selectOption("stage_trend");
+  await page.getByLabel("本生特殊处理要求").fill("只写这位学生的阶段变化");
+  await page.getByRole("button", { name: "保存独立计划", exact: true }).click();
+  await expect(secondStudentCard.getByRole("button", { name: "独立计划", exact: true })).toBeVisible();
+  await expect(studentTwo).toBeChecked();
+
   await page.getByRole("button", { name: "进入生成", exact: true }).click();
+  expect(createBody).toMatchObject({
+    generationPreferences: { moduleKeys: [] },
+    studentOverrides: [{ studentId: TEST_FIXTURE.students[1].id, generationConfig: { type: "stage_trend", outputRequirement: "只写这位学生的阶段变化" } }],
+  });
   await expect(page.getByRole("heading", { name: "生成反馈" })).toBeVisible();
   await expect(page.getByText("最多同时生成 2 条", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "标准生成" })).toBeVisible();
@@ -236,6 +257,62 @@ test("export never reports an unfinished queued item as program-check passed", a
   await expect(page.getByText("尚未完成核验", { exact: true })).toBeVisible();
   await expect(page.getByText("本条仍在生成队列中，当前没有可供核验的最终正文。", { exact: true })).toBeVisible();
   await expect(page.getByText("程序核验通过", { exact: true })).not.toBeVisible();
+});
+
+test("feedback item can adjust and restore its independent generation plan", async ({ page }) => {
+  let independentConfig: Record<string, unknown> | null = null;
+  let itemRevision = 2;
+  const patchBodies: Array<Record<string, unknown>> = [];
+  const detail = () => {
+    const base = plan("模型初稿：本次测验完成稳定。", "needs_review", "in_review", itemRevision);
+    return {
+      ...base,
+      input: { generationPreferences: { closureType: "positive_recognition", moduleKeys: [] } },
+      items: base.items.map((item) => ({ ...item, generationConfig: independentConfig })),
+    };
+  };
+
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
+      await route.fulfill({ json: { plans: [detail()] } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      await route.fulfill({ json: { plan: detail() } });
+      return;
+    }
+    if (request.method() === "PATCH" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      patchBodies.push(body);
+      const patch = body.patch as { generationConfig?: Record<string, unknown> | null };
+      independentConfig = patch.generationConfig ?? null;
+      itemRevision += 1;
+      await route.fulfill({ json: { item: detail().items[0] } });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/feedback?step=export&planId=e2e-feedback-plan-1&semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  const card = page.locator(".feedback-plan-item").first();
+  await card.getByText("计划结构、任务与附件", { exact: true }).click();
+  await card.getByRole("button", { name: "设置独立计划", exact: true }).click();
+  await page.getByLabel("这位学生的反馈类型").selectOption("course_end");
+  await page.getByLabel("本生特殊处理要求").fill("只保留结课阶段中的关键变化");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "保存独立计划", exact: true }).click();
+  await expect(card.getByText("独立计划", { exact: true })).toBeVisible();
+  expect(patchBodies[0]).toMatchObject({ patch: { generationConfig: { type: "course_end", outputRequirement: "只保留结课阶段中的关键变化" } } });
+
+  await expect(card.getByRole("button", { name: "调整独立计划", exact: true })).toBeVisible();
+  await card.getByRole("button", { name: "调整独立计划", exact: true }).click();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "恢复公共设置", exact: true }).click();
+  await expect.poll(() => patchBodies.length).toBe(2);
+  expect(patchBodies[1]).toMatchObject({ patch: { generationConfig: null } });
+  await expect(card.getByRole("button", { name: "设置独立计划", exact: true })).toBeVisible();
 });
 
 test("feedback history uses readable linked selectors instead of internal id inputs", async ({ page }) => {

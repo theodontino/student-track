@@ -16,7 +16,18 @@
 | Student Track | 1.1.4 | 双仪表导航、任务分组与历史、同名班级排序、窄屏回归，以及既有 FeedbackPlan 统一反馈流程与历史；handoff v1 保持兼容。 |
 | WCG | 0.6.0 | handoff 谱系、已批准反馈草稿不发送填入、逐条实时会话定位、前 50→前 150 降级和输入框安全复核；原生 SwiftUI 正式版。 |
 
+## 当前开发 beta
+
+| 组件 | 版本 | 联合验证范围 |
+|---|---:|---|
+| Student Track | 1.1.5-beta | FeedbackPlan 可选模块、学生独立生成配置、同学期当前归属转班，以及带证据的时间语义；按 Zhuiver 归为 PATCH，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
+| WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
+
 Student Track 的日常和稳定版门禁以自动化为准：普通改动通过 `verify:quick`，高风险与发布改动通过 `verify:release`，随后即可进入真实使用。所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化；固定次数的真实课后流程和重复人工合成演练不再阻断发布。
+
+版本级别遵循协议仓库 `Zhuiver.md`：当前 Student Track `1.1.4` 是 PATCH，表示稳定既有
+教学工作台承诺；协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
+`docs/release-evidence/` 中的 Zhuiver 记录，并通过 `npm run release:check-version`。
 
 人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及跨仓协议变化时仍使用精确提交的两端自动化，并固定先发布 Student Track、刷新 `handoff-revisions-v1` 能力目录，再发布 WCG；回滚 Student Track 前停止 WCG 修订发布。
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
 import { normalizeAttentionSignalCandidates } from "@/lib/attention-labels";
+import { parseFeedbackCommunicationSummary } from "@/lib/feedback-communication";
 import {
   communicationPreferenceFromSignals,
   inferCommunicationPreferenceCandidate,
@@ -84,6 +85,12 @@ function normalizeStudent(value: unknown): ParsedStudent {
     communication = {
       type: value.communication.type.trim(),
       summary: value.communication.summary.trim(),
+      ...(typeof value.communication.occurredAt === "string" && value.communication.occurredAt.trim()
+        ? { occurredAt: value.communication.occurredAt.trim() }
+        : (() => {
+          const storedDate = parseFeedbackCommunicationSummary(value.communication.summary).occurredAt;
+          return storedDate ? { occurredAt: storedDate } : {};
+        })()),
     };
   }
 
@@ -263,6 +270,8 @@ export async function processDraftReview(input: ProcessDraftInput) {
         ? "家长"
         : parsedStudent.communication.type;
       const nextSummary = parsedStudent.communication.summary;
+      const previousOccurredAt = communication.occurredAt || parseFeedbackCommunicationSummary(communication.summary).occurredAt;
+      const nextOccurredAt = parsedStudent.communication.occurredAt ?? previousOccurredAt;
       await tx.communicationRevision.create({
         data: {
           communicationId: communication.id,
@@ -272,6 +281,8 @@ export async function processDraftReview(input: ProcessDraftInput) {
           nextTarget,
           previousSummary: communication.summary,
           nextSummary,
+          previousOccurredAt,
+          nextOccurredAt,
           previousSessionId: communication.sessionId,
           nextSessionId: session.id,
         },
@@ -281,6 +292,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
         data: {
           target: nextTarget,
           summary: nextSummary,
+          occurredAt: nextOccurredAt,
           sessionId: session.id,
           // sourceKey intentionally remains the original communication identity.
         },
@@ -486,6 +498,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
             ? "家长"
             : parsedStudent.communication.type;
           const summary = parsedStudent.communication.summary;
+          const occurredAt = parsedStudent.communication.occurredAt ?? "";
           // Derive a stable sourceKey from the draft to prevent duplicate writes
           // on re-confirmation. Falls back to <studentId|sessionId|summary-hash>
           // when draft has no WCC id.
@@ -496,7 +509,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
             where: {
               OR: [
                 { sourceKey },
-                { studentId: student.id, sessionId: session.id, summary },
+                { studentId: student.id, sessionId: session.id, summary, occurredAt },
               ],
             },
             select: { id: true },
@@ -511,6 +524,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
                 sessionId: session.id,
                 target,
                 summary,
+                occurredAt,
                 sourceKey,
               },
             });

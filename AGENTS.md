@@ -66,6 +66,16 @@ Student Track 与 WCG 的跨仓库契约以独立的 `student-track-wcg-protocol
 必须先在协议仓库建立并接受 Issue/RFC，再在本仓库实现。`docs/contracts/` 中已登记的 Schema
 与示例是生成快照，不得在本仓库单独编辑；边界和同步方式见 `docs/contracts/README.md`。
 
+## 产品版本（Zhuiver）
+
+Student Track 的程序版本遵循协议仓库 `Zhuiver.md`，而协议 `contractVersion`、URL 路径、
+协议快照 tag 和兼容矩阵继续遵循协议仓库自己的版本规则。两者不能互相替代。
+
+每个发布 PR 必须写明上一版本、本版本、Zhuiver 分类（`PATCH`/`MINOR`/`MAJOR`）、用户
+主张、核心工作流、领域模型和协议影响。页面数量、文件数量、代码行数和重写技术栈不能
+单独决定版本级别。使用 `docs/release-evidence/TEMPLATE.md` 与
+`npm run release:check-version -- <record>` 形成可检查的发布记录。
+
 ## 完成标准
 
 验证采用“本地精简输出、CI 全量兜底、失败时按需展开”的流程。测试运行时间本身不是问题，默认禁止为了汇报成功而读取或回传完整测试日志。

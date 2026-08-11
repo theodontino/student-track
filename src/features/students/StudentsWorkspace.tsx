@@ -4,6 +4,7 @@ import { Button, ConfirmDialog, ErrorState, LoadingState, StatusBanner } from "@
 import { StudentClassGroups } from "./StudentClassGroups";
 import { StudentEditorDialog } from "./StudentEditorDialog";
 import { StudentImportDialog } from "./StudentImportDialog";
+import { StudentTransferDialog } from "./StudentTransferDialog";
 import { StudentListToolbar } from "./StudentListToolbar";
 import { StudentInspector } from "./StudentInspector";
 import { useStudentsWorkspace } from "./useStudentsWorkspace";
@@ -25,6 +26,7 @@ export default function StudentsWorkspace() {
       <div className="student-master-detail"><div className="student-master-list"><StudentClassGroups workspace={workspace} /></div><StudentInspector workspace={workspace} /></div>
       <StudentEditorDialog workspace={workspace} />
       <StudentImportDialog workspace={workspace} />
+      <StudentTransferDialog workspace={workspace} />
       <ConfirmDialog
         open={Boolean(workspace.deleteTarget)}
         title="删除学生"
