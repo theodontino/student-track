@@ -32,11 +32,13 @@ export const TeacherInterventionSchema: z.ZodType<TeacherIntervention> = z.objec
 
 export const DraftStudentSchema = z.object({
   name: boundedText(100),
+  studentId: optionalBoundedText(128),
   scores: z.object({ A: score, B: score, C: score }),
   events: z.array(boundedText(1000)).max(50),
   communication: z.object({
     type: boundedText(100),
     summary: boundedText(5000),
+    occurredAt: optionalBoundedText(64),
   }).nullable(),
   present: z.boolean().optional(),
   attentionSignals: z.array(AttentionSignalCandidateSchema).max(4).optional(),
@@ -73,7 +75,7 @@ export const NameFixPayloadSchema = z.object({
 });
 
 export const ParseRequestSchema = z.object({
-  rawText: z.string().trim().min(1).max(100000),
+  rawText: z.string().trim().min(1).max(300000),
   sessionCode: z.string().trim().min(1).max(128),
 });
 

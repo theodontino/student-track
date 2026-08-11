@@ -11,9 +11,10 @@ import {
 
 export interface ParsedStudent {
   name: string;
+  studentId?: string;
   scores: { A: number | null; B: number | null; C: number | null };
   events: string[];
-  communication: { type: string; summary: string } | null;
+  communication: { type: string; summary: string; occurredAt?: string } | null;
   present?: boolean;
   attentionSignals?: AttentionSignalCandidate[];
   teacherInterventions?: TeacherIntervention[];
@@ -184,6 +185,18 @@ ${rawText}
 
   const content = await llmCall([
     { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: userPrompt },
+  ]);
+  return DraftStructuredResultSchema.parse(parseJSONValue(content));
+}
+
+/** Parse a validated file bridge with a caller-supplied trusted system prompt. */
+export async function parseInputWithSystemPrompt(
+  systemPrompt: string,
+  userPrompt: string,
+): Promise<ParseResult> {
+  const content = await llmCall([
+    { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ]);
   return DraftStructuredResultSchema.parse(parseJSONValue(content));

@@ -16,6 +16,10 @@ export function ClassroomReviewComposer({ workspace }: { workspace: Workspace })
           <div><strong>助教 Excel</strong><p>把课堂纪律、作业、测验和备注转换为结构化课堂记录。</p></div>
           <label className={workspace.context.sessionCode && !workspace.assistantImporting ? "is-enabled" : ""}>{workspace.assistantImporting ? "导入中…" : "选择文件"}<input type="file" accept=".xlsx" multiple disabled={!workspace.context.sessionCode || workspace.assistantImporting} onChange={(event) => { void workspace.importAssistantRoster(event.target.files); event.currentTarget.value = ""; }} /></label>
         </div>
+        <div className="feedback-assistant-import">
+          <div><strong>STEP 课堂文本</strong><p>导入 STEP 完成课堂导出的结构化事实和固定解读 Prompt。</p></div>
+          <label className={workspace.context.sessionCode ? "is-enabled" : ""}>选择 STEP 文件<input type="file" accept=".txt,.md,.step-classroom.txt,text/plain" disabled={!workspace.context.sessionCode} onChange={(event) => { void workspace.importStepClassroom(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
+        </div>
         <div className="feedback-composer__actions"><span>{workspace.rawText.length} 字</span><Button onClick={() => void workspace.parse()} disabled={!workspace.canParse}>{workspace.parsing ? workspace.parseStatus || "解析中…" : "解析课堂回顾"}</Button></div>
         {workspace.parsing && workspace.streamContent && <div className="feedback-stream" role="status">{workspace.streamContent}</div>}
       </div>

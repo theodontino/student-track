@@ -90,6 +90,7 @@ function normalizeStudent(value: unknown): ParsedStudent {
   const teacherInterventions = normalizeTeacherInterventions(value.teacherInterventions);
   return {
     name: value.name.trim(),
+    ...(typeof value.studentId === "string" && value.studentId.trim() ? { studentId: value.studentId.trim() } : {}),
     scores: {
       A: normalizeOptionalScore(value.scores.A),
       B: normalizeOptionalScore(value.scores.B),
@@ -103,6 +104,19 @@ function normalizeStudent(value: unknown): ParsedStudent {
       : {}),
     ...(typeof value.present === "boolean" ? { present: value.present } : {}),
   };
+}
+
+function isStepDraft(rawText: string, parsedData: ParseResult): boolean {
+  if (!parsedData.students.length) return false;
+  try {
+    const source = JSON.parse(rawText) as unknown;
+    return isRecord(source)
+      && typeof source.stepSessionId === "string"
+      && isRecord(source.class)
+      && Array.isArray(source.students);
+  } catch {
+    return false;
+  }
 }
 
 function normalizeParsedData(value: unknown): ParseResult {
@@ -190,6 +204,10 @@ export async function processDraftReview(input: ProcessDraftInput) {
       ? communicationPreferenceFromSignals(wccSource.preferenceSignals)
       : null;
     const parsedData = normalizeParsedData(source);
+    const stepDraft = isStepDraft(draft.rawText, parsedData);
+    if (stepDraft && parsedData.students.some((student) => !student.studentId)) {
+      throw new ServiceError("STEP 草案缺少学号绑定，不能按姓名猜测学生", 409);
+    }
     const today = new Date().toISOString().split("T")[0];
     const session = draft.sessionCode
       ? await tx.classSession.findUnique({
@@ -290,9 +308,10 @@ export async function processDraftReview(input: ProcessDraftInput) {
     }
 
     const names = Array.from(new Set(parsedData.students.map((student) => student.name)));
+    const stepStudentIds = Array.from(new Set(parsedData.students.map((student) => student.studentId).filter((id): id is string => Boolean(id))));
     const matchingStudents = await tx.student.findMany({
       where: {
-        name: { in: names },
+        ...(stepDraft ? { studentId: { in: stepStudentIds } } : { name: { in: names } }),
         ...(session?.classId ? {
           OR: [
             { enrollments: { some: { semesterId: session.semesterId, classId: session.classId, rosterStatus: "ACTIVE" } } },
@@ -301,12 +320,13 @@ export async function processDraftReview(input: ProcessDraftInput) {
           ],
         } : {}),
       },
-      select: { id: true, name: true },
+      select: { id: true, name: true, studentId: true },
     });
     const studentsByName = new Map<string, typeof matchingStudents>();
     for (const student of matchingStudents) {
       studentsByName.set(student.name, [...(studentsByName.get(student.name) ?? []), student]);
     }
+    const studentsByBusinessId = new Map(matchingStudents.map((student) => [student.studentId, student]));
 
     const warnings: string[] = [];
     const affectedStudentIds: string[] = [];
@@ -314,12 +334,20 @@ export async function processDraftReview(input: ProcessDraftInput) {
     let confirmedCommunicationId: string | null = null;
 
     for (const parsedStudent of parsedData.students) {
-      const matches = isWccDraft && boundWccStudent
+      const matches = stepDraft
+        ? (parsedStudent.studentId && studentsByBusinessId.has(parsedStudent.studentId)
+          ? [studentsByBusinessId.get(parsedStudent.studentId)!]
+          : [])
+        : isWccDraft && boundWccStudent
         ? [boundWccStudent]
         : studentsByName.get(parsedStudent.name) ?? [];
       if (matches.length === 0) {
+        if (stepDraft) throw new ServiceError(`STEP 学号 ${parsedStudent.studentId ?? ""} 不属于目标课次班级`, 409);
         warnings.push(`未找到学生 ${parsedStudent.name}，相关内容未写入`);
         continue;
+      }
+      if (stepDraft && matches[0].name !== parsedStudent.name) {
+        throw new ServiceError(`STEP 学号 ${parsedStudent.studentId} 与姓名不一致`, 409);
       }
       if (matches.length > 1) {
         throw new ServiceError(`学生姓名 ${parsedStudent.name} 存在重名，无法安全确认`, 409);

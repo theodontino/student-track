@@ -6,7 +6,8 @@
 |---|---|
 | `/api/alerts` | `GET` |
 | `/api/attendance` | `GET`, `PUT` |
-| `/api/classes/[id]` | `DELETE`, `PUT` |
+| `/api/classes/[id]` | `DELETE`, `GET`, `PUT` |
+| `/api/classes/[id]/step-roster` | `GET` |
 | `/api/diarize/tasks/[id]/retry` | `POST` |
 | `/api/diarize/tasks/[id]` | `DELETE`, `GET` |
 | `/api/diarize/tasks` | `GET`, `POST` |

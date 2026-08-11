@@ -201,6 +201,18 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     try {
       const response = await fetch("/api/input/parse?stream=true", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rawText, sessionCode }) });
       if (!response.ok) throw new Error(((await response.json().catch(() => null)) as { error?: string } | null)?.error ?? "解析失败");
+      if ((response.headers.get("content-type") ?? "").includes("application/json")) {
+        const data = await response.json() as { draftId: string; parsedResult: DraftStructuredResult; reviewResult: DraftReviewResult | null; corrections?: NameCorrection[]; warnings?: string[] };
+        setDraftId(data.draftId);
+        setParsedResult(data.parsedResult);
+        setReviewResult(data.reviewResult);
+        setCorrections(data.corrections ?? []);
+        setParseStatus("STEP 文件解析完成");
+        setStatus(data.warnings?.length ? data.warnings.join("；") : "STEP 文件解析完成，请确认结构化记录。");
+        setActiveStep("review");
+        workflow.transition("reviewing", "STEP 结构化草案已生成，请人工核对后再写入。");
+        return;
+      }
       if (!response.body) throw new Error("解析流不可用");
       await readSSEStream(response.body.getReader(), {
         parse: (value) => ParseStreamEventSchema.parse(value),
@@ -224,6 +236,23 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
       setRawText(data.rawText ?? ""); setDraftId(data.draftId); setParsedResult(data.parsedResult); setReviewResult(data.reviewResult); setCorrections(data.corrections ?? []); setParseStatus(`已从助教表生成课堂记录，匹配 ${data.matchedRows ?? 0} 条`); setStatus("助教表已解析，请确认结构化记录后写入。"); workflow.transition("reviewing", "助教表草案已生成，请人工核对后再写入。"); setActiveStep("review");
     } catch (reason) { const message = errorMessage(reason, "助教表解析失败"); setError(message); workflow.fail(message, "generating"); }
     finally { setAssistantImporting(false); }
+  }
+  async function importStepClassroom(file: File | undefined) {
+    if (!file) return;
+    if (!sessionCode) { setError("请先选择课次，再导入 STEP 课堂文本"); return; }
+    setError("");
+    try {
+      const text = await file.text();
+      if (!text.replace(/^\uFEFF/, "").trim().startsWith("STEP_CLASSROOM_EXPORT_V1")) {
+        throw new Error("不是支持的 STEP 课堂导出文本");
+      }
+      setRawText(text);
+      setParseStatus("已载入 STEP 课堂文本，请点击解析课堂回顾。");
+      setStatus("STEP 文件已载入；解析前仍可检查目标课次。");
+      setActiveStep("extract");
+    } catch (reason) {
+      setError(errorMessage(reason, "读取 STEP 课堂文本失败"));
+    }
   }
   async function confirm() {
     if (!draftId) return;
@@ -251,7 +280,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     importAssessmentPdfs: assessmentPdfs.importPdfs, importAssessmentFolder: assessmentPdfs.importFolder, matchAssessmentItem: assessmentPdfs.matchItem, confirmAssessmentItem: assessmentPdfs.confirmItem,
     confirmAllAssessmentMatches: assessmentPdfs.confirmAllMatches, removeAssessmentItem: assessmentPdfs.removeItem, removeFailedAssessmentImports: assessmentPdfs.removeFailed, clearAssessmentImports: assessmentPdfs.clear,
     legacyDraftAvailable, restoreLegacyDraft, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming),
-    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, setParsedTeacherInterventions, parse, importAssistantRoster, confirm,
+    onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, setParsedTeacherInterventions, parse, importAssistantRoster, importStepClassroom, confirm,
     setSemesterId, setClassName, setSessionCode,
   };
 }

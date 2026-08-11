@@ -9,8 +9,10 @@ import { DraftStructuredResultSchema, ParseRequestSchema } from "@/lib/contracts
 import type { DraftStructuredResult } from "@/lib/types";
 import { apiErrorBody, apiStreamErrorBody, ApiError } from "@/lib/api-errors";
 import { ZodError } from "zod";
+import { STEP_CLASSROOM_HEADER, StepClassroomImportError, createStepClassroomDraft } from "@/services/step-classroom-import-service";
 
 function parseError(error: unknown) {
+  if (error instanceof StepClassroomImportError) return new ApiError(error.message, error.status, "invalid_request", false);
   if (error instanceof ZodError) return new ApiError("LLM 输出未通过结构化校验", 502, "llm_schema_invalid", false);
   if (error instanceof Error && /LLM|模型|response|token/i.test(error.message)) {
     return new ApiError("LLM 服务暂时不可用", 502, "llm_service_error", true);
@@ -27,6 +29,13 @@ export async function POST(request: NextRequest) {
 
     // v0.13: SSE stream mode
     const streamMode = new URL(request.url).searchParams.get("stream") === "true";
+
+    if (rawText.replace(/^\uFEFF/, "").trim().startsWith(STEP_CLASSROOM_HEADER)) {
+      const result = await withLLMCacheOperation("classroom-parse", "解析 STEP 课堂记录", () => (
+        createStepClassroomDraft({ rawText, sessionCode })
+      ));
+      return NextResponse.json(result);
+    }
 
     const session = await prisma.classSession.findUnique({
       where: { code: sessionCode },

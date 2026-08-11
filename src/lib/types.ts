@@ -53,9 +53,11 @@ export type ScoreDimension = "A" | "B" | "C";
 
 export interface DraftStudent {
   name: string;
+  /** Optional for legacy/NL drafts; required and validated for STEP imports. */
+  studentId?: string;
   scores: Record<ScoreDimension, number | null>;
   events: string[];
-  communication: { type: string; summary: string } | null;
+  communication: { type: string; summary: string; occurredAt?: string } | null;
   present?: boolean;
   attentionSignals?: AttentionSignalCandidate[];
   teacherInterventions?: TeacherIntervention[];
