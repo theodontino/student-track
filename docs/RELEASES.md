@@ -20,7 +20,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.1.5-beta | FeedbackPlan 可选模块、学生独立生成配置、同学期当前归属转班，以及带证据的时间语义；按 Zhuiver 归为 PATCH，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
+| Student Track | 1.1.5-beta.2 | 在 1.1.5-beta 的基础上修复项目/运行数据目录迁移后的本地转写任务路径兼容性；按 Zhuiver 归为 PATCH，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
 
 Student Track 的日常和稳定版门禁以自动化为准：普通改动通过 `verify:quick`，高风险与发布改动通过 `verify:release`，随后即可进入真实使用。所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化；固定次数的真实课后流程和重复人工合成演练不再阻断发布。
