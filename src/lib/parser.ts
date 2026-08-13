@@ -194,11 +194,12 @@ ${rawText}
 export async function parseInputWithSystemPrompt(
   systemPrompt: string,
   userPrompt: string,
+  maxRetries = 0,
 ): Promise<ParseResult> {
   const content = await llmCall([
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
-  ]);
+  ], maxRetries);
   return DraftStructuredResultSchema.parse(parseJSONValue(content));
 }
 

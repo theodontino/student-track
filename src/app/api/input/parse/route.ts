@@ -9,7 +9,8 @@ import { DraftStructuredResultSchema, ParseRequestSchema } from "@/lib/contracts
 import type { DraftStructuredResult } from "@/lib/types";
 import { apiErrorBody, apiStreamErrorBody, ApiError } from "@/lib/api-errors";
 import { ZodError } from "zod";
-import { STEP_CLASSROOM_HEADER, StepClassroomImportError, createStepClassroomDraft } from "@/services/step-classroom-import-service";
+import { isStepClassroomExport } from "@/lib/step-classroom-format";
+import { StepClassroomImportError, createStepClassroomDraft } from "@/services/step-classroom-import-service";
 
 function parseError(error: unknown) {
   if (error instanceof StepClassroomImportError) return new ApiError(error.message, error.status, "invalid_request", false);
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
     // v0.13: SSE stream mode
     const streamMode = new URL(request.url).searchParams.get("stream") === "true";
 
-    if (rawText.replace(/^\uFEFF/, "").trim().startsWith(STEP_CLASSROOM_HEADER)) {
+    if (isStepClassroomExport(rawText)) {
       const result = await withLLMCacheOperation("classroom-parse", "解析 STEP 课堂记录", () => (
         createStepClassroomDraft({ rawText, sessionCode })
       ));

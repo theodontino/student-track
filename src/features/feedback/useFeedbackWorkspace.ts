@@ -6,6 +6,7 @@ import { teachingContextWorkspaceKey } from "@/features/teaching-context/url-con
 import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
 import { useAiWorkflow } from "@/features/ai-workflow";
 import { requestJson } from "@/lib/api-client";
+import { isStepClassroomExport } from "@/lib/step-classroom-format";
 import {
   createEmptyLessonFeedbackMaterial,
   parseLessonFeedbackMaterial,
@@ -243,7 +244,7 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setError("");
     try {
       const text = await file.text();
-      if (!text.replace(/^\uFEFF/, "").trim().startsWith("STEP_CLASSROOM_EXPORT_V1")) {
+      if (!isStepClassroomExport(text)) {
         throw new Error("不是支持的 STEP 课堂导出文本");
       }
       setRawText(text);
