@@ -19,6 +19,19 @@ erDiagram
     TEXT code
     TEXT name
   }
+  ClassGroup {
+    TEXT id PK
+    TEXT semesterId FK
+    TEXT name
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
+  ClassGroupMembership {
+    TEXT id PK
+    TEXT groupId FK
+    TEXT classId UK,FK
+    DATETIME createdAt
+  }
   ClassSession {
     TEXT id PK
     TEXT code UK
@@ -197,6 +210,34 @@ erDiagram
     DATETIME purgedAt
     DATETIME staleAt
     DATETIME createdAt
+    DATETIME updatedAt
+  }
+  GroupLesson {
+    TEXT id PK
+    TEXT groupId FK
+    TEXT title
+    INTEGER sequence
+    TEXT materialSnapshot
+    INTEGER revision
+    DATETIME confirmedAt
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
+  GroupLessonRevision {
+    TEXT id PK
+    TEXT groupLessonId FK
+    INTEGER revision
+    TEXT materialSnapshot
+    DATETIME confirmedAt
+  }
+  GroupLessonSession {
+    TEXT id PK
+    TEXT groupLessonId FK
+    TEXT sessionId UK,FK
+    TEXT syncStatus
+    TEXT differenceSummary
+    BOOLEAN comparable
+    DATETIME confirmedAt
     DATETIME updatedAt
   }
   Label {
@@ -457,6 +498,9 @@ erDiagram
   Class ||--o{ FeedbackPlan : "classId"
   Class ||--o{ StudentClassEnrollment : "classId"
   Class ||--o{ TeacherTask : "classId"
+  Class ||--o| ClassGroupMembership : "classId"
+  ClassGroup ||--o{ ClassGroupMembership : "groupId"
+  ClassGroup ||--o{ GroupLesson : "groupId"
   ClassSession o|--o{ FeedbackPlan : "rangeEndSessionId"
   ClassSession o|--o{ FeedbackPlan : "rangeStartSessionId"
   ClassSession o|--o{ FeedbackPlan : "sessionId"
@@ -466,6 +510,7 @@ erDiagram
   ClassSession ||--o{ Attendance : "sessionId"
   ClassSession ||--o{ Communication : "sessionId"
   ClassSession ||--o{ Event : "sessionId"
+  ClassSession ||--o| GroupLessonSession : "sessionId"
   Communication o|--o{ DraftRecord : "communicationId"
   Communication ||--o{ CommunicationRevision : "communicationId"
   Communication ||--o{ TeacherObservationSource : "communicationId"
@@ -481,8 +526,11 @@ erDiagram
   FeedbackPlanItem o|--o{ TeacherTask : "planItemId"
   GenerationRecord o|--o{ FeedbackPlanItem : "selectedGenerationId"
   GenerationRecord o|--o{ GenerationRecord : "parentGenerationId"
+  GroupLesson ||--o{ GroupLessonRevision : "groupLessonId"
+  GroupLesson ||--o{ GroupLessonSession : "groupLessonId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ Class : "semesterId"
+  Semester ||--o{ ClassGroup : "semesterId"
   Semester ||--o{ ClassSession : "semesterId"
   Semester ||--o{ FeedbackPlan : "semesterId"
   Semester ||--o{ StudentClassEnrollment : "semesterId"
@@ -530,6 +578,29 @@ erDiagram
 | `name` | `TEXT` | 否 |  |
 
 复合唯一约束：`semesterId + code`。
+
+### ClassGroup
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `semesterId` | `TEXT` | 是 | FK |
+| `name` | `TEXT` | 是 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`semesterId + name`。
+
+### ClassGroupMembership
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupId` | `TEXT` | 是 | FK |
+| `classId` | `TEXT` | 是 | unique, FK |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+复合唯一约束：`groupId + classId`。
 
 ### ClassSession
 
@@ -762,6 +833,49 @@ erDiagram
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `updatedAt` | `DATETIME` | 是 |  |
 
+
+### GroupLesson
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupId` | `TEXT` | 是 | FK |
+| `title` | `TEXT` | 是 |  |
+| `sequence` | `INTEGER` | 是 |  |
+| `materialSnapshot` | `TEXT` | 是 | default: '{}' |
+| `revision` | `INTEGER` | 是 | default: 0 |
+| `confirmedAt` | `DATETIME` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`groupId + sequence`。
+
+### GroupLessonRevision
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupLessonId` | `TEXT` | 是 | FK |
+| `revision` | `INTEGER` | 是 |  |
+| `materialSnapshot` | `TEXT` | 是 |  |
+| `confirmedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+复合唯一约束：`groupLessonId + revision`。
+
+### GroupLessonSession
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupLessonId` | `TEXT` | 是 | FK |
+| `sessionId` | `TEXT` | 是 | unique, FK |
+| `syncStatus` | `TEXT` | 是 |  |
+| `differenceSummary` | `TEXT` | 否 |  |
+| `comparable` | `BOOLEAN` | 是 | default: true |
+| `confirmedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`groupLessonId + sessionId`。
 
 ### Label
 

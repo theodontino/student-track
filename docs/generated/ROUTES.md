@@ -6,6 +6,8 @@
 |---|---|
 | `/api/alerts` | `GET` |
 | `/api/attendance` | `GET`, `PUT` |
+| `/api/class-groups/[id]/lessons` | `POST` |
+| `/api/class-groups/[id]` | `DELETE`, `PUT` |
 | `/api/classes/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/classes/[id]/step-roster` | `GET` |
 | `/api/diarize/tasks/[id]/retry` | `POST` |
@@ -15,6 +17,9 @@
 | `/api/feedback/assessment-pdf` | `POST` |
 | `/api/feedback/assistant-roster` | `POST` |
 | `/api/feedback/script-library` | `GET`, `POST` |
+| `/api/group-lessons/[id]/confirm` | `POST` |
+| `/api/group-lessons/[id]` | `PUT` |
+| `/api/group-lessons/[id]/sessions` | `DELETE`, `POST` |
 | `/api/input/parse` | `POST` |
 | `/api/integrations/wecomcatch/v1/directory` | `GET` |
 | `/api/quick-score` | `GET`, `POST` |
@@ -26,6 +31,7 @@
 | `/api/report/feedback-plans/task/[id]` | `PATCH` |
 | `/api/report/teaching-summary` | `GET`, `POST` |
 | `/api/review` | `GET`, `POST` |
+| `/api/semesters/[id]/class-groups` | `GET`, `POST` |
 | `/api/semesters/[id]/classes` | `GET`, `POST` |
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/semesters/[id]/session` | `DELETE`, `POST` |

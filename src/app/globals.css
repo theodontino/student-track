@@ -659,6 +659,16 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .student-records-metrics { grid-template-columns: 1fr; }.student-score-card__dimensions { grid-template-columns: repeat(2, 1fr); }
 }
 
+.class-group-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--space-3); }
+.class-group-list, .group-lesson-list { display: grid; gap: var(--space-3); }
+.class-group-card, .group-lesson-card { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.class-group-card > header, .group-lesson-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.class-group-card > header > div:last-child, .group-lesson-heading > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
+.class-group-card p, .group-lesson-card p { margin: .25rem 0 0; color: var(--color-muted); font-size: .75rem; }
+.class-group-checkboxes { display: grid; gap: .5rem; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.class-group-checkboxes label, .class-group-inline-check { display: flex !important; grid-template-columns: none !important; align-items: center; gap: .5rem !important; }
+.class-group-muted { color: var(--color-muted); font-size: .75rem; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }

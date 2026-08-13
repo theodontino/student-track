@@ -37,6 +37,7 @@ model Class {
   sessions      ClassSession[]
   feedbackPlans FeedbackPlan[]
   teacherTasks  TeacherTask[]
+  classGroupMembership ClassGroupMembership?
 
   @@unique([semesterId, code])
   @@index([semesterId, name])
@@ -327,6 +328,7 @@ model Semester {
   enrollments StudentClassEnrollment[]
   sessions ClassSession[]
   feedbackPlans FeedbackPlan[]
+  classGroups ClassGroup[]
 }
 
 // 7. 课次记录（v0.2 重构：编码体系 + 班级 + 学期序号）
@@ -350,6 +352,86 @@ model ClassSession {
   feedbackPlanRangeStarts FeedbackPlan[] @relation("FeedbackPlanRangeStart")
   feedbackPlanRangeEnds FeedbackPlan[] @relation("FeedbackPlanRangeEnd")
   teacherTasks TeacherTask[] @relation("TeacherTaskDueSession")
+  groupLessonSession GroupLessonSession?
+}
+
+// 7b. 同一学期内的平行班当前分组。一个班级只属于一个当前班级组；历史课次关联不随换组改写。
+model ClassGroup {
+  id         String   @id @default(cuid())
+  semesterId String
+  name       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  semester   Semester               @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  memberships ClassGroupMembership[]
+  lessons     GroupLesson[]
+
+  @@unique([semesterId, name])
+  @@index([semesterId, updatedAt])
+}
+
+model ClassGroupMembership {
+  id        String   @id @default(cuid())
+  groupId   String
+  classId   String   @unique
+  createdAt DateTime @default(now())
+
+  class      Class      @relation(fields: [classId], references: [id], onDelete: Cascade)
+  classGroup ClassGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, classId])
+  @@index([groupId])
+}
+
+// 7c. 共同课只承载公共教学材料和真实课次之间的教师确认关系。
+model GroupLesson {
+  id               String   @id @default(cuid())
+  groupId          String
+  title            String
+  sequence         Int
+  materialSnapshot String   @default("{}")
+  revision         Int      @default(0)
+  confirmedAt      DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  group        ClassGroup            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  revisions    GroupLessonRevision[]
+  sessionLinks GroupLessonSession[]
+
+  @@unique([groupId, sequence])
+  @@index([groupId, updatedAt])
+}
+
+model GroupLessonRevision {
+  id               String   @id @default(cuid())
+  groupLessonId    String
+  revision         Int
+  materialSnapshot String
+  confirmedAt      DateTime @default(now())
+
+  groupLesson GroupLesson @relation(fields: [groupLessonId], references: [id], onDelete: Cascade)
+
+  @@unique([groupLessonId, revision])
+  @@index([groupLessonId, confirmedAt])
+}
+
+model GroupLessonSession {
+  id                String   @id @default(cuid())
+  groupLessonId     String
+  sessionId         String   @unique
+  syncStatus        String   // "synced" | "partially_synced" | "diverged" | "not_applicable"
+  differenceSummary String?
+  comparable        Boolean  @default(true)
+  confirmedAt       DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  groupLesson GroupLesson @relation(fields: [groupLessonId], references: [id], onDelete: Cascade)
+  session     ClassSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+
+  @@unique([groupLessonId, sessionId])
+  @@index([groupLessonId, syncStatus])
 }
 
 // 9. 系统操作日志（v0.11）

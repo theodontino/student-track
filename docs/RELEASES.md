@@ -20,7 +20,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.1.5-beta.2 | 在 1.1.5-beta 的基础上修复项目/运行数据目录迁移后的本地转写任务路径兼容性，并继续维护实验性的 STEP 人工桥；按 Zhuiver 归为 PATCH，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
+| Student Track | 1.2.0-beta.1 | 增加同学期平行班、共同课、不可变教师确认材料修订与真实课次关联，并收口实验性 STEP 人工桥；按 Zhuiver 归为 MINOR，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
 
 ### STEP Bridge 的发布边界
