@@ -705,6 +705,15 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
   const previousSnapshot = previousRun ? parseJson<IntakeSnapshot>(previousRun.appliedSummary, {}) : undefined;
   const inspection = await inspectFeedbackIntakeInternal(input, previousRun ? { sourceManifest: parseJson(previousRun.sourceManifest, []), snapshot: previousSnapshot ?? {} } : undefined);
   if (previousRun) {
+    // A browser can restore an older empty/partial run while another tab (or a
+    // previous scan) has already persisted the same complete source batch. The
+    // fingerprint is intentionally unique, so reuse that canonical run instead
+    // of updating into a unique-constraint error.
+    const canonical = await db.feedbackIntakeRun.findFirst({
+      where: { sourceFingerprint: inspection.sourceFingerprint, id: { not: previousRun.id } },
+      orderBy: { updatedAt: "desc" },
+    });
+    if (canonical) return { run: view(canonical), inspection, duplicate: true };
     const updated = await db.feedbackIntakeRun.update({
       where: { id: previousRun.id },
       data: {
@@ -719,17 +728,29 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
   }
   const existing = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
   if (existing) return { run: view(existing), inspection, duplicate: true };
-  const run = await db.feedbackIntakeRun.create({
-    data: {
-      sessionCode: input.sessionCode,
-      sourceFingerprint: inspection.sourceFingerprint,
-      sourceManifest: JSON.stringify(inspection.sourceManifest),
-      status: inspection.issues.length ? "needs_review" : "ready",
-      issues: JSON.stringify(inspection.issues),
-      appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
-    },
-  });
-  return { run: view(run), inspection, duplicate: false };
+  try {
+    const run = await db.feedbackIntakeRun.create({
+      data: {
+        sessionCode: input.sessionCode,
+        sourceFingerprint: inspection.sourceFingerprint,
+        sourceManifest: JSON.stringify(inspection.sourceManifest),
+        status: inspection.issues.length ? "needs_review" : "ready",
+        issues: JSON.stringify(inspection.issues),
+        appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
+      },
+    });
+    return { run: view(run), inspection, duplicate: false };
+  } catch (error) {
+    // Two scans may pass the read-before-create check concurrently. Treat a
+    // Prisma unique conflict as the same idempotent duplicate case.
+    const isFingerprintConflict = error instanceof Error
+      && error.message.includes("Unique constraint failed on the fields: (`sourceFingerprint`)");
+    if (isFingerprintConflict) {
+      const canonical = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
+      if (canonical) return { run: view(canonical), inspection, duplicate: true };
+    }
+    throw error;
+  }
 }
 
 export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = prisma, decisions: FeedbackIntakeDecision[] = []) {

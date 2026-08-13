@@ -125,6 +125,15 @@ describe("feedback intake file preparation", () => {
     await prisma.feedbackIntakeRun.delete({ where: { id: first.run.id } });
   });
 
+  it("reuses an existing complete batch when a restored empty run has the same fingerprint", async () => {
+    const existing = await createOrGetFeedbackIntakeRun({ sessionCode: "2026070801", files: [stepFile()], db: prisma });
+    const restoredEmpty = await createOrGetFeedbackIntakeRun({ sessionCode: "2026070801", files: [], db: prisma });
+    const resumed = await createOrGetFeedbackIntakeRun({ sessionCode: "2026070801", files: [stepFile()], runId: restoredEmpty.run.id, db: prisma });
+    expect(resumed.duplicate).toBe(true);
+    expect(resumed.run.id).toBe(existing.run.id);
+    await prisma.feedbackIntakeRun.deleteMany({ where: { id: { in: [existing.run.id, restoredEmpty.run.id] } } });
+  });
+
   it("does not write a date-mismatched STEP file before teacher confirmation", async () => {
     const input = { sessionCode: "2026070801", files: [stepFile("2026-07-09T10:00:00+08:00")], db: prisma };
     const before = await prisma.draftRecord.count();
