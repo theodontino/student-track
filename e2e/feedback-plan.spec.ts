@@ -80,6 +80,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
   let currentPlanStatus = "draft";
   let currentRevision = 2;
   let createBody: Record<string, unknown> | null = null;
+  let detailReads = 0;
   const mutationOrder: string[] = [];
   await page.route("**/api/report/feedback-plans**", async (route) => {
     const request = route.request();
@@ -96,6 +97,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
       return;
     }
     if (url.pathname.endsWith("/e2e-feedback-plan-1") && request.method() === "GET") {
+      detailReads += 1;
       await route.fulfill({ json: { plan: plan(currentText, currentStatus, currentPlanStatus, currentRevision) } });
       return;
     }
@@ -140,7 +142,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
     await route.continue();
   });
 
-  await page.goto("/feedback");
+  await page.goto("/feedback/advanced");
   // The shared context picker is also used by the preparation step. Use its
   // stable select order here so this integration test does not depend on the
   // browser's nested-label accessible-name implementation.
@@ -192,9 +194,21 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
   expect(generationMode).toBe("fast");
   await page.getByRole("button", { name: "查看并编辑反馈" }).click();
   await expect(page.getByRole("heading", { name: "编辑与导出" })).toBeVisible();
+  const terminalDetailReads = detailReads;
+  await page.waitForTimeout(1_100);
+  expect(detailReads).toBe(terminalDetailReads);
 
   const editor = page.getByLabel(`${TEST_FIXTURE.students[0].name}反馈计划文本`);
   await editor.fill("教师修改后的反馈文本。");
+  await page.waitForTimeout(1_000);
+  await expect(editor).toBeFocused();
+  expect(mutationOrder).toEqual([]);
+  await page.getByRole("button", { name: "批准所选可通过项" }).click();
+  await expect(page.getByText(/请先保存所选反馈中的未保存修改/)).toBeVisible();
+  expect(mutationOrder).toEqual([]);
+  await page.getByRole("button", { name: "保存修改" }).click();
+  await expect.poll(() => mutationOrder).toEqual(["save"]);
+  await expect(page.getByRole("button", { name: "已保存" })).toBeDisabled();
   await page.getByRole("button", { name: "批准所选可通过项" }).click();
   await expect.poll(() => mutationOrder).toEqual(["save", "approve"]);
   expect(currentText).toBe("教师修改后的反馈文本。");
@@ -232,7 +246,7 @@ test("feedback plan remains within the viewport at supported breakpoints", async
   for (const width of [1280, 768]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/feedback");
-    await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
 });
@@ -344,7 +358,7 @@ test("review defaults to a new plan while history remains recoverable", async ({
     await route.continue();
   });
 
-  await page.goto("/feedback");
+  await page.goto("/feedback/advanced");
   const contextSelects = page.locator(".feedback-context-section select");
   await contextSelects.nth(0).selectOption(TEST_FIXTURE.semester.id);
   await contextSelects.nth(1).selectOption({ label: TEST_FIXTURE.class.name });
@@ -429,7 +443,7 @@ test("multi-class batch creation keeps class sessions and students explicit", as
     await route.fulfill({ json: { batches: created ? [batch] : [] } });
   });
 
-  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}`);
+  await page.goto(`/feedback/advanced?semesterId=${TEST_FIXTURE.semester.id}`);
   const panel = page.locator(".feedback-batch-panel");
   await panel.getByText("多班反馈批次（1.2 Beta）").click();
   await panel.getByLabel("B-01 一班").check();

@@ -11,6 +11,8 @@ const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select
 function Overlay({ open, title, children, onClose, kind, size = "default" }: { open: boolean; title: string; children: ReactNode; onClose: () => void; kind: "dialog" | "drawer"; size?: "default" | "wide" }) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -18,7 +20,8 @@ function Overlay({ open, title, children, onClose, kind, size = "default" }: { o
     document.body.style.overflow = "hidden";
     panelRef.current?.focus();
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.isComposing) return;
+      if (event.key === "Escape") onCloseRef.current();
       if (event.key !== "Tab" || !panelRef.current) return;
       const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE));
       if (focusable.length === 0) { event.preventDefault(); return; }
@@ -33,7 +36,7 @@ function Overlay({ open, title, children, onClose, kind, size = "default" }: { o
       document.removeEventListener("keydown", handleKey);
       previous?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   const overlay = <div className="ui-overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={titleId} className={cx("ui-overlay__panel", `ui-overlay__panel--${kind}`, size === "wide" && "ui-overlay__panel--wide")}><div className="ui-overlay__header"><h2 id={titleId}>{title}</h2><IconButton label="关闭" onClick={onClose}>×</IconButton></div>{children}</div></div>;
   return typeof document === "undefined" ? overlay : createPortal(overlay, document.body);

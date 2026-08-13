@@ -1,12 +1,10 @@
 import FeedbackWorkspace from "@/features/feedback/FeedbackWorkspace";
-import UnifiedFeedbackWorkspace from "@/features/feedback/UnifiedFeedbackWorkspace";
 import type { FeedbackStep } from "@/features/feedback/types";
 
 const STEPS: FeedbackStep[] = ["prepare", "extract", "review", "generate", "export"];
 
-export default async function FeedbackPage({ searchParams }: { searchParams: Promise<{ step?: string; advanced?: string; planId?: string }> }) {
-  const { step, advanced, planId } = await searchParams;
-  if (!step && advanced !== "1" && !planId) return <UnifiedFeedbackWorkspace />;
+export default async function AdvancedFeedbackPage({ searchParams }: { searchParams: Promise<{ step?: string }> }) {
+  const { step } = await searchParams;
   const initialStep = STEPS.includes(step as FeedbackStep) ? step as FeedbackStep : undefined;
   return <FeedbackWorkspace initialStep={initialStep} />;
 }

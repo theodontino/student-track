@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
 import { normalizeAttentionSignalCandidates } from "@/lib/attention-labels";
 import { parseFeedbackCommunicationSummary } from "@/lib/feedback-communication";
@@ -16,6 +17,8 @@ import { ServiceError } from "@/services/service-error";
 import { addHighConfidenceAttentionLabels } from "@/services/student-label-service";
 import { adoptGenerationByOperationKey, compactHotGenerationRecordsForClass } from "@/services/generation-memory-service";
 import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
+import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
+import { restrictStepResultToTeacherObservations } from "@/services/step-classroom-import-service";
 
 type ReviewAction = "confirm" | "reject";
 
@@ -150,13 +153,13 @@ function inferEventType(description: string): string {
  * business records. A confirmed correction accepts repeated confirmation as a
  * no-op so retries cannot apply the same communication revision twice.
  */
-export async function processDraftReview(input: ProcessDraftInput) {
+export async function processDraftReview(input: ProcessDraftInput, db: PrismaClient = prisma) {
   if (!input.draftId) throw new ServiceError("draftId 和 action 为必填项", 400);
   if (input.action !== "confirm" && input.action !== "reject") {
     throw new ServiceError("action 必须是 confirm 或 reject", 400);
   }
 
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await db.$transaction(async (tx) => {
     const draft = await tx.draftRecord.findUnique({ where: { id: input.draftId } });
     if (!draft) throw new ServiceError("草稿不存在", 404);
     if (
@@ -210,7 +213,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
     const wccPreferenceCandidate = isWccDraft
       ? communicationPreferenceFromSignals(wccSource.preferenceSignals)
       : null;
-    const parsedData = normalizeParsedData(source);
+    let parsedData = normalizeParsedData(source);
     const stepDraft = isStepDraft(draft.rawText, parsedData);
     if (stepDraft && parsedData.students.some((student) => !student.studentId)) {
       throw new ServiceError("STEP 草案缺少学号绑定，不能按姓名猜测学生", 409);
@@ -231,6 +234,23 @@ export async function processDraftReview(input: ProcessDraftInput) {
 
     if (isWccDraft && !session) {
       throw new ServiceError("WCC 草案必须关联有效课次才能确认", 409);
+    }
+
+    let stepRestrictedByAssistantRoster = false;
+    if (stepDraft && session) {
+      const assistantRosterDraft = await tx.draftRecord.findFirst({
+        where: {
+          id: { not: draft.id },
+          sessionCode: draft.sessionCode,
+          status: { in: ["pending", "confirmed"] },
+          rawText: { startsWith: ASSISTANT_ROSTER_RAW_TEXT_PREFIX },
+        },
+        select: { id: true },
+      });
+      if (assistantRosterDraft) {
+        parsedData = restrictStepResultToTeacherObservations(parsedData);
+        stepRestrictedByAssistantRoster = true;
+      }
     }
 
     const boundWccStudent = isWccDraft && draft.studentId
@@ -341,6 +361,7 @@ export async function processDraftReview(input: ProcessDraftInput) {
     const studentsByBusinessId = new Map(matchingStudents.map((student) => [student.studentId, student]));
 
     const warnings: string[] = [];
+    if (stepRestrictedByAssistantRoster) warnings.push("本课次已有助教表；STEP 仅写入教师观察，未改动评分和考勤");
     const affectedStudentIds: string[] = [];
     const logs: Array<{ studentId: string; studentName: string; scores: ParsedStudent["scores"] }> = [];
     let confirmedCommunicationId: string | null = null;
@@ -606,9 +627,9 @@ export async function processDraftReview(input: ProcessDraftInput) {
 
   if (result.status === "confirmed") {
     await adoptGenerationByOperationKey(input.draftId).catch(() => undefined);
-    const draftSession = await prisma.draftRecord.findUnique({ where: { id: input.draftId } });
+    const draftSession = await db.draftRecord.findUnique({ where: { id: input.draftId } });
     if (draftSession?.sessionCode) {
-      const session = await prisma.classSession.findUnique({ where: { code: draftSession.sessionCode }, select: { classId: true } });
+      const session = await db.classSession.findUnique({ where: { code: draftSession.sessionCode }, select: { classId: true } });
       if (session?.classId) await compactHotGenerationRecordsForClass(session.classId).catch(() => undefined);
     }
   }

@@ -313,6 +313,25 @@ model DraftRecord {
   @@index([handoffPackageId])
 }
 
+// 5b. 统一课后材料入口运行账本；只保存来源元数据、确定性摘要和异常，不保存原始文件。
+model FeedbackIntakeRun {
+  id                String   @id @default(cuid())
+  sessionCode       String
+  sourceFingerprint String   @unique
+  sourceManifest    String   @default("[]")
+  status            String   @default("ready") // "ready" | "applied" | "needs_review" | "failed"
+  appliedSummary    String   @default("{}")
+  issues            String   @default("[]")
+  planId            String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  session ClassSession @relation(fields: [sessionCode], references: [code], onDelete: Cascade)
+
+  @@index([sessionCode, createdAt])
+  @@index([status, updatedAt])
+}
+
 // 6. 学期
 model Semester {
   id        String   @id @default(cuid())
@@ -354,6 +373,7 @@ model ClassSession {
   feedbackPlanRangeEnds FeedbackPlan[] @relation("FeedbackPlanRangeEnd")
   teacherTasks TeacherTask[] @relation("TeacherTaskDueSession")
   groupLessonSession GroupLessonSession?
+  feedbackIntakeRuns FeedbackIntakeRun[]
 }
 
 // 7b. 同一学期内的平行班当前分组。一个班级只属于一个当前班级组；历史课次关联不随换组改写。

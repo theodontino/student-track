@@ -133,6 +133,18 @@ erDiagram
     TEXT batchExportRunId FK
     DATETIME createdAt
   }
+  FeedbackIntakeRun {
+    TEXT id PK
+    TEXT sessionCode FK
+    TEXT sourceFingerprint UK
+    TEXT sourceManifest
+    TEXT status
+    TEXT appliedSummary
+    TEXT issues
+    TEXT planId
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
   FeedbackPlan {
     TEXT id PK
     TEXT type
@@ -539,6 +551,7 @@ erDiagram
   ClassSession ||--o{ Attendance : "sessionId"
   ClassSession ||--o{ Communication : "sessionId"
   ClassSession ||--o{ Event : "sessionId"
+  ClassSession ||--o{ FeedbackIntakeRun : "sessionCode"
   ClassSession ||--o| GroupLessonSession : "sessionId"
   Communication o|--o{ DraftRecord : "communicationId"
   Communication ||--o{ CommunicationRevision : "communicationId"
@@ -774,6 +787,22 @@ erDiagram
 | `isRepeat` | `BOOLEAN` | 是 | default: false |
 | `batchExportRunId` | `TEXT` | 否 | FK |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+
+### FeedbackIntakeRun
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `sessionCode` | `TEXT` | 是 | FK |
+| `sourceFingerprint` | `TEXT` | 是 | unique |
+| `sourceManifest` | `TEXT` | 是 | default: '[]' |
+| `status` | `TEXT` | 是 | default: 'ready' |
+| `appliedSummary` | `TEXT` | 是 | default: '{}' |
+| `issues` | `TEXT` | 是 | default: '[]' |
+| `planId` | `TEXT` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
 
 
 ### FeedbackPlan

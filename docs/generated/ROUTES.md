@@ -16,6 +16,9 @@
 | `/api/export` | `POST` |
 | `/api/feedback/assessment-pdf` | `POST` |
 | `/api/feedback/assistant-roster` | `POST` |
+| `/api/feedback/intake/runs/[id]` | `GET`, `POST` |
+| `/api/feedback/intake/scan` | `POST` |
+| `/api/feedback/intake/upload` | `POST` |
 | `/api/feedback/script-library` | `GET`, `POST` |
 | `/api/group-lessons/[id]/confirm` | `POST` |
 | `/api/group-lessons/[id]` | `PUT` |

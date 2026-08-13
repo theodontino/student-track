@@ -6,6 +6,7 @@ import { submitQuickScores } from "@/services/quick-score-service";
 import { processDraftReview } from "@/services/review-service";
 import { ServiceError } from "@/services/service-error";
 import { createClassSession, deleteClassSession } from "@/services/session-service";
+import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
 
 let classId = "";
 let classCode = "";
@@ -229,6 +230,73 @@ describe("core transactional workflows", () => {
       where: { sessionId, studentId: student.id, type: "教师处理" },
       select: { description: true },
     })).resolves.toEqual([{ description: "观察问题：后半节开始漏看题目条件；证据：老师当场提醒" }]);
+  });
+
+  it("keeps assistant roster scores and attendance when a STEP draft is confirmed later", async () => {
+    const student = await prisma.student.findUniqueOrThrow({ where: { id: studentIds[0] } });
+    const assistantDraft = await prisma.draftRecord.create({
+      data: {
+        rawText: `${ASSISTANT_ROSTER_RAW_TEXT_PREFIX}测试班 2098-01-01 课次 ${sessionCode}`,
+        sessionCode,
+        status: "confirmed",
+        parsedResult: JSON.stringify({ students: [], alert_suggestion: "" }),
+      },
+    });
+    draftIds.push(assistantDraft.id);
+    await prisma.sessionMetric.create({
+      data: {
+        studentId: student.id,
+        sessionId,
+        date: "2098-01-01",
+        scoreA: 5,
+        scoreB: 4,
+        scoreC: 3,
+        scoreD: 5,
+        operator: "nlReview",
+      },
+    });
+
+    const stepDraft = await prisma.draftRecord.create({
+      data: {
+        rawText: JSON.stringify({
+          class: { code: classCode, name: "测试班" },
+          stepSessionId: "test-step-session",
+          students: [{ studentId: student.studentId, name: student.name }],
+        }),
+        sessionCode,
+        parsedResult: JSON.stringify({
+          students: [{
+            name: student.name,
+            studentId: student.studentId,
+            scores: { A: 1, B: 1, C: 1 },
+            events: ["题1：独立完成但节奏较慢"],
+            communication: null,
+            present: false,
+          }],
+          alert_suggestion: "",
+        }),
+      },
+    });
+    draftIds.push(stepDraft.id);
+
+    await expect(processDraftReview({ draftId: stepDraft.id, action: "confirm" })).resolves.toMatchObject({
+      success: true,
+      status: "confirmed",
+      warnings: expect.arrayContaining(["本课次已有助教表；STEP 仅写入教师观察，未改动评分和考勤"]),
+    });
+
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: student.id, sessionId } },
+    })).resolves.toMatchObject({ scoreA: 5, scoreB: 4, scoreC: 3 });
+    await expect(prisma.attendance.findUnique({
+      where: { sessionId_studentId: { sessionId, studentId: student.id } },
+    })).resolves.toMatchObject({ present: true });
+    expect(await prisma.event.count({
+      where: { sessionId, studentId: student.id, type: { not: "教师处理" } },
+    })).toBe(0);
+    await expect(prisma.event.findFirst({
+      where: { sessionId, studentId: student.id, type: "教师处理" },
+    })).resolves.toMatchObject({ description: expect.stringContaining("题1：独立完成但节奏较慢") });
   });
 
   it("validates class selection and archives metrics before deleting a session", async () => {

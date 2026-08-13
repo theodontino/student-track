@@ -359,13 +359,13 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, { text: string; revision: number }>>({});
   const [taskDrafts, setTaskDrafts] = useState<Record<string, TaskDraft>>({});
+  const [savingItemIds, setSavingItemIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [contextMetaError, setContextMetaError] = useState("");
   const [contextMetaReloadKey, setContextMetaReloadKey] = useState(0);
   const [repeatExportRequest, setRepeatExportRequest] = useState<{ planId: string; mode: "complete" | "approved_only" } | null>(null);
   const candidateDefaultsKey = useRef("");
-  const autosaveTimers = useRef(new Map<string, number>());
   const llmWorkspace = useLLMConfiguration();
   const requestedPlanId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("planId");
 
@@ -594,8 +594,9 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   }, [activePlan]);
 
   const activePlanId = activePlan?.id;
+  const activePlanStatus = activePlan?.status;
   useEffect(() => {
-    if (!activePlanId || !["generate", "export"].includes(workspace.activeStep)) return;
+    if (!activePlanId || !activePlanStatus || !["queued", "generating", "pause_requested"].includes(activePlanStatus)) return;
     const timer = window.setInterval(() => {
       void fetch(`/api/report/feedback-plans/${activePlanId}`)
         .then(async (response) => {
@@ -606,7 +607,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
         .catch(() => undefined);
     }, 800);
     return () => window.clearInterval(timer);
-  }, [activePlanId, workspace.activeStep]);
+  }, [activePlanId, activePlanStatus]);
 
   async function createPlan() {
     if (!sessionMeta) return;
@@ -737,29 +738,44 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   }
 
   async function persistItemDraft(planId: string, item: PlanItem, draft: { text: string; revision: number }) {
-    const timer = autosaveTimers.current.get(item.id);
-    if (timer !== undefined) {
-      window.clearTimeout(timer);
-      autosaveTimers.current.delete(item.id);
-    }
     const response = await fetch(`/api/report/feedback-plans/${planId}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "item", itemId: item.id, patch: { finalText: draft.text, reviewMode: "teacher_edited", expectedItemRevision: draft.revision } }),
     });
-    const payload = await response.json() as ApiFailurePayload;
+    const payload = await response.json() as ApiFailurePayload & { item?: PlanItem };
     if (!response.ok) throw new Error(apiFailureMessage(payload, "保存反馈失败"));
+    if (!payload.item) throw new Error("保存反馈成功，但返回结果不完整");
+    return payload.item;
   }
 
-  async function saveItem(item: PlanItem, override?: { text: string; revision: number }) {
+  async function saveItem(item: PlanItem) {
     if (!activePlan) return;
-    const draft = override ?? drafts[item.id];
+    const draft = drafts[item.id];
     if (!draft) return;
-    setBusy(true); setError("");
+    const planId = activePlan.id;
+    setSavingItemIds((current) => [...new Set([...current, item.id])]);
+    setError("");
     try {
-      await persistItemDraft(activePlan.id, item, draft);
-      await openPlan(activePlan.id);
+      const savedItem = await persistItemDraft(planId, item, draft);
+      setActivePlan((current) => current?.id === planId
+        ? {
+          ...current,
+          status: "in_review",
+          items: current.items.map((currentItem) => currentItem.id === item.id ? { ...currentItem, ...savedItem } : currentItem),
+        }
+        : current);
+      setPlans((current) => current.map((plan) => plan.id === planId ? { ...plan, status: "in_review" } : plan));
+      setDrafts((current) => {
+        const latest = current[item.id];
+        return {
+          ...current,
+          [item.id]: latest && latest.text !== draft.text
+            ? { ...latest, revision: savedItem.itemRevision }
+            : { text: savedItem.finalText ?? "", revision: savedItem.itemRevision },
+        };
+      });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "保存反馈失败"); }
-    finally { setBusy(false); }
+    finally { setSavingItemIds((current) => current.filter((id) => id !== item.id)); }
   }
 
   function openIndependentItem(item: PlanItem) {
@@ -783,16 +799,6 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
     if (!response.ok) throw new Error(apiFailureMessage(payload, "保存学生独立计划失败"));
     await openPlan(activePlan.id);
     setIndependentItemTarget(null);
-  }
-
-  function scheduleAutosave(item: PlanItem, text: string, revision: number) {
-    const previous = autosaveTimers.current.get(item.id);
-    if (previous !== undefined) window.clearTimeout(previous);
-    const timer = window.setTimeout(() => {
-      autosaveTimers.current.delete(item.id);
-      void saveItem(item, { text, revision });
-    }, 800);
-    autosaveTimers.current.set(item.id, timer);
   }
 
   async function pausePlan(plan: Plan) {
@@ -843,22 +849,24 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
   }
 
   async function approvePlan(plan: Plan) {
+    const dirtySelected = plan.items.filter((item) => {
+      const draft = drafts[item.id];
+      return selectedItemIds.includes(item.id) && draft && draft.text !== (item.finalText ?? "");
+    });
+    if (dirtySelected.length) {
+      setError(`请先保存所选反馈中的未保存修改：${dirtySelected.map((item) => item.student?.name ?? "班级公共反馈").join("、")}`);
+      return;
+    }
     setBusy(true); setError("");
     try {
-      const dirtySelected = plan.items.filter((item) => {
-        const draft = drafts[item.id];
-        return selectedItemIds.includes(item.id) && draft && draft.text !== (item.finalText ?? "");
-      });
-      await Promise.all(dirtySelected.map((item) => persistItemDraft(plan.id, item, drafts[item.id]!)));
-      const refreshedPlan = dirtySelected.length ? await openPlan(plan.id) : plan;
-      const approvable = refreshedPlan.items.filter((item) => (
+      const approvable = plan.items.filter((item) => (
         selectedItemIds.includes(item.id)
         && !["approved", "exported", "stale", "generating"].includes(item.status)
         && Boolean(item.finalText?.trim())
         && auditStatus(item) !== "blocked"
       ));
       if (!approvable.length) {
-        const selected = refreshedPlan.items.filter((item) => selectedItemIds.includes(item.id));
+        const selected = plan.items.filter((item) => selectedItemIds.includes(item.id));
         const failures = selected.map((item) => {
           const name = item.student?.name ?? "班级公共反馈";
           if (!item.finalText?.trim()) return `${name}：尚无最终文本`;
@@ -1199,6 +1207,8 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
       }));
       const evidenceSummary = (evidence.teachingEvidence || []).slice(0, 3);
       const taskSummary = item.tasks?.[0]?.action || followup?.content || "暂无当日任务";
+      const itemSaving = savingItemIds.includes(item.id);
+      const itemDirty = draft.text !== (item.finalText ?? "");
       const activePreferenceItems = ([
         ["长度", preference.length],
         ["形式", preference.deliveryChannel],
@@ -1256,7 +1266,7 @@ export function FeedbackPlanPanel({ workspace }: { workspace: Workspace }) {
             {initialDraftText && <section className="feedback-plan-model-suggestion"><div className="feedback-plan-card-label"><strong>模型建议（仅供参考）</strong><span>请对照左侧事实判断</span></div><p>{initialDraftText}</p></section>}
             <section className="feedback-plan-final-editor">
               <div className="feedback-plan-card-label"><strong>教师最终正文</strong><span>批准与导出以此处为准</span></div>
-              <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={5} value={draft.text} onChange={(event) => { const text = event.target.value; setDrafts((current) => ({ ...current, [item.id]: { ...draft, text } })); scheduleAutosave(item, text, draft.revision); }} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · 约 800ms 自动保存</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student) || draft.text === (item.finalText ?? "")}>{draft.text === (item.finalText ?? "") ? "已保存" : item.status === "stale" ? "保留当前正文并复核" : "保存修改"}</Button></div></div>
+              <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={5} value={draft.text} onChange={(event) => { const text = event.target.value; setDrafts((current) => ({ ...current, [item.id]: { ...draft, text } })); }} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · {itemSaving ? "保存中" : itemDirty ? "有未保存修改" : "已保存"}</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemSaving || itemImmutable || Boolean(item.studentId && !item.student) || !itemDirty}>{itemSaving ? "保存中…" : !itemDirty ? "已保存" : item.status === "stale" ? "保留当前正文并复核" : "保存修改"}</Button></div></div>
             </section>
           </div>
         </div>

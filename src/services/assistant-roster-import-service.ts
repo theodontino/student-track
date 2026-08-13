@@ -3,6 +3,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { ParseResult, ParsedStudent } from "@/lib/parser";
 import { completeClassAttendance } from "@/lib/nlAttendance";
 import { normalizeDimensionScore } from "@/config/rules";
+import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
 
 interface ParsedRosterRow {
   fileName: string;
@@ -153,7 +154,7 @@ function buildRawText(input: {
   absentStudents: string[];
 }) {
   const lines = [
-    `助教课堂记录：${input.className} ${input.sessionDate} 课次 ${input.sessionCode}`,
+    `${ASSISTANT_ROSTER_RAW_TEXT_PREFIX}${input.className} ${input.sessionDate} 课次 ${input.sessionCode}`,
     "评分映射：出入门测=A学习/测验；课堂纪律=B精神/纪律；课后作业=C课后任务。",
     "",
     ...input.records.map((row) => {

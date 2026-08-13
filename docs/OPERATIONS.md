@@ -180,6 +180,18 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 
 偏好候选必须在学生档案中由教师确认或拒绝；确认会使相关未批准反馈计划条目标记为 stale，历史已批准版本不变。教师任务在仪表盘和反馈计划中更新为 pending、completed 或 cancelled。
 
+## 统一课后任务材料入口（1.2 Beta 3）
+
+教师在默认 `/feedback` 选择课次后，可以把材料拖入页面、选择文件/文件夹，或放入固定收件箱：
+
+```text
+~/Library/Application Support/Student Track/feedback-inbox
+```
+
+也可以用 `STUDENT_TRACK_FEEDBACK_INBOX_ROOT` 指定本机目录。页面打开时自动扫描一次，按钮可重新扫描；系统不常驻监听、不移动或删除源文件。ZIP 仅支持本次解包的 `.xlsx`、STEP 文本和 PDF；加密、损坏或嵌套 ZIP 会列为异常，解包内容不持久化。
+
+扫描只自动写入班级、课次、日期和学生身份完全匹配的确定性事实。助教表与 STEP 的考勤冲突只阻止冲突字段，其余字段仍可应用；模型候选、模糊姓名、日期不一致、跨班/重复 PDF 留在异常区。确认共同课修订且当前课次已关联时会自动带入，创建 FeedbackPlan 时复制材料快照。扫描不会自动批准、导出或发送；需要逐学生微操时进入“高级工作台”。
+
 ## WCG handoff 与只读花名册
 
 WCG（WeComCatch GUI）是仓库外的独立工具。Student Track 不包含其源码，也不读取或启动其
@@ -253,7 +265,7 @@ npm run verify:release
 
 人工冒烟只由变化边界触发：WCG Accessibility、会话定位或草稿填入变化时做一次真实“不发送”验证；破坏性 migration 先创建并验证备份，再检查迁移后的完整性、行数和领域不变量；安装、签名或进程托管变化在干净账户验证。没有变化的边界不重复执行人工流程。
 
-验证通过后提交版本文件、创建带说明的 Git 标签并发布对应 GitHub Release。`package.json`、标签和 Release 使用同一版本号；运行数据和数据库备份不提交 Git。
+验证通过后提交版本文件、创建带说明的 Git 标签并发布对应 GitHub Release。`package.json`、About 页使用的 `src/lib/product-changelog.ts`、标签和 Release 使用同一版本号；每次发布在 changelog 顶部追加简短的用户可感知变化。运行数据和数据库备份不提交 Git。
 
 ```bash
 git commit -m "Archive vX.Y.Z"
