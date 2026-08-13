@@ -251,6 +251,40 @@ test("feedback plan remains within the viewport at supported breakpoints", async
   }
 });
 
+test("unified feedback keeps the approved three-stage strategy and focused student studio", async ({ page }) => {
+  const detail = plan();
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
+      await route.fulfill({ json: { plans: [detail] } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      await route.fulfill({ json: { plan: detail } });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/feedback?stage=studio&planId=e2e-feedback-plan-1&semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  const stageNavigation = page.getByRole("navigation", { name: "课后任务阶段" });
+  await expect(stageNavigation).toContainText("收集材料");
+  await expect(stageNavigation).toContainText("确认事实");
+  await expect(stageNavigation).toContainText("计划工作室");
+  await expect(page.getByRole("heading", { name: "逐学生计划工作室" })).toBeVisible();
+  await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.students[0].name);
+  await expect(page.getByRole("button", { name: /学生独立设置/ })).toBeVisible();
+  await expect(page.getByText("教师最终正文", { exact: true })).toBeVisible();
+  await expect(page.getByText("模型角色与生成设置", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "1 收集材料 统一投料" }).click();
+  await page.getByRole("button", { name: "展开全部计划设置" }).click();
+  await expect(page.getByRole("checkbox", { name: /具体表现/ })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /教师判断/ })).toBeVisible();
+  await expect(page.getByText("当前课次未关联已确认的共同课材料", { exact: false })).toBeVisible();
+});
+
 test("export never reports an unfinished queued item as program-check passed", async ({ page }) => {
   const queuedPlan = plan("", "queued", "paused");
   await page.route("**/api/report/feedback-plans**", async (route) => {

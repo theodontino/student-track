@@ -51,6 +51,9 @@ export type FeedbackIntakeDecisionAction =
   | "use_step"
   | "skip_attendance"
   | "merge_observation"
+  | "use_observation"
+  | "ignore_observation"
+  | "edit_observation"
   | "select_pdf";
 
 export interface FeedbackIntakeDecision {
@@ -58,6 +61,7 @@ export interface FeedbackIntakeDecision {
   action: FeedbackIntakeDecisionAction;
   studentId?: string;
   sourceName?: string;
+  text?: string;
 }
 
 export interface FeedbackIntakeSummary {
@@ -94,6 +98,16 @@ interface IntakeSourceFact {
     issueId: string;
     student: ParsedStudent;
     candidates: Array<{ id: string; name: string; studentId: string }>;
+  }>;
+  unresolvedObservations?: Array<{
+    issueId: string;
+    studentId: string;
+    studentName: string;
+    text: string;
+  }>;
+  unresolvedAssessments?: Array<{
+    issueId: string;
+    evidence: unknown;
   }>;
 }
 
@@ -345,6 +359,11 @@ function mergeParsedResults(
       .filter((decision) => decision.action === "bind_student" && decision.studentId)
       .map((decision) => [decision.issueId, decision.studentId!] as const),
   );
+  const observationDecisions = new Map(
+    decisions
+      .filter((decision) => ["use_observation", "ignore_observation", "edit_observation"].includes(decision.action))
+      .map((decision) => [decision.issueId, decision] as const),
+  );
   const attendanceChoices = new Map<string, FeedbackIntakeDecisionAction>();
   for (const decision of decisions) {
     if (["use_assistant", "use_step", "skip_attendance"].includes(decision.action)) {
@@ -369,6 +388,19 @@ function mergeParsedResults(
         ...unresolved.student,
         name: selected.name,
         studentId: selected.studentId,
+      });
+    }
+    for (const unresolved of fact.unresolvedObservations ?? []) {
+      const decision = observationDecisions.get(unresolved.issueId);
+      if (!decision || decision.action === "ignore_observation") continue;
+      const text = decision.action === "edit_observation" ? decision.text?.trim() : unresolved.text;
+      if (!text) continue;
+      addStudent(merged, {
+        name: unresolved.studentName,
+        studentId: unresolved.studentId,
+        scores: { A: null, B: null, C: null },
+        events: [text],
+        communication: null,
       });
     }
     for (const student of fact.parsedResult?.students ?? []) {
@@ -412,6 +444,16 @@ function mergeParsedResults(
       }
       seenEvidence.add(studentId);
       evidence[studentId] = value;
+    }
+    for (const unresolved of fact.unresolvedAssessments ?? []) {
+      const selectedId = boundStudents.get(unresolved.issueId);
+      if (!selectedId) continue;
+      if (seenEvidence.has(selectedId)) {
+        issues.push(issue("assessment_duplicate", `学生 ${selectedId} 存在多份 PDF，请选择一份`, fact.sourceNames[0]));
+        continue;
+      }
+      seenEvidence.add(selectedId);
+      evidence[selectedId] = { ...(unresolved.evidence as Record<string, unknown>), studentId: selectedId };
     }
   }
   return { parsedResult: { students: [...merged.values()], alert_suggestion: "" } satisfies DraftStructuredResult, assessmentEvidence: evidence, issues };
@@ -513,16 +555,21 @@ async function inspectFeedbackIntakeInternal(
       }
       const stepResult = createStepObservationOnlyResult(envelope.payload);
       const parsed = new Map<string, ParsedStudent>();
+      const unresolvedObservations: NonNullable<IntakeSourceFact["unresolvedObservations"]> = [];
       for (const student of stepResult.students) {
         const match = byStudentId.get(student.studentId ?? "");
         if (!match || match.name !== student.name) { sourceIssues.push(issue("step_student_mismatch", `STEP 学号 ${student.studentId ?? ""} 与当前花名册不一致`, file.displayName, "error")); continue; }
         const sourceStudent = envelope.payload.students.find((item) => item.studentId === student.studentId);
-        const noteCount = envelope.payload.students.find((item) => item.studentId === student.studentId)?.notes.length ?? 0;
-        if (noteCount > 0) sourceIssues.push(issue("step_notes_review", `${match.name} 有 ${noteCount} 条 STEP 备注，需在高级工作台复核后再确认`, file.displayName));
+        const notes = envelope.payload.students.find((item) => item.studentId === student.studentId)?.notes ?? [];
+        for (const note of notes) {
+          const noteIssue = issue("step_note_review", `${match.name} · ${note.contextLabel}：${note.text}`, file.displayName);
+          sourceIssues.push(noteIssue);
+          unresolvedObservations.push({ issueId: noteIssue.id, studentId: match.studentId, studentName: match.name, text: note.text });
+        }
         const interventions = (student.teacherInterventions ?? []).filter((item) => !item.observedProblem.includes("备注："));
         addStudent(parsed, { name: match.name, studentId: match.studentId, scores: { A: null, B: null, C: null }, events: [], communication: null, ...(sourceStudent ? { present: sourceStudent.present } : {}), teacherInterventions: interventions });
       }
-      sourceFacts.push({ key: file.displayName, kind: "step_classroom", sourceNames: [file.displayName], parsedResult: { students: [...parsed.values()], alert_suggestion: "" }, issues: sourceIssues });
+      sourceFacts.push({ key: file.displayName, kind: "step_classroom", sourceNames: [file.displayName], parsedResult: { students: [...parsed.values()], alert_suggestion: "" }, issues: sourceIssues, unresolvedObservations });
     } catch (error) {
       sourceIssues.push(issue("step_invalid", error instanceof Error ? error.message : "STEP 文件无法解析", file.displayName, "error"));
       sourceFacts.push({ key: file.displayName, kind: "step_classroom", sourceNames: [file.displayName], issues: sourceIssues });
@@ -532,29 +579,39 @@ async function inspectFeedbackIntakeInternal(
   for (const file of freshExpanded.filter((item) => classify(item) === "assessment_pdf")) {
     const sourceIssues: FeedbackIntakeIssue[] = [];
     const sourceEvidence: Record<string, unknown> = {};
+    const unresolvedAssessments: NonNullable<IntakeSourceFact["unresolvedAssessments"]> = [];
     try {
       const parsed = await parseAssessmentPdf(toArrayBuffer(file.buffer), file.displayName);
       const matchById = parsed.reportStudentId ? byStudentId.get(parsed.reportStudentId) : undefined;
       const nameCandidates = parsed.reportStudentName ? (byName.get(parsed.reportStudentName) ?? []) : [];
       const matchByName = nameCandidates.length === 1 ? nameCandidates[0] : undefined;
+      let identityMatch = matchById ?? matchByName;
       if (parsed.reportStudentId && !matchById) {
-        sourceIssues.push(issue("assessment_student_mismatch", "PDF 学号不属于当前班级，不能按姓名回退匹配", file.displayName));
+        const matchIssue = issue("assessment_student_mismatch", "PDF 学号不属于当前班级，请绑定当前班学生或忽略", file.displayName, "requires_teacher", roster);
+        sourceIssues.push(matchIssue);
+        unresolvedAssessments.push({ issueId: matchIssue.id, evidence: { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode } });
+        identityMatch = undefined;
       } else if (matchById && parsed.reportStudentName && matchById.name !== parsed.reportStudentName) {
-        sourceIssues.push(issue("assessment_identity_conflict", "PDF 内姓名和学号对应不同学生", file.displayName));
+        const matchIssue = issue("assessment_identity_conflict", "PDF 内姓名和学号对应不同学生，请重新绑定或忽略", file.displayName, "requires_teacher", roster);
+        sourceIssues.push(matchIssue);
+        unresolvedAssessments.push({ issueId: matchIssue.id, evidence: { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode } });
+        identityMatch = undefined;
       } else if (!parsed.reportStudentId && !matchByName) {
-        sourceIssues.push(issue("assessment_needs_match", "PDF 未能唯一匹配当前班级学生", file.displayName));
-      } else if (!parsed.evidence.reportDate) {
+        const matchIssue = issue("assessment_needs_match", "PDF 未能唯一匹配当前班级学生", file.displayName, "requires_teacher", roster);
+        sourceIssues.push(matchIssue);
+        unresolvedAssessments.push({ issueId: matchIssue.id, evidence: { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode } });
+        identityMatch = undefined;
+      }
+      if (!parsed.evidence.reportDate) {
         sourceIssues.push(issue("assessment_date_missing", "PDF 缺少报告日期，无法自动匹配课次", file.displayName));
       } else if (parsed.evidence.reportDate !== session.date) {
         sourceIssues.push(issue("assessment_date_mismatch", `PDF 报告日期 ${parsed.evidence.reportDate} 与课次日期 ${session.date} 不一致`, file.displayName));
-      } else {
-        const match = matchById ?? matchByName;
-        if (match) sourceEvidence[match.id] = { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode, studentId: match.id };
       }
+      if (identityMatch) sourceEvidence[identityMatch.id] = { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode, studentId: identityMatch.id };
     } catch (error) {
       sourceIssues.push(issue("assessment_invalid", error instanceof Error ? error.message : "PDF 无法解析", file.displayName));
     }
-    sourceFacts.push({ key: file.displayName, kind: "assessment_pdf", sourceNames: [file.displayName], assessmentEvidence: sourceEvidence, issues: sourceIssues });
+    sourceFacts.push({ key: file.displayName, kind: "assessment_pdf", sourceNames: [file.displayName], assessmentEvidence: sourceEvidence, issues: sourceIssues, unresolvedAssessments });
   }
 
   const decisions = previous?.snapshot.decisions ?? [];

@@ -292,6 +292,8 @@ async function closeGenerationClock(planId: string, completed: boolean, db: Feed
 function messageForGenerationError(error: unknown) {
   const raw = error instanceof ApiError
     ? error.message
+    : error instanceof Error && /LLM API Key|LLM.*配置|模型配置/i.test(error.message)
+      ? error.message
     : error instanceof SyntaxError
       ? "模型返回的结构不完整，本条可单独重试"
       : "本条反馈生成失败，可单独重试";

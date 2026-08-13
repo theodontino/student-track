@@ -5,9 +5,11 @@ import Link from "next/link";
 import { Badge, Button, PageHeader, SegmentedControl, StatusBanner, Textarea } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
 import {
+  FEEDBACK_MODULES,
   defaultFeedbackGenerationPreferences,
   type FeedbackClosureType,
 } from "@/lib/feedback-plan";
+import { useLLMConfiguration } from "@/features/system/useLLMConfiguration";
 import type { FeedbackIntakeDecision, FeedbackIntakeIssue } from "@/services/feedback-intake-service";
 import { FeedbackContextSection } from "./FeedbackContextSection";
 import { FeedbackPlanPanel } from "./FeedbackPlanPanel";
@@ -17,6 +19,25 @@ import styles from "./unified-feedback-workspace.module.css";
 type UnifiedStage = "intake" | "review" | "studio";
 type Length = "inherit" | "short" | "standard" | "detailed";
 type Tone = "inherit" | "gentle" | "professional";
+type UploadCandidate = { file: File; displayName: string };
+
+interface WebkitFileSystemEntry {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+}
+
+interface WebkitFileSystemFileEntry extends WebkitFileSystemEntry {
+  file: (success: (file: File) => void, failure?: (error: DOMException) => void) => void;
+}
+
+interface WebkitFileSystemDirectoryReader {
+  readEntries: (success: (entries: WebkitFileSystemEntry[]) => void, failure?: (error: DOMException) => void) => void;
+}
+
+interface WebkitFileSystemDirectoryEntry extends WebkitFileSystemEntry {
+  createReader: () => WebkitFileSystemDirectoryReader;
+}
 
 interface FeedbackIntakeRunView {
   id: string;
@@ -51,6 +72,24 @@ const stageLabels: Record<UnifiedStage, string> = {
   studio: "计划工作室",
 };
 
+const moduleLabels: Record<string, string> = {
+  observed_moment: "具体表现",
+  teacher_interpretation: "教师判断",
+  teacher_intervention: "老师已经做了什么",
+  intervention_outcome: "处理结果",
+  parent_action: "家长最低动作",
+  followup_observation: "后续观察",
+};
+
+const moduleDescriptions: Record<string, string> = {
+  observed_moment: "写清本次可验证的课堂表现",
+  teacher_interpretation: "解释表现背后的学习状态",
+  teacher_intervention: "说明老师已经采取的处理",
+  intervention_outcome: "记录处理后的变化",
+  parent_action: "只在确有必要时提出家庭动作",
+  followup_observation: "写明后续继续关注什么",
+};
+
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "操作失败"; }
 
 function runDecisions(run: FeedbackIntakeRunView | null) {
@@ -68,11 +107,46 @@ function issueChoiceLabel(issue: FeedbackIntakeIssue) {
   if (issue.code === "assessment_duplicate") return "重复 PDF";
   if (issue.code.includes("student") || issue.code.includes("identity")) return "学生匹配";
   if (issue.code.startsWith("assessment")) return "PDF 匹配";
+  if (issue.code === "step_note_review") return "STEP 备注";
   return "需要教师判断";
+}
+
+async function readDirectoryEntries(entry: WebkitFileSystemDirectoryEntry, prefix = entry.name): Promise<UploadCandidate[]> {
+  const reader = entry.createReader();
+  const entries: WebkitFileSystemEntry[] = [];
+  while (true) {
+    const batch = await new Promise<WebkitFileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) break;
+    entries.push(...batch);
+  }
+  const files: UploadCandidate[] = [];
+  for (const child of entries) {
+    const displayName = `${prefix}/${child.name}`;
+    if (child.isDirectory) files.push(...await readDirectoryEntries(child as WebkitFileSystemDirectoryEntry, displayName));
+    else if (child.isFile) {
+      const file = await new Promise<File>((resolve, reject) => (child as WebkitFileSystemFileEntry).file(resolve, reject));
+      files.push({ file, displayName });
+    }
+  }
+  return files;
+}
+
+async function uploadCandidatesFromDrop(dataTransfer: DataTransfer): Promise<UploadCandidate[]> {
+  const candidates: UploadCandidate[] = [];
+  for (const item of Array.from(dataTransfer.items)) {
+    const entry = (item as DataTransferItem & { webkitGetAsEntry?: () => WebkitFileSystemEntry | null }).webkitGetAsEntry?.();
+    if (entry?.isDirectory) candidates.push(...await readDirectoryEntries(entry as unknown as WebkitFileSystemDirectoryEntry));
+    else if (entry?.isFile) {
+      const file = item.getAsFile();
+      if (file) candidates.push({ file, displayName: file.name });
+    }
+  }
+  return candidates.length ? candidates : Array.from(dataTransfer.files).map((file) => ({ file, displayName: file.name }));
 }
 
 export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { initialStage?: UnifiedStage }) {
   const workspace = useFeedbackWorkspace("prepare");
+  const llmWorkspace = useLLMConfiguration();
   const setWorkspaceActiveStep = workspace.setActiveStep;
   const contextSemesterId = workspace.context.semesterId;
   const contextSessionCode = workspace.context.sessionCode;
@@ -88,6 +162,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   const [length, setLength] = useState<Length>("inherit");
   const [tone, setTone] = useState<Tone>("inherit");
   const [closureType, setClosureType] = useState<FeedbackClosureType>(defaultFeedbackGenerationPreferences("event_micro").closureType);
+  const [moduleKeys, setModuleKeys] = useState<string[]>(defaultFeedbackGenerationPreferences("event_micro").moduleKeys);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [commonLessonLabel, setCommonLessonLabel] = useState("");
   const [commonLessonOptions, setCommonLessonOptions] = useState<CommonLessonOption[]>([]);
@@ -95,17 +170,16 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   const [autoScannedSession, setAutoScannedSession] = useState("");
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const selectionSessionRef = useRef("");
-  const studioInitializedRef = useRef(false);
   const runRestoreRef = useRef(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
+  const llmReady = !llmWorkspace.loading && Boolean(llmWorkspace.form.apiKey?.trim() && llmWorkspace.form.model?.trim());
 
   useEffect(() => {
-    if (initialStage === "studio" && !studioInitializedRef.current) {
-      studioInitializedRef.current = true;
+    if (initialStage === "studio" && workspace.activeStep !== "export") {
       workspace.setActiveStep("export");
     }
-  }, [initialStage, workspace]);
+  }, [initialStage, workspace.activeStep, workspace.setActiveStep]);
 
   const updateStage = useCallback((next: UnifiedStage) => {
     setStage(next);
@@ -152,6 +226,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
 
   useEffect(() => {
     const requestedRunId = new URL(window.location.href).searchParams.get("intakeRunId");
+    const requestedPlanId = new URL(window.location.href).searchParams.get("planId");
     if (requestedRunId && workspace.contextHydrated && !runRestoreRef.current) {
       runRestoreRef.current = true;
       void refreshRun(requestedRunId).then((restored) => {
@@ -160,11 +235,12 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       }).catch((reason) => setError(errorMessage(reason)));
       return;
     }
+    if (initialStage === "studio" && requestedPlanId) return;
     if (!workspace.contextHydrated || !workspace.context.sessionCode || autoScannedSession === workspace.context.sessionCode) return;
     if (requestedRunId) return;
     setAutoScannedSession(workspace.context.sessionCode);
     void scanInbox(true);
-  }, [autoScannedSession, scanInbox, updateStage, workspace.context.sessionCode, workspace.contextHydrated]);
+  }, [autoScannedSession, initialStage, scanInbox, updateStage, workspace.context.sessionCode, workspace.contextHydrated]);
 
   useEffect(() => {
     const semesterId = contextSemesterId;
@@ -196,14 +272,15 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     setSelectedStudentIds(recommended);
   }, [contextSessionCode, workspace.contextStudents]);
 
-  async function uploadFiles(files: FileList | null) {
-    if (!workspace.context.sessionCode || !files?.length) return;
+  async function uploadFiles(files: UploadCandidate[]) {
+    if (!workspace.context.sessionCode || !files.length) return;
     setBusy(true); setError(""); setStatus("正在整理文件、ZIP 和目录材料…");
     try {
       const form = new FormData();
       form.set("sessionCode", workspace.context.sessionCode);
       if (run?.sessionCode === workspace.context.sessionCode && !run.planId) form.set("runId", run.id);
-      Array.from(files).forEach((file) => form.append("files", file));
+      form.set("displayNames", JSON.stringify(files.map(({ displayName }) => displayName)));
+      files.forEach(({ file }) => form.append("files", file, file.name));
       const result = await requestJson<ApiResult>("/api/feedback/intake/upload", { method: "POST", body: form });
       adoptRun(result.run);
       setStatus(result.run.issues.length ? "材料已读取；请处理异常项。" : "材料已读取，等待教师确认事实。 ");
@@ -215,8 +292,8 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     return decisions.find((decision) => decision.issueId === issue.id);
   }
 
-  function setDecision(issue: FeedbackIntakeIssue, action: FeedbackIntakeDecision["action"], sourceName?: string, studentId?: string) {
-    setDecisions((current) => [...current.filter((decision) => decision.issueId !== issue.id), { issueId: issue.id, action, ...(issue.sourceName ? { sourceName: issue.sourceName } : {}), ...(sourceName ? { sourceName } : {}), ...(studentId ? { studentId } : {}) }]);
+  function setDecision(issue: FeedbackIntakeIssue, action: FeedbackIntakeDecision["action"], sourceName?: string, studentId?: string, text?: string) {
+    setDecisions((current) => [...current.filter((decision) => decision.issueId !== issue.id), { issueId: issue.id, action, ...(issue.sourceName ? { sourceName: issue.sourceName } : {}), ...(sourceName ? { sourceName } : {}), ...(studentId ? { studentId } : {}), ...(text !== undefined ? { text } : {}) }]);
   }
 
   async function confirmFacts() {
@@ -243,7 +320,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         if (!confirmed) return;
         currentRun = confirmed;
       }
-      const prefs = { closureType, moduleKeys: defaultFeedbackGenerationPreferences("event_micro").moduleKeys, length, tone };
+      const prefs = { closureType, moduleKeys, length, tone };
       const result = await requestJson<{ result: { plan?: { id: string } } }>(`/api/feedback/intake/runs/${encodeURIComponent(currentRun.id)}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "create_plan", plan: {
@@ -283,8 +360,10 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   const issueCount = run?.issues.filter(issueNeedsChoice).length ?? 0;
   const unresolvedCount = run?.issues.filter(issueNeedsChoice).filter((issue) => !decisionFor(issue)).length ?? 0;
   const hasRun = Boolean(run && run.sourceManifest.length > 0);
-  const canStart = Boolean(hasRun && run && run.status !== "failed" && !busy && selectedStudentIds.length > 0);
   const summary = run?.appliedSummary ?? {};
+  const recognizedCount = Number(summary.recognizedCount ?? run?.sourceManifest.filter((source) => source.kind !== "ignored").length ?? 0);
+  const hasUsableMaterial = recognizedCount > 0 || Boolean(selectedCommonLessonId);
+  const canStart = Boolean(hasRun && hasUsableMaterial && llmReady && run && run.status !== "failed" && !busy && selectedStudentIds.length > 0);
 
   function renderRail() {
     return <nav className={styles.taskRail} aria-label="课后任务阶段">
@@ -295,23 +374,33 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   function renderIntake() {
     return <>
       <div className={styles.entrances}>
-        <section className={styles.dropzone} onClick={() => uploadRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}>
+        <section className={styles.dropzone} onClick={() => uploadRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadCandidatesFromDrop(event.dataTransfer).then(uploadFiles).catch((reason) => setError(errorMessage(reason))); }}>
           <span className={styles.eyebrow}>入口 A · 临时投入</span><strong>拖入文件、文件夹或 ZIP</strong><p>助教 Excel、STEP 文本、学生 PDF；ZIP 内支持这些文件类型。</p><Button variant="secondary" disabled={busy || !workspace.context.sessionCode}>选择材料</Button>
-          <input ref={uploadRef} hidden type="file" multiple accept=".xlsx,.txt,.step-classroom.txt,.pdf,.zip" onChange={(event) => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} />
+          <input ref={uploadRef} hidden type="file" multiple accept=".xlsx,.txt,.step-classroom.txt,.pdf,.zip" onChange={(event) => { void uploadFiles(Array.from(event.target.files ?? []).map((file) => ({ file, displayName: file.webkitRelativePath || file.name }))); event.currentTarget.value = ""; }} />
         </section>
         <section className={styles.inbox}>
           <span className={styles.eyebrow}>入口 B · 固定目录</span><strong>读取反馈收件箱</strong><code>~/Library/Application Support/Student Track/feedback-inbox</code><Button variant="secondary" disabled={busy || !workspace.context.sessionCode} onClick={() => void scanInbox()}>重新扫描</Button><small>不移动、不删除原文件；材料先汇总，确认事实后才写入。</small>
         </section>
       </div>
-      <div className={styles.folderRow}><Button variant="ghost" uiSize="sm" onClick={() => folderRef.current?.click()} disabled={busy || !workspace.context.sessionCode}>选择整个报告文件夹</Button><span>适合一次导入一批学生 PDF；文件夹不会被持续监听。</span><input ref={folderRef} hidden type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} accept=".pdf" onChange={(event) => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} /></div>
+      <div className={styles.folderRow}><Button variant="ghost" uiSize="sm" onClick={() => folderRef.current?.click()} disabled={busy || !workspace.context.sessionCode}>选择整个报告文件夹</Button><span>适合一次导入一批学生 PDF；会递归读取子目录，但不会持续监听。</span><input ref={folderRef} hidden type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} accept=".pdf" onChange={(event) => { void uploadFiles(Array.from(event.target.files ?? []).map((file) => ({ file, displayName: file.webkitRelativePath || file.name }))); event.currentTarget.value = ""; }} /></div>
       {hasRun && run && <section className={styles.runSummary}><div><strong>本轮材料</strong><span>{run.sourceManifest.length} 个来源 · {String(summary.appliedStudentCount ?? 0)} 名学生事实已整理</span></div><div className={styles.fileList}>{run.sourceManifest.map((file, index) => <span key={`${String(file.name)}:${String(file.sourceHash ?? index)}`}><Badge tone={file.kind === "ignored" ? "neutral" : file.kind === "assessment_pdf" ? "info" : "success"}>{file.kind === "ignored" ? "忽略" : file.kind === "assessment_pdf" ? "PDF" : file.kind === "step_classroom" ? "STEP" : "助教表"}</Badge>{String(file.name)}</span>)}</div></section>}
       <section className={styles.candidates}><header><div><strong>本次反馈对象</strong><span>先明确入选学生，创建计划时不再静默猜测。</span></div><div><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds(workspace.contextStudents.map((student) => student.id))}>全选</Button><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds([])}>清空</Button></div></header><div className={styles.candidateGrid}>{workspace.contextStudents.length ? workspace.contextStudents.map((student) => <label key={student.id} className={selectedStudentIds.includes(student.id) ? styles.candidateSelected : ""}><input type="checkbox" checked={selectedStudentIds.includes(student.id)} onChange={(event) => setSelectedStudentIds((ids) => event.target.checked ? [...new Set([...ids, student.id])] : ids.filter((id) => id !== student.id))} /><span><strong>{student.name}</strong><small>{student.feedbackRecommendationReasons?.length ? student.feedbackRecommendationReasons.join("、") : "有课堂记录，可手动加入"}</small></span></label>) : <span>正在读取当前课次学生…</span>}</div></section>
-      <section className={styles.strategy}><div className={styles.strategyHeading}><div><strong>本次反馈策略</strong><span>整批设置进入计划快照，逐学生覆盖仍在计划工作室保留。</span></div><Button variant="ghost" uiSize="sm" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "收起计划设置" : "展开全部计划设置"}</Button></div><div className={styles.strategyRows}><label>详略<SegmentedControl label="反馈详略" value={length} onChange={(value) => setLength(value as Length)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "short", label: "简洁" }, { value: "standard", label: "标准" }, { value: "detailed", label: "详细" }]} /></label><label>语气<SegmentedControl label="反馈语气" value={tone} onChange={(value) => setTone(value as Tone)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "gentle", label: "温和" }, { value: "professional", label: "专业" }]} /></label></div>{commonLessonLabel && <p className={styles.commonLesson}>共同课公共材料：{commonLessonLabel}（创建计划时复制确认修订快照）</p>}{commonLessonOptions.length > 0 && <label className={styles.commonLessonPicker}>共同课公共材料<select value={selectedCommonLessonId} onChange={(event) => setSelectedCommonLessonId(event.target.value)}><option value="">不使用（若课次已有唯一关联则自动采用）</option>{commonLessonOptions.map((option) => <option key={option.id} value={option.id}>{option.title} · 修订 {option.revision}{option.linkedToCurrent ? " · 当前课次关联" : ""}</option>)}</select><small>服务端只接受已确认且与当前课次关联的修订。</small></label>}<div className={styles.strategyGrid}><label>生成方式<select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as "standard" | "fast")}><option value="standard">标准反馈（含审核）</option><option value="fast">快速草稿（跳过审核润色）</option></select></label><label>结尾<select value={closureType} onChange={(event) => setClosureType(event.target.value as FeedbackClosureType)}><option value="positive_recognition">具体认可</option><option value="teacher_resolved">课堂已处理</option><option value="home_cooperation">家庭配合</option><option value="continued_observation">后续观察</option></select></label><label className={styles.requirement}>总体要求<Textarea rows={2} value={outputRequirement} onChange={(event) => setOutputRequirement(event.target.value)} /></label></div>{showAdvanced && <p className={styles.advancedNote}>共同课材料、详略、语气、结尾和学生名单都会固化进 FeedbackPlan；高级工作台继续提供模块、独立计划和正文微操。</p>}</section>
+      <section className={styles.strategy}><div className={styles.strategyHeading}><div><strong>本次反馈策略</strong><span>整批设置进入计划快照，逐学生覆盖仍在计划工作室保留。</span></div><Button variant="ghost" uiSize="sm" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "收起计划设置" : "展开全部计划设置"}</Button></div><div className={styles.strategyRows}><label>详略<SegmentedControl label="反馈详略" value={length} onChange={(value) => setLength(value as Length)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "short", label: "简洁" }, { value: "standard", label: "标准" }, { value: "detailed", label: "详细" }]} /></label><label>语气<SegmentedControl label="反馈语气" value={tone} onChange={(value) => setTone(value as Tone)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "gentle", label: "温和" }, { value: "professional", label: "专业" }]} /></label></div><p className={styles.commonLesson}>{commonLessonLabel ? `共同课公共材料：${commonLessonLabel}（创建计划时复制确认修订快照）` : "当前课次未关联已确认的共同课材料；仍可使用本次投入材料。"}</p>{commonLessonOptions.length > 0 && <label className={styles.commonLessonPicker}>共同课公共材料<select value={selectedCommonLessonId} onChange={(event) => setSelectedCommonLessonId(event.target.value)}><option value="">不使用</option>{commonLessonOptions.map((option) => <option key={option.id} value={option.id}>{option.title} · 修订 {option.revision}{option.linkedToCurrent ? " · 当前课次关联" : ""}</option>)}</select><small>服务端只接受已确认且与当前课次关联的修订。</small></label>}<div className={styles.strategyGrid}><label>生成方式<select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as "standard" | "fast")}><option value="standard">标准反馈（含审核）</option><option value="fast">快速草稿（跳过审核润色）</option></select></label><label>结尾<select value={closureType} onChange={(event) => setClosureType(event.target.value as FeedbackClosureType)}><option value="positive_recognition">具体认可</option><option value="teacher_resolved">课堂已处理</option><option value="home_cooperation">家庭配合</option><option value="continued_observation">后续观察</option></select></label><label className={styles.requirement}>总体要求<Textarea rows={2} value={outputRequirement} onChange={(event) => setOutputRequirement(event.target.value)} /></label></div>{showAdvanced && <div className={styles.moduleGrid}>{FEEDBACK_MODULES.event_micro.map((key) => <label key={key} className={moduleKeys.includes(key) ? styles.moduleSelected : ""}><input type="checkbox" checked={moduleKeys.includes(key)} onChange={(event) => setModuleKeys((current) => event.target.checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))} /><span><strong>{moduleLabels[key] ?? key}</strong><small>{moduleDescriptions[key] ?? "决定反馈关注内容"}</small></span></label>)}</div>}</section>
+      {!llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>尚未配置可用的 LLM API Key 与模型，创建计划后将无法生成正文。</span> <Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
+      {hasRun && !hasUsableMaterial && <StatusBanner tone="warning">本轮只有未识别或已忽略的文件，不能据此开始反馈。请重新选择实际文件，或关联一份已确认共同课材料。</StatusBanner>}
       <footer className={styles.actions}><div><strong>{issueCount ? `有 ${issueCount} 项异常需要确认` : hasRun ? "材料已整理，等待事实确认" : "先选择课次和材料"}</strong><span>确认前不写入课堂事实；确认后进入同一个 FeedbackPlan。</span></div><div><Button variant="secondary" onClick={() => startFromIntake("fast")} disabled={!canStart}>{busy ? "处理中…" : "快速生成草稿"}</Button><Button onClick={() => startFromIntake("standard")} disabled={!canStart}>{busy ? "处理中…" : issueCount ? "检查并开始标准反馈" : "开始标准反馈"}</Button></div></footer>
     </>;
   }
 
   function renderIssueChoices(item: FeedbackIntakeIssue, selected?: FeedbackIntakeDecision) {
+    if (item.code === "step_note_review") {
+      return <div className={styles.observationChoices}>
+        <label><input type="radio" name={item.id} checked={selected?.action === "use_observation"} onChange={() => setDecision(item, "use_observation")} /> 采用为课堂观察</label>
+        <label><input type="radio" name={item.id} checked={selected?.action === "ignore_observation"} onChange={() => setDecision(item, "ignore_observation")} /> 忽略这条自由备注</label>
+        <label><input type="radio" name={item.id} checked={selected?.action === "edit_observation"} onChange={() => setDecision(item, "edit_observation", undefined, undefined, item.message)} /> 手动编辑后采用</label>
+        {selected?.action === "edit_observation" && <Textarea aria-label="编辑课堂观察" rows={3} value={selected.text ?? ""} onChange={(event) => setDecision(item, "edit_observation", undefined, undefined, event.target.value)} />}
+      </div>;
+    }
     if (item.code === "attendance_conflict") {
       return <>
         <label><input type="radio" name={item.id} checked={selected?.action === "use_assistant"} onChange={() => setDecision(item, "use_assistant")} /> 采用助教表</label>
@@ -359,16 +448,16 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
           </article>;
         })}
       </div>
-      <details className={styles.allFacts}><summary>查看全部已整理事实（{String(summary.appliedStudentCount ?? 0)} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p></details>
+      <details className={styles.allFacts}><summary>查看全部已整理事实（{String(summary.appliedStudentCount ?? 0)} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p><div className={styles.factSources}>{Array.isArray(summary.sourceFacts) ? (summary.sourceFacts as Array<Record<string, unknown>>).map((fact, index) => <article key={`${String(fact.kind)}-${index}`}><strong>{fact.kind === "assistant_roster" ? "助教表" : fact.kind === "step_classroom" ? "STEP 课堂事实" : "PDF 证据"}</strong><span>{Array.isArray(fact.sourceNames) ? fact.sourceNames.join("、") : "本轮材料"}</span><small>{Array.isArray(fact.students) ? `${fact.students.length} 名学生` : Array.isArray(fact.assessmentEvidence) ? `${fact.assessmentEvidence.length} 份报告` : "已解析"}</small></article>) : <span>暂无可写入事实</span>}</div></details>
       <footer className={styles.actions}>
         <div><strong>确认后固定本次事实快照</strong><span>{unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : "已完成所有必要选择"}</span></div>
-        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button onClick={() => void createPlan(pendingMode)} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length}>{busy ? "确认中…" : `确认事实并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button></div>
+        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button onClick={() => void createPlan(pendingMode)} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length || !llmReady}>{busy ? "确认中…" : `确认事实并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button></div>
       </footer>
     </div>;
   }
 
   function renderStudio() {
-    return <section className={styles.studioStage}><header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>计划工作室</h2><p>逐学生查看证据、编辑正文、保存、批准和导出；高级工作台仍可随时打开。</p></div><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">打开高级工作台</Link></header><FeedbackPlanPanel workspace={workspace} /></section>;
+    return <section className={styles.studioStage}><header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>计划工作室</h2><p>左侧按学生和状态定位，右侧集中处理证据、正文、独立设置、重试、批准与导出。</p></div><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">打开高级工作台</Link></header><FeedbackPlanPanel workspace={workspace} presentation="studio" /></section>;
   }
 
   return <main className={styles.page}>

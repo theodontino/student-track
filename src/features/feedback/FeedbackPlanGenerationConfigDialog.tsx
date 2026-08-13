@@ -277,6 +277,11 @@ export function independentConfigFromCommon(common: FeedbackPlanItemGenerationCo
     outputRequirement: common.outputRequirement,
     generationPreferences: common.type === "class_update"
       ? { closureType: defaults.closureType, moduleKeys: [...defaults.moduleKeys] }
-      : { closureType: common.generationPreferences.closureType, moduleKeys: [...common.generationPreferences.moduleKeys] },
+      : {
+        closureType: common.generationPreferences.closureType,
+        moduleKeys: [...common.generationPreferences.moduleKeys],
+        length: common.generationPreferences.length ?? "inherit",
+        tone: common.generationPreferences.tone ?? "inherit",
+      },
   };
 }

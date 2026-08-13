@@ -9,10 +9,16 @@ export async function POST(request: NextRequest) {
     const sessionCode = String(formData.get("sessionCode") || "").trim();
     const runIdValue = String(formData.get("runId") || "").trim();
     const uploaded = formData.getAll("files").filter((item): item is File => item instanceof File);
+    const displayNames = (() => {
+      try {
+        const value = JSON.parse(String(formData.get("displayNames") || "[]"));
+        return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+      } catch { return []; }
+    })();
     if (!sessionCode) return NextResponse.json({ error: "请选择课次" }, { status: 400 });
     if (!uploaded.length) return NextResponse.json({ error: "请选择文件、文件夹或 ZIP" }, { status: 400 });
-    const files: IntakeFile[] = await Promise.all(uploaded.map(async (file) => ({
-      name: file.name,
+    const files: IntakeFile[] = await Promise.all(uploaded.map(async (file, index) => ({
+      name: displayNames[index] || file.name,
       buffer: await file.arrayBuffer(),
       source: "upload" as const,
     })));

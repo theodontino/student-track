@@ -50,7 +50,7 @@ function textBuffer(value: string) {
   return encoded.buffer;
 }
 
-function stepFile(completedAt = "2026-07-08T10:00:00+08:00") {
+function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ contextQuestionIndex: number; text: string; recordedAt: string }> = []) {
   const payload = {
     class: { code: "E2E-CLASS", name: "E2E测试班" },
     stepSessionId: "beta3-step-test",
@@ -69,7 +69,7 @@ function stepFile(completedAt = "2026-07-08T10:00:00+08:00") {
         followUpAction: null,
         recordedAt: "2026-07-08T09:30:00+08:00",
       }],
-      notes: [],
+      notes,
     }],
   };
   return file("课堂.step-classroom.txt", textBuffer(`${STEP_CLASSROOM_HEADER}\nPROMPT_VERSION: ${STEP_PROMPT_VERSION}\n\n=== DATA BEGIN ===\n${JSON.stringify(payload)}\n=== DATA END ===\n=== PROMPT BEGIN ===\n${STEP_INTERPRETATION_PROMPT}\n=== PROMPT END ===`));
@@ -126,6 +126,26 @@ describe("feedback intake file preparation", () => {
     await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
   });
 
+  it("requires an explicit decision for STEP free notes and persists an edited observation", async () => {
+    const input = {
+      sessionCode: "2026070801",
+      files: [stepFile("2026-07-08T10:00:00+08:00", [{ contextQuestionIndex: 1, text: "原始自由备注", recordedAt: "2026-07-08T09:45:00+08:00" }])],
+      db: prisma,
+    };
+    const result = await createOrGetFeedbackIntakeRun(input);
+    const noteIssue = result.run.issues.find((item) => item.code === "step_note_review");
+    expect(noteIssue).toBeDefined();
+    await expect(resolveFeedbackIntakeRun(result.run.id, { action: "confirm", decisions: [] }, prisma)).rejects.toThrow("材料异常未处理");
+    const confirmed = await resolveFeedbackIntakeRun(result.run.id, {
+      action: "confirm",
+      decisions: [{ issueId: noteIssue!.id, action: "edit_observation", text: "教师确认后的课堂观察" }],
+    }, prisma);
+    expect(confirmed.status).toBe("applied");
+    const saved = await prisma.draftRecord.findFirst({ where: { sessionCode: "2026070801" }, orderBy: { createdAt: "desc" } });
+    expect(saved?.parsedResult).toContain("教师确认后的课堂观察");
+    await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+  }, 20_000);
+
   it("writes a confirmed STEP run once and keeps retry idempotent", async () => {
     const input = { sessionCode: "2026070801", files: [stepFile()], db: prisma };
     const result = await createOrGetFeedbackIntakeRun(input);
@@ -149,11 +169,13 @@ describe("feedback intake file preparation", () => {
       type: "event_micro" as const,
       outputRequirement: "为测试学生生成一条可复核反馈",
       studentIds: [student!.id],
-      generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment", "teacher_interpretation"] },
+      generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment", "teacher_interpretation"], length: "detailed" as const, tone: "gentle" as const },
     };
     const first = await resolveFeedbackIntakeRun(result.run.id, { action: "create_plan", plan: planInput }, prisma);
     const second = await resolveFeedbackIntakeRun(result.run.id, { action: "create_plan", plan: planInput }, prisma);
     expect("plan" in first && "plan" in second ? first.plan?.id : null).toBe("plan" in second ? second.plan?.id : null);
+    const stored = "plan" in first && first.plan ? JSON.parse(first.plan.inputSnapshot) : null;
+    expect(stored?.generationPreferences).toMatchObject({ length: "detailed", tone: "gentle" });
     await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
   }, 20_000);
 });
