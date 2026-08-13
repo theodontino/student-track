@@ -20,8 +20,16 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.1.5-beta.2 | 在 1.1.5-beta 的基础上修复项目/运行数据目录迁移后的本地转写任务路径兼容性；按 Zhuiver 归为 PATCH，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
+| Student Track | 1.1.5-beta.2 | 在 1.1.5-beta 的基础上修复项目/运行数据目录迁移后的本地转写任务路径兼容性，并继续维护实验性的 STEP 人工桥；按 Zhuiver 归为 PATCH，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
+
+### STEP Bridge 的发布边界
+
+ST ↔ STEP 当前桥接是 `experimental`，不属于 Student Track 当前稳定产品承诺，也不作为 ST 1.2 的正式协议交付条件。现阶段只保证当前已验证的 ST + STEP 组合，实验文件格式可以随两端数据模型调整，旧实验格式不承诺长期兼容。
+
+正式 `.stsession/.stlesson`、canonical Schema、revision/ledger、compatibility matrix 和联合 conformance 已延期到 STEP 核心课堂模型和真实桥接需求明显稳定后再由 `Protocol-of-sts` 收口。实验 bridge 的当前实现、测试和真实使用结果可以作为未来协议设计输入，但不登记为正式协议兼容证据。
+
+实验期仍保持稳定安全边界：`studentId` 精确匹配、班级和目标课次一致、确定性课堂事实不由 LLM 改写或补分、模型失败不阻断教师复核、坐标和触控 UI 数据不进入 ST、教师确认前不写正式记录。
 
 Student Track 的日常和稳定版门禁以自动化为准：普通改动通过 `verify:quick`，高风险与发布改动通过 `verify:release`，随后即可进入真实使用。所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化；固定次数的真实课后流程和重复人工合成演练不再阻断发布。
 
@@ -29,7 +37,7 @@ Student Track 的日常和稳定版门禁以自动化为准：普通改动通过
 教学工作台承诺；协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
 `docs/release-evidence/` 中的 Zhuiver 记录，并通过 `npm run release:check-version`。
 
-人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及跨仓协议变化时仍使用精确提交的两端自动化，并固定先发布 Student Track、刷新 `handoff-revisions-v1` 能力目录，再发布 WCG；回滚 Student Track 前停止 WCG 修订发布。
+人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及**已接受的正式跨仓协议**变化时仍使用精确提交的两端自动化；实验 STEP bridge 的当前 adapter 变化不触发正式 compatibility 流程。
 
 ## 发布时的文档检查
 
@@ -40,4 +48,4 @@ Student Track 的日常和稳定版门禁以自动化为准：普通改动通过
 - `docs/ARCHITECTURE.md`、`docs/DOMAIN.md`、`docs/OPERATIONS.md` 中的运行链路；
 - 由脚本生成的路由和 Schema 文档。
 
-接口、协议或数据迁移发生不兼容变化时，先更新契约和测试，再发布实现；仅小版本功能更新不改动 handoff v1。
+接口、已接受协议或数据迁移发生不兼容变化时，先更新契约和测试，再发布实现；仅小版本功能更新不改动 handoff v1。实验性 STEP bridge 在正式协议收口前按当前两端组合维护，不承担长期旧格式兼容义务。
