@@ -49,7 +49,7 @@ function findHeader(headers: string[], candidates: string[]) {
   return headers.findIndex((header) => candidates.includes(header));
 }
 
-function normalizeExcelDate(value: string) {
+export function normalizeAssistantRosterDate(value: string, referenceDate = "") {
   const text = value.trim();
   if (!text) return "";
   const slash = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
@@ -61,6 +61,11 @@ function normalizeExcelDate(value: string) {
   }
   const dash = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (dash) return `${dash[1]}-${dash[2].padStart(2, "0")}-${dash[3].padStart(2, "0")}`;
+  const full = text.match(/^(\d{4})[./年-](\d{1,2})[./月-](\d{1,2})日?$/);
+  if (full) return `${full[1]}-${full[2].padStart(2, "0")}-${full[3].padStart(2, "0")}`;
+  const short = text.match(/^(\d{1,2})[./月-](\d{1,2})日?$/);
+  const referenceYear = referenceDate.match(/^(\d{4})-/)?.[1];
+  if (short && referenceYear) return `${referenceYear}-${short[1].padStart(2, "0")}-${short[2].padStart(2, "0")}`;
   return text;
 }
 
@@ -74,7 +79,7 @@ function rowHasUsefulClassroomData(row: ParsedRosterRow) {
   return row.scoreA !== null || row.scoreB !== null || row.scoreC !== null || Boolean(row.note);
 }
 
-export function parseAssistantRosterFiles(files: Array<{ name: string; buffer: ArrayBuffer }>) {
+export function parseAssistantRosterFiles(files: Array<{ name: string; buffer: ArrayBuffer }>, referenceDate = "") {
   const rows: ParsedRosterRow[] = [];
 
   for (const file of files) {
@@ -90,7 +95,7 @@ export function parseAssistantRosterFiles(files: Array<{ name: string; buffer: A
       const metaHeaders = (sheetRows[0] ?? []).map(normalizeHeader);
       const dateIndex = findHeader(metaHeaders, ["日期"]);
       const lessonIndex = findHeader(metaHeaders, ["课次"]);
-      const fileDate = normalizeExcelDate(dateIndex >= 0 ? clean(sheetRows[0][dateIndex + 1]) : "");
+      const fileDate = normalizeAssistantRosterDate(dateIndex >= 0 ? clean(sheetRows[0][dateIndex + 1]) : "", referenceDate);
       const lessonNumber = lessonIndex >= 0 ? clean(sheetRows[0][lessonIndex + 1]) : "";
 
       const headers = (sheetRows[1] ?? []).map(normalizeHeader);
@@ -198,7 +203,7 @@ export async function createAssistantRosterDraft(
   });
   if (roster.length === 0) throw new Error("该班级无学生");
 
-  const rows = parseAssistantRosterFiles(input.files);
+  const rows = parseAssistantRosterFiles(input.files, session.date);
   const targetClassName = session.class.name ?? session.class.code;
   const targetRows = rows.filter((row) => (
     row.classCode === session.class?.code || row.className === session.class?.name

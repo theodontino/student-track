@@ -218,6 +218,7 @@ export function expandFeedbackIntakeFiles(files: IntakeFile[]) {
 
 function classify(file: ExpandedFile): IntakeKind | "ignored" {
   const lower = file.name.toLocaleLowerCase();
+  if (lower.split(/[\\/]/).pop()?.startsWith("~$")) return "ignored";
   if (lower.endsWith(".xlsx")) return "assistant_roster";
   if (lower.endsWith(".step-classroom.txt") || lower.endsWith("step-classroom.txt")) return "step_classroom";
   if (lower.endsWith(".txt")) {
@@ -336,10 +337,15 @@ function lessonNumberMatches(value: string, semesterNumber: number) {
   return Boolean(digits && Number(digits) === semesterNumber);
 }
 
-function mapRosterByName(roster: Array<{ id: string; name: string; studentId: string }>) {
-  const map = new Map<string, Array<{ id: string; name: string; studentId: string }>>();
-  for (const student of roster) map.set(student.name, [...(map.get(student.name) ?? []), student]);
-  return map;
+export function resolveIntakeStudentIdentity(
+  roster: Array<{ id: string; name: string; studentId: string }>,
+  reportedStudentId: string,
+  reportedName: string,
+) {
+  const idMatch = reportedStudentId ? roster.find((student) => student.studentId === reportedStudentId) : undefined;
+  const nameCandidates = reportedName ? roster.filter((student) => student.name === reportedName) : [];
+  if (idMatch && reportedName && idMatch.name !== reportedName) return { match: undefined, candidates: nameCandidates, conflict: true };
+  return { match: idMatch ?? (nameCandidates.length === 1 ? nameCandidates[0] : undefined), candidates: nameCandidates, conflict: false };
 }
 
 function mergeParsedResults(
@@ -475,7 +481,6 @@ async function inspectFeedbackIntakeInternal(
   const freshManifest = manifestFor(freshExpanded);
   const manifest = [...existingManifest, ...freshManifest] as Array<{ name: string; source: IntakeSource; kind: IntakeKind | "ignored"; size: number; sourceHash?: string }>;
   const sourceFingerprint = sha256(JSON.stringify({ sessionCode: input.sessionCode, files: manifest.map((file) => ({ name: file.name, size: file.size, sourceHash: file.sourceHash ?? "" })).sort((left, right) => sourceSignature(left).localeCompare(sourceSignature(right))) }));
-  const byName = mapRosterByName(roster);
   const byStudentId = new Map(roster.map((student) => [student.studentId, student]));
   const sourceFacts: IntakeSourceFact[] = [...(previous?.snapshot.sourceFacts ?? [])];
   for (const file of freshExpanded.filter((item) => classify(item) === "assistant_roster")) {
@@ -483,7 +488,7 @@ async function inspectFeedbackIntakeInternal(
     const sourceName = file.displayName;
     let rows: ReturnType<typeof parseAssistantRosterFiles> = [];
     try {
-      rows = parseAssistantRosterFiles([{ name: sourceName, buffer: toArrayBuffer(file.buffer) }]);
+      rows = parseAssistantRosterFiles([{ name: sourceName, buffer: toArrayBuffer(file.buffer) }], session.date);
     } catch (error) {
       sourceIssues.push(issue("assistant_invalid", error instanceof Error ? error.message : "助教表无法解析", sourceName, "error"));
       sourceFacts.push({ key: sourceName, kind: "assistant_roster", sourceNames: [sourceName], issues: sourceIssues });
@@ -495,19 +500,20 @@ async function inspectFeedbackIntakeInternal(
       sourceFacts.push({ key: sourceName, kind: "assistant_roster", sourceNames: [sourceName], issues: sourceIssues });
       continue;
     }
-    for (const row of targetRows) {
-      if (!row.date) sourceIssues.push(issue("assistant_date_missing", "助教表缺少日期，无法自动匹配课次", sourceName));
-      else if (row.date !== session.date) sourceIssues.push(issue("assistant_date_mismatch", `助教表日期 ${row.date} 与课次日期 ${session.date} 不一致`, sourceName));
-      if (!row.lessonNumber) sourceIssues.push(issue("assistant_lesson_missing", "助教表缺少课次，无法自动匹配当前课次", sourceName));
-      else if (!lessonNumberMatches(row.lessonNumber, session.semesterNumber)) sourceIssues.push(issue("assistant_lesson_mismatch", `助教表课次 ${row.lessonNumber} 与当前第 ${session.semesterNumber} 次课不一致`, sourceName));
-    }
+    const dates = [...new Set(targetRows.map((row) => row.date))];
+    const lessonNumbers = [...new Set(targetRows.map((row) => row.lessonNumber))];
+    if (dates.includes("")) sourceIssues.push(issue("assistant_date_missing", "助教表缺少日期，无法自动匹配课次", sourceName));
+    for (const date of dates.filter(Boolean)) if (date !== session.date) sourceIssues.push(issue("assistant_date_mismatch", `助教表日期 ${date} 与课次日期 ${session.date} 不一致`, sourceName));
+    if (lessonNumbers.includes("")) sourceIssues.push(issue("assistant_lesson_missing", "助教表缺少课次，无法自动匹配当前课次", sourceName));
+    for (const lessonNumber of lessonNumbers.filter(Boolean)) if (!lessonNumberMatches(lessonNumber, session.semesterNumber)) sourceIssues.push(issue("assistant_lesson_mismatch", `助教表课次 ${lessonNumber} 与当前第 ${session.semesterNumber} 次课不一致`, sourceName));
     const parsed = new Map<string, ParsedStudent>();
     const unresolvedStudents: NonNullable<IntakeSourceFact["unresolvedStudents"]> = [];
     const seen = new Set<string>();
     for (const row of targetRows) {
-      let match = row.studentId ? byStudentId.get(row.studentId) : undefined;
-      const candidates = byName.get(row.name) ?? [];
-      if (row.studentId && (!match || match.name !== row.name)) {
+      const identity = resolveIntakeStudentIdentity(roster, row.studentId, row.name);
+      let match = identity.match;
+      const candidates = identity.candidates;
+      if (identity.conflict) {
         const mismatch = issue("student_identity_conflict", `${row.fileName} 第 ${row.rowNumber} 行学号与姓名无法同时匹配当前班级学生`, sourceName, "requires_teacher", candidates);
         sourceIssues.push(mismatch);
         unresolvedStudents.push({
@@ -582,21 +588,19 @@ async function inspectFeedbackIntakeInternal(
     const unresolvedAssessments: NonNullable<IntakeSourceFact["unresolvedAssessments"]> = [];
     try {
       const parsed = await parseAssessmentPdf(toArrayBuffer(file.buffer), file.displayName);
-      const matchById = parsed.reportStudentId ? byStudentId.get(parsed.reportStudentId) : undefined;
-      const nameCandidates = parsed.reportStudentName ? (byName.get(parsed.reportStudentName) ?? []) : [];
-      const matchByName = nameCandidates.length === 1 ? nameCandidates[0] : undefined;
-      let identityMatch = matchById ?? matchByName;
-      if (parsed.reportStudentId && !matchById) {
+      const identity = resolveIntakeStudentIdentity(roster, parsed.reportStudentId, parsed.reportStudentName);
+      let identityMatch = identity.match;
+      if (parsed.reportStudentId && !identityMatch && !identity.conflict) {
         const matchIssue = issue("assessment_student_mismatch", "PDF 学号不属于当前班级，请绑定当前班学生或忽略", file.displayName, "requires_teacher", roster);
         sourceIssues.push(matchIssue);
         unresolvedAssessments.push({ issueId: matchIssue.id, evidence: { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode } });
         identityMatch = undefined;
-      } else if (matchById && parsed.reportStudentName && matchById.name !== parsed.reportStudentName) {
+      } else if (identity.conflict) {
         const matchIssue = issue("assessment_identity_conflict", "PDF 内姓名和学号对应不同学生，请重新绑定或忽略", file.displayName, "requires_teacher", roster);
         sourceIssues.push(matchIssue);
         unresolvedAssessments.push({ issueId: matchIssue.id, evidence: { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode } });
         identityMatch = undefined;
-      } else if (!parsed.reportStudentId && !matchByName) {
+      } else if (!parsed.reportStudentId && !identityMatch) {
         const matchIssue = issue("assessment_needs_match", "PDF 未能唯一匹配当前班级学生", file.displayName, "requires_teacher", roster);
         sourceIssues.push(matchIssue);
         unresolvedAssessments.push({ issueId: matchIssue.id, evidence: { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode } });

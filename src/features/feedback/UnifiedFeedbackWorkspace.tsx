@@ -357,6 +357,19 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     else void createPlan(mode);
   }
 
+  function restartIntake() {
+    setRun(null);
+    setDecisions([]);
+    setError("");
+    setStatus("已开始新一轮材料整理，请重新选择文件或文件夹。");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("intakeRunId");
+    url.searchParams.delete("planId");
+    url.searchParams.set("stage", "intake");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setStage("intake");
+  }
+
   const issueCount = run?.issues.filter(issueNeedsChoice).length ?? 0;
   const unresolvedCount = run?.issues.filter(issueNeedsChoice).filter((issue) => !decisionFor(issue)).length ?? 0;
   const hasRun = Boolean(run && run.sourceManifest.length > 0);
@@ -451,7 +464,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       <details className={styles.allFacts}><summary>查看全部已整理事实（{String(summary.appliedStudentCount ?? 0)} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p><div className={styles.factSources}>{Array.isArray(summary.sourceFacts) ? (summary.sourceFacts as Array<Record<string, unknown>>).map((fact, index) => <article key={`${String(fact.kind)}-${index}`}><strong>{fact.kind === "assistant_roster" ? "助教表" : fact.kind === "step_classroom" ? "STEP 课堂事实" : "PDF 证据"}</strong><span>{Array.isArray(fact.sourceNames) ? fact.sourceNames.join("、") : "本轮材料"}</span><small>{Array.isArray(fact.students) ? `${fact.students.length} 名学生` : Array.isArray(fact.assessmentEvidence) ? `${fact.assessmentEvidence.length} 份报告` : "已解析"}</small></article>) : <span>暂无可写入事实</span>}</div></details>
       <footer className={styles.actions}>
         <div><strong>确认后固定本次事实快照</strong><span>{unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : "已完成所有必要选择"}</span></div>
-        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button onClick={() => void createPlan(pendingMode)} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length || !llmReady}>{busy ? "确认中…" : `确认事实并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button></div>
+        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button variant="ghost" onClick={restartIntake} disabled={busy}>重新解析本次材料</Button><Button onClick={() => void createPlan(pendingMode)} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length || !llmReady}>{busy ? "确认中…" : `确认事实并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button></div>
       </footer>
     </div>;
   }

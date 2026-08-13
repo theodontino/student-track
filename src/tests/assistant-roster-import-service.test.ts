@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
-import { parseAssistantRosterFiles } from "@/services/assistant-roster-import-service";
+import { normalizeAssistantRosterDate, parseAssistantRosterFiles } from "@/services/assistant-roster-import-service";
 
 function workbookBuffer(rows: unknown[][]) {
   const workbook = XLSX.utils.book_new();
@@ -9,6 +9,13 @@ function workbookBuffer(rows: unknown[][]) {
 }
 
 describe("assistant roster import service", () => {
+  it("uses the selected session year for common month-day date formats", () => {
+    expect(normalizeAssistantRosterDate("8.13", "2026-08-13")).toBe("2026-08-13");
+    expect(normalizeAssistantRosterDate("08-13", "2026-08-13")).toBe("2026-08-13");
+    expect(normalizeAssistantRosterDate("2026/8/13", "2026-08-13")).toBe("2026-08-13");
+    expect(normalizeAssistantRosterDate("8月13日", "2026-08-13")).toBe("2026-08-13");
+  });
+
   it("parses assistant roster rows and maps score columns to A/B/C", () => {
     const rows = parseAssistantRosterFiles([{
       name: "3群学员列表.xlsx",

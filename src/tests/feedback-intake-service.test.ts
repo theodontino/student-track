@@ -8,6 +8,7 @@ import {
   expandFeedbackIntakeFiles,
   inspectFeedbackIntake,
   resolveFeedbackIntakeRun,
+  resolveIntakeStudentIdentity,
   type IntakeFile,
 } from "@/services/feedback-intake-service";
 
@@ -76,12 +77,22 @@ function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ cont
 }
 
 describe("feedback intake file preparation", () => {
+  it("falls back from an unknown student number to one unique roster name", () => {
+    const roster = [
+      { id: "student-a", name: "测试甲", studentId: "E2E-001" },
+      { id: "student-b", name: "测试乙", studentId: "E2E-002" },
+    ];
+    expect(resolveIntakeStudentIdentity(roster, "OLD-001", "测试甲")).toMatchObject({ match: roster[0], conflict: false });
+    expect(resolveIntakeStudentIdentity(roster, "E2E-002", "测试甲")).toMatchObject({ match: undefined, conflict: true });
+  });
+
   it("classifies supported sources and ignores unrelated files", () => {
     expect(classifyFeedbackIntakeFile("助教课堂.xlsx")).toBe("assistant_roster");
     expect(classifyFeedbackIntakeFile("step-classroom.txt")).toBe("step_classroom");
     expect(classifyFeedbackIntakeFile("说明.txt")).toBe("ignored");
     expect(classifyFeedbackIntakeFile("张三.pdf")).toBe("assessment_pdf");
     expect(classifyFeedbackIntakeFile("说明.docx")).toBe("ignored");
+    expect(classifyFeedbackIntakeFile("报告目录/~$课堂记录.xlsx")).toBe("ignored");
   });
 
   it("expands a ZIP only for this run", () => {
