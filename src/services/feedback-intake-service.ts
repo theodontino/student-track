@@ -8,13 +8,12 @@ import type { ParsedStudent } from "@/lib/parser";
 import type { DraftStructuredResult } from "@/lib/types";
 import { completeClassAttendance } from "@/lib/nlAttendance";
 import { parseAssistantRosterFiles } from "@/services/assistant-roster-import-service";
-import { parseStepClassroomEnvelope, createStepObservationOnlyResult } from "@/services/step-classroom-import-service";
+import { parseStepClassroomEnvelope, createStepObservationOnlyResult, STEP_CLASSROOM_HEADER } from "@/services/step-classroom-import-service";
 import { parseAssessmentPdf } from "@/services/assessment-pdf-service";
 import { processDraftReview } from "@/services/review-service";
 import { createFeedbackPlan, getFeedbackPlan } from "@/services/feedback-plan-service";
 import type { FeedbackPlanCreateInput } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
-import { lessonMaterialHasContent } from "@/lib/feedback-materials";
 import { prisma } from "@/lib/prisma";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -40,7 +39,25 @@ export interface FeedbackIntakeIssue {
   code: string;
   message: string;
   sourceName?: string;
+  candidates?: Array<{ id: string; name: string; studentId: string }>;
   severity: "requires_teacher" | "error";
+}
+
+export type FeedbackIntakeDecisionAction =
+  | "ignore_source"
+  | "accept_source"
+  | "bind_student"
+  | "use_assistant"
+  | "use_step"
+  | "skip_attendance"
+  | "merge_observation"
+  | "select_pdf";
+
+export interface FeedbackIntakeDecision {
+  issueId: string;
+  action: FeedbackIntakeDecisionAction;
+  studentId?: string;
+  sourceName?: string;
 }
 
 export interface FeedbackIntakeSummary {
@@ -58,11 +75,34 @@ export interface FeedbackIntakeSummary {
 export interface FeedbackIntakeInspection {
   sessionCode: string;
   sourceFingerprint: string;
-  sourceManifest: Array<{ name: string; source: IntakeSource; kind: IntakeKind | "ignored"; size: number }>;
+  sourceManifest: Array<{ name: string; source: IntakeSource; kind: IntakeKind | "ignored"; size: number; sourceHash?: string }>;
   parsedResult: DraftStructuredResult;
   assessmentEvidence: Record<string, unknown>;
   issues: FeedbackIntakeIssue[];
   summary: FeedbackIntakeSummary;
+  sourceFacts?: IntakeSourceFact[];
+}
+
+interface IntakeSourceFact {
+  key: string;
+  kind: IntakeKind;
+  sourceNames: string[];
+  parsedResult?: DraftStructuredResult;
+  assessmentEvidence?: Record<string, unknown>;
+  issues: FeedbackIntakeIssue[];
+  unresolvedStudents?: Array<{
+    issueId: string;
+    student: ParsedStudent;
+    candidates: Array<{ id: string; name: string; studentId: string }>;
+  }>;
+}
+
+interface IntakeSnapshot {
+  parsedResult?: DraftStructuredResult;
+  assessmentEvidence?: Record<string, unknown>;
+  sourceFacts?: IntakeSourceFact[];
+  decisions?: FeedbackIntakeDecision[];
+  applied?: boolean;
 }
 
 export interface FeedbackIntakeRunView {
@@ -165,7 +205,11 @@ export function expandFeedbackIntakeFiles(files: IntakeFile[]) {
 function classify(file: ExpandedFile): IntakeKind | "ignored" {
   const lower = file.name.toLocaleLowerCase();
   if (lower.endsWith(".xlsx")) return "assistant_roster";
-  if (lower.endsWith(".step-classroom.txt") || lower.endsWith(".txt") || lower.endsWith(".md")) return "step_classroom";
+  if (lower.endsWith(".step-classroom.txt") || lower.endsWith("step-classroom.txt")) return "step_classroom";
+  if (lower.endsWith(".txt")) {
+    const text = new TextDecoder().decode(file.buffer.slice(0, 512));
+    return text.includes(STEP_CLASSROOM_HEADER) ? "step_classroom" : "ignored";
+  }
   if (lower.endsWith(".pdf")) return "assessment_pdf";
   return "ignored";
 }
@@ -174,8 +218,15 @@ export function classifyFeedbackIntakeFile(name: string): IntakeKind | "ignored"
   return classify({ name, displayName: name, buffer: new ArrayBuffer(0), source: "upload" });
 }
 
-function issue(code: string, message: string, sourceName?: string, severity: FeedbackIntakeIssue["severity"] = "requires_teacher"): FeedbackIntakeIssue {
-  return { id: `${code}:${sourceName ?? "run"}:${Math.random().toString(36).slice(2, 8)}`, code, message, ...(sourceName ? { sourceName } : {}), severity };
+function issue(code: string, message: string, sourceName?: string, severity: FeedbackIntakeIssue["severity"] = "requires_teacher", candidates?: FeedbackIntakeIssue["candidates"]): FeedbackIntakeIssue {
+  return {
+    id: `${code}:${sourceName ?? "run"}:${sha256(message).slice(0, 10)}`,
+    code,
+    message,
+    ...(sourceName ? { sourceName } : {}),
+    ...(candidates?.length ? { candidates } : {}),
+    severity,
+  };
 }
 
 function normalizeDraftStudent(value: ParsedStudent): DraftStructuredResult["students"][number] {
@@ -202,7 +253,7 @@ async function readInboxFiles() {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw new Error("读取反馈收件箱失败");
     }
-    for (const entry of entries) {
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       if (entry.name.startsWith(".")) continue;
       const target = path.join(directory, entry.name);
       if (entry.isDirectory()) await visit(target);
@@ -231,10 +282,15 @@ async function loadSession(db: PrismaClient, sessionCode: string) {
   return { session, roster };
 }
 
+function studentKey(student: Pick<ParsedStudent, "studentId" | "name">) {
+  return student.studentId || `name:${student.name}`;
+}
+
 function addStudent(target: Map<string, ParsedStudent>, student: ParsedStudent) {
-  const existing = target.get(student.name);
-  if (!existing) { target.set(student.name, student); return; }
-  target.set(student.name, {
+  const key = studentKey(student);
+  const existing = target.get(key);
+  if (!existing) { target.set(key, student); return; }
+  target.set(key, {
     ...existing,
     scores: {
       A: student.scores.A ?? existing.scores.A,
@@ -248,132 +304,312 @@ function addStudent(target: Map<string, ParsedStudent>, student: ParsedStudent) 
 }
 
 function manifestFor(files: ExpandedFile[]) {
-  return files.map((file) => ({ name: file.displayName, source: file.source, kind: classify(file), size: file.buffer.byteLength }));
+  return files.map((file) => ({
+    name: file.displayName,
+    source: file.source,
+    kind: classify(file),
+    size: file.buffer.byteLength,
+    sourceHash: sha256(new Uint8Array(file.buffer)),
+  }));
 }
 
-export async function inspectFeedbackIntake(input: { sessionCode: string; files: IntakeFile[]; db?: PrismaClient }): Promise<FeedbackIntakeInspection> {
+function sourceSignature(file: { name: string; size?: number; sourceHash?: string }) {
+  return `${file.name}\u0000${file.sourceHash ?? ""}\u0000${file.size ?? ""}`;
+}
+
+function lessonNumberMatches(value: string, semesterNumber: number) {
+  const digits = value.match(/\d+/)?.[0];
+  return Boolean(digits && Number(digits) === semesterNumber);
+}
+
+function mapRosterByName(roster: Array<{ id: string; name: string; studentId: string }>) {
+  const map = new Map<string, Array<{ id: string; name: string; studentId: string }>>();
+  for (const student of roster) map.set(student.name, [...(map.get(student.name) ?? []), student]);
+  return map;
+}
+
+function mergeParsedResults(
+  sourceFacts: IntakeSourceFact[],
+  decisions: FeedbackIntakeDecision[] = [],
+) {
+  const merged = new Map<string, ParsedStudent>();
+  const issues = sourceFacts.flatMap((fact) => fact.issues);
+  const ignoredSources = new Set(
+    decisions.filter((decision) => decision.action === "ignore_source" && decision.sourceName).map((decision) => decision.sourceName),
+  );
+  const acceptedIssues = new Set(
+    decisions.filter((decision) => decision.action === "accept_source").map((decision) => decision.issueId),
+  );
+  const boundStudents = new Map(
+    decisions
+      .filter((decision) => decision.action === "bind_student" && decision.studentId)
+      .map((decision) => [decision.issueId, decision.studentId!] as const),
+  );
+  const attendanceChoices = new Map<string, FeedbackIntakeDecisionAction>();
+  for (const decision of decisions) {
+    if (["use_assistant", "use_step", "skip_attendance"].includes(decision.action)) {
+      const issueItem = issues.find((item) => item.id === decision.issueId);
+      const studentName = issueItem?.message.match(/^(.+?) 的助教表/)?.[1];
+      if (studentName) attendanceChoices.set(studentName, decision.action);
+    }
+  }
+  const evidence: Record<string, unknown> = {};
+  const seenEvidence = new Set<string>();
+  for (const fact of sourceFacts) {
+    if (fact.sourceNames.some((name) => ignoredSources.has(name))) continue;
+    const blocked = fact.issues.filter((item) => (
+      ["assistant_date_missing", "assistant_date_mismatch", "assistant_lesson_missing", "assistant_lesson_mismatch", "step_date_missing", "step_date_mismatch", "assessment_date_missing", "assessment_date_mismatch"].includes(item.code)
+    ));
+    if (blocked.some((item) => !acceptedIssues.has(item.id))) continue;
+    for (const unresolved of fact.unresolvedStudents ?? []) {
+      const selectedId = boundStudents.get(unresolved.issueId);
+      const selected = selectedId ? unresolved.candidates.find((candidate) => candidate.id === selectedId) : undefined;
+      if (!selected) continue;
+      addStudent(merged, {
+        ...unresolved.student,
+        name: selected.name,
+        studentId: selected.studentId,
+      });
+    }
+    for (const student of fact.parsedResult?.students ?? []) {
+      const key = studentKey(student);
+      const existing = merged.get(key);
+      if (!existing) { merged.set(key, { ...student }); continue; }
+      const presentConflict = existing.present !== undefined && student.present !== undefined && existing.present !== student.present;
+      const nextScores = { ...existing.scores };
+      for (const dimension of ["A", "B", "C"] as const) {
+        if (existing.scores[dimension] !== null && student.scores[dimension] !== null && existing.scores[dimension] !== student.scores[dimension]) {
+          issues.push(issue("score_conflict", `${existing.name} 的 ${dimension} 维度来自多个来源且结论不一致，本次不自动写入该维度`, fact.sourceNames[0]));
+          nextScores[dimension] = null;
+        } else if (nextScores[dimension] === null) nextScores[dimension] = student.scores[dimension];
+      }
+      const selectedAttendance = attendanceChoices.get(existing.name);
+      const nextPresent = presentConflict
+        ? selectedAttendance === "skip_attendance"
+          ? undefined
+          : selectedAttendance === "use_step"
+            ? fact.kind === "step_classroom" ? student.present : existing.present
+            : selectedAttendance === "use_assistant"
+              ? fact.kind === "assistant_roster" ? student.present : existing.present
+              : undefined
+        : student.present ?? existing.present;
+      if (presentConflict && !selectedAttendance) issues.push(issue("attendance_conflict", `${existing.name} 的助教表与 STEP 考勤结论冲突，该学生考勤暂不自动写入`, fact.sourceNames[0]));
+      merged.set(key, {
+        ...existing,
+        scores: nextScores,
+        events: [...new Set([...existing.events, ...student.events])],
+        ...(nextPresent === undefined ? {} : { present: nextPresent }),
+        teacherInterventions: [...new Set([...(existing.teacherInterventions ?? []), ...(student.teacherInterventions ?? [])])],
+      });
+    }
+    for (const [studentId, value] of Object.entries(fact.assessmentEvidence ?? {})) {
+      if (seenEvidence.has(studentId)) {
+        const selected = decisions.find((decision) => decision.action === "select_pdf" && decision.studentId === studentId);
+        if (!selected || selected.sourceName !== fact.sourceNames[0]) {
+          issues.push(issue("assessment_duplicate", `学生 ${studentId} 存在多份 PDF，请选择一份`, fact.sourceNames[0]));
+          continue;
+        }
+      }
+      seenEvidence.add(studentId);
+      evidence[studentId] = value;
+    }
+  }
+  return { parsedResult: { students: [...merged.values()], alert_suggestion: "" } satisfies DraftStructuredResult, assessmentEvidence: evidence, issues };
+}
+
+async function inspectFeedbackIntakeInternal(
+  input: { sessionCode: string; files: IntakeFile[]; db?: PrismaClient },
+  previous?: { sourceManifest: Array<Record<string, unknown>>; snapshot: IntakeSnapshot },
+): Promise<FeedbackIntakeInspection> {
   const db = input.db ?? prisma;
   const { session, roster } = await loadSession(db, input.sessionCode);
   const classInfo = session.class;
   if (!classInfo) throw new Error("课次不存在或未关联班级");
   const expansionIssues: FeedbackIntakeIssue[] = [];
   const expanded = expandFiles(input.files, expansionIssues);
-  const manifest = manifestFor(expanded);
-  const sourceFingerprint = sha256(JSON.stringify({ sessionCode: input.sessionCode, files: expanded.map((file) => ({ name: file.displayName, source: file.source, size: file.buffer.byteLength, sha256: sha256(new Uint8Array(file.buffer)) })) }));
-  const issues: FeedbackIntakeIssue[] = [...expansionIssues];
-  const byName = new Map(roster.map((student) => [student.name, student]));
+  const existingManifest = previous?.sourceManifest ?? [];
+  const existingSignatures = new Set(existingManifest.map((entry) => sourceSignature({ name: String(entry.name ?? ""), size: Number(entry.size ?? 0), sourceHash: typeof entry.sourceHash === "string" ? entry.sourceHash : undefined })));
+  const freshExpanded = expanded.filter((file) => !existingSignatures.has(sourceSignature({ name: file.displayName, size: file.buffer.byteLength, sourceHash: sha256(new Uint8Array(file.buffer)) })));
+  const freshManifest = manifestFor(freshExpanded);
+  const manifest = [...existingManifest, ...freshManifest] as Array<{ name: string; source: IntakeSource; kind: IntakeKind | "ignored"; size: number; sourceHash?: string }>;
+  const sourceFingerprint = sha256(JSON.stringify({ sessionCode: input.sessionCode, files: manifest.map((file) => ({ name: file.name, size: file.size, sourceHash: file.sourceHash ?? "" })).sort((left, right) => sourceSignature(left).localeCompare(sourceSignature(right))) }));
+  const byName = mapRosterByName(roster);
   const byStudentId = new Map(roster.map((student) => [student.studentId, student]));
-  const merged = new Map<string, ParsedStudent>();
-  const assistantFiles = expanded.filter((file) => classify(file) === "assistant_roster");
-  const stepFiles = expanded.filter((file) => classify(file) === "step_classroom");
-  const assessmentFiles = expanded.filter((file) => classify(file) === "assessment_pdf");
-
-  if (assistantFiles.length) {
-    const rows = parseAssistantRosterFiles(await Promise.all(assistantFiles.map(async (file) => ({ name: file.displayName, buffer: toArrayBuffer(file.buffer) }))));
+  const sourceFacts: IntakeSourceFact[] = [...(previous?.snapshot.sourceFacts ?? [])];
+  for (const file of freshExpanded.filter((item) => classify(item) === "assistant_roster")) {
+    const sourceIssues: FeedbackIntakeIssue[] = [];
+    const sourceName = file.displayName;
+    let rows: ReturnType<typeof parseAssistantRosterFiles> = [];
+    try {
+      rows = parseAssistantRosterFiles([{ name: sourceName, buffer: toArrayBuffer(file.buffer) }]);
+    } catch (error) {
+      sourceIssues.push(issue("assistant_invalid", error instanceof Error ? error.message : "助教表无法解析", sourceName, "error"));
+      sourceFacts.push({ key: sourceName, kind: "assistant_roster", sourceNames: [sourceName], issues: sourceIssues });
+      continue;
+    }
     const targetRows = rows.filter((row) => row.classCode === classInfo.code || row.className === classInfo.name);
-    if (!targetRows.length) issues.push(issue("assistant_class_mismatch", `助教表中没有找到 ${classInfo.name ?? classInfo.code} 的课堂记录`, assistantFiles[0]?.displayName));
+    if (!targetRows.length) {
+      sourceIssues.push(issue("assistant_class_mismatch", `助教表中没有找到 ${classInfo.name ?? classInfo.code} 的课堂记录`, sourceName, "error"));
+      sourceFacts.push({ key: sourceName, kind: "assistant_roster", sourceNames: [sourceName], issues: sourceIssues });
+      continue;
+    }
+    for (const row of targetRows) {
+      if (!row.date) sourceIssues.push(issue("assistant_date_missing", "助教表缺少日期，无法自动匹配课次", sourceName));
+      else if (row.date !== session.date) sourceIssues.push(issue("assistant_date_mismatch", `助教表日期 ${row.date} 与课次日期 ${session.date} 不一致`, sourceName));
+      if (!row.lessonNumber) sourceIssues.push(issue("assistant_lesson_missing", "助教表缺少课次，无法自动匹配当前课次", sourceName));
+      else if (!lessonNumberMatches(row.lessonNumber, session.semesterNumber)) sourceIssues.push(issue("assistant_lesson_mismatch", `助教表课次 ${row.lessonNumber} 与当前第 ${session.semesterNumber} 次课不一致`, sourceName));
+    }
+    const parsed = new Map<string, ParsedStudent>();
+    const unresolvedStudents: NonNullable<IntakeSourceFact["unresolvedStudents"]> = [];
     const seen = new Set<string>();
     for (const row of targetRows) {
-      const match = (row.studentId ? byStudentId.get(row.studentId) : undefined) ?? byName.get(row.name);
-      if (!match) { issues.push(issue("student_mismatch", `${row.fileName} 第 ${row.rowNumber} 行无法匹配当前班级学生`, row.fileName)); continue; }
-      if (seen.has(match.id)) { issues.push(issue("duplicate_student", `${match.name} 在助教表中重复出现，已保留第一条`, row.fileName)); continue; }
+      let match = row.studentId ? byStudentId.get(row.studentId) : undefined;
+      const candidates = byName.get(row.name) ?? [];
+      if (row.studentId && (!match || match.name !== row.name)) {
+        const mismatch = issue("student_identity_conflict", `${row.fileName} 第 ${row.rowNumber} 行学号与姓名无法同时匹配当前班级学生`, sourceName, "requires_teacher", candidates);
+        sourceIssues.push(mismatch);
+        unresolvedStudents.push({
+          issueId: mismatch.id,
+          student: { name: row.name, studentId: row.studentId, scores: { A: row.scoreA, B: row.scoreB, C: row.scoreC }, events: row.note ? [row.note] : [], communication: null, present: true },
+          candidates,
+        });
+        continue;
+      }
+      if (!match) {
+        if (candidates.length !== 1) {
+          const mismatch = issue("student_mismatch", `${row.fileName} 第 ${row.rowNumber} 行无法唯一匹配当前班级学生`, sourceName, "requires_teacher", candidates);
+          sourceIssues.push(mismatch);
+          unresolvedStudents.push({
+            issueId: mismatch.id,
+            student: { name: row.name, scores: { A: row.scoreA, B: row.scoreB, C: row.scoreC }, events: row.note ? [row.note] : [], communication: null, present: true },
+            candidates,
+          });
+          continue;
+        }
+        match = candidates[0];
+      }
+      if (seen.has(match.id)) { sourceIssues.push(issue("duplicate_student", `${match.name} 在助教表中重复出现，已保留第一条`, sourceName)); continue; }
       seen.add(match.id);
-      addStudent(merged, { name: match.name, studentId: match.studentId, scores: { A: row.scoreA, B: row.scoreB, C: row.scoreC }, events: row.note ? [row.note] : [], communication: null, present: true });
+      addStudent(parsed, { name: match.name, studentId: match.studentId, scores: { A: row.scoreA, B: row.scoreB, C: row.scoreC }, events: row.note ? [row.note] : [], communication: null, present: true });
     }
-    const completed = completeClassAttendance({ students: [...merged.values()], alert_suggestion: "" }, roster);
-    merged.clear();
-    completed.students.forEach((student) => merged.set(student.name, student));
+    const completed = parsed.size ? completeClassAttendance({ students: [...parsed.values()], alert_suggestion: "" }, roster) : undefined;
+    sourceFacts.push({ key: sourceName, kind: "assistant_roster", sourceNames: [sourceName], parsedResult: completed, issues: sourceIssues, unresolvedStudents });
   }
 
-  for (const file of stepFiles) {
+  for (const file of freshExpanded.filter((item) => classify(item) === "step_classroom")) {
+    const sourceIssues: FeedbackIntakeIssue[] = [];
     try {
       const envelope = parseStepClassroomEnvelope(Buffer.from(file.buffer).toString("utf8"));
       if (envelope.payload.class.code !== classInfo.code) {
-        issues.push(issue("step_class_mismatch", `STEP 班级 ${envelope.payload.class.code} 与当前课次班级不一致`, file.displayName, "error"));
+        sourceIssues.push(issue("step_class_mismatch", `STEP 班级 ${envelope.payload.class.code} 与当前课次班级不一致`, file.displayName, "error"));
+        sourceFacts.push({ key: file.displayName, kind: "step_classroom", sourceNames: [file.displayName], issues: sourceIssues });
         continue;
       }
       const completedAt = envelope.payload.completedAt;
       if (!completedAt) {
-        issues.push(issue("step_date_missing", "STEP 缺少完成日期，无法自动匹配课次", file.displayName));
+        sourceIssues.push(issue("step_date_missing", "STEP 缺少完成日期，无法自动匹配课次", file.displayName));
       } else if (completedAt.slice(0, 10) !== session.date) {
-        issues.push(issue("step_date_mismatch", `STEP 完成日期 ${completedAt.slice(0, 10)} 与课次日期 ${session.date} 不一致`, file.displayName));
+        sourceIssues.push(issue("step_date_mismatch", `STEP 完成日期 ${completedAt.slice(0, 10)} 与课次日期 ${session.date} 不一致`, file.displayName));
       }
       const stepResult = createStepObservationOnlyResult(envelope.payload);
+      const parsed = new Map<string, ParsedStudent>();
       for (const student of stepResult.students) {
         const match = byStudentId.get(student.studentId ?? "");
-        if (!match || match.name !== student.name) { issues.push(issue("step_student_mismatch", `STEP 学号 ${student.studentId ?? ""} 与当前花名册不一致`, file.displayName, "error")); continue; }
+        if (!match || match.name !== student.name) { sourceIssues.push(issue("step_student_mismatch", `STEP 学号 ${student.studentId ?? ""} 与当前花名册不一致`, file.displayName, "error")); continue; }
         const sourceStudent = envelope.payload.students.find((item) => item.studentId === student.studentId);
-        const interventions = student.teacherInterventions ?? [];
-        const previous = merged.get(match.name);
-        if (previous?.present !== undefined && sourceStudent && previous.present !== sourceStudent.present) {
-          issues.push(issue("attendance_conflict", `${match.name} 的助教表与 STEP 考勤结论冲突，该学生考勤暂不自动写入`, file.displayName));
-          const withoutPresent = { ...previous, present: undefined };
-          merged.set(match.name, { ...withoutPresent, teacherInterventions: [...(previous.teacherInterventions ?? []), ...interventions] });
-        } else {
-          addStudent(merged, { name: match.name, studentId: match.studentId, scores: { A: null, B: null, C: null }, events: [], communication: null, ...(sourceStudent ? { present: sourceStudent.present } : {}), teacherInterventions: interventions });
-        }
+        const noteCount = envelope.payload.students.find((item) => item.studentId === student.studentId)?.notes.length ?? 0;
+        if (noteCount > 0) sourceIssues.push(issue("step_notes_review", `${match.name} 有 ${noteCount} 条 STEP 备注，需在高级工作台复核后再确认`, file.displayName));
+        const interventions = (student.teacherInterventions ?? []).filter((item) => !item.observedProblem.includes("备注："));
+        addStudent(parsed, { name: match.name, studentId: match.studentId, scores: { A: null, B: null, C: null }, events: [], communication: null, ...(sourceStudent ? { present: sourceStudent.present } : {}), teacherInterventions: interventions });
       }
+      sourceFacts.push({ key: file.displayName, kind: "step_classroom", sourceNames: [file.displayName], parsedResult: { students: [...parsed.values()], alert_suggestion: "" }, issues: sourceIssues });
     } catch (error) {
-      issues.push(issue("step_invalid", error instanceof Error ? error.message : "STEP 文件无法解析", file.displayName, "error"));
+      sourceIssues.push(issue("step_invalid", error instanceof Error ? error.message : "STEP 文件无法解析", file.displayName, "error"));
+      sourceFacts.push({ key: file.displayName, kind: "step_classroom", sourceNames: [file.displayName], issues: sourceIssues });
     }
   }
 
-  const assessmentEvidence: Record<string, unknown> = {};
-  const assessmentSeen = new Set<string>();
-  for (const file of assessmentFiles) {
+  for (const file of freshExpanded.filter((item) => classify(item) === "assessment_pdf")) {
+    const sourceIssues: FeedbackIntakeIssue[] = [];
+    const sourceEvidence: Record<string, unknown> = {};
     try {
       const parsed = await parseAssessmentPdf(toArrayBuffer(file.buffer), file.displayName);
       const matchById = parsed.reportStudentId ? byStudentId.get(parsed.reportStudentId) : undefined;
-      const matchByName = parsed.reportStudentName ? byName.get(parsed.reportStudentName) : undefined;
-      if (matchById && matchByName && matchById.id !== matchByName.id) {
-        issues.push(issue("assessment_identity_conflict", "PDF 内姓名和学号对应不同学生", file.displayName)); continue;
+      const nameCandidates = parsed.reportStudentName ? (byName.get(parsed.reportStudentName) ?? []) : [];
+      const matchByName = nameCandidates.length === 1 ? nameCandidates[0] : undefined;
+      if (parsed.reportStudentId && !matchById) {
+        sourceIssues.push(issue("assessment_student_mismatch", "PDF 学号不属于当前班级，不能按姓名回退匹配", file.displayName));
+      } else if (matchById && parsed.reportStudentName && matchById.name !== parsed.reportStudentName) {
+        sourceIssues.push(issue("assessment_identity_conflict", "PDF 内姓名和学号对应不同学生", file.displayName));
+      } else if (!parsed.reportStudentId && !matchByName) {
+        sourceIssues.push(issue("assessment_needs_match", "PDF 未能唯一匹配当前班级学生", file.displayName));
+      } else if (!parsed.evidence.reportDate) {
+        sourceIssues.push(issue("assessment_date_missing", "PDF 缺少报告日期，无法自动匹配课次", file.displayName));
+      } else if (parsed.evidence.reportDate !== session.date) {
+        sourceIssues.push(issue("assessment_date_mismatch", `PDF 报告日期 ${parsed.evidence.reportDate} 与课次日期 ${session.date} 不一致`, file.displayName));
+      } else {
+        const match = matchById ?? matchByName;
+        if (match) sourceEvidence[match.id] = { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode, studentId: match.id };
       }
-      const match = matchById ?? matchByName;
-      if (!match) { issues.push(issue("assessment_needs_match", "PDF 未能唯一匹配当前班级学生", file.displayName)); continue; }
-      if (assessmentSeen.has(match.id)) { issues.push(issue("assessment_duplicate", `${match.name} 存在多份 PDF，已保留第一份`, file.displayName)); continue; }
-      assessmentSeen.add(match.id);
-      assessmentEvidence[match.id] = { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode, studentId: match.id };
     } catch (error) {
-      issues.push(issue("assessment_invalid", error instanceof Error ? error.message : "PDF 无法解析", file.displayName));
+      sourceIssues.push(issue("assessment_invalid", error instanceof Error ? error.message : "PDF 无法解析", file.displayName));
     }
+    sourceFacts.push({ key: file.displayName, kind: "assessment_pdf", sourceNames: [file.displayName], assessmentEvidence: sourceEvidence, issues: sourceIssues });
   }
 
-  const recognized = manifest.filter((entry) => entry.kind !== "ignored").length;
-  const result = {
-    students: [...merged.values()].map(normalizeDraftStudent),
-    alert_suggestion: "",
-  } satisfies DraftStructuredResult;
+  const decisions = previous?.snapshot.decisions ?? [];
+  const merged = mergeParsedResults(sourceFacts, decisions);
+  const issues = [...expansionIssues, ...merged.issues];
+  const assessmentEvidence = merged.assessmentEvidence;
+  const allManifest = manifest as Array<{ name: string; source: IntakeSource; kind: IntakeKind | "ignored"; size: number; sourceHash?: string }>;
+  const recognized = allManifest.filter((entry) => entry.kind !== "ignored").length;
+  const result = { students: merged.parsedResult.students.map(normalizeDraftStudent), alert_suggestion: "" } satisfies DraftStructuredResult;
   return {
     sessionCode: input.sessionCode,
     sourceFingerprint,
-    sourceManifest: manifest,
+    sourceManifest: allManifest,
     parsedResult: result,
     assessmentEvidence,
     issues,
     summary: {
-      sourceCount: input.files.length,
+      sourceCount: allManifest.length,
       recognizedCount: recognized,
-      ignoredCount: manifest.length - recognized,
-      assistantFileCount: assistantFiles.length,
-      stepFileCount: stepFiles.length,
-      assessmentFileCount: assessmentFiles.length,
+      ignoredCount: allManifest.length - recognized,
+      assistantFileCount: allManifest.filter((entry) => entry.kind === "assistant_roster").length,
+      stepFileCount: allManifest.filter((entry) => entry.kind === "step_classroom").length,
+      assessmentFileCount: allManifest.filter((entry) => entry.kind === "assessment_pdf").length,
       appliedStudentCount: result.students.length,
       assessmentStudentCount: Object.keys(assessmentEvidence).length,
       issueCount: issues.length,
     },
+    sourceFacts,
   };
+}
+
+export async function inspectFeedbackIntake(input: { sessionCode: string; files: IntakeFile[]; db?: PrismaClient }): Promise<FeedbackIntakeInspection> {
+  return inspectFeedbackIntakeInternal(input);
 }
 
 function parseJson<T>(value: string, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
-async function confirmedMaterialForSession(sessionId: string, db: PrismaClient) {
+function isPrismaClientDb(db: FeedbackIntakeDb): db is PrismaClient {
+  return "$connect" in db && "$disconnect" in db;
+}
+
+async function confirmedMaterialForSession(sessionId: string, db: FeedbackIntakeDb, revisionId?: string) {
   const link = await db.groupLessonSession.findUnique({
     where: { sessionId },
     include: { groupLesson: { include: { revisions: { orderBy: { revision: "desc" }, take: 1 } } } },
   });
-  const raw = link?.groupLesson.revisions[0]?.materialSnapshot;
+  const selectedRevision = revisionId
+    ? await db.groupLessonRevision.findUnique({ where: { id: revisionId }, select: { id: true, groupLessonId: true, materialSnapshot: true } })
+    : null;
+  if (revisionId && (!selectedRevision || !link || selectedRevision.groupLessonId !== link.groupLessonId)) {
+    throw new Error("共同课修订未确认或未关联当前课次");
+  }
+  const raw = selectedRevision?.materialSnapshot ?? link?.groupLesson.revisions[0]?.materialSnapshot;
   if (!raw) return null;
   const parsed = LessonFeedbackMaterialSchema.safeParse(parseJson(raw, null));
   return parsed.success ? parsed.data : null;
@@ -399,9 +635,27 @@ export async function getFeedbackIntakeRun(id: string, db: PrismaClient = prisma
   return run ? view(run) : null;
 }
 
-export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string; files: IntakeFile[]; db?: PrismaClient }) {
+export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string; files: IntakeFile[]; runId?: string; db?: PrismaClient }) {
   const db = input.db ?? prisma;
-  const inspection = await inspectFeedbackIntake(input);
+  const previousRun = input.runId ? await db.feedbackIntakeRun.findUnique({ where: { id: input.runId } }) : null;
+  if (input.runId && !previousRun) throw new Error("反馈材料运行不存在");
+  if (previousRun && previousRun.sessionCode !== input.sessionCode) throw new Error("不能把材料追加到另一课次");
+  if (previousRun?.planId) throw new Error("这轮材料已经关联 FeedbackPlan，请重新开始一轮材料");
+  const previousSnapshot = previousRun ? parseJson<IntakeSnapshot>(previousRun.appliedSummary, {}) : undefined;
+  const inspection = await inspectFeedbackIntakeInternal(input, previousRun ? { sourceManifest: parseJson(previousRun.sourceManifest, []), snapshot: previousSnapshot ?? {} } : undefined);
+  if (previousRun) {
+    const updated = await db.feedbackIntakeRun.update({
+      where: { id: previousRun.id },
+      data: {
+        sourceFingerprint: inspection.sourceFingerprint,
+        sourceManifest: JSON.stringify(inspection.sourceManifest),
+        status: inspection.issues.length ? "needs_review" : "ready",
+        issues: JSON.stringify(inspection.issues),
+        appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
+      },
+    });
+    return { run: view(updated), inspection, duplicate: false };
+  }
   const existing = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
   if (existing) return { run: view(existing), inspection, duplicate: true };
   const run = await db.feedbackIntakeRun.create({
@@ -411,73 +665,89 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
       sourceManifest: JSON.stringify(inspection.sourceManifest),
       status: inspection.issues.length ? "needs_review" : "ready",
       issues: JSON.stringify(inspection.issues),
-      appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence }),
+      appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
     },
   });
   return { run: view(run), inspection, duplicate: false };
 }
 
-export async function applyFeedbackIntakeRun(id: string, db: PrismaClient = prisma) {
-  const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
+export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = prisma, decisions: FeedbackIntakeDecision[] = []) {
+  const execute = async (tx: FeedbackIntakeDb) => {
+    const run = await tx.feedbackIntakeRun.findUnique({ where: { id } });
   if (!run) throw new Error("反馈材料运行不存在");
-  const snapshot = parseJson<{ parsedResult?: DraftStructuredResult; assessmentEvidence?: Record<string, unknown>; [key: string]: unknown }>(run.appliedSummary, {});
+  const snapshot = parseJson<IntakeSnapshot>(run.appliedSummary, {});
+  const allDecisions = [...(snapshot.decisions ?? []).filter((old) => !decisions.some((next) => next.issueId === old.issueId)), ...decisions];
   if (run.status === "applied" || snapshot.applied === true) return view(run);
-  if (!snapshot.parsedResult?.students?.length) {
-    const updated = await db.feedbackIntakeRun.update({
+  const runIssues = parseJson<FeedbackIntakeIssue[]>(run.issues, []);
+  const resolvedIssueIds = new Set(allDecisions.map((decision) => decision.issueId));
+  const unresolved = runIssues.filter((item) => !resolvedIssueIds.has(item.id));
+  if (unresolved.length) throw new Error(`还有 ${unresolved.length} 项材料异常未处理，请先完成事实确认`);
+  const merged = snapshot.sourceFacts?.length
+    ? mergeParsedResults(snapshot.sourceFacts, allDecisions)
+    : { parsedResult: snapshot.parsedResult ?? { students: [], alert_suggestion: "" }, assessmentEvidence: snapshot.assessmentEvidence ?? {}, issues: [] };
+  const generatedUnresolved = merged.issues.filter((item) => !resolvedIssueIds.has(item.id));
+  if (generatedUnresolved.length) throw new Error(`材料合并后仍有 ${generatedUnresolved.length} 项冲突未处理，请返回事实确认`);
+  const effectiveSnapshot = { ...snapshot, parsedResult: merged.parsedResult, assessmentEvidence: merged.assessmentEvidence, decisions: allDecisions };
+  if (!effectiveSnapshot.parsedResult?.students?.length) {
+    const updated = await tx.feedbackIntakeRun.update({
       where: { id },
       data: {
-        status: parseJson<FeedbackIntakeIssue[]>(run.issues, []).length ? "needs_review" : "applied",
-        appliedSummary: JSON.stringify({ ...snapshot, applied: true }),
+        status: "applied",
+        issues: "[]",
+        appliedSummary: JSON.stringify({ ...effectiveSnapshot, applied: true }),
       },
     });
     return view(updated);
   }
-  const rawText = `统一反馈材料入口：${run.sessionCode}\n${run.sourceFingerprint}`;
-  const existingDraft = await db.draftRecord.findFirst({
+  const rawText = JSON.stringify({
+    stepSessionId: `feedback-intake:${run.id}`,
+    class: { code: run.sessionCode, name: "统一课后材料" },
+    students: effectiveSnapshot.parsedResult.students,
+  });
+  const existingDraft = await tx.draftRecord.findFirst({
     where: { sessionCode: run.sessionCode, rawText, status: { in: ["pending", "confirmed"] } },
     select: { id: true, status: true },
   });
   if (!existingDraft) {
-    const draft = await db.draftRecord.create({
+    const draft = await tx.draftRecord.create({
       data: {
         rawText,
-        parsedResult: JSON.stringify(snapshot.parsedResult),
+        parsedResult: JSON.stringify(effectiveSnapshot.parsedResult),
         status: "pending",
         sessionCode: run.sessionCode,
-        studentId: snapshot.parsedResult.students[0]?.studentId ?? null,
+        studentId: effectiveSnapshot.parsedResult.students[0]?.studentId ?? null,
       },
     });
-    await processDraftReview({ draftId: draft.id, action: "confirm", edits: snapshot.parsedResult }, db);
+    await processDraftReview({ draftId: draft.id, action: "confirm", edits: effectiveSnapshot.parsedResult }, tx);
   } else if (existingDraft.status === "pending") {
-    await processDraftReview({ draftId: existingDraft.id, action: "confirm", edits: snapshot.parsedResult }, db);
+    await processDraftReview({ draftId: existingDraft.id, action: "confirm", edits: effectiveSnapshot.parsedResult }, tx);
   }
-  const updated = await db.feedbackIntakeRun.update({
+  const updated = await tx.feedbackIntakeRun.update({
     where: { id },
     data: {
-      status: parseJson<FeedbackIntakeIssue[]>(run.issues, []).length ? "needs_review" : "applied",
-      appliedSummary: JSON.stringify({ ...snapshot, applied: true }),
+      status: "applied",
+      issues: "[]",
+      appliedSummary: JSON.stringify({ ...effectiveSnapshot, applied: true }),
     },
   });
   return view(updated);
+  };
+  return isPrismaClientDb(db) ? db.$transaction((tx) => execute(tx)) : execute(db);
 }
 
-export async function resolveFeedbackIntakeRun(id: string, input: { action: "apply" | "resolve" | "create_plan"; plan?: Omit<FeedbackPlanCreateInput, "sessionId" | "semesterId" | "classId"> & { type?: FeedbackPlanCreateInput["type"] } }, db: PrismaClient = prisma) {
+export async function resolveFeedbackIntakeRun(id: string, input: { action: "apply" | "confirm" | "resolve" | "create_plan"; decisions?: FeedbackIntakeDecision[]; plan?: Omit<FeedbackPlanCreateInput, "sessionId" | "semesterId" | "classId"> & { type?: FeedbackPlanCreateInput["type"]; commonLessonRevisionId?: string } }, db: FeedbackIntakeDb = prisma) {
   const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
   if (!run) throw new Error("反馈材料运行不存在");
-  if (input.action === "apply") return applyFeedbackIntakeRun(id, db);
-  if (input.action === "resolve") {
-    await applyFeedbackIntakeRun(id, db);
-    const updated = await db.feedbackIntakeRun.update({ where: { id }, data: { status: "applied", issues: "[]" } });
-    return view(updated);
+  if (input.action === "apply" || input.action === "confirm" || input.action === "resolve") return applyFeedbackIntakeRun(id, db, input.decisions ?? []);
+  if (run.status !== "applied") throw new Error("请先完成事实确认，再创建 FeedbackPlan");
+  if (run.planId) {
+    const existingPlan = await getFeedbackPlan(run.planId, db);
+    if (existingPlan) return { ...view(run), plan: existingPlan };
   }
   const session = await db.classSession.findUnique({ where: { code: run.sessionCode }, select: { id: true, semesterId: true, classId: true } });
   if (!session?.classId) throw new Error("反馈材料目标课次不存在或未关联班级");
-  const snapshot = parseJson<{ assessmentEvidence?: Record<string, unknown> }>(run.appliedSummary, {});
-  const confirmedLessonMaterial = await confirmedMaterialForSession(session.id, db);
-  const requestedLessonMaterial = input.plan?.lessonMaterial;
-  const lessonMaterial = requestedLessonMaterial && lessonMaterialHasContent(requestedLessonMaterial)
-    ? requestedLessonMaterial
-    : confirmedLessonMaterial ?? undefined;
+  const snapshot = parseJson<IntakeSnapshot>(run.appliedSummary, {});
+  const confirmedLessonMaterial = await confirmedMaterialForSession(session.id, db, input.plan?.commonLessonRevisionId);
   const planInput = {
     type: input.plan?.type ?? "event_micro",
     outputRequirement: input.plan?.outputRequirement ?? "为每名入选学生生成一条可复核的家长反馈",
@@ -486,12 +756,21 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
     sessionId: session.id,
     ...(input.plan?.studentIds ? { studentIds: input.plan.studentIds } : {}),
     ...(input.plan?.generationPreferences ? { generationPreferences: input.plan.generationPreferences } : {}),
-    ...(lessonMaterial ? { lessonMaterial } : {}),
+    ...(confirmedLessonMaterial ? { lessonMaterial: confirmedLessonMaterial } : {}),
     ...(Object.keys(snapshot.assessmentEvidence ?? {}).length ? { assessmentEvidence: snapshot.assessmentEvidence } : {}),
   } as FeedbackPlanCreateInput;
-  const plan = await createFeedbackPlan(planInput, db);
-  await db.feedbackIntakeRun.update({ where: { id }, data: { planId: plan.id, status: "applied" } });
-  return { ...view((await db.feedbackIntakeRun.findUniqueOrThrow({ where: { id } }))), plan: await getFeedbackPlan(plan.id, db) };
+  const createPlanInTransaction = async (tx: FeedbackIntakeDb) => {
+    const current = await tx.feedbackIntakeRun.findUniqueOrThrow({ where: { id } });
+    if (current.planId) return { planId: current.planId };
+    const plan = await createFeedbackPlan(planInput, tx);
+    await tx.feedbackIntakeRun.update({ where: { id }, data: { planId: plan.id, status: "applied" } });
+    return { planId: plan.id };
+  };
+  const result = isPrismaClientDb(db)
+    ? await db.$transaction((tx) => createPlanInTransaction(tx))
+    : await createPlanInTransaction(db);
+  const updated = await db.feedbackIntakeRun.findUniqueOrThrow({ where: { id } });
+  return { ...view(updated), plan: await getFeedbackPlan(result.planId, db) };
 }
 
 export async function filesFromInbox() {

@@ -79,6 +79,8 @@ type Draft = {
   outputRequirement: string;
   closureType: FeedbackClosureType;
   moduleKeys: string[];
+  length: "inherit" | "short" | "standard" | "detailed";
+  tone: "inherit" | "gentle" | "professional";
 };
 
 function draftFromConfig(config: FeedbackPlanItemGenerationConfig): Draft {
@@ -87,6 +89,8 @@ function draftFromConfig(config: FeedbackPlanItemGenerationConfig): Draft {
     outputRequirement: config.outputRequirement,
     closureType: config.generationPreferences.closureType,
     moduleKeys: [...config.generationPreferences.moduleKeys],
+    length: config.generationPreferences.length ?? "inherit",
+    tone: config.generationPreferences.tone ?? "inherit",
   };
 }
 
@@ -134,7 +138,7 @@ export function FeedbackPlanGenerationConfigDialog({
 
   function changeType(nextType: StudentFeedbackPlanType) {
     const defaults = defaultFeedbackGenerationPreferences(nextType);
-    setDraft((current) => ({ ...current, type: nextType, closureType: defaults.closureType, moduleKeys: [...defaults.moduleKeys] }));
+    setDraft((current) => ({ ...current, type: nextType, closureType: defaults.closureType, moduleKeys: [...defaults.moduleKeys], length: defaults.length ?? "inherit", tone: defaults.tone ?? "inherit" }));
   }
 
   function changeClosure(nextClosure: FeedbackClosureType) {
@@ -174,6 +178,8 @@ export function FeedbackPlanGenerationConfigDialog({
       generationPreferences: {
         closureType: draft.closureType,
         moduleKeys: draft.moduleKeys,
+        length: draft.length,
+        tone: draft.tone,
       },
     };
     setSaving(true);
@@ -224,6 +230,16 @@ export function FeedbackPlanGenerationConfigDialog({
               </Select>
             </FormField>
             <div className="feedback-plan-independent-dialog__module-summary"><strong>当前模块范围</strong><span>{moduleSelectionLabel}</span><small>不选择模块时，模型可以在当前类型的完整目录内自然取舍；不会因数量阻断。</small></div>
+            <FormField id="feedback-independent-length" label="详略" description="默认跟随该学生家庭偏好。" required>
+              <Select id="feedback-independent-length" value={draft.length} onChange={(event) => setDraft((current) => ({ ...current, length: event.target.value as Draft["length"] }))}>
+                <option value="inherit">随家庭偏好</option><option value="short">简洁</option><option value="standard">标准</option><option value="detailed">详细</option>
+              </Select>
+            </FormField>
+            <FormField id="feedback-independent-tone" label="语气" description="默认跟随该学生家庭偏好。" required>
+              <Select id="feedback-independent-tone" value={draft.tone} onChange={(event) => setDraft((current) => ({ ...current, tone: event.target.value as Draft["tone"] }))}>
+                <option value="inherit">随家庭偏好</option><option value="gentle">温和</option><option value="professional">专业</option>
+              </Select>
+            </FormField>
           </div>
           <div className="feedback-plan-modules" aria-label={`${studentName}独立计划模块`}>
             <span className="feedback-plan-label">可选模块</span>

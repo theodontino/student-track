@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
 import { normalizeAttentionSignalCandidates } from "@/lib/attention-labels";
 import { parseFeedbackCommunicationSummary } from "@/lib/feedback-communication";
@@ -21,6 +21,11 @@ import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source"
 import { restrictStepResultToTeacherObservations } from "@/services/step-classroom-import-service";
 
 type ReviewAction = "confirm" | "reject";
+type ReviewDb = PrismaClient | Prisma.TransactionClient;
+
+function isPrismaClient(db: ReviewDb): db is PrismaClient {
+  return "$connect" in db && "$disconnect" in db;
+}
 
 interface ProcessDraftInput {
   draftId: string;
@@ -153,13 +158,13 @@ function inferEventType(description: string): string {
  * business records. A confirmed correction accepts repeated confirmation as a
  * no-op so retries cannot apply the same communication revision twice.
  */
-export async function processDraftReview(input: ProcessDraftInput, db: PrismaClient = prisma) {
+export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb = prisma) {
   if (!input.draftId) throw new ServiceError("draftId 和 action 为必填项", 400);
   if (input.action !== "confirm" && input.action !== "reject") {
     throw new ServiceError("action 必须是 confirm 或 reject", 400);
   }
 
-  const result = await db.$transaction(async (tx) => {
+  const transactionBody = async (tx: Prisma.TransactionClient) => {
     const draft = await tx.draftRecord.findUnique({ where: { id: input.draftId } });
     if (!draft) throw new ServiceError("草稿不存在", 404);
     if (
@@ -613,7 +618,11 @@ export async function processDraftReview(input: ProcessDraftInput, db: PrismaCli
         : warnings,
       logs,
     };
-  }, { timeout: 15_000 });
+  };
+  const clientDb = isPrismaClient(db) ? db : null;
+  const result = clientDb
+    ? await clientDb.$transaction(transactionBody, { timeout: 15_000 })
+    : await transactionBody(db);
 
   for (const entry of result.logs) {
     void logAction({
@@ -625,11 +634,11 @@ export async function processDraftReview(input: ProcessDraftInput, db: PrismaCli
     });
   }
 
-  if (result.status === "confirmed") {
+  if (result.status === "confirmed" && clientDb) {
     await adoptGenerationByOperationKey(input.draftId).catch(() => undefined);
-    const draftSession = await db.draftRecord.findUnique({ where: { id: input.draftId } });
+    const draftSession = await clientDb.draftRecord.findUnique({ where: { id: input.draftId } });
     if (draftSession?.sessionCode) {
-      const session = await db.classSession.findUnique({ where: { code: draftSession.sessionCode }, select: { classId: true } });
+      const session = await clientDb.classSession.findUnique({ where: { code: draftSession.sessionCode }, select: { classId: true } });
       if (session?.classId) await compactHotGenerationRecordsForClass(session.classId).catch(() => undefined);
     }
   }

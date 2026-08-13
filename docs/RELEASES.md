@@ -20,7 +20,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.2.0-beta.3 | 在 beta.2 基础上提供统一课后任务材料入口、固定收件箱、拖拽/文件夹/ZIP、确定性事实自动应用与异常复核；保留高级五步工作台、FeedbackPlan 历史、批次和 WCG no-send 边界；按 Zhuiver 归为 MINOR，不改变 handoff v1、receipt v1 或正式协议。 |
+| Student Track | 1.2.0-beta.3 | 在 beta.2 基础上提供三段式统一课后任务：材料合并、教师确认事实、FeedbackPlan 工作室；支持固定收件箱、拖拽/文件夹/ZIP，保留高级五步工作台、FeedbackPlan 历史、批次和 WCG no-send 边界；按 Zhuiver 归为 MINOR，不改变 handoff v1、receipt v1 或正式协议。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
 
 ### STEP Bridge 的发布边界

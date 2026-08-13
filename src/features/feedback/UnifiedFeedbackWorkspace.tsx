@@ -2,11 +2,21 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Badge, Button, PageHeader, StatusBanner, Textarea } from "@/components/ui";
+import { Badge, Button, PageHeader, SegmentedControl, StatusBanner, Textarea } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
+import {
+  defaultFeedbackGenerationPreferences,
+  type FeedbackClosureType,
+} from "@/lib/feedback-plan";
+import type { FeedbackIntakeDecision, FeedbackIntakeIssue } from "@/services/feedback-intake-service";
 import { FeedbackContextSection } from "./FeedbackContextSection";
+import { FeedbackPlanPanel } from "./FeedbackPlanPanel";
 import { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 import styles from "./unified-feedback-workspace.module.css";
+
+type UnifiedStage = "intake" | "review" | "studio";
+type Length = "inherit" | "short" | "standard" | "detailed";
+type Tone = "inherit" | "gentle" | "professional";
 
 interface FeedbackIntakeRunView {
   id: string;
@@ -15,7 +25,7 @@ interface FeedbackIntakeRunView {
   sourceFingerprint: string;
   sourceManifest: Array<Record<string, unknown>>;
   appliedSummary: Record<string, unknown>;
-  issues: Array<{ id: string; code: string; message: string; sourceName?: string; severity: "requires_teacher" | "error" }>;
+  issues: FeedbackIntakeIssue[];
   planId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -29,33 +39,100 @@ interface CommonLessonOption {
   linkedToCurrent: boolean;
 }
 
-type ApiResult = { run: FeedbackIntakeRunView; inspection?: { summary?: Record<string, unknown>; assessmentEvidence?: Record<string, unknown> }; duplicate?: boolean };
+type ApiResult = {
+  run: FeedbackIntakeRunView;
+  inspection?: { summary?: Record<string, unknown>; assessmentEvidence?: Record<string, unknown> };
+  duplicate?: boolean;
+};
+
+const stageLabels: Record<UnifiedStage, string> = {
+  intake: "收集材料",
+  review: "确认事实",
+  studio: "计划工作室",
+};
 
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "操作失败"; }
 
-export default function UnifiedFeedbackWorkspace() {
+function runDecisions(run: FeedbackIntakeRunView | null) {
+  const value = run?.appliedSummary?.decisions;
+  return Array.isArray(value) ? value as FeedbackIntakeDecision[] : [];
+}
+
+function issueNeedsChoice() {
+  return true;
+}
+
+function issueChoiceLabel(issue: FeedbackIntakeIssue) {
+  if (issue.code === "attendance_conflict") return "考勤冲突";
+  if (issue.code.includes("date") || issue.code.includes("lesson")) return "课次边界";
+  if (issue.code === "assessment_duplicate") return "重复 PDF";
+  if (issue.code.includes("student") || issue.code.includes("identity")) return "学生匹配";
+  if (issue.code.startsWith("assessment")) return "PDF 匹配";
+  return "需要教师判断";
+}
+
+export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { initialStage?: UnifiedStage }) {
   const workspace = useFeedbackWorkspace("prepare");
+  const setWorkspaceActiveStep = workspace.setActiveStep;
   const contextSemesterId = workspace.context.semesterId;
   const contextSessionCode = workspace.context.sessionCode;
+  const [stage, setStage] = useState<UnifiedStage>(initialStage);
   const [run, setRun] = useState<FeedbackIntakeRunView | null>(null);
+  const [decisions, setDecisions] = useState<FeedbackIntakeDecision[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  const [pendingMode, setPendingMode] = useState<"standard" | "fast">("standard");
   const [outputRequirement, setOutputRequirement] = useState("为每名入选学生生成一条可复核的家长反馈");
   const [generationMode, setGenerationMode] = useState<"standard" | "fast">("standard");
+  const [length, setLength] = useState<Length>("inherit");
+  const [tone, setTone] = useState<Tone>("inherit");
+  const [closureType, setClosureType] = useState<FeedbackClosureType>(defaultFeedbackGenerationPreferences("event_micro").closureType);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [commonLessonLabel, setCommonLessonLabel] = useState("");
   const [commonLessonOptions, setCommonLessonOptions] = useState<CommonLessonOption[]>([]);
   const [selectedCommonLessonId, setSelectedCommonLessonId] = useState("");
   const [autoScannedSession, setAutoScannedSession] = useState("");
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const selectionSessionRef = useRef("");
+  const studioInitializedRef = useRef(false);
+  const runRestoreRef = useRef(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (initialStage === "studio" && !studioInitializedRef.current) {
+      studioInitializedRef.current = true;
+      workspace.setActiveStep("export");
+    }
+  }, [initialStage, workspace]);
+
+  const updateStage = useCallback((next: UnifiedStage) => {
+    setStage(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set("stage", next);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    if (next === "studio") setWorkspaceActiveStep("export");
+  }, [setWorkspaceActiveStep]);
 
   async function refreshRun(id: string) {
     const result = await requestJson<{ run: FeedbackIntakeRunView }>(`/api/feedback/intake/runs/${encodeURIComponent(id)}`);
     setRun(result.run);
+    setDecisions(runDecisions(result.run));
     return result.run;
   }
+
+  const adoptRun = useCallback((nextRun: FeedbackIntakeRunView) => {
+    setRun(nextRun);
+    setDecisions(runDecisions(nextRun));
+    const url = new URL(window.location.href);
+    url.searchParams.set("intakeRunId", nextRun.id);
+    if (nextRun.planId) url.searchParams.set("planId", nextRun.planId);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    if (nextRun.planId) updateStage("studio");
+    else if (nextRun.issues.some(issueNeedsChoice)) updateStage("review");
+    else updateStage("intake");
+  }, [updateStage]);
 
   const scanInbox = useCallback(async (silent = false) => {
     const sessionCode = workspace.context.sessionCode;
@@ -63,19 +140,31 @@ export default function UnifiedFeedbackWorkspace() {
     setBusy(true); setError(""); if (!silent) setStatus("正在扫描反馈收件箱…");
     try {
       const result = await requestJson<ApiResult>("/api/feedback/intake/scan", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionCode }),
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionCode, ...(run?.sessionCode === sessionCode && run.id && !run.planId ? { runId: run.id } : {}) }),
       });
-      setRun(result.run);
-      setStatus(result.run.sourceManifest.length === 0 ? "反馈收件箱暂无材料；可以继续拖入或选择本次文件。" : result.run.status === "needs_review" ? "材料已读取；只有异常项需要处理。" : "材料已读取并应用，可以开始反馈。 ");
+      adoptRun(result.run);
+      setStatus(result.run.sourceManifest.length === 0 ? "反馈收件箱暂无材料；可以继续拖入或选择本次文件。" : result.run.issues.length ? "材料已读取；请只处理异常项。" : "材料已读取，等待教师确认事实。 ");
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
-  }, [workspace.context.sessionCode]);
+  }, [adoptRun, run, workspace.context.sessionCode]);
 
   useEffect(() => {
+    const requestedRunId = new URL(window.location.href).searchParams.get("intakeRunId");
+    if (requestedRunId && workspace.contextHydrated && !runRestoreRef.current) {
+      runRestoreRef.current = true;
+      void refreshRun(requestedRunId).then((restored) => {
+        if (restored.planId) updateStage("studio");
+        else if (restored.issues.some(issueNeedsChoice)) updateStage("review");
+      }).catch((reason) => setError(errorMessage(reason)));
+      return;
+    }
     if (!workspace.contextHydrated || !workspace.context.sessionCode || autoScannedSession === workspace.context.sessionCode) return;
+    if (requestedRunId) return;
     setAutoScannedSession(workspace.context.sessionCode);
     void scanInbox(true);
-  }, [autoScannedSession, scanInbox, workspace.context.sessionCode, workspace.contextHydrated]);
+  }, [autoScannedSession, scanInbox, updateStage, workspace.context.sessionCode, workspace.contextHydrated]);
 
   useEffect(() => {
     const semesterId = contextSemesterId;
@@ -93,19 +182,19 @@ export default function UnifiedFeedbackWorkspace() {
         setCommonLessonOptions(options);
         const linked = options.find((option) => option.linkedToCurrent);
         setSelectedCommonLessonId(linked?.id ?? "");
-        for (const group of data.groups ?? []) {
-          for (const lesson of group.lessons ?? []) {
-            if (lesson.sessionLinks?.some((link) => link.session.code === sessionCode) && lesson.revisions?.[0]) {
-              setCommonLessonLabel(`${lesson.title} · 已确认修订 ${lesson.revisions[0].revision}`);
-              return;
-            }
-          }
-        }
-        setCommonLessonLabel("");
+        const linkedLesson = (data.groups ?? []).flatMap((group) => group.lessons ?? []).find((lesson) => lesson.sessionLinks?.some((link) => link.session.code === sessionCode) && lesson.revisions?.[0]);
+        setCommonLessonLabel(linkedLesson?.revisions?.[0] ? `${linkedLesson.title} · 已确认修订 ${linkedLesson.revisions[0].revision}` : "");
       })
       .catch(() => { if (!cancelled) { setCommonLessonLabel(""); setCommonLessonOptions([]); setSelectedCommonLessonId(""); } });
     return () => { cancelled = true; };
   }, [contextSemesterId, contextSessionCode]);
+
+  useEffect(() => {
+    if (selectionSessionRef.current === contextSessionCode) return;
+    selectionSessionRef.current = contextSessionCode;
+    const recommended = workspace.contextStudents.filter((student) => (student.feedbackRecommendationReasons?.length ?? 0) > 0).map((student) => student.id);
+    setSelectedStudentIds(recommended);
+  }, [contextSessionCode, workspace.contextStudents]);
 
   async function uploadFiles(files: FileList | null) {
     if (!workspace.context.sessionCode || !files?.length) return;
@@ -113,89 +202,180 @@ export default function UnifiedFeedbackWorkspace() {
     try {
       const form = new FormData();
       form.set("sessionCode", workspace.context.sessionCode);
+      if (run?.sessionCode === workspace.context.sessionCode && !run.planId) form.set("runId", run.id);
       Array.from(files).forEach((file) => form.append("files", file));
       const result = await requestJson<ApiResult>("/api/feedback/intake/upload", { method: "POST", body: form });
-      setRun(result.run);
-      setStatus(result.run.status === "needs_review" ? "材料已读取；请处理异常项。" : "材料已读取并应用，可以开始反馈。 ");
+      adoptRun(result.run);
+      setStatus(result.run.issues.length ? "材料已读取；请处理异常项。" : "材料已读取，等待教师确认事实。 ");
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
   }
 
-  async function createPlan() {
+  function decisionFor(issue: FeedbackIntakeIssue) {
+    return decisions.find((decision) => decision.issueId === issue.id);
+  }
+
+  function setDecision(issue: FeedbackIntakeIssue, action: FeedbackIntakeDecision["action"], sourceName?: string, studentId?: string) {
+    setDecisions((current) => [...current.filter((decision) => decision.issueId !== issue.id), { issueId: issue.id, action, ...(issue.sourceName ? { sourceName: issue.sourceName } : {}), ...(sourceName ? { sourceName } : {}), ...(studentId ? { studentId } : {}) }]);
+  }
+
+  async function confirmFacts() {
+    if (!run) return run;
+    setBusy(true); setError(""); setStatus("正在按你的选择确认事实…");
+    try {
+      const result = await requestJson<{ result: FeedbackIntakeRunView }>(`/api/feedback/intake/runs/${encodeURIComponent(run.id)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "confirm", decisions }),
+      });
+      adoptRun(result.result);
+      setStatus("事实已确认并原子写入；现在可以创建反馈计划。 ");
+      return result.result;
+    } catch (reason) { setError(errorMessage(reason)); return null; }
+    finally { setBusy(false); }
+  }
+
+  async function createPlan(mode: "standard" | "fast") {
     if (!run) return;
     setBusy(true); setError(""); setStatus("正在创建 FeedbackPlan…");
     try {
-      const selectedCommonLesson = commonLessonOptions.find((option) => option.id === selectedCommonLessonId);
-      const selectedLessonMaterial = selectedCommonLesson
-        ? (() => { try { return JSON.parse(selectedCommonLesson.materialSnapshot) as Record<string, unknown>; } catch { return undefined; } })()
-        : undefined;
-      const result = await requestJson<{ result: { plan?: { id: string } } }>(`/api/feedback/intake/runs/${encodeURIComponent(run.id)}`, {
+      let currentRun = run;
+      if (currentRun.status !== "applied") {
+        const confirmed = await confirmFacts();
+        if (!confirmed) return;
+        currentRun = confirmed;
+      }
+      const prefs = { closureType, moduleKeys: defaultFeedbackGenerationPreferences("event_micro").moduleKeys, length, tone };
+      const result = await requestJson<{ result: { plan?: { id: string } } }>(`/api/feedback/intake/runs/${encodeURIComponent(currentRun.id)}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "create_plan", plan: {
           type: "event_micro",
           outputRequirement,
-          generationMode,
-          lessonMaterial: selectedLessonMaterial ?? workspace.lessonMaterial,
+          generationMode: mode,
+          studentIds: selectedStudentIds,
+          generationPreferences: prefs,
+          ...(selectedCommonLessonId ? { commonLessonRevisionId: selectedCommonLessonId } : {}),
         } }),
       });
-      const next = await refreshRun(run.id);
-      setRun(next);
       const planId = result.result.plan?.id;
-      if (planId) {
-        const assessmentEvidence = run.appliedSummary.assessmentEvidence;
+      if (!planId) throw new Error("FeedbackPlan 创建后没有返回计划 ID");
+      const next = await refreshRun(currentRun.id);
+      adoptRun(next);
+      try {
         await requestJson(`/api/report/feedback-plans/${encodeURIComponent(planId)}`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_generation", generationMode, assessmentEvidence: assessmentEvidence ?? {} }),
+          body: JSON.stringify({ action: "start_generation", generationMode: mode, assessmentEvidence: currentRun.appliedSummary.assessmentEvidence ?? {} }),
         });
-        setStatus(generationMode === "fast" ? "快速草稿已开始生成，正在进入计划工作室。" : "标准反馈已开始生成，正在进入计划工作室。");
-        window.location.assign(`/feedback/advanced?planId=${encodeURIComponent(planId)}`);
-      } else {
-        setStatus("FeedbackPlan 已创建。");
+        setStatus(mode === "fast" ? "快速草稿已开始生成，已进入计划工作室。" : "标准反馈已开始生成，已进入计划工作室。 ");
+      } catch (reason) {
+        setStatus("计划已创建，但生成尚未启动；可以在计划工作室重试。 ");
+        setError(errorMessage(reason));
       }
+      updateStage("studio");
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
   }
 
-  async function resolveIssues() {
-    if (!run) return;
-    setBusy(true); setError("");
-    try {
-      const result = await requestJson<{ result: FeedbackIntakeRunView }>(`/api/feedback/intake/runs/${encodeURIComponent(run.id)}`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "resolve" }),
-      });
-      setRun(result.result); setStatus("异常已标记为教师处理，未重新推断或补写事实。");
-    } catch (reason) { setError(errorMessage(reason)); }
-    finally { setBusy(false); }
+  function startFromIntake(mode: "standard" | "fast") {
+    setPendingMode(mode);
+    if (run?.issues.some(issueNeedsChoice)) updateStage("review");
+    else void createPlan(mode);
   }
 
+  const issueCount = run?.issues.filter(issueNeedsChoice).length ?? 0;
+  const unresolvedCount = run?.issues.filter(issueNeedsChoice).filter((issue) => !decisionFor(issue)).length ?? 0;
   const hasRun = Boolean(run && run.sourceManifest.length > 0);
-  const issueCount = run?.issues.length ?? 0;
-  const canStart = Boolean(hasRun && run && run.status !== "failed" && !busy);
-  return <main className={styles.page}>
-    <PageHeader
-      title="课后任务"
-      description="一次投入材料，自动应用无冲突事实，只把真正需要判断的项目留给教师。"
-      actions={<div className={styles.headerActions}><Badge tone="info">1.2 Beta 3</Badge><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">高级工作台</Link></div>}
-    />
-    {error && <StatusBanner tone="danger">{error}</StatusBanner>}
-    {status && <StatusBanner tone="success">{status}</StatusBanner>}
-    <FeedbackContextSection workspace={workspace} />
-    <section className={styles.taskCard}>
-      <header className={styles.taskHeader}><div><span className={styles.eyebrow}>统一材料入口</span><h2>把本次课后材料一次放进来</h2><p>拖拽、选择文件，或把材料放进固定收件箱。ZIP 只解开本次需要识别的文件；临时投入单次不超过 100MB。</p></div><div className={styles.headerStatus}>{run && run.sourceManifest.length === 0 ? <Badge tone="neutral">暂无材料</Badge> : hasRun ? <Badge tone={issueCount ? "warning" : "success"}>{issueCount ? `${issueCount} 项需处理` : "已应用"}</Badge> : <Badge tone="neutral">等待材料</Badge>}</div></header>
+  const canStart = Boolean(hasRun && run && run.status !== "failed" && !busy && selectedStudentIds.length > 0);
+  const summary = run?.appliedSummary ?? {};
+
+  function renderRail() {
+    return <nav className={styles.taskRail} aria-label="课后任务阶段">
+      {(["intake", "review", "studio"] as UnifiedStage[]).map((item, index) => <button type="button" key={item} className={stage === item ? styles.activeRail : ""} onClick={() => (item === "studio" && !run?.planId ? undefined : updateStage(item))} disabled={item === "studio" && !run?.planId}><span>{index + 1}</span><strong>{stageLabels[item]}</strong><small>{item === "intake" ? "统一投料" : item === "review" ? "只处理异常" : "逐学生复核"}</small></button>)}
+    </nav>;
+  }
+
+  function renderIntake() {
+    return <>
       <div className={styles.entrances}>
         <section className={styles.dropzone} onClick={() => uploadRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}>
           <span className={styles.eyebrow}>入口 A · 临时投入</span><strong>拖入文件、文件夹或 ZIP</strong><p>助教 Excel、STEP 文本、学生 PDF；ZIP 内支持这些文件类型。</p><Button variant="secondary" disabled={busy || !workspace.context.sessionCode}>选择材料</Button>
-          <input ref={uploadRef} hidden type="file" multiple accept=".xlsx,.txt,.md,.step-classroom.txt,.pdf,.zip" onChange={(event) => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} />
+          <input ref={uploadRef} hidden type="file" multiple accept=".xlsx,.txt,.step-classroom.txt,.pdf,.zip" onChange={(event) => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} />
         </section>
         <section className={styles.inbox}>
-          <span className={styles.eyebrow}>入口 B · 固定目录</span><strong>读取反馈收件箱</strong><code>~/Library/Application Support/Student Track/feedback-inbox</code><Button variant="secondary" disabled={busy || !workspace.context.sessionCode} onClick={() => void scanInbox()}>重新扫描</Button><small>不移动、不删除原文件；只在教师打开本任务时读取。</small>
+          <span className={styles.eyebrow}>入口 B · 固定目录</span><strong>读取反馈收件箱</strong><code>~/Library/Application Support/Student Track/feedback-inbox</code><Button variant="secondary" disabled={busy || !workspace.context.sessionCode} onClick={() => void scanInbox()}>重新扫描</Button><small>不移动、不删除原文件；材料先汇总，确认事实后才写入。</small>
         </section>
       </div>
       <div className={styles.folderRow}><Button variant="ghost" uiSize="sm" onClick={() => folderRef.current?.click()} disabled={busy || !workspace.context.sessionCode}>选择整个报告文件夹</Button><span>适合一次导入一批学生 PDF；文件夹不会被持续监听。</span><input ref={folderRef} hidden type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} accept=".pdf" onChange={(event) => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} /></div>
-      {hasRun && run && <section className={styles.runSummary}><div><strong>本轮材料</strong><span>{run.sourceManifest.length} 个来源 · {run.appliedSummary && String((run.appliedSummary as { appliedStudentCount?: number }).appliedStudentCount ?? 0)} 名学生事实已整理</span></div><div className={styles.fileList}>{run.sourceManifest.map((file) => <span key={`${String(file.name)}:${String(file.size)}`}><Badge tone={file.kind === "ignored" ? "neutral" : file.kind === "assessment_pdf" ? "info" : "success"}>{file.kind === "ignored" ? "忽略" : file.kind === "assessment_pdf" ? "PDF" : file.kind === "step_classroom" ? "STEP" : "助教表"}</Badge>{String(file.name)}</span>)}</div></section>}
-      {run && issueCount > 0 && <section className={styles.issues}><div><strong>只处理这些异常</strong><span>其余确定性内容已经应用；系统不会为异常项猜测学生、日期或事实。</span></div>{run.issues.map((item) => <article key={item.id}><Badge tone={item.severity === "error" ? "danger" : "warning"}>{item.code}</Badge><span>{item.message}</span><small>{item.sourceName ?? "本轮材料"}</small></article>)}<Button variant="ghost" onClick={() => void resolveIssues()} disabled={busy}>我已了解，继续进入反馈</Button></section>}
-      <section className={styles.strategy}><div className={styles.strategyHeading}><div><strong>反馈策略</strong><span>批次设置仍可在计划工作室里逐学生覆盖。</span></div><Button variant="ghost" uiSize="sm" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "收起高级设置" : "展开高级设置"}</Button></div>{commonLessonLabel && <p className={styles.commonLesson}>共同课公共材料：{commonLessonLabel}（创建计划时自动复制快照）</p>}{commonLessonOptions.length > 0 && <label className={styles.commonLessonPicker}>共同课公共材料<select value={selectedCommonLessonId} onChange={(event) => setSelectedCommonLessonId(event.target.value)}><option value="">不使用（若课次已有唯一关联则自动采用）</option>{commonLessonOptions.map((option) => <option key={option.id} value={option.id}>{option.title} · 修订 {option.revision}{option.linkedToCurrent ? " · 当前课次关联" : ""}</option>)}</select><small>{commonLessonLabel ? "当前课次存在唯一关联，已自动选中；仍可手动更换。" : "当前课次没有唯一关联，请手动选择；系统不会猜测。"}</small></label>}<div className={styles.strategyGrid}><label>生成方式<select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as "standard" | "fast")}><option value="standard">标准反馈（含审核）</option><option value="fast">快速草稿（跳过审核润色）</option></select></label><label className={styles.requirement}>输出要求<Textarea rows={2} value={outputRequirement} onChange={(event) => setOutputRequirement(event.target.value)} /></label></div>{showAdvanced && <p className={styles.advancedNote}>共同课公共材料会从已确认修订自动带入；学生独立详略、语气、模块和正文编辑仍在高级工作台保留。</p>}</section>
-      <footer className={styles.actions}><div><strong>{!run ? "先选择课次和材料" : issueCount ? "材料已应用，仍有异常可回查" : "材料已就绪"}</strong><span>开始后进入现有 FeedbackPlan 生成、复核和导出链路。</span></div><div>{run?.planId && <Link href={`/feedback/advanced?planId=${encodeURIComponent(run.planId)}`} className="ui-button ui-button--secondary ui-button--md">打开计划</Link>}<Button onClick={() => void createPlan()} disabled={!canStart || !outputRequirement.trim()}>{busy ? "处理中…" : generationMode === "fast" ? "快速生成草稿" : "开始标准反馈"}</Button></div></footer>
-    </section>
+      {hasRun && run && <section className={styles.runSummary}><div><strong>本轮材料</strong><span>{run.sourceManifest.length} 个来源 · {String(summary.appliedStudentCount ?? 0)} 名学生事实已整理</span></div><div className={styles.fileList}>{run.sourceManifest.map((file, index) => <span key={`${String(file.name)}:${String(file.sourceHash ?? index)}`}><Badge tone={file.kind === "ignored" ? "neutral" : file.kind === "assessment_pdf" ? "info" : "success"}>{file.kind === "ignored" ? "忽略" : file.kind === "assessment_pdf" ? "PDF" : file.kind === "step_classroom" ? "STEP" : "助教表"}</Badge>{String(file.name)}</span>)}</div></section>}
+      <section className={styles.candidates}><header><div><strong>本次反馈对象</strong><span>先明确入选学生，创建计划时不再静默猜测。</span></div><div><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds(workspace.contextStudents.map((student) => student.id))}>全选</Button><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds([])}>清空</Button></div></header><div className={styles.candidateGrid}>{workspace.contextStudents.length ? workspace.contextStudents.map((student) => <label key={student.id} className={selectedStudentIds.includes(student.id) ? styles.candidateSelected : ""}><input type="checkbox" checked={selectedStudentIds.includes(student.id)} onChange={(event) => setSelectedStudentIds((ids) => event.target.checked ? [...new Set([...ids, student.id])] : ids.filter((id) => id !== student.id))} /><span><strong>{student.name}</strong><small>{student.feedbackRecommendationReasons?.length ? student.feedbackRecommendationReasons.join("、") : "有课堂记录，可手动加入"}</small></span></label>) : <span>正在读取当前课次学生…</span>}</div></section>
+      <section className={styles.strategy}><div className={styles.strategyHeading}><div><strong>本次反馈策略</strong><span>整批设置进入计划快照，逐学生覆盖仍在计划工作室保留。</span></div><Button variant="ghost" uiSize="sm" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "收起计划设置" : "展开全部计划设置"}</Button></div><div className={styles.strategyRows}><label>详略<SegmentedControl label="反馈详略" value={length} onChange={(value) => setLength(value as Length)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "short", label: "简洁" }, { value: "standard", label: "标准" }, { value: "detailed", label: "详细" }]} /></label><label>语气<SegmentedControl label="反馈语气" value={tone} onChange={(value) => setTone(value as Tone)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "gentle", label: "温和" }, { value: "professional", label: "专业" }]} /></label></div>{commonLessonLabel && <p className={styles.commonLesson}>共同课公共材料：{commonLessonLabel}（创建计划时复制确认修订快照）</p>}{commonLessonOptions.length > 0 && <label className={styles.commonLessonPicker}>共同课公共材料<select value={selectedCommonLessonId} onChange={(event) => setSelectedCommonLessonId(event.target.value)}><option value="">不使用（若课次已有唯一关联则自动采用）</option>{commonLessonOptions.map((option) => <option key={option.id} value={option.id}>{option.title} · 修订 {option.revision}{option.linkedToCurrent ? " · 当前课次关联" : ""}</option>)}</select><small>服务端只接受已确认且与当前课次关联的修订。</small></label>}<div className={styles.strategyGrid}><label>生成方式<select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as "standard" | "fast")}><option value="standard">标准反馈（含审核）</option><option value="fast">快速草稿（跳过审核润色）</option></select></label><label>结尾<select value={closureType} onChange={(event) => setClosureType(event.target.value as FeedbackClosureType)}><option value="positive_recognition">具体认可</option><option value="teacher_resolved">课堂已处理</option><option value="home_cooperation">家庭配合</option><option value="continued_observation">后续观察</option></select></label><label className={styles.requirement}>总体要求<Textarea rows={2} value={outputRequirement} onChange={(event) => setOutputRequirement(event.target.value)} /></label></div>{showAdvanced && <p className={styles.advancedNote}>共同课材料、详略、语气、结尾和学生名单都会固化进 FeedbackPlan；高级工作台继续提供模块、独立计划和正文微操。</p>}</section>
+      <footer className={styles.actions}><div><strong>{issueCount ? `有 ${issueCount} 项异常需要确认` : hasRun ? "材料已整理，等待事实确认" : "先选择课次和材料"}</strong><span>确认前不写入课堂事实；确认后进入同一个 FeedbackPlan。</span></div><div><Button variant="secondary" onClick={() => startFromIntake("fast")} disabled={!canStart}>{busy ? "处理中…" : "快速生成草稿"}</Button><Button onClick={() => startFromIntake("standard")} disabled={!canStart}>{busy ? "处理中…" : issueCount ? "检查并开始标准反馈" : "开始标准反馈"}</Button></div></footer>
+    </>;
+  }
+
+  function renderIssueChoices(item: FeedbackIntakeIssue, selected?: FeedbackIntakeDecision) {
+    if (item.code === "attendance_conflict") {
+      return <>
+        <label><input type="radio" name={item.id} checked={selected?.action === "use_assistant"} onChange={() => setDecision(item, "use_assistant")} /> 采用助教表</label>
+        <label><input type="radio" name={item.id} checked={selected?.action === "use_step"} onChange={() => setDecision(item, "use_step")} /> 采用 STEP</label>
+        <label><input type="radio" name={item.id} checked={selected?.action === "skip_attendance"} onChange={() => setDecision(item, "skip_attendance")} /> 本次不写考勤</label>
+      </>;
+    }
+    if (item.code === "assessment_duplicate") {
+      const studentId = item.message.match(/^学生 ([^ ]+) 存在多份 PDF/)?.[1];
+      return <>
+        <label><input type="radio" name={item.id} checked={selected?.action === "select_pdf"} onChange={() => setDecision(item, "select_pdf", item.sourceName, studentId)} /> 选择这份 PDF</label>
+        <label><input type="radio" name={item.id} checked={selected?.action === "ignore_source"} onChange={() => setDecision(item, "ignore_source")} /> 忽略这份 PDF（保留已选）</label>
+      </>;
+    }
+    if (item.candidates?.length) {
+      return <>
+        <label>绑定学生<select value={selected?.action === "bind_student" ? selected.studentId ?? "" : ""} onChange={(event) => { if (event.target.value) setDecision(item, "bind_student", item.sourceName, event.target.value); }}>
+          <option value="">请选择当前班学生</option>
+          {item.candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.studentId}</option>)}
+        </select></label>
+        <label><input type="radio" name={item.id} checked={selected?.action === "ignore_source"} onChange={() => setDecision(item, "ignore_source")} /> 忽略该条</label>
+      </>;
+    }
+    return <>
+      <label><input type="radio" name={item.id} checked={selected?.action === "ignore_source"} onChange={() => setDecision(item, "ignore_source")} /> 忽略这份来源</label>
+      <label><input type="radio" name={item.id} checked={selected?.action === "accept_source"} onChange={() => setDecision(item, "accept_source")} /> 接受为当前课次</label>
+    </>;
+  }
+
+  function renderReview() {
+    return <div className={styles.reviewStage}>
+      <div className={styles.summaryStrip}>
+        <div><strong>{String(summary.appliedStudentCount ?? 0)}</strong><span>已整理学生</span></div>
+        <div><strong>{String(summary.assessmentStudentCount ?? 0)}</strong><span>PDF 证据</span></div>
+        <div><strong>{issueCount}</strong><span>需要教师判断</span></div>
+        <div><strong>{unresolvedCount}</strong><span>尚未选择</span></div>
+      </div>
+      <StatusBanner tone="warning">只处理下面的异常；无冲突材料已经整理，未选择前不会写入。</StatusBanner>
+      <div className={styles.issueList}>
+        {(run?.issues ?? []).filter(issueNeedsChoice).map((item) => {
+          const selected = decisionFor(item);
+          return <article key={item.id}>
+            <header><div><Badge tone={item.severity === "error" ? "danger" : "warning"}>{issueChoiceLabel(item)}</Badge><strong>{item.message}</strong></div><small>{item.sourceName ?? "本轮材料"}</small></header>
+            <div className={styles.choiceRow}>{renderIssueChoices(item, selected)}</div>
+          </article>;
+        })}
+      </div>
+      <details className={styles.allFacts}><summary>查看全部已整理事实（{String(summary.appliedStudentCount ?? 0)} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p></details>
+      <footer className={styles.actions}>
+        <div><strong>确认后固定本次事实快照</strong><span>{unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : "已完成所有必要选择"}</span></div>
+        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button onClick={() => void createPlan(pendingMode)} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length}>{busy ? "确认中…" : `确认事实并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button></div>
+      </footer>
+    </div>;
+  }
+
+  function renderStudio() {
+    return <section className={styles.studioStage}><header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>计划工作室</h2><p>逐学生查看证据、编辑正文、保存、批准和导出；高级工作台仍可随时打开。</p></div><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">打开高级工作台</Link></header><FeedbackPlanPanel workspace={workspace} /></section>;
+  }
+
+  return <main className={styles.page}>
+    <PageHeader title="课后任务" description="一次投入材料，统一确认事实，再进入可完整微操的反馈计划。" actions={<div className={styles.headerActions}><Badge tone="info">1.2 Beta 3</Badge><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">高级工作台</Link></div>} />
+    {error && <StatusBanner tone="danger">{error}</StatusBanner>}
+    {status && <StatusBanner tone="success">{status}</StatusBanner>}
+    <FeedbackContextSection workspace={workspace} />
+    <section className={styles.taskCard}><header className={styles.taskHeader}><div><span className={styles.eyebrow}>当前课后任务</span><h2>{workspace.context.className || "选择班级"} · {workspace.context.sessionCode || "选择课次"}</h2><p>所有材料、课堂事实、共同课快照和反馈计划都围绕当前课次。</p></div><div className={styles.headerStatus}>{run?.planId ? <Badge tone="success">已进入计划工作室</Badge> : issueCount ? <Badge tone="warning">{issueCount} 项需处理</Badge> : hasRun ? <Badge tone="info">等待事实确认</Badge> : <Badge tone="neutral">等待材料</Badge>}</div></header>{renderRail()}<div className={styles.stageContent}>{stage === "intake" && renderIntake()}{stage === "review" && renderReview()}{stage === "studio" && renderStudio()}</div></section>
   </main>;
 }

@@ -7,6 +7,7 @@ import {
   createOrGetFeedbackIntakeRun,
   expandFeedbackIntakeFiles,
   inspectFeedbackIntake,
+  resolveFeedbackIntakeRun,
   type IntakeFile,
 } from "@/services/feedback-intake-service";
 
@@ -49,13 +50,13 @@ function textBuffer(value: string) {
   return encoded.buffer;
 }
 
-function stepFile() {
+function stepFile(completedAt = "2026-07-08T10:00:00+08:00") {
   const payload = {
     class: { code: "E2E-CLASS", name: "E2E测试班" },
     stepSessionId: "beta3-step-test",
     title: "课后课堂观察",
     startedAt: "2026-07-08T09:00:00+08:00",
-    completedAt: "2026-07-08T10:00:00+08:00",
+    completedAt,
     questionCount: 1,
     students: [{
       studentId: "E2E-001",
@@ -78,6 +79,7 @@ describe("feedback intake file preparation", () => {
   it("classifies supported sources and ignores unrelated files", () => {
     expect(classifyFeedbackIntakeFile("助教课堂.xlsx")).toBe("assistant_roster");
     expect(classifyFeedbackIntakeFile("step-classroom.txt")).toBe("step_classroom");
+    expect(classifyFeedbackIntakeFile("说明.txt")).toBe("ignored");
     expect(classifyFeedbackIntakeFile("张三.pdf")).toBe("assessment_pdf");
     expect(classifyFeedbackIntakeFile("说明.docx")).toBe("ignored");
   });
@@ -111,4 +113,47 @@ describe("feedback intake file preparation", () => {
     expect(second.duplicate).toBe(true);
     await prisma.feedbackIntakeRun.delete({ where: { id: first.run.id } });
   });
+
+  it("does not write a date-mismatched STEP file before teacher confirmation", async () => {
+    const input = { sessionCode: "2026070801", files: [stepFile("2026-07-09T10:00:00+08:00")], db: prisma };
+    const before = await prisma.draftRecord.count();
+    const inspection = await inspectFeedbackIntake(input);
+    expect(inspection.issues.some((item) => item.code === "step_date_mismatch")).toBe(true);
+    expect(inspection.parsedResult.students).toHaveLength(0);
+    const result = await createOrGetFeedbackIntakeRun(input);
+    expect(result.run.status).toBe("needs_review");
+    expect(await prisma.draftRecord.count()).toBe(before);
+    await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+  });
+
+  it("writes a confirmed STEP run once and keeps retry idempotent", async () => {
+    const input = { sessionCode: "2026070801", files: [stepFile()], db: prisma };
+    const result = await createOrGetFeedbackIntakeRun(input);
+    const before = await prisma.draftRecord.count();
+    const confirmed = await resolveFeedbackIntakeRun(result.run.id, { action: "confirm", decisions: [] }, prisma);
+    expect(confirmed.status).toBe("applied");
+    expect(await prisma.draftRecord.count()).toBe(before + 1);
+    const repeated = await resolveFeedbackIntakeRun(result.run.id, { action: "confirm", decisions: [] }, prisma);
+    expect(repeated.status).toBe("applied");
+    expect(await prisma.draftRecord.count()).toBe(before + 1);
+    await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+  }, 20_000);
+
+  it("returns the same plan when create_plan is retried", async () => {
+    const input = { sessionCode: "2026070801", files: [stepFile()], db: prisma };
+    const result = await createOrGetFeedbackIntakeRun(input);
+    await resolveFeedbackIntakeRun(result.run.id, { action: "confirm", decisions: [] }, prisma);
+    const student = await prisma.student.findFirst({ where: { studentId: "E2E-001" }, select: { id: true } });
+    expect(student).not.toBeNull();
+    const planInput = {
+      type: "event_micro" as const,
+      outputRequirement: "为测试学生生成一条可复核反馈",
+      studentIds: [student!.id],
+      generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment", "teacher_interpretation"] },
+    };
+    const first = await resolveFeedbackIntakeRun(result.run.id, { action: "create_plan", plan: planInput }, prisma);
+    const second = await resolveFeedbackIntakeRun(result.run.id, { action: "create_plan", plan: planInput }, prisma);
+    expect("plan" in first && "plan" in second ? first.plan?.id : null).toBe("plan" in second ? second.plan?.id : null);
+    await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+  }, 20_000);
 });

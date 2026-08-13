@@ -41,6 +41,8 @@ export type FeedbackModuleKey = (typeof FEEDBACK_MODULES)[FeedbackPlanType][numb
 
 export const FeedbackGenerationPreferencesSchema = z.object({
   closureType: z.enum(FEEDBACK_CLOSURE_TYPES),
+  length: z.enum(["inherit", "short", "standard", "detailed"]).optional(),
+  tone: z.enum(["inherit", "gentle", "professional"]).optional(),
   // An empty selection means that the current feedback type's full module
   // catalog is available. The upper bound is only a payload safety bound;
   // it is intentionally above every current type's catalog size.
@@ -87,6 +89,9 @@ const DEFAULT_FEEDBACK_GENERATION_PREFERENCES: Record<FeedbackPlanType, Feedback
 
 export function defaultFeedbackGenerationPreferences(planType: FeedbackPlanType): FeedbackGenerationPreferences {
   const defaults = DEFAULT_FEEDBACK_GENERATION_PREFERENCES[planType];
+  // Keep the old payload shape for callers that do not opt into the new
+  // public length/tone controls. Missing values are treated as "inherit" at
+  // generation time, so old plans remain fully compatible.
   return { closureType: defaults.closureType, moduleKeys: [...defaults.moduleKeys] };
 }
 

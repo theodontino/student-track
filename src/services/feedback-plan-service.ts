@@ -1708,8 +1708,16 @@ export async function generateFeedbackPlanItems(input: {
           planType: effectiveConfig.type,
           outputRequirement: effectiveConfig.outputRequirement,
           evidenceBundle: bundle,
-          style: preference?.terminology === "professional" ? "professional" : "gentle",
-          length: preference?.length === "short" ? "short" : "standard",
+          style: effectiveConfig.generationPreferences?.tone === "professional"
+            ? "professional"
+            : effectiveConfig.generationPreferences?.tone === "gentle"
+              ? "gentle"
+              : preference?.terminology === "professional" ? "professional" : "gentle",
+          length: effectiveConfig.generationPreferences?.length === "short"
+            ? "short"
+            : effectiveConfig.generationPreferences?.length === "detailed"
+              ? "standard"
+              : preference?.length === "short" ? "short" : "standard",
           draftClient,
           draftModel,
           reviewClient,
