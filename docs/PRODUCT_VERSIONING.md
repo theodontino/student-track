@@ -1,7 +1,8 @@
 # Student Track 产品版本（Zhuiver）
 
-Student Track 的产品版本遵循协议仓库中的 [`Zhuiver.md`](../../student-track-wcg-protocols/Zhuiver.md)。
-本文件是本仓库的适配说明，不复制或重新定义 Zhuiver 的语义。
+Student Track 的产品版本遵循外部治理仓库 `Protocol-of-sts/Zhuiver.md`。本文件是本仓库的适配说明，不复制或重新定义 Zhuiver 的语义。
+
+这里刻意不使用指向本机兄弟仓库的相对 Markdown 链接：GitHub Actions 只 checkout Student Track 自身，跨仓相对路径不是可移植的文档依赖。需要查阅规范时，以 `theodontino/Protocol-of-sts` 仓库中的 `Zhuiver.md` 为准。
 
 ## 版本来源
 
