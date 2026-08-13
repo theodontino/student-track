@@ -285,6 +285,48 @@ test("unified feedback keeps the approved three-stage strategy and focused stude
   await expect(page.getByText("当前课次未关联已确认的共同课材料", { exact: false })).toBeVisible();
 });
 
+test("unified studio can safely pause and continue an active generation queue", async ({ page }) => {
+  let planStatus = "generating";
+  const detail = () => plan("", planStatus === "paused" ? "queued" : "generating", planStatus);
+  const actions: string[] = [];
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
+      await route.fulfill({ json: { plans: [detail()] } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      await route.fulfill({ json: { plan: detail() } });
+      return;
+    }
+    if (request.method() === "POST" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      const body = request.postDataJSON() as { action?: string };
+      if (body.action === "pause_generation") {
+        actions.push(body.action);
+        planStatus = "paused";
+        await route.fulfill({ status: 202, json: { accepted: true, status: "paused" } });
+        return;
+      }
+      if (body.action === "continue_generation") {
+        actions.push(body.action);
+        planStatus = "generating";
+        await route.fulfill({ status: 202, json: { accepted: true, status: "queued" } });
+        return;
+      }
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/feedback?stage=studio&planId=e2e-feedback-plan-1&semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  await expect(page.getByLabel("反馈生成进度")).toBeVisible();
+  await page.getByRole("button", { name: "暂停生成", exact: true }).click();
+  await expect(page.getByRole("button", { name: "继续生成", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "继续生成", exact: true }).click();
+  await expect(page.getByRole("button", { name: "暂停生成", exact: true })).toBeVisible();
+  expect(actions).toEqual(["pause_generation", "continue_generation"]);
+});
+
 test("export never reports an unfinished queued item as program-check passed", async ({ page }) => {
   const queuedPlan = plan("", "queued", "paused");
   await page.route("**/api/report/feedback-plans**", async (route) => {
