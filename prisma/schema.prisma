@@ -328,6 +328,7 @@ model Semester {
   enrollments StudentClassEnrollment[]
   sessions ClassSession[]
   feedbackPlans FeedbackPlan[]
+  feedbackPlanBatches FeedbackPlanBatch[]
   classGroups ClassGroup[]
 }
 
@@ -412,6 +413,7 @@ model GroupLessonRevision {
   confirmedAt      DateTime @default(now())
 
   groupLesson GroupLesson @relation(fields: [groupLessonId], references: [id], onDelete: Cascade)
+  feedbackPlanBatches FeedbackPlanBatch[]
 
   @@unique([groupLessonId, revision])
   @@index([groupLessonId, confirmedAt])
@@ -590,6 +592,8 @@ model FeedbackPlan {
   approvedAt          DateTime?
   exportedAt          DateTime?
   archivedAt          DateTime?
+  batchId             String?
+  batchOrder          Int?
 
   semester          Semester      @relation(fields: [semesterId], references: [id], onDelete: Cascade)
   class             Class          @relation(fields: [classId], references: [id], onDelete: Restrict)
@@ -600,9 +604,38 @@ model FeedbackPlan {
   tasks             TeacherTask[]
   attachments       FeedbackAttachment[]
   exportRuns        FeedbackExportRun[]
+  batch             FeedbackPlanBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
+  @@unique([batchId, batchOrder])
+  @@unique([batchId, classId])
   @@index([classId, semesterId, archivedAt, updatedAt])
   @@index([classId, semesterId, type, createdAt])
+  @@index([status, updatedAt])
+}
+
+// 12d.1 多班反馈批次只编排既有 FeedbackPlan；每班仍是独立计划和审核边界。
+model FeedbackPlanBatch {
+  id                     String   @id @default(cuid())
+  requestKey             String   @unique
+  semesterId             String
+  type                   String   // "event_micro" | "stage_trend"
+  outputRequirement      String
+  generationMode         String   @default("standard")
+  status                 String   @default("ready")
+  currentPlanId          String?
+  failedPlanId           String?
+  sharedLessonRevisionId String?
+  planRevision           Int      @default(1)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  archivedAt             DateTime?
+
+  semester             Semester             @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  sharedLessonRevision GroupLessonRevision? @relation(fields: [sharedLessonRevisionId], references: [id], onDelete: SetNull)
+  plans                 FeedbackPlan[]
+  exportRuns            FeedbackPlanBatchExportRun[]
+
+  @@index([semesterId, archivedAt, updatedAt])
   @@index([status, updatedAt])
 }
 
@@ -730,11 +763,30 @@ model FeedbackExportRun {
   itemManifest String   @default("[]")
   manifestHash String
   isRepeat     Boolean  @default(false)
+  batchExportRunId String?
   createdAt    DateTime @default(now())
 
   plan FeedbackPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  batchExportRun FeedbackPlanBatchExportRun? @relation(fields: [batchExportRunId], references: [id], onDelete: SetNull)
 
   @@index([planId, createdAt])
+  @@index([batchExportRunId])
+}
+
+model FeedbackPlanBatchExportRun {
+  id             String   @id @default(cuid())
+  batchId        String
+  mode           String   // "complete" | "approved_only"
+  itemManifest   String   @default("[]")
+  manifestHash   String
+  workbookSha256 String
+  isRepeat       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  batch     FeedbackPlanBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  childRuns FeedbackExportRun[]
+
+  @@index([batchId, createdAt])
 }
 
 // 12e. 面向后续教学的受控记忆。semesterKey 为学期 ID 或 "long-term"，避免 nullable 唯一键歧义。

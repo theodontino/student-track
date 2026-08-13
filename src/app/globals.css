@@ -307,6 +307,28 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .ai-workflow-glow, .diarize-composer-glow { --glow-duration: 3s; }
 .feedback-workspace { width: min(96rem, 100%); margin: 0 auto; display: grid; gap: var(--space-4); }
 .feedback-workspace > .page-header { margin-bottom: 0; }
+.feedback-batch-panel { overflow: hidden; border: 1px solid var(--color-info-border); border-radius: var(--radius-lg); background: var(--color-surface-raised); box-shadow: var(--shadow-card); }
+.feedback-batch-panel > summary { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-4); cursor: pointer; color: var(--color-ink-soft); }
+.feedback-batch-panel > summary span { color: var(--color-muted); font-size: .72rem; }
+.feedback-batch-panel__body, .feedback-batch-panel__create, .feedback-batch-panel__manage { display: grid; gap: var(--space-3); }
+.feedback-batch-panel__body { padding: 0 var(--space-4) var(--space-4); border-top: 1px solid var(--color-border); }
+.feedback-batch-panel__create { grid-template-columns: repeat(3, minmax(0, 1fr)); padding-top: var(--space-4); }
+.feedback-batch-panel__requirement, .feedback-batch-panel__classes { grid-column: 1 / -1; }
+.feedback-batch-panel__requirement .ui-textarea { min-height: 4.5rem; }
+.feedback-batch-panel__classes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.feedback-batch-panel__classes article { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.feedback-batch-panel__classes article > div, .feedback-batch-panel__plans, .feedback-batch-panel__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.feedback-batch-panel__classes details summary { cursor: pointer; color: var(--color-brand-700); font-size: .72rem; font-weight: 700; }
+.feedback-batch-panel__students { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; margin-top: var(--space-2); color: var(--color-ink-soft); font-size: .72rem; }
+.feedback-batch-panel__students small { color: var(--color-muted); }
+.feedback-batch-panel__pdf { align-items: center; color: var(--color-muted); font-size: .7rem; }
+.feedback-batch-panel__classes .ui-field { min-width: 12rem; flex: 1; }
+.feedback-batch-panel__progress { height: .4rem; overflow: hidden; border-radius: 999px; background: var(--color-surface-subtle); }
+.feedback-batch-panel__progress span { display: block; height: 100%; background: var(--color-brand-600); }
+.feedback-batch-panel__manage p, .feedback-batch-panel__manage small { margin: 0; color: var(--color-muted); font-size: .72rem; line-height: 1.5; }
+.feedback-batch-panel__plans a { display: grid; gap: .15rem; min-width: 12rem; padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-ink-soft); text-decoration: none; }
+.feedback-batch-panel__plans a.is-current { border-color: var(--color-brand-500); background: var(--color-brand-50); }
+.feedback-batch-panel__plans span { color: var(--color-muted); font-size: .68rem; }
 .feedback-flow { display: grid; gap: var(--space-4); }
 .feedback-stepper { position: sticky; top: 1rem; z-index: 8; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: .35rem; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-glass-strong); -webkit-backdrop-filter: blur(var(--glass-blur-floating)) saturate(125%); backdrop-filter: blur(var(--glass-blur-floating)) saturate(125%); box-shadow: var(--shadow-card); }
 .feedback-stepper button { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: .6rem; padding: .7rem .8rem; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--color-muted); text-align: left; transition: background var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-spring), color var(--motion-base); }

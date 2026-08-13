@@ -683,7 +683,7 @@ function candidateStudentIds(input: FeedbackPlanCreateInput, context: Awaited<Re
     .map((student) => student.id) ?? [];
 }
 
-export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: PrismaClient = prisma) {
+export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: FeedbackPlanDb = prisma) {
   const parsedInput = FeedbackPlanCreateSchema.parse(rawInput);
   let generationPreferences: FeedbackGenerationPreferences;
   try {
@@ -816,7 +816,7 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     generationPreferences,
   };
 
-  const created = await db.$transaction(async (tx) => {
+  const createInDb = async (tx: FeedbackPlanDb) => {
     const plan = await tx.feedbackPlan.create({
       data: {
         type: input.type,
@@ -854,13 +854,18 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
       include: { items: true },
     });
     return plan;
-  });
+  };
+  // A batch owns the outer transaction. Prisma TransactionClient deliberately
+  // omits $transaction, so this small runtime check avoids a nested transaction.
+  const created = "$transaction" in db
+    ? await (db as PrismaClient).$transaction((tx) => createInDb(tx))
+    : await createInDb(db);
   const detail = await getFeedbackPlan(created.id, db);
   if (!detail) throw new Error("反馈计划创建后无法读取");
   return detail;
 }
 
-export async function getFeedbackPlan(id: string, db: PrismaClient = prisma) {
+export async function getFeedbackPlan(id: string, db: FeedbackPlanDb = prisma) {
   const plan = await db.feedbackPlan.findUnique({
     where: { id },
     include: {
@@ -1359,7 +1364,7 @@ function attachmentDestination(planId: string, relativeLocator: string) {
   return destination;
 }
 
-export async function validateFeedbackPlanAttachments(planId: string, db: PrismaClient = prisma) {
+export async function validateFeedbackPlanAttachments(planId: string, db: FeedbackPlanDb = prisma) {
   const attachments = await db.feedbackAttachment.findMany({ where: { planId } });
   const result: Array<{ id: string; status: "available" | "missing" }> = [];
   for (const attachment of attachments) {
@@ -1824,6 +1829,10 @@ export async function generateFeedbackPlanItems(input: {
 // 进程重启后由 continue/retry 把没有执行器的 generating 条目重新入队。
 const feedbackGenerationJobs = new Map<string, Promise<void>>();
 const MAX_FEEDBACK_CONCURRENCY = 2;
+
+export function isFeedbackPlanGenerationRunning(planId: string) {
+  return feedbackGenerationJobs.has(planId);
+}
 
 async function claimQueuedFeedbackPlanItem(planId: string, db: PrismaClient) {
   const candidate = await db.feedbackPlanItem.findFirst({

@@ -130,6 +130,7 @@ erDiagram
     TEXT itemManifest
     TEXT manifestHash
     BOOLEAN isRepeat
+    TEXT batchExportRunId FK
     DATETIME createdAt
   }
   FeedbackPlan {
@@ -155,6 +156,34 @@ erDiagram
     DATETIME approvedAt
     DATETIME exportedAt
     DATETIME archivedAt
+    TEXT batchId FK
+    INTEGER batchOrder
+  }
+  FeedbackPlanBatch {
+    TEXT id PK
+    TEXT requestKey UK
+    TEXT semesterId FK
+    TEXT type
+    TEXT outputRequirement
+    TEXT generationMode
+    TEXT status
+    TEXT currentPlanId
+    TEXT failedPlanId
+    TEXT sharedLessonRevisionId FK
+    INTEGER planRevision
+    DATETIME createdAt
+    DATETIME updatedAt
+    DATETIME archivedAt
+  }
+  FeedbackPlanBatchExportRun {
+    TEXT id PK
+    TEXT batchId FK
+    TEXT mode
+    TEXT itemManifest
+    TEXT manifestHash
+    TEXT workbookSha256
+    BOOLEAN isRepeat
+    DATETIME createdAt
   }
   FeedbackPlanItem {
     TEXT id PK
@@ -521,6 +550,9 @@ erDiagram
   FeedbackPlan ||--o{ FeedbackExportRun : "planId"
   FeedbackPlan ||--o{ FeedbackPlanItem : "planId"
   FeedbackPlan ||--o{ TeacherTask : "planId"
+  FeedbackPlanBatch o|--o{ FeedbackPlan : "batchId"
+  FeedbackPlanBatch ||--o{ FeedbackPlanBatchExportRun : "batchId"
+  FeedbackPlanBatchExportRun o|--o{ FeedbackExportRun : "batchExportRunId"
   FeedbackPlanItem o|--o{ FeedbackAttachment : "planItemId"
   FeedbackPlanItem o|--o{ GenerationRecord : "feedbackPlanItemId"
   FeedbackPlanItem o|--o{ TeacherTask : "planItemId"
@@ -528,11 +560,13 @@ erDiagram
   GenerationRecord o|--o{ GenerationRecord : "parentGenerationId"
   GroupLesson ||--o{ GroupLessonRevision : "groupLessonId"
   GroupLesson ||--o{ GroupLessonSession : "groupLessonId"
+  GroupLessonRevision o|--o{ FeedbackPlanBatch : "sharedLessonRevisionId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ Class : "semesterId"
   Semester ||--o{ ClassGroup : "semesterId"
   Semester ||--o{ ClassSession : "semesterId"
   Semester ||--o{ FeedbackPlan : "semesterId"
+  Semester ||--o{ FeedbackPlanBatch : "semesterId"
   Semester ||--o{ StudentClassEnrollment : "semesterId"
   Student o|--o{ FeedbackPlanItem : "studentId"
   Student o|--o{ TeacherTask : "studentId"
@@ -738,6 +772,7 @@ erDiagram
 | `itemManifest` | `TEXT` | 是 | default: '[]' |
 | `manifestHash` | `TEXT` | 是 |  |
 | `isRepeat` | `BOOLEAN` | 是 | default: false |
+| `batchExportRunId` | `TEXT` | 否 | FK |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
@@ -767,6 +802,43 @@ erDiagram
 | `approvedAt` | `DATETIME` | 否 |  |
 | `exportedAt` | `DATETIME` | 否 |  |
 | `archivedAt` | `DATETIME` | 否 |  |
+| `batchId` | `TEXT` | 否 | FK |
+| `batchOrder` | `INTEGER` | 否 |  |
+
+复合唯一约束：`batchId + classId`、`batchId + batchOrder`。
+
+### FeedbackPlanBatch
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `requestKey` | `TEXT` | 是 | unique |
+| `semesterId` | `TEXT` | 是 | FK |
+| `type` | `TEXT` | 是 |  |
+| `outputRequirement` | `TEXT` | 是 |  |
+| `generationMode` | `TEXT` | 是 | default: 'standard' |
+| `status` | `TEXT` | 是 | default: 'ready' |
+| `currentPlanId` | `TEXT` | 否 |  |
+| `failedPlanId` | `TEXT` | 否 |  |
+| `sharedLessonRevisionId` | `TEXT` | 否 | FK |
+| `planRevision` | `INTEGER` | 是 | default: 1 |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+| `archivedAt` | `DATETIME` | 否 |  |
+
+
+### FeedbackPlanBatchExportRun
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `batchId` | `TEXT` | 是 | FK |
+| `mode` | `TEXT` | 是 |  |
+| `itemManifest` | `TEXT` | 是 | default: '[]' |
+| `manifestHash` | `TEXT` | 是 |  |
+| `workbookSha256` | `TEXT` | 是 |  |
+| `isRepeat` | `BOOLEAN` | 是 | default: false |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
 ### FeedbackPlanItem

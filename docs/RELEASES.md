@@ -20,7 +20,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.2.0-beta.1 | 增加同学期平行班、共同课、不可变教师确认材料修订与真实课次关联，并收口实验性 STEP 人工桥；按 Zhuiver 归为 MINOR，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
+| Student Track | 1.2.0-beta.2 | 在 beta.1 共同课基础上增加同学期多班 FeedbackPlan 原子创建、逐班串行恢复、逐班复核入口和按学生合并导出；按 Zhuiver 归为 MINOR，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
 
 ### STEP Bridge 的发布边界

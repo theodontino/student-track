@@ -395,3 +395,53 @@ test("feedback preparation recommends and applies the current lesson script", as
   await expect(page.getByText("第二课全对", { exact: true })).toBeVisible();
   await expect(page.getByText("第二课有误", { exact: true })).toBeVisible();
 });
+
+test("multi-class batch creation keeps class sessions and students explicit", async ({ page }) => {
+  const classes = [
+    { id: "batch-class-1", code: "B-01", name: "一班" },
+    { id: "batch-class-2", code: "B-02", name: "二班" },
+  ];
+  const sessions = classes.map((item, index) => ({ id: `batch-session-${index + 1}`, code: `2098120${index + 1}01`, date: `2098-12-0${index + 1}`, classId: item.id }));
+  const students = classes.map((item, index) => ({ id: `batch-student-${index + 1}`, name: `批次学生${index + 1}`, studentId: `B-S${index + 1}`, classId: item.id }));
+  let created = false;
+  let createBody: Record<string, unknown> | null = null;
+  const batch = {
+    id: "batch-e2e-1",
+    semesterId: TEST_FIXTURE.semester.id,
+    type: "event_micro",
+    outputRequirement: "逐班生成反馈",
+    status: "ready",
+    currentPlanId: null,
+    plans: classes.map((item, index) => ({ id: `batch-plan-${index + 1}`, batchOrder: index + 1, status: "draft", class: item, progress: { total: 1, generated: 0, approved: 0, exported: 0, failed: 0 } })),
+    progress: { total: 2, generated: 0, approved: 0, exported: 0, failed: 0, completedClasses: 0, totalClasses: 2 },
+  };
+  await page.route("**/api/semesters", (route) => route.fulfill({ json: [TEST_FIXTURE.semester] }));
+  await page.route(`**/api/semesters/${TEST_FIXTURE.semester.id}`, (route) => route.fulfill({ json: { ...TEST_FIXTURE.semester, classes, sessions } }));
+  await page.route(`**/api/semesters/${TEST_FIXTURE.semester.id}/class-groups`, (route) => route.fulfill({ json: { groups: [] } }));
+  await page.route("**/api/students?**", (route) => route.fulfill({ json: students }));
+  await page.route("**/api/report/feedback-plan-batches**", async (route) => {
+    if (route.request().method() === "POST") {
+      createBody = route.request().postDataJSON() as Record<string, unknown>;
+      created = true;
+      await route.fulfill({ status: 201, json: { batch } });
+      return;
+    }
+    await route.fulfill({ json: { batches: created ? [batch] : [] } });
+  });
+
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}`);
+  const panel = page.locator(".feedback-batch-panel");
+  await panel.getByText("多班反馈批次（1.2 Beta）").click();
+  await panel.getByLabel("B-01 一班").check();
+  await panel.getByLabel("B-02 二班").check();
+  await panel.getByRole("button", { name: "原子创建批次" }).click();
+  await expect(panel.getByText("批次及各班独立反馈计划已原子创建。")).toBeVisible();
+  expect(createBody).toMatchObject({
+    semesterId: TEST_FIXTURE.semester.id,
+    type: "event_micro",
+    plans: [
+      { classId: classes[0].id, sessionId: sessions[0].id, studentIds: [students[0].id] },
+      { classId: classes[1].id, sessionId: sessions[1].id, studentIds: [students[1].id] },
+    ],
+  });
+});

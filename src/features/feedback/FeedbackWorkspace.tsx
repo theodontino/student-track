@@ -2,6 +2,7 @@
 
 import { Button, PageHeader, StatusBanner } from "@/components/ui";
 import { FeedbackWorkflow } from "./FeedbackWorkflow";
+import { FeedbackBatchPanel } from "./FeedbackBatchPanel";
 import type { FeedbackStep } from "./types";
 import { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 
@@ -14,6 +15,7 @@ export default function FeedbackWorkspace({ initialStep }: { initialStep?: Feedb
       {workspace.status && <StatusBanner tone="success">{workspace.status}</StatusBanner>}
       {workspace.legacyDraftAvailable && <StatusBanner tone="warning">另有一份旧“课堂录入”草稿仍保留在当前标签页。<Button variant="ghost" uiSize="sm" onClick={workspace.restoreLegacyDraft}>载入旧草稿</Button></StatusBanner>}
       <FeedbackWorkflow workspace={workspace} />
+      <FeedbackBatchPanel initialSemesterId={workspace.context.semesterId} />
     </main>
   );
 }
