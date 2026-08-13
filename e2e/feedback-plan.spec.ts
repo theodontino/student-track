@@ -395,7 +395,7 @@ test("feedback preparation recommends and applies the current lesson script", as
     });
   });
 
-  await page.goto("/feedback?step=prepare");
+  await page.goto("/feedback/advanced?step=prepare");
   const contextSelects = page.locator(".feedback-context-section select");
   await contextSelects.nth(0).selectOption(TEST_FIXTURE.semester.id);
   await contextSelects.nth(1).selectOption({ label: TEST_FIXTURE.class.name });
