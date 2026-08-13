@@ -6,6 +6,16 @@
 
 当前开发版本为 **1.1.5-beta.2**；当前稳定版本为 **1.1.4**。本 beta 修复反馈计划的可选模块、学生独立计划、同学期转班、时间证据处理和项目迁移后的本地转写任务路径中的既有 UX 阻断，继续保持 handoff v1 与 receipt v1 兼容。
 
+## 实验性能力：STEP Bridge
+
+Student Track 当前包含实验性的 STEP 人工文件桥，用于验证 ST 与 STEP 之间的班级花名册和课堂事实流转。该能力**不属于当前稳定产品承诺，也不作为 ST 1.2 的正式协议交付要求**。
+
+当前实验桥只保证当前已验证的 ST + STEP 组合可用；文件头、字段和 adapter 可以随两端数据模型继续调整，旧实验文件不承诺长期兼容。现阶段优先保持桥接简单、可读、可修改，不为短命格式建立永久 migration、revision ledger 或 compatibility matrix。
+
+仍然保持少数硬边界：按稳定 `studentId` 精确匹配；班级和目标课次必须一致；STEP 的确定性课堂事实不由 LLM 改写或补分；模型失败不能阻断教师复核；坐标和触控 UI 数据不得进入 ST；教师确认前不写正式记录。
+
+正式 `.stsession/.stlesson`、canonical Schema、revision/ledger、联合 conformance 与长期兼容策略已延期到 STEP 核心数据模型和真实桥接需求明显稳定以后，再由 `Protocol-of-sts` 收口。当前实施范围见 GitHub Issue #43。
+
 ## 快速启动
 
 本项目使用 Node.js 24 LTS 和 npm 11，并且只支持本机 `127.0.0.1` 访问。
