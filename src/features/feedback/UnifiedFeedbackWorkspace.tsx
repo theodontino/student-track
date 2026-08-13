@@ -181,7 +181,7 @@ export default function UnifiedFeedbackWorkspace() {
     {status && <StatusBanner tone="success">{status}</StatusBanner>}
     <FeedbackContextSection workspace={workspace} />
     <section className={styles.taskCard}>
-      <header className={styles.taskHeader}><div><span className={styles.eyebrow}>统一材料入口</span><h2>把本次课后材料一次放进来</h2><p>拖拽、选择文件，或把材料放进固定收件箱。ZIP 只解开本次需要识别的文件。</p></div><div className={styles.headerStatus}>{run && run.sourceManifest.length === 0 ? <Badge tone="neutral">暂无材料</Badge> : hasRun ? <Badge tone={issueCount ? "warning" : "success"}>{issueCount ? `${issueCount} 项需处理` : "已应用"}</Badge> : <Badge tone="neutral">等待材料</Badge>}</div></header>
+      <header className={styles.taskHeader}><div><span className={styles.eyebrow}>统一材料入口</span><h2>把本次课后材料一次放进来</h2><p>拖拽、选择文件，或把材料放进固定收件箱。ZIP 只解开本次需要识别的文件；临时投入单次不超过 100MB。</p></div><div className={styles.headerStatus}>{run && run.sourceManifest.length === 0 ? <Badge tone="neutral">暂无材料</Badge> : hasRun ? <Badge tone={issueCount ? "warning" : "success"}>{issueCount ? `${issueCount} 项需处理` : "已应用"}</Badge> : <Badge tone="neutral">等待材料</Badge>}</div></header>
       <div className={styles.entrances}>
         <section className={styles.dropzone} onClick={() => uploadRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}>
           <span className={styles.eyebrow}>入口 A · 临时投入</span><strong>拖入文件、文件夹或 ZIP</strong><p>助教 Excel、STEP 文本、学生 PDF；ZIP 内支持这些文件类型。</p><Button variant="secondary" disabled={busy || !workspace.context.sessionCode}>选择材料</Button>
