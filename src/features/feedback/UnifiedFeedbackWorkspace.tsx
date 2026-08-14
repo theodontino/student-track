@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import packageMetadata from "../../../package.json";
 import { Badge, Button, PageHeader, SegmentedControl, StatusBanner, Textarea } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
 import {
@@ -81,6 +82,7 @@ interface GroupFlowEntry {
   runStatus?: string;
   issueCount?: number;
   studentIds?: string[];
+  classConfirmed?: boolean;
 }
 
 interface GroupFlowState {
@@ -212,6 +214,8 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   const [stage, setStage] = useState<UnifiedStage>(initialStage);
   const [run, setRun] = useState<FeedbackIntakeRunView | null>(null);
   const [decisions, setDecisions] = useState<FeedbackIntakeDecision[]>([]);
+  const [factsConfirmed, setFactsConfirmed] = useState(false);
+  const [classConfirmed, setClassConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -273,6 +277,11 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   }, [contextSessionCode, currentGroupEntry, groupFlow, groupMode, persistGroupFlow, selectedStudentIds]);
 
   useEffect(() => {
+    setFactsConfirmed(false);
+    setClassConfirmed(currentGroupEntry?.classConfirmed === true);
+  }, [contextSessionCode, currentGroupEntry?.classConfirmed]);
+
+  useEffect(() => {
     if (initialStage === "studio" && workspace.activeStep !== "export") {
       setWorkspaceActiveStep("export");
     }
@@ -299,17 +308,21 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     const result = await requestJson<{ run: FeedbackIntakeRunView }>(`/api/feedback/intake/runs/${encodeURIComponent(id)}`);
     setRun(result.run);
     setDecisions(runDecisions(result.run));
+    setFactsConfirmed(result.run.status === "applied");
     return result.run;
   }
 
   const adoptRun = useCallback((nextRun: FeedbackIntakeRunView) => {
     setRun(nextRun);
     setDecisions(runDecisions(nextRun));
+    setFactsConfirmed(nextRun.status === "applied");
+    setClassConfirmed(false);
     if (groupFlow?.entries.some((entry) => entry.sessionCode === nextRun.sessionCode)) {
       persistGroupFlow({
         ...groupFlow,
         entries: groupFlow.entries.map((entry) => entry.sessionCode === nextRun.sessionCode ? {
           ...entry,
+          classConfirmed: nextRun.status === "applied" ? entry.classConfirmed : false,
           runId: nextRun.id,
           runStatus: nextRun.status,
           issueCount: nextRun.issues.length,
@@ -430,10 +443,18 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
 
   useEffect(() => {
     const stored = groupMode ? currentGroupEntry?.studentIds : undefined;
-    if (selectionSessionRef.current === contextSessionCode && !stored) return;
+    // The context loads asynchronously. Do not mark the session as initialized
+    // while the candidate list is still empty, otherwise the later response
+    // leaves the confirmation button disabled with zero selected students.
+    if (!contextSessionCode || !workspace.contextStudents.length) return;
+    // Initialize a session only once. An empty persisted group selection is
+    // treated as an uninitialized legacy value; a later deliberate “清空” is
+    // preserved because this guard prevents the effect from refilling it.
+    if (selectionSessionRef.current === contextSessionCode) return;
     selectionSessionRef.current = contextSessionCode;
     const recommended = workspace.contextStudents.filter((student) => (student.feedbackRecommendationReasons?.length ?? 0) > 0).map((student) => student.id);
-    setSelectedStudentIds(stored ?? recommended);
+    const fallback = recommended.length ? recommended : workspace.contextStudents.map((student) => student.id);
+    setSelectedStudentIds(stored?.length ? stored : fallback);
   }, [contextSessionCode, currentGroupEntry?.studentIds, groupMode, workspace.contextStudents]);
 
   function groupFlowWithCurrentSettings(flow: GroupFlowState): GroupFlowState {
@@ -468,7 +489,9 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         date: member.session.date,
         selected: true,
         ...(member.session.code === contextSessionCode ? {
-          studentIds: selectedStudentIds,
+          studentIds: selectedStudentIds.length
+            ? selectedStudentIds
+            : workspace.contextStudents.map((student) => student.id),
           ...(run ? { runId: run.id, runStatus: run.status, issueCount: run.issues.length } : {}),
         } : {}),
       }))
@@ -549,7 +572,8 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   async function createGroupBatch(flow: GroupFlowState, mode: "standard" | "fast") {
     const entries = flow.entries.filter((entry) => entry.selected);
     if (entries.length < 2) throw new Error("班级组批次至少需要两个已就绪班级");
-    if (entries.some((entry) => entry.runStatus !== "applied" || !entry.runId)) throw new Error("还有班级尚未完成事实确认");
+    if (entries.some((entry) => entry.runStatus !== "applied" || !entry.runId)) throw new Error("还有班级尚未完成文件确认");
+    if (entries.some((entry) => !entry.classConfirmed)) throw new Error("还有班级尚未确认班级与课次无误");
     if (entries.some((entry) => !(entry.studentIds?.length))) throw new Error("每个班至少选择一名反馈对象");
     const prefs = { closureType, moduleKeys, length, tone };
     const response = await requestJson<{ batch: FeedbackBatchView }>("/api/report/feedback-plan-batches", {
@@ -594,12 +618,11 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     window.location.assign(`${url.pathname}${url.search}${url.hash}`);
   }
 
-  async function completeCurrentGroupClass(mode: "standard" | "fast") {
-    if (!groupFlow || !currentGroupEntry) return;
-    setBusy(true); setError(""); setStatus("正在确认当前班事实…");
+  async function confirmCurrentFacts() {
+    setBusy(true); setError(""); setStatus("正在确认当前班文件并写入事实…");
     try {
       let currentRun = run;
-      if (!currentRun) {
+      if (!currentRun && contextSessionCode) {
         const scanned = await requestJson<ApiResult>("/api/feedback/intake/scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -607,7 +630,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         });
         currentRun = scanned.run;
       }
-      if (currentRun.status !== "applied") {
+      if (currentRun && currentRun.status !== "applied") {
         const confirmed = await requestJson<{ result: FeedbackIntakeRunView }>(`/api/feedback/intake/runs/${encodeURIComponent(currentRun.id)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -615,28 +638,69 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         });
         currentRun = confirmed.result;
       }
-      const updatedFlow: GroupFlowState = {
-        ...groupFlowWithCurrentSettings(groupFlow),
-        generationMode: mode,
-        entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode ? {
-          ...entry,
-          runId: currentRun.id,
-          runStatus: currentRun.status,
-          issueCount: currentRun.issues.length,
-          studentIds: selectedStudentIds,
-        } : entry),
-      };
-      persistGroupFlow(updatedFlow);
-      const next = updatedFlow.entries.find((entry) => entry.selected && entry.sessionCode !== contextSessionCode && entry.runStatus !== "applied");
-      if (next) {
-        setStatus(`${currentGroupEntry.className ?? currentGroupEntry.classCode}已确认，正在进入下一班。`);
-        openGroupEntry(next, "intake", updatedFlow);
-        return;
+      if (currentRun) {
+        setRun(currentRun);
+        setDecisions(runDecisions(currentRun));
+        setFactsConfirmed(currentRun.status === "applied");
+        const url = new URL(window.location.href);
+        url.searchParams.set("intakeRunId", currentRun.id);
+        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+        if (groupFlow && currentGroupEntry) {
+          persistGroupFlow({
+            ...groupFlowWithCurrentSettings(groupFlow),
+            entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode ? {
+              ...entry,
+              classConfirmed: false,
+              runId: currentRun!.id,
+              runStatus: currentRun!.status,
+              issueCount: currentRun!.issues.length,
+              studentIds: selectedStudentIds,
+            } : entry),
+          });
+        }
+      } else {
+        setFactsConfirmed(true);
       }
-      setStatus("所有入选班级事实已确认，正在原子创建反馈批次…");
-      await createGroupBatch(updatedFlow, mode);
+      setStatus("文件已确认。请核对当前班级、课次和材料对应无误后继续。");
     } catch (reason) {
       setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmClassAndContinue(mode: "standard" | "fast") {
+    if (!classConfirmed) {
+      setError("请先确认当前班级、课次和材料对应无误");
+      return;
+    }
+    if (groupMode && groupFlow && currentGroupEntry) {
+      setBusy(true); setError(""); setStatus("正在确认当前班级并整理班级组流程…");
+      try {
+        const updatedFlow: GroupFlowState = {
+          ...groupFlowWithCurrentSettings(groupFlow),
+          generationMode: mode,
+          entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode ? { ...entry, classConfirmed: true } : entry),
+        };
+        persistGroupFlow(updatedFlow);
+        const next = updatedFlow.entries.find((entry) => entry.selected && entry.sessionCode !== contextSessionCode && (!entry.runStatus || !entry.classConfirmed));
+        if (next) {
+          setStatus(`${currentGroupEntry.className ?? currentGroupEntry.classCode}已确认，正在进入下一班。`);
+          openGroupEntry(next, "intake", updatedFlow);
+          return;
+        }
+        setStatus("所有入选班级都已确认，正在原子创建反馈批次…");
+        await createGroupBatch(updatedFlow, mode);
+      } catch (reason) {
+        setError(errorMessage(reason));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    setBusy(true); setError(""); setStatus("班级已确认，正在创建 FeedbackPlan…");
+    try {
+      await createPlan(mode);
     } finally {
       setBusy(false);
     }
@@ -701,9 +765,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
 
   function startFromIntake(mode: "standard" | "fast") {
     setPendingMode(mode);
-    if (run?.issues.some(issueNeedsChoice)) updateStage("review");
-    else if (groupMode) void completeCurrentGroupClass(mode);
-    else void createPlan(mode);
+    updateStage("review");
   }
 
   function restartIntake() {
@@ -711,12 +773,14 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       persistGroupFlow({
         ...groupFlowWithCurrentSettings(groupFlow),
         entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode
-          ? { ...entry, runId: undefined, runStatus: undefined, issueCount: undefined }
+          ? { ...entry, classConfirmed: false, runId: undefined, runStatus: undefined, issueCount: undefined }
           : entry),
       });
     }
     setRun(null);
     setDecisions([]);
+    setFactsConfirmed(false);
+    setClassConfirmed(false);
     setError("");
     setStatus("已清空本轮材料；临时上传文件不会保存，请重新选择文件或文件夹。");
     const url = new URL(window.location.href);
@@ -734,7 +798,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   const recognizedCount = Number(summary.recognizedCount ?? run?.sourceManifest.filter((source) => source.kind !== "ignored").length ?? 0);
   const hasExistingFacts = workspace.contextStudents.some((student) => (student.feedbackRecommendationReasons?.length ?? 0) > 0) || materialMode !== "none";
   const hasUsableMaterial = recognizedCount > 0 || materialMode !== "none" || hasExistingFacts;
-  const canStart = Boolean(hasUsableMaterial && hasExistingFacts && llmReady && (!run || run.status !== "failed") && !busy && selectedStudentIds.length > 0);
+  const canStart = Boolean(hasUsableMaterial && hasExistingFacts && (!run || run.status !== "failed") && !busy && selectedStudentIds.length > 0);
 
   function renderRail() {
     const studioReady = Boolean(run?.planId || groupFlow?.batchId || batch);
@@ -759,7 +823,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         const active = member.session?.code === contextSessionCode;
         return <article key={member.classId} className={active ? styles.groupClassActive : ""}>
           <label><input type="checkbox" disabled={!entry} checked={entry?.selected === true} onChange={(event) => entry && toggleGroupEntry(entry.sessionCode, event.target.checked)} /><span><strong>{member.className ?? member.classCode}</strong><small>{member.session ? `${member.session.date} · ${member.session.code}` : "本讲尚未完成，已跳过"}</small></span></label>
-          {entry && <div><Badge tone={entry.runStatus === "applied" ? "success" : (entry.issueCount ?? 0) > 0 ? "warning" : entry.runId ? "info" : "neutral"}>{entry.runStatus === "applied" ? "事实已确认" : (entry.issueCount ?? 0) > 0 ? `${entry.issueCount} 项异常` : entry.runId ? "材料已读取" : "等待投料"}</Badge>{!active && entry.selected && <Button uiSize="sm" variant="ghost" onClick={() => openGroupEntry(entry)}>处理本班</Button>}</div>}
+          {entry && <div><Badge tone={entry.classConfirmed ? "success" : entry.runStatus === "applied" ? "info" : (entry.issueCount ?? 0) > 0 ? "warning" : entry.runId ? "info" : "neutral"}>{entry.classConfirmed ? "班级已确认" : entry.runStatus === "applied" ? "文件已确认" : (entry.issueCount ?? 0) > 0 ? `${entry.issueCount} 项异常` : entry.runId ? "材料已读取" : "等待投料"}</Badge>{!active && entry.selected && <Button uiSize="sm" variant="ghost" onClick={() => openGroupEntry(entry)}>{entry.runStatus === "applied" ? "核对班级" : "处理本班"}</Button>}</div>}
         </article>;
       })}</div>}
     </section>;
@@ -800,7 +864,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       </section>
       {!llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>尚未配置可用的 LLM API Key 与模型，创建计划后将无法生成正文。</span> <Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
       {hasRun && !hasUsableMaterial && <StatusBanner tone="warning">本轮只有未识别或已忽略的文件；如果当前课次也没有已确认课堂事实，请先补充材料。</StatusBanner>}
-      <footer className={styles.actions}><div><strong>{issueCount ? `有 ${issueCount} 项异常需要确认` : hasRun ? "材料已整理，等待事实确认" : hasExistingFacts ? "沿用当前课次已确认事实" : "先选择课次和材料"}</strong><span>确认前不写入课堂事实；确认后进入同一个 FeedbackPlan。</span></div><div><Button variant="secondary" onClick={() => startFromIntake("fast")} disabled={!canStart}>{busy ? "处理中…" : "快速生成草稿"}</Button><Button onClick={() => startFromIntake("standard")} disabled={!canStart}>{busy ? "处理中…" : issueCount ? "检查并开始标准反馈" : "开始标准反馈"}</Button></div></footer>
+      <footer className={styles.actions}><div><strong>{issueCount ? `有 ${issueCount} 项异常需要确认` : hasRun ? "材料已整理，等待事实确认" : hasExistingFacts ? "沿用当前课次已确认事实" : "先选择课次和材料"}</strong><span>下一步先确认文件和班级；确认后才会创建计划并开始生成。</span></div><div><Button variant="secondary" onClick={() => startFromIntake("fast")} disabled={!canStart}>{busy ? "处理中…" : "进入事实确认（快速）"}</Button><Button onClick={() => startFromIntake("standard")} disabled={!canStart}>{busy ? "处理中…" : "进入事实确认（标准）"}</Button></div></footer>
     </>;
   }
 
@@ -843,6 +907,8 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   }
 
   function renderReview() {
+    const missingStudents = selectedStudentIds.length === 0;
+    const factsReady = factsConfirmed || run?.status === "applied";
     return <div className={styles.reviewStage}>
       {renderGroupScope()}
       <div className={styles.summaryStrip}>
@@ -851,20 +917,30 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         <div><strong>{issueCount}</strong><span>需要教师判断</span></div>
         <div><strong>{unresolvedCount}</strong><span>尚未选择</span></div>
       </div>
-      <StatusBanner tone="warning">只处理下面的异常；无冲突材料已经整理，未选择前不会写入。</StatusBanner>
-      <div className={styles.issueList}>
-        {(run?.issues ?? []).filter(issueNeedsChoice).map((item) => {
-          const selected = decisionFor(item);
-          return <article key={item.id}>
-            <header><div><Badge tone={item.severity === "error" ? "danger" : "warning"}>{issueChoiceLabel(item)}</Badge><strong>{item.message}</strong></div><small>{item.sourceName ?? "本轮材料"}</small></header>
-            <div className={styles.choiceRow}>{renderIssueChoices(item, selected)}</div>
-          </article>;
-        })}
-      </div>
+      {!factsReady && <>
+        <StatusBanner tone="warning">只处理下面的异常；无冲突材料已经整理，未选择前不会写入。</StatusBanner>
+        {missingStudents && <StatusBanner tone="warning">还没有选择反馈对象。请返回“收集材料”至少选择一名学生；没有推荐理由时，系统会默认选中当前课次学生。</StatusBanner>}
+        <div className={styles.issueList}>
+          {(run?.issues ?? []).filter(issueNeedsChoice).map((item) => {
+            const selected = decisionFor(item);
+            return <article key={item.id}>
+              <header><div><Badge tone={item.severity === "error" ? "danger" : "warning"}>{issueChoiceLabel(item)}</Badge><strong>{item.message}</strong></div><small>{item.sourceName ?? "本轮材料"}</small></header>
+              <div className={styles.choiceRow}>{renderIssueChoices(item, selected)}</div>
+            </article>;
+          })}
+        </div>
+      </>}
+      {factsReady && <>
+        <StatusBanner tone="success">文件与课堂事实已确认并固定。本步骤不会自动替你确认班级归属。</StatusBanner>
+        <section className={styles.classConfirmation}>
+          <label><input type="checkbox" checked={classConfirmed} onChange={(event) => setClassConfirmed(event.target.checked)} /> <strong>我确认本轮材料对应当前班级与课次</strong></label>
+          <p>{workspace.context.className || "当前班级"} · {contextSessionCode} · 反馈对象 {selectedStudentIds.length} 人。确认后才会进入反馈生成或班级组下一班。</p>
+        </section>
+      </>}
       <details className={styles.allFacts}><summary>查看全部已整理事实（{String(summary.appliedStudentCount ?? 0)} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p><div className={styles.factSources}>{Array.isArray(summary.sourceFacts) ? (summary.sourceFacts as Array<Record<string, unknown>>).map((fact, index) => <article key={`${String(fact.kind)}-${index}`}><strong>{fact.kind === "assistant_roster" ? "助教表" : fact.kind === "step_classroom" ? "STEP 课堂事实" : "PDF 证据"}</strong><span>{Array.isArray(fact.sourceNames) ? fact.sourceNames.join("、") : "本轮材料"}</span><small>{Array.isArray(fact.students) ? `${fact.students.length} 名学生` : Array.isArray(fact.assessmentEvidence) ? `${fact.assessmentEvidence.length} 份报告` : "已解析"}</small></article>) : <span>暂无可写入事实</span>}</div></details>
       <footer className={styles.actions}>
-        <div><strong>确认后固定本次事实快照</strong><span>{unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : "已完成所有必要选择"}</span></div>
-        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button variant="ghost" onClick={restartIntake} disabled={busy}>清空本轮并重新选择材料</Button><Button onClick={() => groupMode ? void completeCurrentGroupClass(pendingMode) : void createPlan(pendingMode)} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length || !llmReady}>{busy ? "确认中…" : groupMode ? "确认本班并继续班级组" : `确认事实并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button></div>
+        <div><strong>{factsReady ? "班级归属确认" : "文件与事实确认"}</strong><span>{factsReady ? (classConfirmed ? "已确认当前班级与课次，可以继续" : "请勾选确认当前班级与课次") : unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : missingStudents ? "请先选择至少一名反馈对象" : `已完成必要选择 · 已选 ${selectedStudentIds.length} 名学生`}</span></div>
+        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button variant="ghost" onClick={restartIntake} disabled={busy}>清空本轮并重新选择材料</Button>{!factsReady ? <Button onClick={() => void confirmCurrentFacts()} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length}>{busy ? "确认中…" : "确认文件并写入事实"}</Button> : <Button onClick={() => void confirmClassAndContinue(pendingMode)} disabled={busy || !classConfirmed || !selectedStudentIds.length || !llmReady}>{busy ? "处理中…" : groupMode ? "确认班级无误并继续班级组" : `确认班级无误并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button>}</div>
       </footer>
     </div>;
   }
@@ -888,7 +964,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   }
 
   return <main className={styles.page}>
-    <PageHeader title="课后任务" description="一次投入材料，统一确认事实，再进入可完整微操的反馈计划。" actions={<div className={styles.headerActions}><Badge tone="info">1.2.1</Badge><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">高级工作台</Link></div>} />
+    <PageHeader title="课后任务" description="一次投入材料，统一确认事实，再进入可完整微操的反馈计划。" actions={<div className={styles.headerActions}><Badge tone="info">{packageMetadata.version}</Badge><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">高级工作台</Link></div>} />
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {status && <StatusBanner tone="success">{status}</StatusBanner>}
     <FeedbackContextSection workspace={workspace} />

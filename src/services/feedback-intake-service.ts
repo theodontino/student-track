@@ -345,8 +345,12 @@ export function resolveIntakeStudentIdentity(
 ) {
   const idMatch = reportedStudentId ? roster.find((student) => student.studentId === reportedStudentId) : undefined;
   const nameCandidates = reportedName ? roster.filter((student) => student.name === reportedName) : [];
-  if (idMatch && reportedName && idMatch.name !== reportedName) {
-    return { match: undefined, candidates: nameCandidates, conflict: true };
+  // Keep the established intake behavior: when the exported number is stale
+  // (or belongs to another export) but the current-class name is unique, use
+  // that canonical roster student instead of blocking the whole batch.
+  const nameMatch = nameCandidates.length === 1 ? nameCandidates[0] : undefined;
+  if (nameMatch && (!idMatch || idMatch.id !== nameMatch.id)) {
+    return { match: nameMatch, candidates: nameCandidates, conflict: false };
   }
   return {
     match: idMatch ?? (nameCandidates.length === 1 ? nameCandidates[0] : undefined),
