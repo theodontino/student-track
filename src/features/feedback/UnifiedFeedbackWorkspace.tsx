@@ -796,6 +796,16 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   const hasRun = Boolean(run && run.sourceManifest.length > 0);
   const summary = run?.appliedSummary ?? {};
   const recognizedCount = Number(summary.recognizedCount ?? run?.sourceManifest.filter((source) => source.kind !== "ignored").length ?? 0);
+  const parsedStudentCount = (() => {
+    const students = (summary.parsedResult as { students?: unknown[] } | undefined)?.students;
+    return Array.isArray(students) ? students.length : Number(summary.appliedStudentCount ?? 0);
+  })();
+  const parsedAssessmentCount = (() => {
+    const evidence = summary.assessmentEvidence;
+    return evidence && typeof evidence === "object" && !Array.isArray(evidence)
+      ? Object.keys(evidence as Record<string, unknown>).length
+      : Number(summary.assessmentStudentCount ?? 0);
+  })();
   const hasExistingFacts = workspace.contextStudents.some((student) => (student.feedbackRecommendationReasons?.length ?? 0) > 0) || materialMode !== "none";
   const hasUsableMaterial = recognizedCount > 0 || materialMode !== "none" || hasExistingFacts;
   const canStart = Boolean(hasUsableMaterial && hasExistingFacts && (!run || run.status !== "failed") && !busy && selectedStudentIds.length > 0);
@@ -823,7 +833,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         const active = member.session?.code === contextSessionCode;
         return <article key={member.classId} className={active ? styles.groupClassActive : ""}>
           <label><input type="checkbox" disabled={!entry} checked={entry?.selected === true} onChange={(event) => entry && toggleGroupEntry(entry.sessionCode, event.target.checked)} /><span><strong>{member.className ?? member.classCode}</strong><small>{member.session ? `${member.session.date} · ${member.session.code}` : "本讲尚未完成，已跳过"}</small></span></label>
-          {entry && <div><Badge tone={entry.classConfirmed ? "success" : entry.runStatus === "applied" ? "info" : (entry.issueCount ?? 0) > 0 ? "warning" : entry.runId ? "info" : "neutral"}>{entry.classConfirmed ? "班级已确认" : entry.runStatus === "applied" ? "文件已确认" : (entry.issueCount ?? 0) > 0 ? `${entry.issueCount} 项异常` : entry.runId ? "材料已读取" : "等待投料"}</Badge>{!active && entry.selected && <Button uiSize="sm" variant="ghost" onClick={() => openGroupEntry(entry)}>{entry.runStatus === "applied" ? "核对班级" : "处理本班"}</Button>}</div>}
+          {entry && <div><Badge tone={entry.classConfirmed ? "success" : entry.runStatus === "applied" ? "info" : (entry.issueCount ?? 0) > 0 ? "warning" : entry.runId ? "info" : "neutral"}>{entry.classConfirmed ? "班级已确认" : entry.runStatus === "applied" ? "文件已确认" : (entry.issueCount ?? 0) > 0 ? `${entry.issueCount} 项异常` : entry.runId ? "材料已读取" : "等待投料"}</Badge>{!active && entry.selected && <Button uiSize="sm" variant="ghost" onClick={() => openGroupEntry(entry, entry.runId ? "review" : "intake")}>{entry.runStatus === "applied" ? "核对班级" : "处理本班"}</Button>}</div>}
         </article>;
       })}</div>}
     </section>;
@@ -842,7 +852,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         </section>
       </div>
       <div className={styles.folderRow}><Button variant="ghost" uiSize="sm" onClick={() => folderRef.current?.click()} disabled={busy || !workspace.context.sessionCode}>选择整个报告文件夹</Button><span>适合一次导入一批学生 PDF；会递归读取子目录，但不会持续监听。</span><input ref={folderRef} hidden type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} accept=".pdf" onChange={(event) => { void uploadFiles(Array.from(event.target.files ?? []).map((file) => ({ file, displayName: file.webkitRelativePath || file.name }))); event.currentTarget.value = ""; }} /></div>
-      {hasRun && run && <section className={styles.runSummary}><div><strong>本轮材料</strong><span>{run.sourceManifest.length} 个来源 · {String(summary.appliedStudentCount ?? 0)} 名学生事实已整理</span></div><div className={styles.fileList}>{run.sourceManifest.map((file, index) => <span key={`${String(file.name)}:${String(file.sourceHash ?? index)}`}><Badge tone={file.kind === "ignored" ? "neutral" : file.kind === "assessment_pdf" ? "info" : "success"}>{file.kind === "ignored" ? "忽略" : file.kind === "assessment_pdf" ? "PDF" : file.kind === "step_classroom" ? "STEP" : "助教表"}</Badge>{String(file.name)}</span>)}</div></section>}
+      {hasRun && run && <section className={styles.runSummary}><div><strong>本轮材料</strong><span>{run.sourceManifest.length} 个来源 · {parsedStudentCount} 名学生事实已整理</span></div><div className={styles.fileList}>{run.sourceManifest.map((file, index) => <span key={`${String(file.name)}:${String(file.sourceHash ?? index)}`}><Badge tone={file.kind === "ignored" ? "neutral" : file.kind === "assessment_pdf" ? "info" : "success"}>{file.kind === "ignored" ? "忽略" : file.kind === "assessment_pdf" ? "PDF" : file.kind === "step_classroom" ? "STEP" : "助教表"}</Badge>{String(file.name)}</span>)}</div></section>}
       <section className={styles.candidates}><header><div><strong>本次反馈对象</strong><span>先明确入选学生，创建计划时不再静默猜测。</span></div><div><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds(workspace.contextStudents.map((student) => student.id))}>全选</Button><Button uiSize="sm" variant="ghost" onClick={() => setSelectedStudentIds([])}>清空</Button></div></header><div className={styles.candidateGrid}>{workspace.contextStudents.length ? workspace.contextStudents.map((student) => <label key={student.id} className={selectedStudentIds.includes(student.id) ? styles.candidateSelected : ""}><input type="checkbox" checked={selectedStudentIds.includes(student.id)} onChange={(event) => setSelectedStudentIds((ids) => event.target.checked ? [...new Set([...ids, student.id])] : ids.filter((id) => id !== student.id))} /><span><strong>{student.name}</strong><small>{student.feedbackRecommendationReasons?.length ? student.feedbackRecommendationReasons.join("、") : "有课堂记录，可手动加入"}</small></span></label>) : <span>正在读取当前课次学生…</span>}</div></section>
       <section className={styles.strategy}>
         <div className={styles.strategyHeading}><div><strong>课程公共材料</strong><span>只作为课程背景；确认后复制进本次 FeedbackPlan 快照，不会成为学生证据。</span></div><Badge tone={materialMode === "none" ? "neutral" : "success"}>{materialMode === "none" ? "本次不使用" : "已选择"}</Badge></div>
@@ -912,8 +922,8 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     return <div className={styles.reviewStage}>
       {renderGroupScope()}
       <div className={styles.summaryStrip}>
-        <div><strong>{String(summary.appliedStudentCount ?? 0)}</strong><span>已整理学生</span></div>
-        <div><strong>{String(summary.assessmentStudentCount ?? 0)}</strong><span>PDF 证据</span></div>
+        <div><strong>{parsedStudentCount}</strong><span>已整理学生</span></div>
+        <div><strong>{parsedAssessmentCount}</strong><span>PDF 证据</span></div>
         <div><strong>{issueCount}</strong><span>需要教师判断</span></div>
         <div><strong>{unresolvedCount}</strong><span>尚未选择</span></div>
       </div>
@@ -937,7 +947,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
           <p>{workspace.context.className || "当前班级"} · {contextSessionCode} · 反馈对象 {selectedStudentIds.length} 人。确认后才会进入反馈生成或班级组下一班。</p>
         </section>
       </>}
-      <details className={styles.allFacts}><summary>查看全部已整理事实（{String(summary.appliedStudentCount ?? 0)} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p><div className={styles.factSources}>{Array.isArray(summary.sourceFacts) ? (summary.sourceFacts as Array<Record<string, unknown>>).map((fact, index) => <article key={`${String(fact.kind)}-${index}`}><strong>{fact.kind === "assistant_roster" ? "助教表" : fact.kind === "step_classroom" ? "STEP 课堂事实" : "PDF 证据"}</strong><span>{Array.isArray(fact.sourceNames) ? fact.sourceNames.join("、") : "本轮材料"}</span><small>{Array.isArray(fact.students) ? `${fact.students.length} 名学生` : Array.isArray(fact.assessmentEvidence) ? `${fact.assessmentEvidence.length} 份报告` : "已解析"}</small></article>) : <span>暂无可写入事实</span>}</div></details>
+      <details className={styles.allFacts}><summary>查看全部已整理事实（{parsedStudentCount} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p><div className={styles.factSources}>{Array.isArray(summary.sourceFacts) ? (summary.sourceFacts as Array<Record<string, unknown>>).map((fact, index) => { const students = (fact.parsedResult as { students?: unknown[] } | undefined)?.students; const evidence = fact.assessmentEvidence; const count = Array.isArray(students) ? `${students.length} 名学生` : evidence && typeof evidence === "object" && !Array.isArray(evidence) ? `${Object.keys(evidence as Record<string, unknown>).length} 份报告` : "已解析"; return <article key={`${String(fact.kind)}-${index}`}><strong>{fact.kind === "assistant_roster" ? "助教表" : fact.kind === "step_classroom" ? "STEP 课堂事实" : "PDF 证据"}</strong><span>{Array.isArray(fact.sourceNames) ? fact.sourceNames.join("、") : "本轮材料"}</span><small>{count}</small></article>; }) : <span>暂无可写入事实</span>}</div></details>
       <footer className={styles.actions}>
         <div><strong>{factsReady ? "班级归属确认" : "文件与事实确认"}</strong><span>{factsReady ? (classConfirmed ? "已确认当前班级与课次，可以继续" : "请勾选确认当前班级与课次") : unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : missingStudents ? "请先选择至少一名反馈对象" : `已完成必要选择 · 已选 ${selectedStudentIds.length} 名学生`}</span></div>
         <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button variant="ghost" onClick={restartIntake} disabled={busy}>清空本轮并重新选择材料</Button>{!factsReady ? <Button onClick={() => void confirmCurrentFacts()} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length}>{busy ? "确认中…" : "确认文件并写入事实"}</Button> : <Button onClick={() => void confirmClassAndContinue(pendingMode)} disabled={busy || !classConfirmed || !selectedStudentIds.length || !llmReady}>{busy ? "处理中…" : groupMode ? "确认班级无误并继续班级组" : `确认班级无误并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button>}</div>

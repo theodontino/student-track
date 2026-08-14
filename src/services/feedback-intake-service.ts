@@ -816,13 +816,19 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
   const generatedUnresolved = merged.issues.filter((item) => !resolvedIssueIds.has(item.id));
   if (generatedUnresolved.length) throw new Error(`材料合并后仍有 ${generatedUnresolved.length} 项冲突未处理，请返回事实确认`);
   const effectiveSnapshot = { ...snapshot, parsedResult: merged.parsedResult, assessmentEvidence: merged.assessmentEvidence, decisions: allDecisions };
+  const appliedSummary = {
+    ...effectiveSnapshot,
+    appliedStudentCount: effectiveSnapshot.parsedResult?.students?.length ?? 0,
+    assessmentStudentCount: Object.keys(effectiveSnapshot.assessmentEvidence ?? {}).length,
+    applied: true,
+  };
   if (!effectiveSnapshot.parsedResult?.students?.length) {
     const updated = await tx.feedbackIntakeRun.update({
       where: { id },
       data: {
         status: "applied",
         issues: "[]",
-        appliedSummary: JSON.stringify({ ...effectiveSnapshot, applied: true }),
+        appliedSummary: JSON.stringify(appliedSummary),
       },
     });
     return view(updated);
@@ -855,7 +861,7 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
     data: {
       status: "applied",
       issues: "[]",
-      appliedSummary: JSON.stringify({ ...effectiveSnapshot, applied: true }),
+      appliedSummary: JSON.stringify(appliedSummary),
     },
   });
   return view(updated);
