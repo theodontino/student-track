@@ -679,13 +679,26 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     }
   }
 
-  async function confirmClassAndContinue(mode: "standard" | "fast") {
+  function confirmCurrentClassScope() {
+    if (groupMode && groupFlow && currentGroupEntry) {
+      const updatedFlow: GroupFlowState = {
+        ...groupFlowWithCurrentSettings(groupFlow),
+        entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode ? { ...entry, classConfirmed: true } : entry),
+      };
+      persistGroupFlow(updatedFlow);
+    }
+    setClassConfirmed(true);
+    setError("");
+    setStatus("本班材料、班级与课次已确认。请单独选择下一步。");
+  }
+
+  async function continueAfterClassConfirmation(mode: "standard" | "fast") {
     if (!classConfirmed) {
-      setError("请先确认当前班级、课次和材料对应无误");
+      setError("请先确认本班材料、班级与课次");
       return;
     }
     if (groupMode && groupFlow && currentGroupEntry) {
-      setBusy(true); setError(""); setStatus("正在确认当前班级并整理班级组流程…");
+      setBusy(true); setError("");
       try {
         const updatedFlow: GroupFlowState = {
           ...groupFlowWithCurrentSettings(groupFlow),
@@ -693,13 +706,13 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
           entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode ? { ...entry, classConfirmed: true } : entry),
         };
         persistGroupFlow(updatedFlow);
-        const next = updatedFlow.entries.find((entry) => entry.selected && entry.sessionCode !== contextSessionCode && (!entry.runStatus || !entry.classConfirmed));
+        const next = updatedFlow.entries.find((entry) => entry.selected && entry.sessionCode !== contextSessionCode && !entry.classConfirmed);
         if (next) {
-          setStatus(`${currentGroupEntry.className ?? currentGroupEntry.classCode}已确认，正在进入下一班。`);
+          setStatus(`正在进入 ${next.className ?? next.classCode}，继续确认下一班。`);
           openGroupEntry(next, next.runId ? "review" : "intake", updatedFlow);
           return;
         }
-        setStatus("所有入选班级都已确认，正在原子创建反馈批次…");
+        setStatus("所有入选班级均已确认，正在创建班级组计划并开始生成…");
         await createGroupBatch(updatedFlow, mode);
       } catch (reason) {
         setError(errorMessage(reason));
@@ -708,7 +721,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       }
       return;
     }
-    setBusy(true); setError(""); setStatus("班级已确认，正在创建 FeedbackPlan…");
+    setBusy(true); setError(""); setStatus("正在创建 FeedbackPlan 并开始生成…");
     try {
       await createPlan(mode);
     } finally {
@@ -929,6 +942,10 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   function renderReview() {
     const missingStudents = selectedStudentIds.length === 0;
     const factsReady = factsConfirmed || run?.status === "applied";
+    const nextGroupEntry = groupMode ? selectedGroupEntries.find((entry) => entry.sessionCode !== contextSessionCode && !entry.classConfirmed) : undefined;
+    const continueLabel = groupMode
+      ? nextGroupEntry ? `进入下一班：${nextGroupEntry.className ?? nextGroupEntry.classCode}` : "创建班级组计划并开始生成"
+      : `进入计划并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`;
     return <div className={styles.reviewStage}>
       {renderGroupScope()}
       <div className={styles.summaryStrip}>
@@ -953,14 +970,14 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       {factsReady && <>
         <StatusBanner tone="success">文件与课堂事实已确认并固定。本步骤不会自动替你确认班级归属。</StatusBanner>
         <section className={styles.classConfirmation}>
-          <label><input type="checkbox" checked={classConfirmed} onChange={(event) => setClassConfirmed(event.target.checked)} /> <strong>我确认本轮材料对应当前班级与课次</strong></label>
-          <p>{workspace.context.className || "当前班级"} · {contextSessionCode} · 反馈对象 {selectedStudentIds.length} 人。确认后才会进入反馈生成或班级组下一班。</p>
+          <strong>{classConfirmed ? "本班材料与归属已确认" : "确认本班材料与归属"}</strong>
+          <p>{workspace.context.className || "当前班级"} · {contextSessionCode} · 反馈对象 {selectedStudentIds.length} 人。确认动作只保存当前班状态，不会自动跳转或开始生成。</p>
         </section>
       </>}
       <details className={styles.allFacts}><summary>查看全部已整理事实（{parsedStudentCount} 名学生）</summary><p>来源事实只会在确认后进入当前课次；模型候选、坐标和未确认备注不会自动写入。</p><div className={styles.factSources}>{Array.isArray(summary.sourceFacts) ? (summary.sourceFacts as Array<Record<string, unknown>>).map((fact, index) => { const students = (fact.parsedResult as { students?: unknown[] } | undefined)?.students; const evidence = fact.assessmentEvidence; const count = Array.isArray(students) ? `${students.length} 名学生` : evidence && typeof evidence === "object" && !Array.isArray(evidence) ? `${Object.keys(evidence as Record<string, unknown>).length} 份报告` : "已解析"; return <article key={`${String(fact.kind)}-${index}`}><strong>{fact.kind === "assistant_roster" ? "助教表" : fact.kind === "step_classroom" ? "STEP 课堂事实" : "PDF 证据"}</strong><span>{Array.isArray(fact.sourceNames) ? fact.sourceNames.join("、") : "本轮材料"}</span><small>{count}</small></article>; }) : <span>暂无可写入事实</span>}</div></details>
       <footer className={styles.actions}>
-        <div><strong>{factsReady ? "班级归属确认" : "文件与事实确认"}</strong><span>{factsReady ? (classConfirmed ? "已确认当前班级与课次，可以继续" : "请勾选确认当前班级与课次") : unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : missingStudents ? "请先选择至少一名反馈对象" : `已完成必要选择 · 已选 ${selectedStudentIds.length} 名学生`}</span></div>
-        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button variant="ghost" onClick={restartIntake} disabled={busy}>清空本轮并重新选择材料</Button>{!factsReady ? <Button onClick={() => void confirmCurrentFacts()} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length}>{busy ? "确认中…" : "确认文件并写入事实"}</Button> : <Button onClick={() => void confirmClassAndContinue(pendingMode)} disabled={busy || !classConfirmed || !selectedStudentIds.length || !llmReady}>{busy ? "处理中…" : groupMode ? "确认班级无误并继续班级组" : `确认班级无误并开始${pendingMode === "fast" ? "快速" : "标准"}反馈`}</Button>}</div>
+        <div><strong>{factsReady ? "材料确认与计划推进" : "文件与事实确认"}</strong><span>{factsReady ? (classConfirmed ? "材料已经确认；现在可以独立进入下一班或创建计划" : "先确认本班材料，不会立即进入计划") : unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : missingStudents ? "请先选择至少一名反馈对象" : `已完成必要选择 · 已选 ${selectedStudentIds.length} 名学生`}</span></div>
+        <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button variant="ghost" onClick={restartIntake} disabled={busy}>清空本轮并重新选择材料</Button>{!factsReady ? <Button onClick={() => void confirmCurrentFacts()} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length}>{busy ? "确认中…" : "确认文件并写入事实"}</Button> : <><Button variant="secondary" onClick={confirmCurrentClassScope} disabled={busy || classConfirmed || !selectedStudentIds.length}>{classConfirmed ? "本班材料已确认" : "确认本班材料与归属"}</Button><Button onClick={() => void continueAfterClassConfirmation(pendingMode)} disabled={busy || !classConfirmed || !selectedStudentIds.length || !llmReady}>{busy ? "处理中…" : continueLabel}</Button></>}</div>
       </footer>
     </div>;
   }
