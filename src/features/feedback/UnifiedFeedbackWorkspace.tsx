@@ -582,7 +582,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   async function createGroupBatch(flow: GroupFlowState, mode: "standard" | "fast") {
     const entries = flow.entries.filter((entry) => entry.selected);
     if (entries.length < 2) throw new Error("班级组批次至少需要两个已就绪班级");
-    if (entries.some((entry) => entry.runStatus !== "applied" || !entry.runId)) throw new Error("还有班级尚未完成文件确认");
+    if (entries.some((entry) => !entry.runId)) throw new Error("还有班级尚未选择或确认材料");
     if (entries.some((entry) => !entry.classConfirmed)) throw new Error("还有班级尚未确认班级与课次无误");
     if (entries.some((entry) => !(entry.studentIds?.length))) throw new Error("每个班至少选择一名反馈对象");
     const prefs = { closureType, moduleKeys, length, tone };
@@ -681,9 +681,12 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
 
   function confirmCurrentClassScope() {
     if (groupMode && groupFlow && currentGroupEntry) {
+      const storedFlow = readGroupFlow();
+      const sourceFlow = storedFlow?.groupLessonId === groupFlow.groupLessonId ? storedFlow : groupFlow;
+      const flowWithSettings = groupFlowWithCurrentSettings(sourceFlow);
       const updatedFlow: GroupFlowState = {
-        ...groupFlowWithCurrentSettings(groupFlow),
-        entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode ? { ...entry, classConfirmed: true } : entry),
+        ...flowWithSettings,
+        entries: flowWithSettings.entries.map((entry) => entry.sessionCode === contextSessionCode ? { ...entry, classConfirmed: true } : entry),
       };
       persistGroupFlow(updatedFlow);
     }
@@ -700,10 +703,13 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     if (groupMode && groupFlow && currentGroupEntry) {
       setBusy(true); setError("");
       try {
+        const storedFlow = readGroupFlow();
+        const sourceFlow = storedFlow?.groupLessonId === groupFlow.groupLessonId ? storedFlow : groupFlow;
+        const flowWithSettings = groupFlowWithCurrentSettings(sourceFlow);
         const updatedFlow: GroupFlowState = {
-          ...groupFlowWithCurrentSettings(groupFlow),
+          ...flowWithSettings,
           generationMode: mode,
-          entries: groupFlow.entries.map((entry) => entry.sessionCode === contextSessionCode ? { ...entry, classConfirmed: true } : entry),
+          entries: flowWithSettings.entries.map((entry) => entry.sessionCode === contextSessionCode ? { ...entry, classConfirmed: true } : entry),
         };
         persistGroupFlow(updatedFlow);
         const next = updatedFlow.entries.find((entry) => entry.selected && entry.sessionCode !== contextSessionCode && !entry.classConfirmed);
@@ -979,6 +985,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         <div><strong>{factsReady ? "材料确认与计划推进" : "文件与事实确认"}</strong><span>{factsReady ? (classConfirmed ? "材料已经确认；现在可以独立进入下一班或创建计划" : "先确认本班材料，不会立即进入计划") : unresolvedCount ? `还有 ${unresolvedCount} 项必须选择` : missingStudents ? "请先选择至少一名反馈对象" : `已完成必要选择 · 已选 ${selectedStudentIds.length} 名学生`}</span></div>
         <div><Button variant="ghost" onClick={() => updateStage("intake")} disabled={busy}>返回材料</Button><Button variant="ghost" onClick={restartIntake} disabled={busy}>清空本轮并重新选择材料</Button>{!factsReady ? <Button onClick={() => void confirmCurrentFacts()} disabled={busy || unresolvedCount > 0 || !selectedStudentIds.length}>{busy ? "确认中…" : "确认文件并写入事实"}</Button> : <><Button variant="secondary" onClick={confirmCurrentClassScope} disabled={busy || classConfirmed || !selectedStudentIds.length}>{classConfirmed ? "本班材料已确认" : "确认本班材料与归属"}</Button><Button onClick={() => void continueAfterClassConfirmation(pendingMode)} disabled={busy || !classConfirmed || !selectedStudentIds.length || !llmReady}>{busy ? "处理中…" : continueLabel}</Button></>}</div>
       </footer>
+      {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     </div>;
   }
 
