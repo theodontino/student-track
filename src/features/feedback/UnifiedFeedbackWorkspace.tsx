@@ -106,6 +106,7 @@ interface GroupFlowState {
 
 interface FeedbackBatchView {
   id: string;
+  requestKey?: string;
   status: string;
   currentPlanId: string | null;
   plans: Array<{
@@ -630,7 +631,12 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     const firstPlan = response.batch.plans[0];
     if (!firstPlan) throw new Error("班级组批次创建后没有子计划");
     const firstEntry = entries.find((entry) => entry.classId === firstPlan.class.id) ?? entries[0];
-    const finishedFlow = { ...flow, generationMode: mode, batchId: response.batch.id };
+    const finishedFlow = {
+      ...flow,
+      requestKey: response.batch.requestKey ?? flow.requestKey,
+      generationMode: mode,
+      batchId: response.batch.id,
+    };
     persistGroupFlow(finishedFlow);
     const url = new URL(window.location.href);
     url.searchParams.set("groupMode", "1");

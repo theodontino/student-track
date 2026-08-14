@@ -177,6 +177,56 @@ describe("feedback plan batch service", () => {
     expect((await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: existingPlan.id } })).batchId).toBe(batch.id);
   });
 
+  it("replaces a stale archived plan linked from an intake run", async () => {
+    const outputRequirement = "班级组替换已归档计划";
+    const archivedPlan = await createFeedbackPlan({
+      semesterId,
+      classId: classIds[0]!,
+      sessionId: sessionIds[0]!,
+      type: "event_micro",
+      outputRequirement,
+      studentIds: [studentIds[0]!],
+    });
+    await prisma.feedbackPlan.update({
+      where: { id: archivedPlan.id },
+      data: { archivedAt: new Date(), status: "archived" },
+    });
+    const run = await prisma.feedbackIntakeRun.create({
+      data: {
+        sessionCode: "2098010101",
+        sourceFingerprint: `${marker}-ARCHIVED-PLAN-RUN`,
+        sourceManifest: "[]",
+        status: "applied",
+        appliedSummary: JSON.stringify({ applied: true, assessmentEvidence: {} }),
+        planId: archivedPlan.id,
+      },
+    });
+
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-ARCHIVED-PLAN-BATCH`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement,
+      groupLessonId: lessonId,
+      sharedLessonRevisionId: revisionId,
+      sharedMaterialConfirmed: true,
+      plans: [{
+        classId: classIds[0]!,
+        sessionId: sessionIds[0]!,
+        intakeRunId: run.id,
+        studentIds: [studentIds[0]!],
+      }, {
+        classId: classIds[1]!,
+        sessionId: sessionIds[1]!,
+        studentIds: [studentIds[1]!],
+      }],
+    });
+
+    expect(batch.plans[0]?.id).not.toBe(archivedPlan.id);
+    expect((await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } })).planId).toBe(batch.plans[0]?.id);
+    expect((await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: archivedPlan.id } })).archivedAt).not.toBeNull();
+  });
+
   it("stops after a failed class and resumes serially from that class", async () => {
     const batch = await createFeedbackPlanBatch({
       requestKey: `${marker}-SCHEDULE`,

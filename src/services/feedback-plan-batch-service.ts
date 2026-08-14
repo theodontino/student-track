@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
@@ -89,7 +90,11 @@ export async function listFeedbackPlanBatches(input: { semesterId?: string; arch
 export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput, db: PrismaClient = prisma) {
   const input = FeedbackPlanBatchCreateSchema.parse(raw);
   const existing = await db.feedbackPlanBatch.findUnique({ where: { requestKey: input.requestKey }, include: batchInclude });
-  if (existing) return toFeedbackPlanBatchView(existing);
+  if (existing && !existing.archivedAt) return toFeedbackPlanBatchView(existing);
+
+  // An archived batch is historical data, not an idempotency hit for a new run.
+  // The request key is unique, so use a fresh key while preserving the old batch.
+  const batchRequestKey = existing?.archivedAt ? randomUUID() : input.requestKey;
 
   return db.$transaction(async (tx) => {
     const semester = await tx.semester.findUnique({ where: { id: input.semesterId }, select: { id: true } });
@@ -151,7 +156,13 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
           items: { select: { studentId: true } },
         },
       });
-      if (!existingPlan || existingPlan.batchId || existingPlan.archivedAt
+      // Intake runs can outlive a plan: cleanup archives or removes the old
+      // plan, while the run remains the durable source ledger. In either case
+      // create a fresh plan and relink the run below. Only a live plan can
+      // block batch adoption.
+      if (!existingPlan) return { run, existingPlanId: null };
+      if (existingPlan.archivedAt) return { run, existingPlanId: null };
+      if (existingPlan.batchId
         || existingPlan.semesterId !== input.semesterId
         || existingPlan.classId !== child.classId
         || existingPlan.sessionId !== childSessions[index]?.id
@@ -187,7 +198,7 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
 
     const batch = await tx.feedbackPlanBatch.create({
       data: {
-        requestKey: input.requestKey,
+        requestKey: batchRequestKey,
         semesterId: input.semesterId,
         type: input.type,
         outputRequirement: input.outputRequirement,
