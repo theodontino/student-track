@@ -135,8 +135,39 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
       if (!run) throw new ApiError("有班级的材料运行不存在", 404, "not_found", false);
       if (run.status !== "applied") throw new ApiError("有班级尚未确认课堂事实", 409, "conflict", false);
       if (run.sessionCode !== childSessions[index]?.code) throw new ApiError("材料运行与目标课次不一致", 409, "conflict", false);
-      if (run.planId) throw new ApiError("有班级的材料运行已经创建过反馈计划", 409, "conflict", false);
-      return run;
+      if (!run.planId) return { run, existingPlanId: null };
+      const existingPlan = await tx.feedbackPlan.findUnique({
+        where: { id: run.planId },
+        select: {
+          id: true,
+          semesterId: true,
+          classId: true,
+          sessionId: true,
+          type: true,
+          outputRequirement: true,
+          generationMode: true,
+          batchId: true,
+          archivedAt: true,
+          items: { select: { studentId: true } },
+        },
+      });
+      if (!existingPlan || existingPlan.batchId || existingPlan.archivedAt
+        || existingPlan.semesterId !== input.semesterId
+        || existingPlan.classId !== child.classId
+        || existingPlan.sessionId !== childSessions[index]?.id
+        || existingPlan.type !== input.type
+        || existingPlan.outputRequirement !== input.outputRequirement
+        || existingPlan.generationMode !== input.generationMode) {
+        throw new ApiError("已有反馈计划不能并入当前班级组批次", 409, "conflict", false);
+      }
+      if (child.studentIds?.length) {
+        const requested = [...new Set(child.studentIds)].sort();
+        const existing = existingPlan.items.flatMap((item) => item.studentId ? [item.studentId] : []).sort();
+        if (requested.length !== existing.length || requested.some((studentId, itemIndex) => studentId !== existing[itemIndex])) {
+          throw new ApiError("已有反馈计划的学生范围与当前班级组选择不一致", 409, "conflict", false);
+        }
+      }
+      return { run, existingPlanId: existingPlan.id };
     }));
 
     const revision = input.sharedLessonRevisionId
@@ -166,7 +197,8 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
     });
     for (const [index, child] of input.plans.entries()) {
       const session = childSessions[index];
-      const intakeRun = intakeRuns[index];
+      const intake = intakeRuns[index];
+      const intakeRun = intake?.run ?? null;
       let intakeAssessmentEvidence: FeedbackPlanCreateInput["assessmentEvidence"];
       if (intakeRun) {
         try {
@@ -186,9 +218,13 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
         lessonMaterial,
         assessmentEvidence: intakeAssessmentEvidence ?? child.assessmentEvidence,
       };
-      const plan = await createFeedbackPlan(planInput, tx);
-      await tx.feedbackPlan.update({ where: { id: plan.id }, data: { batchId: batch.id, batchOrder: index + 1, generationMode: input.generationMode } });
-      if (intakeRun) await tx.feedbackIntakeRun.update({ where: { id: intakeRun.id }, data: { planId: plan.id } });
+      const planId = intake?.existingPlanId
+        ? (await tx.feedbackPlan.update({ where: { id: intake.existingPlanId }, data: { batchId: batch.id, batchOrder: index + 1 } })).id
+        : (await createFeedbackPlan(planInput, tx)).id;
+      if (!intake?.existingPlanId) {
+        await tx.feedbackPlan.update({ where: { id: planId }, data: { batchId: batch.id, batchOrder: index + 1, generationMode: input.generationMode } });
+      }
+      if (intakeRun) await tx.feedbackIntakeRun.update({ where: { id: intakeRun.id }, data: { planId } });
     }
     const created = await tx.feedbackPlanBatch.findUnique({ where: { id: batch.id }, include: batchInclude });
     if (!created) throw new Error("反馈批次创建后无法读取");

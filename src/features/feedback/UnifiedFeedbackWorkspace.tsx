@@ -304,6 +304,12 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     if (next === "studio") setWorkspaceActiveStep("export");
   }, [setWorkspaceActiveStep]);
 
+  useEffect(() => {
+    if (stage !== "studio" || !groupMode || groupFlow?.batchId || batch) return;
+    updateStage("review");
+    setStatus("班级组批次尚未创建，请先逐班确认班级与课次。");
+  }, [batch, groupFlow?.batchId, groupMode, stage, updateStage]);
+
   async function refreshRun(id: string) {
     const result = await requestJson<{ run: FeedbackIntakeRunView }>(`/api/feedback/intake/runs/${encodeURIComponent(id)}`);
     setRun(result.run);
@@ -333,7 +339,9 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     url.searchParams.set("intakeRunId", nextRun.id);
     if (nextRun.planId) url.searchParams.set("planId", nextRun.planId);
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-    if (nextRun.planId) updateStage("studio");
+    const requestedGroupMode = new URL(window.location.href).searchParams.get("groupMode") === "1";
+    if (nextRun.planId && !requestedGroupMode) updateStage("studio");
+    else if (requestedGroupMode && nextRun.status === "applied") updateStage("review");
     else if (nextRun.issues.some(issueNeedsChoice)) updateStage("review");
     else updateStage("intake");
   }, [groupFlow, persistGroupFlow, updateStage]);
@@ -360,7 +368,9 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     if (requestedRunId && workspace.contextHydrated && !runRestoreRef.current) {
       runRestoreRef.current = true;
       void refreshRun(requestedRunId).then((restored) => {
-        if (restored.planId) updateStage("studio");
+        const requestedGroupMode = new URL(window.location.href).searchParams.get("groupMode") === "1";
+        if (restored.planId && !requestedGroupMode) updateStage("studio");
+        else if (requestedGroupMode) updateStage("review");
         else if (restored.issues.some(issueNeedsChoice)) updateStage("review");
       }).catch((reason) => setError(errorMessage(reason)));
       return;
@@ -686,7 +696,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         const next = updatedFlow.entries.find((entry) => entry.selected && entry.sessionCode !== contextSessionCode && (!entry.runStatus || !entry.classConfirmed));
         if (next) {
           setStatus(`${currentGroupEntry.className ?? currentGroupEntry.classCode}已确认，正在进入下一班。`);
-          openGroupEntry(next, "intake", updatedFlow);
+          openGroupEntry(next, next.runId ? "review" : "intake", updatedFlow);
           return;
         }
         setStatus("所有入选班级都已确认，正在原子创建反馈批次…");
@@ -811,7 +821,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   const canStart = Boolean(hasUsableMaterial && hasExistingFacts && (!run || run.status !== "failed") && !busy && selectedStudentIds.length > 0);
 
   function renderRail() {
-    const studioReady = Boolean(run?.planId || groupFlow?.batchId || batch);
+    const studioReady = groupMode ? Boolean(groupFlow?.batchId || batch) : Boolean(run?.planId);
     return <nav className={styles.taskRail} aria-label="课后任务阶段">
       {(["intake", "review", "studio"] as UnifiedStage[]).map((item, index) => <button type="button" key={item} className={stage === item ? styles.activeRail : ""} onClick={() => (item === "studio" && !studioReady ? undefined : updateStage(item))} disabled={item === "studio" && !studioReady}><span>{index + 1}</span><strong>{stageLabels[item]}</strong><small>{item === "intake" ? "统一投料" : item === "review" ? "只处理异常" : groupMode ? "按班复核" : "逐学生复核"}</small></button>)}
     </nav>;
@@ -978,6 +988,6 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {status && <StatusBanner tone="success">{status}</StatusBanner>}
     <FeedbackContextSection workspace={workspace} />
-    <section className={styles.taskCard}><header className={styles.taskHeader}><div><span className={styles.eyebrow}>当前课后任务</span><h2>{workspace.context.className || "选择班级"} · {workspace.context.sessionCode || "选择课次"}</h2><p>{groupMode ? `正在处理“${groupFlow?.groupName}”班级组；当前为本班材料与学生事实。` : "所有材料、课堂事实、共同课快照和反馈计划都围绕当前课次。"}</p></div><div className={styles.headerStatus}>{run?.planId || batch ? <Badge tone="success">已进入计划工作室</Badge> : groupMode ? <Badge tone="info">班级组 {selectedGroupEntries.filter((entry) => entry.runStatus === "applied").length}/{selectedGroupEntries.length} 班已确认</Badge> : issueCount ? <Badge tone="warning">{issueCount} 项需处理</Badge> : hasRun ? <Badge tone="info">等待事实确认</Badge> : <Badge tone="neutral">等待材料</Badge>}</div></header>{renderRail()}<div className={styles.stageContent}>{stage === "intake" && renderIntake()}{stage === "review" && renderReview()}{stage === "studio" && renderStudio()}</div></section>
+    <section className={styles.taskCard}><header className={styles.taskHeader}><div><span className={styles.eyebrow}>当前课后任务</span><h2>{workspace.context.className || "选择班级"} · {workspace.context.sessionCode || "选择课次"}</h2><p>{groupMode ? `正在处理“${groupFlow?.groupName}”班级组；当前为本班材料与学生事实。` : "所有材料、课堂事实、共同课快照和反馈计划都围绕当前课次。"}</p></div><div className={styles.headerStatus}>{groupMode ? groupFlow?.batchId || batch ? <Badge tone="success">已进入班级组计划工作室</Badge> : <Badge tone="info">班级组 {selectedGroupEntries.filter((entry) => entry.classConfirmed).length}/{selectedGroupEntries.length} 班已确认</Badge> : run?.planId ? <Badge tone="success">已进入计划工作室</Badge> : issueCount ? <Badge tone="warning">{issueCount} 项需处理</Badge> : hasRun ? <Badge tone="info">等待事实确认</Badge> : <Badge tone="neutral">等待材料</Badge>}</div></header>{renderRail()}<div className={styles.stageContent}>{stage === "intake" && renderIntake()}{stage === "review" && renderReview()}{stage === "studio" && renderStudio()}</div></section>
   </main>;
 }

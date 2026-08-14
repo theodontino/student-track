@@ -10,6 +10,7 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
 }));
 import { buildFeedbackPlanBatchExportWorkbook } from "@/services/feedback-export-service";
 import { continueFeedbackPlanBatch, createFeedbackPlanBatch, getFeedbackPlanBatch, pauseFeedbackPlanBatch, retryFeedbackPlanBatch, startFeedbackPlanBatch } from "@/services/feedback-plan-batch-service";
+import { createFeedbackPlan } from "@/services/feedback-plan-service";
 import { confirmGroupLesson, createClassGroup, createGroupLesson, setSessionGroupProgress } from "@/services/group-lesson-service";
 
 const marker = "VITEST-FEEDBACK-BATCH";
@@ -131,6 +132,49 @@ describe("feedback plan batch service", () => {
     const linkedRuns = await prisma.feedbackIntakeRun.findMany({ where: { id: { in: runs.map((run) => run.id) } }, orderBy: { sourceFingerprint: "asc" } });
     expect(linkedRuns.every((run) => Boolean(run.planId))).toBe(true);
     expect(new Set(linkedRuns.map((run) => run.planId)).size).toBe(2);
+  });
+
+  it("adopts an unbatched plan already created from the same intake run", async () => {
+    const outputRequirement = "班级组接管已有计划";
+    const existingPlan = await createFeedbackPlan({
+      semesterId,
+      classId: classIds[0]!,
+      sessionId: sessionIds[0]!,
+      type: "event_micro",
+      outputRequirement,
+      studentIds: [studentIds[0]!],
+    });
+    const runs = await Promise.all(sessionIds.map((sessionId, index) => prisma.feedbackIntakeRun.create({
+      data: {
+        sessionCode: `2098010${index + 1}01`,
+        sourceFingerprint: `${marker}-ADOPT-RUN-${index}`,
+        sourceManifest: "[]",
+        status: "applied",
+        appliedSummary: JSON.stringify({ applied: true, assessmentEvidence: {} }),
+        ...(index === 0 ? { planId: existingPlan.id } : {}),
+      },
+    })));
+
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-ADOPT-BATCH`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement,
+      generationMode: "standard",
+      groupLessonId: lessonId,
+      sharedLessonRevisionId: revisionId,
+      sharedMaterialConfirmed: true,
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        intakeRunId: runs[index]!.id,
+        studentIds: [studentIds[index]!],
+      })),
+    });
+
+    expect(batch.plans).toHaveLength(2);
+    expect(batch.plans[0]?.id).toBe(existingPlan.id);
+    expect((await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: existingPlan.id } })).batchId).toBe(batch.id);
   });
 
   it("stops after a failed class and resumes serially from that class", async () => {
