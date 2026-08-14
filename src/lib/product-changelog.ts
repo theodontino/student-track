@@ -6,6 +6,14 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.2",
+    title: "修复 PDF 学生匹配回归",
+    changes: [
+      "PDF 学号不属于当前班、但姓名能唯一匹配当前班学生时，恢复按姓名自动降级，不再逐人阻断。",
+      "学号和姓名确实指向当前班两名不同学生时仍保留教师确认。",
+    ],
+  },
+  {
     version: "1.2.1",
     title: "班级组一站式反馈",
     changes: [

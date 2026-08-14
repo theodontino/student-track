@@ -4,7 +4,7 @@
 
 | 组件 | 版本 | 与另一端的关系 |
 |---|---:|---|
-| Student Track | 1.2.1 | 三段式课后任务可沿同一共同课一次处理班级组内所有已就绪班级；各班材料运行、证据、计划、批准和独立导出保持隔离，按 Zhuiver 归为 PATCH。 |
+| Student Track | 1.2.2 | 修复 PDF 外部学号无法命中当前班时未按唯一姓名降级的回归；班级组一站式反馈及各班隔离边界不变，按 Zhuiver 归为 PATCH。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 原生 SwiftUI 正式版；发布 `wcc.student-track-file.v1`，只读 receipt v1，并保持不发送边界。 |
 
 两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
@@ -13,7 +13,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.2.1 | 班级组一站式反馈复用既有 FeedbackPlanBatch；旧五步工作台、FeedbackPlan 历史、handoff v1 和 no-send 边界保持兼容。 |
+| Student Track | 1.2.2 | 班级组一站式反馈复用既有 FeedbackPlanBatch；PDF 学生匹配恢复既定降级规则，旧五步工作台、FeedbackPlan 历史、handoff v1 和 no-send 边界保持兼容。 |
 | WCG | 0.6.0 | handoff 谱系、已批准反馈草稿不发送填入、逐条实时会话定位、前 50→前 150 降级和输入框安全复核；原生 SwiftUI 正式版。 |
 
 ## 1.2 Beta 发布历史

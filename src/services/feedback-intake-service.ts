@@ -344,13 +344,14 @@ export function resolveIntakeStudentIdentity(
 ) {
   const idMatch = reportedStudentId ? roster.find((student) => student.studentId === reportedStudentId) : undefined;
   const nameCandidates = reportedName ? roster.filter((student) => student.name === reportedName) : [];
-  if (reportedStudentId) {
-    if (!idMatch || !reportedName || idMatch.name !== reportedName) {
-      return { match: undefined, candidates: nameCandidates, conflict: true };
-    }
-    return { match: idMatch, candidates: nameCandidates, conflict: false };
+  if (idMatch && reportedName && idMatch.name !== reportedName) {
+    return { match: undefined, candidates: nameCandidates, conflict: true };
   }
-  return { match: nameCandidates.length === 1 ? nameCandidates[0] : undefined, candidates: nameCandidates, conflict: false };
+  return {
+    match: idMatch ?? (nameCandidates.length === 1 ? nameCandidates[0] : undefined),
+    candidates: nameCandidates,
+    conflict: false,
+  };
 }
 
 function mergeParsedResults(
