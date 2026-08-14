@@ -73,12 +73,18 @@ describe("feedback script library service", () => {
     const saved = await saveFeedbackScriptLibrary(prisma, semester.id, exampleWorkbook(), sessionCode);
     expect(saved.recommendedLessonNumber).toBe(2);
     expect(saved.library?.entries).toHaveLength(3);
+    expect(saved.library?.version).toBe(2);
+    expect(saved.library?.entries[0]?.material).toMatchObject({
+      scriptLessonNumber: 1,
+      semesterScriptSource: { lessonNumber: 1 },
+    });
 
     const restored = await getFeedbackScriptLibrary(prisma, semester.id, sessionCode);
     expect(restored).toMatchObject({
       recommendedLessonNumber: 2,
       library: { name: "测试学期群反馈与私反馈" },
     });
+    expect(restored.library?.version).toBe(2);
     const stored = await prisma.semester.findUniqueOrThrow({ where: { id: semester.id } });
     expect(stored.feedbackScriptLibraryJson).toContain("第一课群反馈");
     expect(stored.feedbackScriptLibraryJson).not.toContain(".xlsx");
@@ -90,5 +96,21 @@ describe("feedback script library service", () => {
       [1, "A", "B", "C"],
       ["第1课", "D", "E", "F"],
     ]))).toThrow("第 1 课重复");
+  });
+
+  it("normalizes a stored v1 library into v2 material entries", async () => {
+    const semester = await prisma.semester.create({
+      data: {
+        name: `${semesterName}-V1`,
+        startDate: "2099-01-01",
+        endDate: "2099-12-31",
+        feedbackScriptLibraryName: "旧话术库",
+        feedbackScriptLibraryJson: JSON.stringify({ version: 1, name: "旧话术库", warnings: [], entries: [{ lessonNumber: 4, topic: "旧课", groupFeedback: "旧群反馈", perfectPrivateFeedback: "全对", errorPrivateFeedback: "有误", note: "" }] }),
+        feedbackScriptLibraryUpdatedAt: new Date("2099-01-04T00:00:00.000Z"),
+      },
+    });
+    const restored = await getFeedbackScriptLibrary(prisma, semester.id);
+    expect(restored.library).toMatchObject({ version: 2, entries: [{ lessonNumber: 4, material: { semesterScriptSource: { lessonNumber: 4, libraryUpdatedAt: "2099-01-04T00:00:00.000Z" } } }] });
+    await prisma.semester.delete({ where: { id: semester.id } });
   });
 });

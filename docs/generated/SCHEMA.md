@@ -40,6 +40,8 @@ erDiagram
     INTEGER semesterNumber
     TEXT date
     TEXT classId FK
+    TEXT commonMaterialSnapshot
+    DATETIME commonMaterialConfirmedAt
     DATETIME createdAt
   }
   Communication {
@@ -662,6 +664,8 @@ erDiagram
 | `semesterNumber` | `INTEGER` | 是 |  |
 | `date` | `TEXT` | 是 |  |
 | `classId` | `TEXT` | 否 | FK |
+| `commonMaterialSnapshot` | `TEXT` | 否 |  |
+| `commonMaterialConfirmedAt` | `DATETIME` | 否 |  |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 

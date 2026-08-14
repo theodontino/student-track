@@ -246,7 +246,8 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
     sequence: rawLesson.sequence,
     revision: rawLesson.revision,
     confirmedAt: rawLesson.confirmedAt,
-    revisions: rawLesson.revisions.map(({ materialSnapshot: _material, ...item }) => item),
+    revisions: rawLesson.revisions.map((item) => ({ id: item.id, revision: item.revision, confirmedAt: item.confirmedAt })),
+    draftMaterial: parseMaterial(rawLesson.materialSnapshot),
     confirmedMaterial: confirmed ? parseMaterial(confirmed.materialSnapshot) : null,
     hasUnconfirmedChanges: !confirmed || confirmed.materialSnapshot !== rawLesson.materialSnapshot,
   } : null;

@@ -282,7 +282,7 @@ test("unified feedback keeps the approved three-stage strategy and focused stude
   await page.getByRole("button", { name: "展开全部计划设置" }).click();
   await expect(page.getByRole("checkbox", { name: /具体表现/ })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /教师判断/ })).toBeVisible();
-  await expect(page.getByText("当前课次未关联已确认的共同课材料", { exact: false })).toBeVisible();
+  await expect(page.getByText("当前独立课次 · 尚未确认公共材料", { exact: true })).toBeVisible();
 });
 
 test("unified studio can safely pause and continue an active generation queue", async ({ page }) => {
@@ -331,8 +331,12 @@ test("feedback context explains class group progress and confirmed sharing", asy
   let confirmed = false;
   await page.route("**/api/report/feedback-context**", async (route) => {
     const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({ response, json: {
+    const body = JSON.parse(await response.text()) as Record<string, unknown>;
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      contentType: "application/json",
+      json: {
       ...body,
       groupProgress: {
         group: { id: "e2e-group-1", name: "合成平行班组" },
@@ -341,7 +345,8 @@ test("feedback context explains class group progress and confirmed sharing", asy
         status: "linked",
         lesson: { id: "e2e-group-lesson-1", title: "氧化还原", sequence: 3, revision: 1, confirmedAt: "2026-08-14T00:00:00.000Z", revisions: [], confirmedMaterial: null, hasUnconfirmedChanges: true },
       },
-    } });
+      },
+    });
   });
   await page.route("**/api/group-lessons/e2e-group-lesson-1/confirm", async (route) => {
     confirmed = true;

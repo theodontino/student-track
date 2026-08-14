@@ -344,8 +344,13 @@ export function resolveIntakeStudentIdentity(
 ) {
   const idMatch = reportedStudentId ? roster.find((student) => student.studentId === reportedStudentId) : undefined;
   const nameCandidates = reportedName ? roster.filter((student) => student.name === reportedName) : [];
-  if (idMatch && reportedName && idMatch.name !== reportedName) return { match: undefined, candidates: nameCandidates, conflict: true };
-  return { match: idMatch ?? (nameCandidates.length === 1 ? nameCandidates[0] : undefined), candidates: nameCandidates, conflict: false };
+  if (reportedStudentId) {
+    if (!idMatch || !reportedName || idMatch.name !== reportedName) {
+      return { match: undefined, candidates: nameCandidates, conflict: true };
+    }
+    return { match: idMatch, candidates: nameCandidates, conflict: false };
+  }
+  return { match: nameCandidates.length === 1 ? nameCandidates[0] : undefined, candidates: nameCandidates, conflict: false };
 }
 
 function mergeParsedResults(
@@ -659,16 +664,35 @@ function isPrismaClientDb(db: FeedbackIntakeDb): db is PrismaClient {
   return "$connect" in db && "$disconnect" in db;
 }
 
-async function confirmedMaterialForSession(sessionId: string, db: FeedbackIntakeDb, revisionId?: string) {
+type CommonMaterialSelection =
+  | { mode: "linked_revision"; revisionId: string }
+  | { mode: "session_snapshot" }
+  | { mode: "none" };
+
+async function confirmedMaterialForSession(
+  sessionId: string,
+  db: FeedbackIntakeDb,
+  selection?: CommonMaterialSelection,
+  legacyRevisionId?: string,
+) {
   const link = await db.groupLessonSession.findUnique({
     where: { sessionId },
     include: { groupLesson: { include: { revisions: { orderBy: { revision: "desc" }, take: 1 } } } },
   });
+  const revisionId = selection?.mode === "linked_revision" ? selection.revisionId : legacyRevisionId;
   const selectedRevision = revisionId
     ? await db.groupLessonRevision.findUnique({ where: { id: revisionId }, select: { id: true, groupLessonId: true, materialSnapshot: true } })
     : null;
-  if (revisionId && (!selectedRevision || !link || selectedRevision.groupLessonId !== link.groupLessonId)) {
+  if (selection?.mode === "linked_revision" && (!selectedRevision || !link || selectedRevision.groupLessonId !== link.groupLessonId)) {
     throw new Error("共同课修订未确认或未关联当前课次");
+  }
+  if (selection?.mode === "none") return null;
+  if (selection?.mode === "session_snapshot") {
+    if (link) throw new Error("当前课次已关联共同课，请选择当前共同课修订或明确不使用");
+    const session = await db.classSession.findUnique({ where: { id: sessionId }, select: { commonMaterialSnapshot: true } });
+    const parsedSession = session?.commonMaterialSnapshot ? parseJson(session.commonMaterialSnapshot, null) : null;
+    const sessionMaterial = LessonFeedbackMaterialSchema.safeParse(parsedSession);
+    return sessionMaterial.success ? sessionMaterial.data : null;
   }
   const raw = selectedRevision?.materialSnapshot ?? link?.groupLesson.revisions[0]?.materialSnapshot;
   if (!raw) return null;
@@ -714,17 +738,27 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
       orderBy: { updatedAt: "desc" },
     });
     if (canonical) return { run: view(canonical), inspection, duplicate: true };
-    const updated = await db.feedbackIntakeRun.update({
-      where: { id: previousRun.id },
-      data: {
-        sourceFingerprint: inspection.sourceFingerprint,
-        sourceManifest: JSON.stringify(inspection.sourceManifest),
-        status: inspection.issues.length ? "needs_review" : "ready",
-        issues: JSON.stringify(inspection.issues),
-        appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
-      },
-    });
-    return { run: view(updated), inspection, duplicate: false };
+    try {
+      const updated = await db.feedbackIntakeRun.update({
+        where: { id: previousRun.id },
+        data: {
+          sourceFingerprint: inspection.sourceFingerprint,
+          sourceManifest: JSON.stringify(inspection.sourceManifest),
+          status: inspection.issues.length ? "needs_review" : "ready",
+          issues: JSON.stringify(inspection.issues),
+          appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
+        },
+      });
+      return { run: view(updated), inspection, duplicate: false };
+    } catch (error) {
+      const isFingerprintConflict = error instanceof Error
+        && error.message.includes("Unique constraint failed on the fields: (`sourceFingerprint`)");
+      if (isFingerprintConflict) {
+        const canonical = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
+        if (canonical) return { run: view(canonical), inspection, duplicate: true };
+      }
+      throw error;
+    }
   }
   const existing = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
   if (existing) return { run: view(existing), inspection, duplicate: true };
@@ -817,7 +851,7 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
   return isPrismaClientDb(db) ? db.$transaction((tx) => execute(tx)) : execute(db);
 }
 
-export async function resolveFeedbackIntakeRun(id: string, input: { action: "apply" | "confirm" | "resolve" | "create_plan"; decisions?: FeedbackIntakeDecision[]; plan?: Omit<FeedbackPlanCreateInput, "sessionId" | "semesterId" | "classId"> & { type?: FeedbackPlanCreateInput["type"]; commonLessonRevisionId?: string } }, db: FeedbackIntakeDb = prisma) {
+export async function resolveFeedbackIntakeRun(id: string, input: { action: "apply" | "confirm" | "resolve" | "create_plan"; decisions?: FeedbackIntakeDecision[]; plan?: Omit<FeedbackPlanCreateInput, "sessionId" | "semesterId" | "classId"> & { type?: FeedbackPlanCreateInput["type"]; commonLessonRevisionId?: string; commonMaterial?: CommonMaterialSelection } }, db: FeedbackIntakeDb = prisma) {
   const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
   if (!run) throw new Error("反馈材料运行不存在");
   if (input.action === "apply" || input.action === "confirm" || input.action === "resolve") return applyFeedbackIntakeRun(id, db, input.decisions ?? []);
@@ -829,7 +863,7 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
   const session = await db.classSession.findUnique({ where: { code: run.sessionCode }, select: { id: true, semesterId: true, classId: true } });
   if (!session?.classId) throw new Error("反馈材料目标课次不存在或未关联班级");
   const snapshot = parseJson<IntakeSnapshot>(run.appliedSummary, {});
-  const confirmedLessonMaterial = await confirmedMaterialForSession(session.id, db, input.plan?.commonLessonRevisionId);
+  const confirmedLessonMaterial = await confirmedMaterialForSession(session.id, db, input.plan?.commonMaterial, input.plan?.commonLessonRevisionId);
   const planInput = {
     type: input.plan?.type ?? "event_micro",
     outputRequirement: input.plan?.outputRequirement ?? "为每名入选学生生成一条可复核的家长反馈",

@@ -6,6 +6,7 @@ import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 import { assertClassInSemester } from "@/services/student-enrollment-service";
+import { resolveSemesterCommonMaterial } from "@/services/common-material-service";
 
 function localDate(date = new Date()) {
   const year = date.getFullYear();
@@ -39,6 +40,7 @@ export async function createClassSession(input: {
   classCode?: string;
   date?: string;
   groupProgressMode?: "auto" | "independent";
+  commonMaterialLessonNumber?: number | null;
 }) {
   const date = input.date ?? localDate();
   const result = await prisma.$transaction(async (tx) => {
@@ -143,6 +145,14 @@ export async function createClassSession(input: {
               select: { id: true, title: true, sequence: true },
             });
             created = true;
+            const suggestedLessonNumber = input.commonMaterialLessonNumber ?? sequence;
+            const suggestedMaterial = await resolveSemesterCommonMaterial(tx, input.semesterId, suggestedLessonNumber);
+            if (suggestedMaterial) {
+              await tx.groupLesson.update({
+                where: { id: lesson.id },
+                data: { materialSnapshot: JSON.stringify(suggestedMaterial) },
+              });
+            }
           }
           if (lesson) {
             await tx.groupLessonSession.create({ data: { groupLessonId: lesson.id, sessionId: session.id, syncStatus: "synced", comparable: true } });
@@ -150,6 +160,24 @@ export async function createClassSession(input: {
           }
         }
       }
+    }
+
+    // An explicitly independent session may still use one confirmed semester
+    // script, but saving that choice is never implicit for grouped sessions.
+    if (input.commonMaterialLessonNumber !== undefined && !groupProgress?.lesson) {
+      const material = input.commonMaterialLessonNumber === null
+        ? null
+        : await resolveSemesterCommonMaterial(tx, input.semesterId, input.commonMaterialLessonNumber, session.code);
+      if (input.commonMaterialLessonNumber !== null && !material) {
+        throw new ServiceError(`学期公共材料库没有第 ${input.commonMaterialLessonNumber} 课`, 404);
+      }
+      await tx.classSession.update({
+        where: { id: session.id },
+        data: {
+          commonMaterialSnapshot: material ? JSON.stringify(material) : null,
+          commonMaterialConfirmedAt: material ? new Date() : null,
+        },
+      });
     }
 
     const enrollments = classId

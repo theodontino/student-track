@@ -19,6 +19,14 @@ beforeAll(async () => {
   leadClassId = lead.id;
   followerClassId = follower.id;
   await createClassGroup(semesterId, { name: `${marker}-GROUP`, classIds: [leadClassId, followerClassId], leadClassId });
+  await prisma.semester.update({
+    where: { id: semesterId },
+    data: {
+      feedbackScriptLibraryName: `${marker}-LIBRARY`,
+      feedbackScriptLibraryJson: JSON.stringify({ version: 1, name: `${marker}-LIBRARY`, warnings: [], entries: [{ lessonNumber: 1, topic: "合成第一讲", groupFeedback: "第一讲公共材料", perfectPrivateFeedback: "全对模板", errorPrivateFeedback: "有误模板", note: "" }] }),
+      feedbackScriptLibraryUpdatedAt: new Date("2099-08-01T00:00:00.000Z"),
+    },
+  });
 });
 
 afterAll(async () => {
@@ -38,6 +46,11 @@ describe("class group shared progress", () => {
   it("lets the lead create a lesson and the follower catch up to it", async () => {
     const lead = await createClassSession({ semesterId, classId: leadClassId, date: "2099-08-02" });
     expect(lead.groupProgress).toMatchObject({ status: "created", lesson: { sequence: 1, title: "第 1 讲" } });
+    const lesson = await prisma.groupLesson.findUniqueOrThrow({ where: { id: lead.groupProgress!.lesson!.id } });
+    expect(JSON.parse(lesson.materialSnapshot)).toMatchObject({
+      groupFeedbackRaw: "第一讲公共材料",
+      semesterScriptSource: { lessonNumber: 1 },
+    });
     const follower = await createClassSession({ semesterId, classId: followerClassId, date: "2099-08-03" });
     expect(follower.groupProgress).toMatchObject({ status: "linked", lesson: { id: lead.groupProgress?.lesson?.id, sequence: 1 } });
   });
@@ -58,5 +71,12 @@ describe("class group shared progress", () => {
 
     const other = await createClassSession({ semesterId, classId: followerClassId, date: "2099-08-07", groupProgressMode: "independent" });
     await expect(setSessionGroupProgress({ sessionId: other.id, groupLessonId: lessonId! })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("stores an explicitly selected public material on an independent session", async () => {
+    const independent = await createClassSession({ semesterId, classId: followerClassId, date: "2099-08-08", groupProgressMode: "independent", commonMaterialLessonNumber: 1 });
+    expect(independent.groupProgress).toMatchObject({ status: "independent", lesson: null });
+    const stored = await prisma.classSession.findUniqueOrThrow({ where: { id: independent.id } });
+    expect(JSON.parse(stored.commonMaterialSnapshot ?? "{}" as string)).toMatchObject({ groupFeedbackRaw: "第一讲公共材料", sessionCode: independent.code });
   });
 });

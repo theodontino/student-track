@@ -360,6 +360,9 @@ model ClassSession {
   semesterNumber Int                       // 学期内序号（1,2,3...），增删后应用层重排
   date           String                    // YYYY-MM-DD，冗余，从 code 推导方便索引
   classId        String?                   // 班级 FK；null = 全校
+  // 独立课次明确确认的学期公共材料；关联共同课后仍以 GroupLessonRevision 为准。
+  commonMaterialSnapshot   String?
+  commonMaterialConfirmedAt DateTime?
   createdAt      DateTime @default(now())
 
   semester    Semester         @relation(fields: [semesterId], references: [id], onDelete: Cascade)

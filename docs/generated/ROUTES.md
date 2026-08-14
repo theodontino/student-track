@@ -20,6 +20,7 @@
 | `/api/feedback/intake/scan` | `POST` |
 | `/api/feedback/intake/upload` | `POST` |
 | `/api/feedback/script-library` | `GET`, `POST` |
+| `/api/group-lessons/[id]/common-material` | `PUT` |
 | `/api/group-lessons/[id]/confirm` | `POST` |
 | `/api/group-lessons/[id]` | `PUT` |
 | `/api/group-lessons/[id]/sessions` | `DELETE`, `POST` |
@@ -41,6 +42,7 @@
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/semesters/[id]/session` | `DELETE`, `POST` |
 | `/api/semesters` | `GET`, `POST` |
+| `/api/sessions/[id]/common-material` | `PUT` |
 | `/api/sessions/[id]/group-progress` | `GET`, `PUT` |
 | `/api/sessions` | `GET` |
 | `/api/settings/llm` | `DELETE`, `GET`, `PATCH`, `POST`, `PUT` |

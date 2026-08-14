@@ -14,6 +14,7 @@ import { safeFeedbackCommunicationTarget } from "@/lib/feedback-text-safety";
 import { CommunicationPreferenceSchema, type CommunicationPreference } from "@/lib/feedback-plan";
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
 import { getSessionGroupProgress } from "@/services/group-lesson-service";
+import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 
 const RECENT_SESSION_LIMIT = 5;
 const COMMUNICATION_PREVIEW_LIMIT = 3;
@@ -97,6 +98,10 @@ export interface FeedbackContextResult {
   };
   className: string;
   groupProgress: Awaited<ReturnType<typeof getSessionGroupProgress>>;
+  sessionCommonMaterial: {
+    material: import("@/lib/feedback-materials").LessonFeedbackMaterial;
+    confirmedAt: Date | null;
+  } | null;
   total: number;
   students: FeedbackContextStudent[];
 }
@@ -609,6 +614,15 @@ export async function buildFeedbackContext(
     },
     className,
     groupProgress: await getSessionGroupProgress(session.id, prisma),
+    sessionCommonMaterial: (() => {
+      if (!session.commonMaterialSnapshot) return null;
+      try {
+        const parsed = LessonFeedbackMaterialSchema.safeParse(JSON.parse(session.commonMaterialSnapshot));
+        return parsed.success ? { material: parsed.data, confirmedAt: session.commonMaterialConfirmedAt } : null;
+      } catch {
+        return null;
+      }
+    })(),
     total: contextStudents.length,
     students: contextStudents,
   };
