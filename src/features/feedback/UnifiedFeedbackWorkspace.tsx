@@ -151,6 +151,20 @@ const moduleDescriptions: Record<string, string> = {
   followup_observation: "写明后续继续关注什么",
 };
 
+function requiredModuleForClosure(closureType: FeedbackClosureType) {
+  if (closureType === "continued_observation") return "followup_observation";
+  if (closureType === "teacher_resolved") return "teacher_intervention";
+  if (closureType === "home_cooperation") return "parent_action";
+  return null;
+}
+
+function modulesForClosure(closureType: FeedbackClosureType, moduleKeys: string[]) {
+  const required = requiredModuleForClosure(closureType);
+  return moduleKeys.length > 0 && required && !moduleKeys.includes(required)
+    ? [...moduleKeys, required]
+    : moduleKeys;
+}
+
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "操作失败"; }
 
 function runDecisions(run: FeedbackIntakeRunView | null) {
@@ -263,7 +277,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       setLength(restored.preferences.length);
       setTone(restored.preferences.tone);
       setClosureType(restored.preferences.closureType);
-      setModuleKeys(restored.preferences.moduleKeys);
+      setModuleKeys(modulesForClosure(restored.preferences.closureType, restored.preferences.moduleKeys));
     }
   }, [workspace.contextHydrated, workspace.groupProgress]);
 
@@ -468,10 +482,11 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   }, [contextSessionCode, currentGroupEntry?.studentIds, groupMode, workspace.contextStudents]);
 
   function groupFlowWithCurrentSettings(flow: GroupFlowState): GroupFlowState {
+    const compatibleModuleKeys = modulesForClosure(closureType, moduleKeys);
     return {
       ...flow,
       generationMode,
-      preferences: { outputRequirement, length, tone, closureType, moduleKeys },
+      preferences: { outputRequirement, length, tone, closureType, moduleKeys: compatibleModuleKeys },
       entries: flow.entries.map((entry) => entry.sessionCode === contextSessionCode
         ? { ...entry, studentIds: selectedStudentIds, ...(run ? { runId: run.id, runStatus: run.status, issueCount: run.issues.length } : {}) }
         : entry),
@@ -517,7 +532,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
       groupLessonId: progress.lesson.id,
       requestKey: crypto.randomUUID(),
       generationMode,
-      preferences: { outputRequirement, length, tone, closureType, moduleKeys },
+      preferences: { outputRequirement, length, tone, closureType, moduleKeys: modulesForClosure(closureType, moduleKeys) },
       entries,
     };
     persistGroupFlow(next);
@@ -585,7 +600,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
     if (entries.some((entry) => !entry.runId)) throw new Error("还有班级尚未选择或确认材料");
     if (entries.some((entry) => !entry.classConfirmed)) throw new Error("还有班级尚未确认班级与课次无误");
     if (entries.some((entry) => !(entry.studentIds?.length))) throw new Error("每个班至少选择一名反馈对象");
-    const prefs = { closureType, moduleKeys, length, tone };
+    const prefs = { closureType, moduleKeys: modulesForClosure(closureType, moduleKeys), length, tone };
     const response = await requestJson<{ batch: FeedbackBatchView }>("/api/report/feedback-plan-batches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -756,7 +771,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         currentRun = confirmed.result;
         adoptRun(currentRun);
       }
-      const prefs = { closureType, moduleKeys, length, tone };
+      const prefs = { closureType, moduleKeys: modulesForClosure(closureType, moduleKeys), length, tone };
       const commonMaterial = materialMode === "linked_revision"
         ? { mode: "linked_revision", revisionId: selectedCommonLessonId }
         : materialMode === "session_snapshot"
@@ -795,6 +810,19 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   function startFromIntake(mode: "standard" | "fast") {
     setPendingMode(mode);
     updateStage("review");
+  }
+
+  function changeClosure(nextClosure: FeedbackClosureType) {
+    setClosureType(nextClosure);
+    setModuleKeys((current) => modulesForClosure(nextClosure, current));
+  }
+
+  function toggleModule(key: string, enabled: boolean) {
+    setModuleKeys((current) => {
+      if (enabled) return [...new Set([...current, key])];
+      if (key === requiredModuleForClosure(closureType) && current.length > 1) return current;
+      return current.filter((item) => item !== key);
+    });
   }
 
   function restartIntake() {
@@ -899,7 +927,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
         {materialMode !== "none" && <div className={styles.commonLessonPicker}><small>本次将使用当前课次实际关联的公共材料。若不需要，可选择“本次不使用”。</small><Button variant="ghost" uiSize="sm" onClick={() => { setMaterialMode("none"); setSelectedCommonLessonId(""); }}>本次不使用公共材料</Button></div>}
         <div className={styles.strategyHeading}><div><strong>本次反馈策略</strong><span>整批设置进入计划快照，逐学生覆盖仍在计划工作室保留。</span></div><Button variant="ghost" uiSize="sm" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "收起全部计划设置" : "展开全部计划设置"}</Button></div>
         <div className={styles.strategyRows}><label>详略<SegmentedControl label="反馈详略" value={length} onChange={(value) => setLength(value as Length)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "short", label: "简洁" }, { value: "standard", label: "标准" }, { value: "detailed", label: "详细" }]} /></label><label>语气<SegmentedControl label="反馈语气" value={tone} onChange={(value) => setTone(value as Tone)} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "gentle", label: "温和" }, { value: "professional", label: "专业" }]} /></label></div>
-        <div className={styles.strategyGrid}><label>生成方式<select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as "standard" | "fast")}><option value="standard">标准反馈（含审核）</option><option value="fast">快速草稿（跳过审核润色）</option></select></label><label>结尾<select value={closureType} onChange={(event) => setClosureType(event.target.value as FeedbackClosureType)}><option value="positive_recognition">具体认可</option><option value="teacher_resolved">课堂已处理</option><option value="home_cooperation">家庭配合</option><option value="continued_observation">后续观察</option></select></label><label className={styles.requirement}>总体要求<Textarea rows={2} value={outputRequirement} onChange={(event) => setOutputRequirement(event.target.value)} /></label></div>{showAdvanced && <div className={styles.moduleGrid}>{FEEDBACK_MODULES.event_micro.map((key) => <label key={key} className={moduleKeys.includes(key) ? styles.moduleSelected : ""}><input type="checkbox" checked={moduleKeys.includes(key)} onChange={(event) => setModuleKeys((current) => event.target.checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))} /><span><strong>{moduleLabels[key] ?? key}</strong><small>{moduleDescriptions[key] ?? "决定反馈关注内容"}</small></span></label>)}</div>}
+        <div className={styles.strategyGrid}><label>生成方式<select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as "standard" | "fast")}><option value="standard">标准反馈（含审核）</option><option value="fast">快速草稿（跳过审核润色）</option></select></label><label>结尾<select value={closureType} onChange={(event) => changeClosure(event.target.value as FeedbackClosureType)}><option value="positive_recognition">具体认可</option><option value="teacher_resolved">课堂已处理</option><option value="home_cooperation">家庭配合</option><option value="continued_observation">后续观察</option></select></label><label className={styles.requirement}>总体要求<Textarea rows={2} value={outputRequirement} onChange={(event) => setOutputRequirement(event.target.value)} /></label></div>{showAdvanced && <div className={styles.moduleGrid}>{FEEDBACK_MODULES.event_micro.map((key) => { const required = key === requiredModuleForClosure(closureType) && moduleKeys.length > 1; return <label key={key} className={moduleKeys.includes(key) ? styles.moduleSelected : ""}><input type="checkbox" checked={moduleKeys.includes(key)} disabled={required} onChange={(event) => toggleModule(key, event.target.checked)} /><span><strong>{moduleLabels[key] ?? key}</strong><small>{required ? "当前结尾需要此模块" : moduleDescriptions[key] ?? "决定反馈关注内容"}</small></span></label>; })}</div>}
       </section>
       {!llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>尚未配置可用的 LLM API Key 与模型，创建计划后将无法生成正文。</span> <Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
       {hasRun && !hasUsableMaterial && <StatusBanner tone="warning">本轮只有未识别或已忽略的文件；如果当前课次也没有已确认课堂事实，请先补充材料。</StatusBanner>}
