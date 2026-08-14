@@ -332,6 +332,185 @@ export async function buildFeedbackPlanExportWorkbook(
   return buffer;
 }
 
+/** Builds one workbook from approved student items across a persisted batch. */
+export async function buildFeedbackPlanBatchExportWorkbook(
+  prisma: PrismaClient,
+  batchId: string,
+  mode: "complete" | "approved_only" = "approved_only",
+  options: { allowRepeat?: boolean } = {},
+) {
+  const batch = await prisma.feedbackPlanBatch.findUnique({
+    where: { id: batchId },
+    include: {
+      plans: {
+        orderBy: { batchOrder: "asc" },
+        include: {
+          class: { select: { code: true, name: true } },
+          items: { include: { student: { select: { name: true, studentId: true } }, attachments: true } },
+          tasks: { include: { student: { select: { name: true } }, dueSession: { select: { code: true, date: true } } } },
+          attachments: true,
+        },
+      },
+      exportRuns: { orderBy: { createdAt: "desc" } },
+    },
+  });
+  if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+  if (batch.archivedAt) throw new ApiError("已归档反馈批次为只读", 409, "conflict", false);
+
+  const initiallyExported = new Set<string>();
+  for (const run of batch.exportRuns) {
+    try {
+      const entries = JSON.parse(run.itemManifest) as Array<{ itemId?: unknown }>;
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        if (typeof entry.itemId === "string") initiallyExported.add(entry.itemId);
+      }
+    } catch { /* malformed historical ledgers do not authorize skipping items */ }
+  }
+  const initialItems = batch.plans.flatMap((plan) => plan.items.map((item) => ({ plan, item })));
+  const initialPending = initialItems.filter(({ item }) => !["approved", "exported"].includes(item.status) || !item.finalText?.trim());
+  if (mode === "complete" && initialPending.length) throw new ApiError(`还有 ${initialPending.length} 条反馈未批准`, 409, "conflict", false);
+  const initiallySelected = initialItems.filter(({ item }) => (
+    ["approved", "exported"].includes(item.status)
+    && item.finalText?.trim()
+    && (mode === "complete" || !initiallyExported.has(item.id))
+  ));
+  if (!initiallySelected.length) throw new ApiError("没有新的已批准反馈可合并导出", 409, "conflict", false);
+  const relevantPlanIds = new Set(initiallySelected.map(({ plan }) => plan.id));
+  for (const planId of relevantPlanIds) await validateFeedbackPlanAttachments(planId, prisma);
+  const refreshed = await prisma.feedbackPlanBatch.findUnique({
+    where: { id: batchId },
+    include: {
+      plans: {
+        orderBy: { batchOrder: "asc" },
+        include: {
+          class: { select: { code: true, name: true } },
+          items: { include: { student: { select: { name: true, studentId: true } }, attachments: true } },
+          tasks: { include: { student: { select: { name: true } }, dueSession: { select: { code: true, date: true } } } },
+          attachments: true,
+        },
+      },
+      exportRuns: { orderBy: { createdAt: "desc" } },
+    },
+  });
+  if (!refreshed) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+
+  const previouslyBatchExported = new Set<string>();
+  for (const run of refreshed.exportRuns) {
+    try {
+      const manifest = JSON.parse(run.itemManifest) as Array<{ itemId?: unknown }>;
+      for (const entry of Array.isArray(manifest) ? manifest : []) {
+        if (typeof entry.itemId === "string") previouslyBatchExported.add(entry.itemId);
+      }
+    } catch { /* malformed historical ledgers do not authorize skipping items */ }
+  }
+  const allItems = refreshed.plans.flatMap((plan) => plan.items.map((item) => ({ plan, item })));
+  const notApproved = allItems.filter(({ item }) => !["approved", "exported"].includes(item.status) || !item.finalText?.trim());
+  if (mode === "complete" && notApproved.length) throw new ApiError(`还有 ${notApproved.length} 条反馈未批准`, 409, "conflict", false);
+  const approved = allItems.filter(({ item }) => ["approved", "exported"].includes(item.status) && item.finalText?.trim());
+  const selected = mode === "approved_only"
+    ? approved.filter(({ item }) => !previouslyBatchExported.has(item.id))
+    : approved;
+  if (!selected.length) throw new ApiError("没有新的已批准反馈可合并导出", 409, "conflict", false);
+
+  const selectedIds = new Set(selected.map(({ item }) => item.id));
+  for (const plan of refreshed.plans) {
+    const hasSelectedItem = plan.items.some((item) => selectedIds.has(item.id));
+    if (!hasSelectedItem) continue;
+    const missing = plan.attachments.filter((attachment) => attachment.status === "missing" && (!attachment.planItemId || selectedIds.has(attachment.planItemId)));
+    if (missing.length) throw new ApiError(`班级 ${plan.class.code} 有 ${missing.length} 个本次导出所需附件缺失`, 409, "conflict", false);
+  }
+
+  const manifest = selected.map(({ plan, item }) => ({
+    planId: plan.id,
+    itemId: item.id,
+    finalTextHash: item.finalTextHash ?? createHash("sha256").update(item.finalText ?? "").digest("hex"),
+  }));
+  const manifestHash = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+  if (refreshed.exportRuns.some((run) => run.manifestHash === manifestHash) && !options.allowRepeat) {
+    throw new ApiError("相同条目和文本已经合并导出；如需完整重导，请二次确认", 409, "repeat_export", false);
+  }
+
+  const feedbackRows = selected.map(({ plan, item }) => ({
+    班级编号: plan.class.code,
+    班级名称: plan.class.name,
+    类型: plan.type,
+    姓名: item.student?.name ?? "",
+    学号: item.student?.studentId ?? "",
+    反馈状态: item.status,
+    最终反馈: item.finalText ?? "",
+  }));
+  const teacherRows = selected.map(({ plan, item }) => {
+    const evidence = (() => { try { return JSON.parse(item.evidenceSnapshot) as { teachingEvidence?: Array<{ content: string }> }; } catch { return {}; } })();
+    const composition = (() => { try { return JSON.parse(item.compositionSnapshot) as { modules?: Array<{ key: string; status: string }> }; } catch { return {}; } })();
+    return {
+      班级编号: plan.class.code,
+      班级名称: plan.class.name,
+      姓名: item.student?.name ?? "",
+      证据: evidence.teachingEvidence?.map((entry) => entry.content).join("；") ?? "",
+      采用模块: composition.modules?.filter((module) => module.status === "included").map((module) => module.key).join("、") ?? "",
+      审核: item.auditSnapshot,
+      最终反馈: item.finalText ?? "",
+    };
+  });
+  const taskRows = refreshed.plans.flatMap((plan) => {
+    if (!plan.items.some((item) => selectedIds.has(item.id))) return [];
+    return plan.tasks.filter((task) => !task.planItemId || selectedIds.has(task.planItemId)).map((task) => ({
+      班级编号: plan.class.code,
+      班级名称: plan.class.name,
+      学生: task.student?.name ?? "班级",
+      任务: task.action,
+      截止: task.dueSession ? `${task.dueSession.date} ${task.dueSession.code}` : task.dueDate ?? "",
+      预计分钟: task.estimatedMinutes ?? "",
+      状态: task.status,
+    }));
+  });
+  const attachmentRows = refreshed.plans.flatMap((plan) => {
+    if (!plan.items.some((item) => selectedIds.has(item.id))) return [];
+    return plan.attachments.filter((attachment) => !attachment.planItemId || selectedIds.has(attachment.planItemId)).map((attachment) => ({
+      班级编号: plan.class.code,
+      班级名称: plan.class.name,
+      文件名: attachment.displayName,
+      类型: attachment.mimeType,
+      大小: attachment.sizeBytes,
+      SHA256: attachment.sha256,
+      定位符: attachment.relativeLocator,
+      状态: attachment.status,
+    }));
+  });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(feedbackRows), "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(teacherRows), "教师内部研判");
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(taskRows.length ? taskRows : [{ 班级编号: "", 班级名称: "", 学生: "", 任务: "", 截止: "", 预计分钟: "", 状态: "" }]), "教师待办");
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(attachmentRows.length ? attachmentRows : [{ 班级编号: "", 班级名称: "", 文件名: "", 类型: "", 大小: "", SHA256: "", 定位符: "", 状态: "" }]), "附件清单");
+  const buffer = new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
+  const workbookSha256 = createHash("sha256").update(buffer).digest("hex");
+
+  await prisma.$transaction(async (tx) => {
+    const batchRun = await tx.feedbackPlanBatchExportRun.create({
+      data: { batchId, mode, itemManifest: JSON.stringify(manifest), manifestHash, workbookSha256, isRepeat: options.allowRepeat === true },
+    });
+    for (const plan of refreshed.plans) {
+      const planItems = selected.filter((entry) => entry.plan.id === plan.id).map((entry) => entry.item);
+      if (!planItems.length) continue;
+      const childManifest = planItems.map((item) => ({ itemId: item.id, finalTextHash: item.finalTextHash ?? createHash("sha256").update(item.finalText ?? "").digest("hex") }));
+      await tx.feedbackExportRun.create({
+        data: {
+          planId: plan.id,
+          batchExportRunId: batchRun.id,
+          mode,
+          itemManifest: JSON.stringify(childManifest),
+          manifestHash: createHash("sha256").update(JSON.stringify(childManifest)).digest("hex"),
+          isRepeat: options.allowRepeat === true,
+        },
+      });
+      await tx.feedbackPlanItem.updateMany({ where: { id: { in: planItems.map((item) => item.id) } }, data: { status: "exported", exportedAt: new Date() } });
+      const allExported = plan.items.every((item) => item.status === "exported" || planItems.some((selectedItem) => selectedItem.id === item.id));
+      await tx.feedbackPlan.update({ where: { id: plan.id }, data: { status: allExported ? "exported" : "partially_exported", exportedAt: new Date() } });
+    }
+  });
+  return buffer;
+}
+
 /** Builds a no-send handoff package for WCG from teacher-approved personal feedback. */
 export async function buildWeComDraftPackage(
   prisma: PrismaClient,

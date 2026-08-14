@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
+import { parseLessonFeedbackMaterial, type LessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type {
   FeedbackScriptEntry,
   FeedbackScriptLibrary,
@@ -12,7 +13,7 @@ const MAX_CELL_LENGTH = 20_000;
 const MAX_TOTAL_TEXT_LENGTH = 500_000;
 
 interface ParsedFeedbackScriptLibrary {
-  version: 1;
+  version: 1 | 2;
   name: string;
   entries: FeedbackScriptEntry[];
   warnings: string[];
@@ -88,6 +89,7 @@ export function parseFeedbackScriptWorkbook(buffer: ArrayBuffer): ParsedFeedback
   const lessonIndex = findHeaderIndex(headers, ["课次", "课次/进度", "进度"]);
   const topicIndex = findHeaderIndex(headers, ["教研内容", "课程内容", "课题", "主题"]);
   const groupIndex = findHeaderIndex(headers, ["群反馈"]);
+  const assessmentIndex = findHeaderIndex(headers, ["统一测评说明", "统一出门测说明", "出门测统一说明", "测评说明"]);
   const perfectIndex = findHeaderIndex(headers, ["全对的私反馈", "全对私反馈"]);
   const errorIndex = findHeaderIndex(headers, ["有错误的私反馈", "有错的私反馈", "错误私反馈"]);
   const noteIndex = findHeaderIndex(headers, ["备注"]);
@@ -100,6 +102,7 @@ export function parseFeedbackScriptWorkbook(buffer: ArrayBuffer): ParsedFeedback
     lessonIndex,
     topicIndex,
     groupIndex,
+    assessmentIndex,
     perfectIndex,
     errorIndex,
     noteIndex,
@@ -132,6 +135,7 @@ export function parseFeedbackScriptWorkbook(buffer: ArrayBuffer): ParsedFeedback
 
     const topic = topicIndex >= 0 ? safeCell(row[topicIndex], `第 ${lessonNumber} 课教研内容`) : "";
     const groupFeedback = safeCell(row[groupIndex], `第 ${lessonNumber} 课群反馈`);
+    const assessmentBrief = assessmentIndex >= 0 ? safeCell(row[assessmentIndex], `第 ${lessonNumber} 课统一测评说明`) : "";
     const perfectPrivateFeedback = removeRenewalPlaceholder(
       safeCell(row[perfectIndex], `第 ${lessonNumber} 课全对私反馈`),
       lessonNumber,
@@ -143,9 +147,24 @@ export function parseFeedbackScriptWorkbook(buffer: ArrayBuffer): ParsedFeedback
       warnings,
     );
     const note = noteIndex >= 0 ? safeCell(row[noteIndex], `第 ${lessonNumber} 课备注`) : "";
-    totalTextLength += topic.length + groupFeedback.length + perfectPrivateFeedback.length + errorPrivateFeedback.length + note.length;
+    totalTextLength += topic.length + groupFeedback.length + assessmentBrief.length + perfectPrivateFeedback.length + errorPrivateFeedback.length + note.length;
     if (totalTextLength > MAX_TOTAL_TEXT_LENGTH) throw new Error("话术库文字总量过大，请拆分或精简后重试");
-    entries.push({ lessonNumber, topic, groupFeedback, perfectPrivateFeedback, errorPrivateFeedback, note });
+    const parsedMaterial = parseLessonFeedbackMaterial(groupFeedback, assessmentBrief);
+    entries.push({
+      lessonNumber,
+      topic,
+      groupFeedback,
+      perfectPrivateFeedback,
+      errorPrivateFeedback,
+      note,
+      material: {
+        ...parsedMaterial,
+        lessonTitle: parsedMaterial.lessonTitle || topic,
+        scriptLessonNumber: lessonNumber,
+        perfectPrivateTemplate: perfectPrivateFeedback || undefined,
+        errorPrivateTemplate: errorPrivateFeedback || undefined,
+      },
+    });
     if (entries.length > MAX_ENTRIES) throw new Error(`话术库最多支持 ${MAX_ENTRIES} 个课次`);
   }
 
@@ -155,10 +174,47 @@ export function parseFeedbackScriptWorkbook(buffer: ArrayBuffer): ParsedFeedback
     .flatMap((row) => row.map(clean))
     .find(Boolean);
   return {
-    version: 1,
+    version: 2,
     name: title?.slice(0, 200) || "学期话术库",
     entries,
     warnings: [...new Set(warnings)],
+  };
+}
+
+function materialFromEntry(entry: FeedbackScriptEntry, updatedAt: string): LessonFeedbackMaterial {
+  const parsed = entry.material && entry.material.version === 1
+    ? entry.material
+    : parseLessonFeedbackMaterial(entry.groupFeedback, "");
+  return {
+    ...parsed,
+    lessonTitle: parsed.lessonTitle || entry.topic,
+    scriptLessonNumber: entry.lessonNumber,
+    perfectPrivateTemplate: parsed.perfectPrivateTemplate ?? (entry.perfectPrivateFeedback || undefined),
+    errorPrivateTemplate: parsed.errorPrivateTemplate ?? (entry.errorPrivateFeedback || undefined),
+    semesterScriptSource: { lessonNumber: entry.lessonNumber, libraryUpdatedAt: updatedAt },
+  };
+}
+
+function normalizeLibrary(
+  parsed: { version?: number; name?: string; entries?: FeedbackScriptEntry[]; warnings?: string[] },
+  updatedAt: string,
+): FeedbackScriptLibrary {
+  const entries = Array.isArray(parsed.entries) ? parsed.entries.map((entry) => ({
+    lessonNumber: entry.lessonNumber,
+    topic: entry.topic ?? "",
+    groupFeedback: entry.groupFeedback ?? "",
+    perfectPrivateFeedback: entry.perfectPrivateFeedback ?? "",
+    errorPrivateFeedback: entry.errorPrivateFeedback ?? "",
+    note: entry.note ?? "",
+    material: materialFromEntry(entry, updatedAt),
+  })) : [];
+  if (!entries.length) throw new Error("已保存的话术库格式无效，请重新上传");
+  return {
+    version: 2,
+    name: parsed.name || "学期公共材料库",
+    entries,
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    updatedAt,
   };
 }
 
@@ -169,25 +225,24 @@ function parseStoredLibrary(semester: {
 }): FeedbackScriptLibrary | null {
   if (!semester.feedbackScriptLibraryJson || !semester.feedbackScriptLibraryUpdatedAt) return null;
   const parsed = JSON.parse(semester.feedbackScriptLibraryJson) as ParsedFeedbackScriptLibrary;
-  if (parsed.version !== 1 || !Array.isArray(parsed.entries)) throw new Error("已保存的话术库格式无效，请重新上传");
-  return {
-    ...parsed,
-    name: semester.feedbackScriptLibraryName || parsed.name,
-    updatedAt: semester.feedbackScriptLibraryUpdatedAt.toISOString(),
-  };
+  if (![1, 2].includes(parsed.version) || !Array.isArray(parsed.entries)) throw new Error("已保存的话术库格式无效，请重新上传");
+  const normalized = normalizeLibrary(parsed, semester.feedbackScriptLibraryUpdatedAt.toISOString());
+  return { ...normalized, name: semester.feedbackScriptLibraryName || normalized.name };
 }
 
-async function recommendedLessonNumber(prisma: PrismaClient, semesterId: string, sessionCode?: string) {
+async function recommendedLessonNumber(prisma: PrismaClient | Prisma.TransactionClient, semesterId: string, sessionCode?: string) {
   if (!sessionCode) return null;
   const session = await prisma.classSession.findUnique({
     where: { code: sessionCode },
-    select: { semesterId: true, semesterNumber: true },
+    select: { semesterId: true, semesterNumber: true, groupLessonSession: { select: { groupLesson: { select: { sequence: true } } } } },
   });
-  return session?.semesterId === semesterId ? session.semesterNumber : null;
+  return session?.semesterId === semesterId
+    ? session.groupLessonSession?.groupLesson.sequence ?? session.semesterNumber
+    : null;
 }
 
 export async function getFeedbackScriptLibrary(
-  prisma: PrismaClient,
+  prisma: PrismaClient | Prisma.TransactionClient,
   semesterId: string,
   sessionCode?: string,
 ): Promise<FeedbackScriptLibraryResponse> {
@@ -215,12 +270,19 @@ export async function saveFeedbackScriptLibrary(
   const parsed = parseFeedbackScriptWorkbook(buffer);
   const existing = await prisma.semester.findUnique({ where: { id: semesterId }, select: { id: true } });
   if (!existing) throw new Error("学期不存在");
+  const updatedAt = new Date();
+  const normalized = normalizeLibrary(parsed, updatedAt.toISOString());
   const updated = await prisma.semester.update({
     where: { id: semesterId },
     data: {
       feedbackScriptLibraryName: parsed.name,
-      feedbackScriptLibraryJson: JSON.stringify(parsed),
-      feedbackScriptLibraryUpdatedAt: new Date(),
+      feedbackScriptLibraryJson: JSON.stringify({
+        version: normalized.version,
+        name: normalized.name,
+        entries: normalized.entries,
+        warnings: normalized.warnings,
+      }),
+      feedbackScriptLibraryUpdatedAt: updatedAt,
     },
     select: {
       feedbackScriptLibraryName: true,
@@ -232,4 +294,14 @@ export async function saveFeedbackScriptLibrary(
     library: parseStoredLibrary(updated),
     recommendedLessonNumber: await recommendedLessonNumber(prisma, semesterId, sessionCode),
   };
+}
+
+export async function getFeedbackScriptMaterial(
+  db: PrismaClient | Prisma.TransactionClient,
+  semesterId: string,
+  lessonNumber: number,
+) {
+  const response = await getFeedbackScriptLibrary(db, semesterId);
+  const entry = response.library?.entries.find((item) => item.lessonNumber === lessonNumber);
+  return entry?.material ?? null;
 }

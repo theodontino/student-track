@@ -80,6 +80,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
   let currentPlanStatus = "draft";
   let currentRevision = 2;
   let createBody: Record<string, unknown> | null = null;
+  let detailReads = 0;
   const mutationOrder: string[] = [];
   await page.route("**/api/report/feedback-plans**", async (route) => {
     const request = route.request();
@@ -96,6 +97,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
       return;
     }
     if (url.pathname.endsWith("/e2e-feedback-plan-1") && request.method() === "GET") {
+      detailReads += 1;
       await route.fulfill({ json: { plan: plan(currentText, currentStatus, currentPlanStatus, currentRevision) } });
       return;
     }
@@ -140,7 +142,7 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
     await route.continue();
   });
 
-  await page.goto("/feedback");
+  await page.goto("/feedback/advanced");
   // The shared context picker is also used by the preparation step. Use its
   // stable select order here so this integration test does not depend on the
   // browser's nested-label accessible-name implementation.
@@ -192,9 +194,21 @@ test("feedback plan supports queued generation, teacher edit, approval and expor
   expect(generationMode).toBe("fast");
   await page.getByRole("button", { name: "查看并编辑反馈" }).click();
   await expect(page.getByRole("heading", { name: "编辑与导出" })).toBeVisible();
+  const terminalDetailReads = detailReads;
+  await page.waitForTimeout(1_100);
+  expect(detailReads).toBe(terminalDetailReads);
 
   const editor = page.getByLabel(`${TEST_FIXTURE.students[0].name}反馈计划文本`);
   await editor.fill("教师修改后的反馈文本。");
+  await page.waitForTimeout(1_000);
+  await expect(editor).toBeFocused();
+  expect(mutationOrder).toEqual([]);
+  await page.getByRole("button", { name: "批准所选可通过项" }).click();
+  await expect(page.getByText(/请先保存所选反馈中的未保存修改/)).toBeVisible();
+  expect(mutationOrder).toEqual([]);
+  await page.getByRole("button", { name: "保存修改" }).click();
+  await expect.poll(() => mutationOrder).toEqual(["save"]);
+  await expect(page.getByRole("button", { name: "已保存" })).toBeDisabled();
   await page.getByRole("button", { name: "批准所选可通过项" }).click();
   await expect.poll(() => mutationOrder).toEqual(["save", "approve"]);
   expect(currentText).toBe("教师修改后的反馈文本。");
@@ -232,9 +246,120 @@ test("feedback plan remains within the viewport at supported breakpoints", async
   for (const width of [1280, 768]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/feedback");
-    await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
+});
+
+test("unified feedback keeps the approved three-stage strategy and focused student studio", async ({ page }) => {
+  const detail = plan();
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
+      await route.fulfill({ json: { plans: [detail] } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      await route.fulfill({ json: { plan: detail } });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/feedback?stage=studio&planId=e2e-feedback-plan-1&semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  const stageNavigation = page.getByRole("navigation", { name: "课后任务阶段" });
+  await expect(stageNavigation).toContainText("收集材料");
+  await expect(stageNavigation).toContainText("确认事实");
+  await expect(stageNavigation).toContainText("计划工作室");
+  await expect(page.getByRole("heading", { name: "逐学生计划工作室" })).toBeVisible();
+  await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.students[0].name);
+  await expect(page.getByRole("button", { name: /学生独立设置/ })).toBeVisible();
+  await expect(page.getByText("教师最终正文", { exact: true })).toBeVisible();
+  await expect(page.getByText("模型角色与生成设置", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "1 收集材料 统一投料" }).click();
+  await page.getByRole("button", { name: "展开全部计划设置" }).click();
+  await expect(page.getByRole("checkbox", { name: /具体表现/ })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /教师判断/ })).toBeVisible();
+  await expect(page.getByText("当前独立课次 · 尚未确认公共材料", { exact: true })).toBeVisible();
+});
+
+test("unified studio can safely pause and continue an active generation queue", async ({ page }) => {
+  let planStatus = "generating";
+  const detail = () => plan("", planStatus === "paused" ? "queued" : "generating", planStatus);
+  const actions: string[] = [];
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) {
+      await route.fulfill({ json: { plans: [detail()] } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      await route.fulfill({ json: { plan: detail() } });
+      return;
+    }
+    if (request.method() === "POST" && url.pathname.endsWith("/e2e-feedback-plan-1")) {
+      const body = request.postDataJSON() as { action?: string };
+      if (body.action === "pause_generation") {
+        actions.push(body.action);
+        planStatus = "paused";
+        await route.fulfill({ status: 202, json: { accepted: true, status: "paused" } });
+        return;
+      }
+      if (body.action === "continue_generation") {
+        actions.push(body.action);
+        planStatus = "generating";
+        await route.fulfill({ status: 202, json: { accepted: true, status: "queued" } });
+        return;
+      }
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/feedback?stage=studio&planId=e2e-feedback-plan-1&semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  await expect(page.getByLabel("反馈生成进度")).toBeVisible();
+  await page.getByRole("button", { name: "暂停生成", exact: true }).click();
+  await expect(page.getByRole("button", { name: "继续生成", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "继续生成", exact: true }).click();
+  await expect(page.getByRole("button", { name: "暂停生成", exact: true })).toBeVisible();
+  expect(actions).toEqual(["pause_generation", "continue_generation"]);
+});
+
+test("feedback context explains class group progress and confirmed sharing", async ({ page }) => {
+  let confirmed = false;
+  await page.route("**/api/report/feedback-context**", async (route) => {
+    const response = await route.fetch();
+    const body = JSON.parse(await response.text()) as Record<string, unknown>;
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      contentType: "application/json",
+      json: {
+      ...body,
+      groupProgress: {
+        group: { id: "e2e-group-1", name: "合成平行班组" },
+        leadClass: { id: TEST_FIXTURE.class.id, code: TEST_FIXTURE.class.code, name: TEST_FIXTURE.class.name },
+        isLeadClass: true,
+        status: "linked",
+        lesson: { id: "e2e-group-lesson-1", title: "氧化还原", sequence: 3, revision: 1, confirmedAt: "2026-08-14T00:00:00.000Z", revisions: [], confirmedMaterial: null, hasUnconfirmedChanges: true },
+      },
+      },
+    });
+  });
+  await page.route("**/api/group-lessons/e2e-group-lesson-1/confirm", async (route) => {
+    confirmed = true;
+    await route.fulfill({ json: { revision: 2 } });
+  });
+  await page.route("**/api/group-lessons/e2e-group-lesson-1", async (route) => {
+    await route.fulfill({ json: { lesson: { id: "e2e-group-lesson-1" } } });
+  });
+
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  await expect(page.getByText(/当前班属于“合成平行班组”.*第 3 讲共同进度/)).toBeVisible();
+  await page.getByRole("button", { name: "确认并共享共同材料" }).click();
+  await expect.poll(() => confirmed).toBe(true);
 });
 
 test("export never reports an unfinished queued item as program-check passed", async ({ page }) => {
@@ -344,7 +469,7 @@ test("review defaults to a new plan while history remains recoverable", async ({
     await route.continue();
   });
 
-  await page.goto("/feedback");
+  await page.goto("/feedback/advanced");
   const contextSelects = page.locator(".feedback-context-section select");
   await contextSelects.nth(0).selectOption(TEST_FIXTURE.semester.id);
   await contextSelects.nth(1).selectOption({ label: TEST_FIXTURE.class.name });
@@ -381,7 +506,7 @@ test("feedback preparation recommends and applies the current lesson script", as
     });
   });
 
-  await page.goto("/feedback?step=prepare");
+  await page.goto("/feedback/advanced?step=prepare");
   const contextSelects = page.locator(".feedback-context-section select");
   await contextSelects.nth(0).selectOption(TEST_FIXTURE.semester.id);
   await contextSelects.nth(1).selectOption({ label: TEST_FIXTURE.class.name });
@@ -394,4 +519,54 @@ test("feedback preparation recommends and applies the current lesson script", as
   await page.getByText("查看本节私反馈话术").click();
   await expect(page.getByText("第二课全对", { exact: true })).toBeVisible();
   await expect(page.getByText("第二课有误", { exact: true })).toBeVisible();
+});
+
+test("multi-class batch creation keeps class sessions and students explicit", async ({ page }) => {
+  const classes = [
+    { id: "batch-class-1", code: "B-01", name: "一班" },
+    { id: "batch-class-2", code: "B-02", name: "二班" },
+  ];
+  const sessions = classes.map((item, index) => ({ id: `batch-session-${index + 1}`, code: `2098120${index + 1}01`, date: `2098-12-0${index + 1}`, classId: item.id }));
+  const students = classes.map((item, index) => ({ id: `batch-student-${index + 1}`, name: `批次学生${index + 1}`, studentId: `B-S${index + 1}`, classId: item.id }));
+  let created = false;
+  let createBody: Record<string, unknown> | null = null;
+  const batch = {
+    id: "batch-e2e-1",
+    semesterId: TEST_FIXTURE.semester.id,
+    type: "event_micro",
+    outputRequirement: "逐班生成反馈",
+    status: "ready",
+    currentPlanId: null,
+    plans: classes.map((item, index) => ({ id: `batch-plan-${index + 1}`, batchOrder: index + 1, status: "draft", class: item, progress: { total: 1, generated: 0, approved: 0, exported: 0, failed: 0 } })),
+    progress: { total: 2, generated: 0, approved: 0, exported: 0, failed: 0, completedClasses: 0, totalClasses: 2 },
+  };
+  await page.route("**/api/semesters", (route) => route.fulfill({ json: [TEST_FIXTURE.semester] }));
+  await page.route(`**/api/semesters/${TEST_FIXTURE.semester.id}`, (route) => route.fulfill({ json: { ...TEST_FIXTURE.semester, classes, sessions } }));
+  await page.route(`**/api/semesters/${TEST_FIXTURE.semester.id}/class-groups`, (route) => route.fulfill({ json: { groups: [] } }));
+  await page.route("**/api/students?**", (route) => route.fulfill({ json: students }));
+  await page.route("**/api/report/feedback-plan-batches**", async (route) => {
+    if (route.request().method() === "POST") {
+      createBody = route.request().postDataJSON() as Record<string, unknown>;
+      created = true;
+      await route.fulfill({ status: 201, json: { batch } });
+      return;
+    }
+    await route.fulfill({ json: { batches: created ? [batch] : [] } });
+  });
+
+  await page.goto(`/feedback/advanced?semesterId=${TEST_FIXTURE.semester.id}`);
+  const panel = page.locator(".feedback-batch-panel");
+  await panel.getByText("多班反馈批次（1.2 Beta）").click();
+  await panel.getByLabel("B-01 一班").check();
+  await panel.getByLabel("B-02 二班").check();
+  await panel.getByRole("button", { name: "原子创建批次" }).click();
+  await expect(panel.getByText("批次及各班独立反馈计划已原子创建。")).toBeVisible();
+  expect(createBody).toMatchObject({
+    semesterId: TEST_FIXTURE.semester.id,
+    type: "event_micro",
+    plans: [
+      { classId: classes[0].id, sessionId: sessions[0].id, studentIds: [students[0].id] },
+      { classId: classes[1].id, sessionId: sessions[1].id, studentIds: [students[1].id] },
+    ],
+  });
 });

@@ -56,6 +56,9 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByRole("heading", { name: "关于 Student Track" })).toBeVisible();
     await expect(page.locator(".system-about-hero")).toBeVisible();
     await expect(page.locator(".system-about-card")).toHaveCount(3);
+    await expect(page.getByRole("heading", { name: "版本更新" })).toBeVisible();
+    await expect(page.locator(".system-changelog").getByText("v1.2.0-beta.2", { exact: true })).toBeVisible();
+    await expect(page.getByText("共同课与 STEP 基础", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const licenseTab = page.locator(".system-nav").getByRole("link", { name: "开源许可" });
     await expect(licenseTab).toBeVisible();
@@ -74,7 +77,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("teaching context and an unfinished entry survive page switches", async ({ page }) => {
-    await page.goto("/feedback");
+    await page.goto("/feedback/advanced");
     await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
     await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
     await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
@@ -86,8 +89,36 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByLabel(/班级选择班级/)).toHaveValue(TEST_FIXTURE.class.id);
     await expect(page.getByLabel(/课次选择课次/)).toHaveValue(TEST_FIXTURE.sessions[0].code);
 
-    await page.getByRole("link", { name: "课后工作台" }).click();
+    await page.goto("/feedback/advanced");
     await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未提交课堂回顾");
+  });
+
+  test("workspace drafts debounce continuous text input", async ({ page }) => {
+    await page.addInitScript(() => {
+      const originalSetItem = Storage.prototype.setItem;
+      (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0;
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith("student-track:workspace:")) {
+          const target = window as Window & { workspaceWriteCount?: number };
+          target.workspaceWriteCount = (target.workspaceWriteCount ?? 0) + 1;
+        }
+        return originalSetItem.call(this, key, value);
+      };
+    });
+    await page.goto("/feedback/advanced");
+    await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
+    await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
+    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
+    await page.getByRole("button", { name: "2 录入 录入与提取课堂记录" }).click();
+    await page.waitForTimeout(500);
+    await page.evaluate(() => { (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0; });
+
+    const review = page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。");
+    await review.click();
+    await review.type("连续输入保持流畅", { delay: 40 });
+    await expect(review).toBeFocused();
+    await page.waitForTimeout(450);
+    expect(await page.evaluate(() => (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount)).toBe(1);
   });
 
   test("an unsaved quick-score edit survives page switches", async ({ page }) => {
@@ -130,7 +161,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("an unfinished feedback review survives page switches", async ({ page }) => {
-    await page.goto("/feedback");
+    await page.goto("/feedback/advanced");
     await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
     await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
     await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
@@ -139,7 +170,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await review.fill("E2E 未生成反馈的课堂回顾");
 
     await page.getByRole("link", { name: "反馈历史" }).click();
-    await page.getByRole("link", { name: "课后工作台" }).click();
+    await page.goto("/feedback/advanced");
     await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未生成反馈的课堂回顾");
     await page.getByRole("button", { name: "1 准备 选择课次与准备材料" }).click();
     await expect(page.locator("select").nth(2)).toHaveValue(TEST_FIXTURE.sessions[0].code);
@@ -159,7 +190,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
   test("feedback workspace does not overflow a narrow window", async ({ page }) => {
     await page.setViewportSize({ width: 720, height: 900 });
     await page.goto("/feedback");
-    await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
@@ -180,6 +211,15 @@ test.describe.serial("v0.17.0 information architecture", () => {
 
     await page.getByRole("button", { name: "添加学生" }).click();
     await expect(page.getByRole("dialog", { name: "添加学生" })).toBeVisible();
+    const nameInput = page.getByLabel("姓名");
+    await nameInput.type("测试学生", { delay: 40 });
+    await expect(nameInput).toHaveValue("测试学生");
+    await expect(nameInput).toBeFocused();
+    const labelInput = page.getByLabel("标签");
+    await labelInput.fill("组合标签");
+    await labelInput.dispatchEvent("keydown", { key: "Enter", code: "Enter", isComposing: true });
+    await expect(labelInput).toHaveValue("组合标签");
+    await expect(page.getByText("组合标签", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "关闭" }).click();
 
     await page.getByRole("button", { name: "导入花名册" }).click();

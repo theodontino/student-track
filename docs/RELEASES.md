@@ -4,7 +4,7 @@
 
 | 组件 | 版本 | 与另一端的关系 |
 |---|---:|---|
-| Student Track | 1.1.4 | 学生/班级双仪表、警告与教师待办优先级、稳定班级身份和学期上下文；保持 FeedbackPlan 与 handoff v1 稳定。 |
+| Student Track | 1.2.0 | 统一课后任务、班级组共同进度、学期公共材料与主反馈入口；保留逐学生微操、旧工作台/API、FeedbackPlan 历史、多班批次和 no-send 边界，按 Zhuiver 归为 MINOR。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 原生 SwiftUI 正式版；发布 `wcc.student-track-file.v1`，只读 receipt v1，并保持不发送边界。 |
 
 两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
@@ -13,14 +13,16 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.1.4 | 双仪表导航、任务分组与历史、同名班级排序、窄屏回归，以及既有 FeedbackPlan 统一反馈流程与历史；handoff v1 保持兼容。 |
+| Student Track | 1.2.0 | 统一课后任务、班级组共同进度、学期公共材料与主反馈入口；旧五步工作台、FeedbackPlan 历史和 handoff v1 保持兼容。 |
 | WCG | 0.6.0 | handoff 谱系、已批准反馈草稿不发送填入、逐条实时会话定位、前 50→前 150 降级和输入框安全复核；原生 SwiftUI 正式版。 |
 
-## 当前开发 beta
+## 1.2 Beta 发布历史
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.1.5-beta.2 | 在 1.1.5-beta 的基础上修复项目/运行数据目录迁移后的本地转写任务路径兼容性，并继续维护实验性的 STEP 人工桥；按 Zhuiver 归为 PATCH，不改变 handoff v1、receipt v1 或 WCG 发送边界。 |
+| Student Track | 1.2.0-beta.3 | 在 beta.2 基础上提供三段式统一课后任务：材料合并、教师确认事实、FeedbackPlan 工作室；支持固定收件箱、拖拽/文件夹/ZIP，保留高级五步工作台、FeedbackPlan 历史、批次和 WCG no-send 边界；按 Zhuiver 归为 MINOR，不改变 handoff v1、receipt v1 或正式协议。 |
+| Student Track | 1.2.0-beta.4 | 班级组增加显式主班和自动共同进度：主班推进共同课、其他班顺序跟随，反馈页提示班级组与材料状态并允许确认共享；真实课次与 no-send 边界不变，按 Zhuiver 归为 MINOR。 |
+| Student Track | 1.2.0-beta.5 | 在 beta.4 班级组进度上统一学期公共材料库、共同课草稿/确认和主反馈材料选择；独立课次支持明确公共材料快照，明确“不使用”不再回退到其他修订，旧工作台/API/no-send 边界保留。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
 
 ### STEP Bridge 的发布边界
@@ -33,8 +35,8 @@ ST ↔ STEP 当前桥接是 `experimental`，不属于 Student Track 当前稳�
 
 Student Track 的日常和稳定版门禁以自动化为准：普通改动通过 `verify:quick`，高风险与发布改动通过 `verify:release`，随后即可进入真实使用。所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化；固定次数的真实课后流程和重复人工合成演练不再阻断发布。
 
-版本级别遵循协议仓库 `Zhuiver.md`：当前 Student Track `1.1.4` 是 PATCH，表示稳定既有
-教学工作台承诺；协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
+版本级别遵循协议仓库 `Zhuiver.md`：Student Track `1.2.0` 是 MINOR，表示在保留既有
+教学工作台承诺的基础上统一课后反馈工作流；协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
 `docs/release-evidence/` 中的 Zhuiver 记录，并通过 `npm run release:check-version`。
 
 人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及**已接受的正式跨仓协议**变化时仍使用精确提交的两端自动化；实验 STEP bridge 的当前 adapter 变化不触发正式 compatibility 流程。

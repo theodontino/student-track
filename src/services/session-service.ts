@@ -6,6 +6,7 @@ import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 import { assertClassInSemester } from "@/services/student-enrollment-service";
+import { resolveSemesterCommonMaterial } from "@/services/common-material-service";
 
 function localDate(date = new Date()) {
   const year = date.getFullYear();
@@ -38,6 +39,8 @@ export async function createClassSession(input: {
   classId?: string;
   classCode?: string;
   date?: string;
+  groupProgressMode?: "auto" | "independent";
+  commonMaterialLessonNumber?: number | null;
 }) {
   const date = input.date ?? localDate();
   const result = await prisma.$transaction(async (tx) => {
@@ -93,6 +96,90 @@ export async function createClassSession(input: {
       },
     });
 
+    let groupProgress: {
+      status: "created" | "linked" | "independent" | "lead_required";
+      group: { id: string; name: string };
+      leadClass: { id: string; code: string; name: string | null } | null;
+      lesson: { id: string; title: string; sequence: number } | null;
+    } | null = null;
+    if (classId) {
+      const membership = await tx.classGroupMembership.findUnique({
+        where: { classId },
+        select: {
+          classGroup: {
+            select: {
+              id: true,
+              name: true,
+              leadClassId: true,
+              leadClass: { select: { id: true, code: true, name: true } },
+            },
+          },
+        },
+      });
+      const group = membership?.classGroup;
+      if (group) {
+        groupProgress = { status: "independent", group: { id: group.id, name: group.name }, leadClass: group.leadClass, lesson: null };
+        if (!group.leadClassId) {
+          groupProgress.status = "lead_required";
+        } else if (input.groupProgressMode !== "independent") {
+          const isLeadClass = group.leadClassId === classId;
+          let lesson = await tx.groupLesson.findFirst({
+            where: isLeadClass
+              ? { groupId: group.id, sessionLinks: { none: { session: { classId } } } }
+              : {
+                  groupId: group.id,
+                  AND: [
+                    { sessionLinks: { some: { session: { classId: group.leadClassId } } } },
+                    { sessionLinks: { none: { session: { classId } } } },
+                  ],
+                },
+            orderBy: { sequence: "asc" },
+            select: { id: true, title: true, sequence: true },
+          });
+          let created = false;
+          if (!lesson && isLeadClass) {
+            const latest = await tx.groupLesson.findFirst({ where: { groupId: group.id }, orderBy: { sequence: "desc" }, select: { sequence: true } });
+            const sequence = (latest?.sequence ?? 0) + 1;
+            lesson = await tx.groupLesson.create({
+              data: { groupId: group.id, sequence, title: `第 ${sequence} 讲` },
+              select: { id: true, title: true, sequence: true },
+            });
+            created = true;
+            const suggestedLessonNumber = input.commonMaterialLessonNumber ?? sequence;
+            const suggestedMaterial = await resolveSemesterCommonMaterial(tx, input.semesterId, suggestedLessonNumber);
+            if (suggestedMaterial) {
+              await tx.groupLesson.update({
+                where: { id: lesson.id },
+                data: { materialSnapshot: JSON.stringify(suggestedMaterial) },
+              });
+            }
+          }
+          if (lesson) {
+            await tx.groupLessonSession.create({ data: { groupLessonId: lesson.id, sessionId: session.id, syncStatus: "synced", comparable: true } });
+            groupProgress = { status: created ? "created" : "linked", group: { id: group.id, name: group.name }, leadClass: group.leadClass, lesson };
+          }
+        }
+      }
+    }
+
+    // An explicitly independent session may still use one confirmed semester
+    // script, but saving that choice is never implicit for grouped sessions.
+    if (input.commonMaterialLessonNumber !== undefined && !groupProgress?.lesson) {
+      const material = input.commonMaterialLessonNumber === null
+        ? null
+        : await resolveSemesterCommonMaterial(tx, input.semesterId, input.commonMaterialLessonNumber, session.code);
+      if (input.commonMaterialLessonNumber !== null && !material) {
+        throw new ServiceError(`学期公共材料库没有第 ${input.commonMaterialLessonNumber} 课`, 404);
+      }
+      await tx.classSession.update({
+        where: { id: session.id },
+        data: {
+          commonMaterialSnapshot: material ? JSON.stringify(material) : null,
+          commonMaterialConfirmedAt: material ? new Date() : null,
+        },
+      });
+    }
+
     const enrollments = classId
       ? await tx.studentClassEnrollment.findMany({
           where: { semesterId: input.semesterId, classId, rosterStatus: "ACTIVE" },
@@ -121,7 +208,7 @@ export async function createClassSession(input: {
       updateLatestInSemester: true,
     }, tx);
 
-    return { session, studentCount: students.length, className: selectedClass?.name ?? selectedClass?.code };
+    return { session, studentCount: students.length, className: selectedClass?.name ?? selectedClass?.code, groupProgress };
   }, { timeout: 15_000 });
 
   void logAction({
@@ -132,7 +219,7 @@ export async function createClassSession(input: {
     detail: { date, class: result.className, studentCount: result.studentCount },
   });
 
-  return { ...result.session, studentCount: result.studentCount };
+  return { ...result.session, studentCount: result.studentCount, groupProgress: result.groupProgress };
 }
 
 /** Archives metrics, deletes a session, resequences its class, and recalculates D atomically. */
@@ -157,6 +244,7 @@ export async function deleteClassSession(input: { semesterId: string; code: stri
       sessionId: session.id,
     }, tx);
 
+    await tx.groupLessonSession.deleteMany({ where: { sessionId: session.id } });
     await tx.classSession.delete({ where: { id: session.id } });
     await reorderSemesterNumbers(tx, input.semesterId, session.classId);
     await recalculateScoreDForStudents({

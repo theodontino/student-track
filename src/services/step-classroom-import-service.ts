@@ -1,8 +1,9 @@
 import { prisma as defaultPrisma } from "@/lib/prisma";
-import { parseInputWithSystemPrompt } from "@/lib/parser";
+import { parseInput } from "@/lib/parser";
 import { DraftStructuredResultSchema } from "@/lib/contracts/classroom-parse";
 import type { DraftStructuredResult } from "@/lib/types";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
 import {
   detectStepClassroomExportVersion,
   STEP_CLASSROOM_HEADER_V1,
@@ -278,9 +279,83 @@ function deterministicEvents(student: StepClassroomPayload["students"][number]):
   return [...observations, ...notes];
 }
 
+function stepNaturalLanguageInput(payload: StepClassroomPayload): string {
+  return [
+    `STEP 课堂：${payload.class.name}，${payload.title}`,
+    ...payload.students.map((student) => {
+      const facts = deterministicEvents(student);
+      return `${student.name}（学号 ${student.studentId}）：明确考勤为${student.present ? "出勤" : "缺勤"}${facts.length ? `；${facts.join("；")}` : "；没有其他课堂观察"}`;
+    }),
+  ].join("\n");
+}
+
+function observationOnlyInterventions(student: StepClassroomPayload["students"][number]) {
+  return [
+    ...student.observations.map((observation) => ({
+      observedProblem: `${observation.contextLabel}：${observation.semanticText}`,
+      teacherAction: [
+        observation.interventionText ?? "",
+        observation.followUpAction === "remediation" ? "后续补教" : observation.followUpAction === "extension" ? "后续附加题" : "",
+      ].filter(Boolean).join("；"),
+      outcome: "",
+      evidenceText: `STEP 课堂观察（${observation.recordedAt}）`,
+    })),
+    ...student.notes.map((note) => ({
+      observedProblem: `${note.contextLabel}备注：${note.text}`,
+      teacherAction: "",
+      outcome: "",
+      evidenceText: `STEP 备注，待教师复核（${note.recordedAt}）`,
+    })),
+  ];
+}
+
+export function createStepObservationOnlyResult(payload: StepClassroomPayload): DraftStructuredResult {
+  return DraftStructuredResultSchema.parse({
+    students: payload.students.map((student) => ({
+      name: student.name,
+      studentId: student.studentId,
+      scores: { A: null, B: null, C: null },
+      events: [],
+      communication: null,
+      attentionSignals: [],
+      teacherInterventions: observationOnlyInterventions(student).slice(0, 20),
+    })),
+    alert_suggestion: "",
+  });
+}
+
+/**
+ * Re-applies assistant-roster precedence when an older STEP draft is confirmed
+ * after the assistant roster was imported. This keeps late confirmations from
+ * overwriting attendance or scores.
+ */
+export function restrictStepResultToTeacherObservations(result: DraftStructuredResult): DraftStructuredResult {
+  return DraftStructuredResultSchema.parse({
+    students: result.students.map((student) => ({
+      name: student.name,
+      ...(student.studentId ? { studentId: student.studentId } : {}),
+      scores: { A: null, B: null, C: null },
+      events: [],
+      communication: null,
+      attentionSignals: [],
+      teacherInterventions: [
+        ...(student.teacherInterventions ?? []),
+        ...student.events.map((event) => ({
+          observedProblem: event,
+          teacherAction: "",
+          outcome: "",
+          evidenceText: "STEP 课堂记录，待教师复核",
+        })),
+      ].slice(0, 20),
+    })),
+    alert_suggestion: result.alert_suggestion,
+  });
+}
+
 export function mergeStepClassroomResult(
   payload: StepClassroomPayload,
   llmResult: DraftStructuredResult | null,
+  options: { useNlCandidates?: boolean } = {},
 ): DraftStructuredResult {
   const generatedStudents = llmResult?.students ?? [];
   const byOutputId = new Map(generatedStudents.flatMap((student) => student.studentId ? [[student.studentId, student] as const] : []));
@@ -294,12 +369,14 @@ export function mergeStepClassroomResult(
       return {
         name: source.name,
         studentId: source.studentId,
-        scores: { A: null, B: null, C: null },
+        scores: options.useNlCandidates && generated
+          ? generated.scores
+          : { A: null, B: null, C: null },
         events: [...deterministicEvents(source), ...(generated?.events ?? [])].filter((event, index, all) => all.indexOf(event) === index).slice(0, 50),
         communication: null,
         present: source.present,
-        // STEP observations and attendance are deterministic facts. Keep the
-        // LLM limited to note-derived candidates; it must not create labels.
+        // NL may suggest scores and events, but STEP import does not accept
+        // model-created internal labels or communication records.
         attentionSignals: [],
         teacherInterventions: generated?.teacherInterventions ?? [],
       };
@@ -334,21 +411,29 @@ export async function createStepClassroomDraft(input: {
     if (target.name !== student.name) throw new StepClassroomImportError(`学号 ${student.studentId} 的姓名与 ST 花名册不一致`, 409);
   }
 
-  const llmInput = `请只解读下面 DATA BEGIN 与 DATA END 之间的数据，并返回以下根结构：\n{"students":[{"name":"...","studentId":"...","scores":{"A":null,"B":null,"C":null},"events":[],"communication":null,"present":true,"teacherInterventions":[]}],"alert_suggestion":""}\n不要返回 class、title、observations 或 notes 作为根字段。\n\n=== DATA BEGIN ===\n${envelope.dataText}\n=== DATA END ===`;
+  const assistantRosterDraft = await db.draftRecord.findFirst({
+    where: {
+      sessionCode: input.sessionCode,
+      status: { in: ["pending", "confirmed"] },
+      rawText: { startsWith: ASSISTANT_ROSTER_RAW_TEXT_PREFIX },
+    },
+    select: { id: true },
+  });
   let llmResult: DraftStructuredResult | null = null;
   let llmWarning: string | null = null;
-  try {
-    // STEP already carries deterministic attendance and observation facts.
-    // The model is an optional interpretation layer and must never block the
-    // teacher from reviewing those imported facts.
-    const systemPrompt = envelope.version === 1
-      ? STEP_INTERPRETATION_PROMPT
-      : `${STEP_INTERPRETATION_PROMPT}\n\n${STEP_INTERPRETATION_PROMPT_V2}`;
-    llmResult = await parseInputWithSystemPrompt(systemPrompt, llmInput, 0);
-  } catch {
-    llmWarning = "模型未能补充 STEP 备注解读；已保留考勤、课堂观察和待复核备注，可继续人工确认。";
+  if (!assistantRosterDraft) {
+    try {
+      // Without an assistant roster, STEP facts use the same NL inference
+      // channel as a teacher's classroom recap. Everything remains a draft
+      // until the teacher reviews and confirms it.
+      llmResult = await parseInput(stepNaturalLanguageInput(envelope.payload), roster.map((student) => student.name));
+    } catch {
+      llmWarning = "模型未能通过 NL 渠道补充 STEP 推测；已保留明确考勤和课堂观察，可继续人工确认。";
+    }
   }
-  const validated = mergeStepClassroomResult(envelope.payload, llmResult);
+  const validated = assistantRosterDraft
+    ? createStepObservationOnlyResult(envelope.payload)
+    : mergeStepClassroomResult(envelope.payload, llmResult, { useNlCandidates: true });
   const matchedStudentIds = envelope.payload.students.map((student) => byBusinessId.get(student.studentId)!.id);
   const draft = await db.draftRecord.create({
     data: {
@@ -370,7 +455,9 @@ export async function createStepClassroomDraft(input: {
     createdAt: draft.createdAt,
     corrections: [],
     warnings: [
-      "STEP 考勤和观察已按导出事实保留；请在教师复核后确认写入。",
+      assistantRosterDraft
+        ? "检测到本课次已有助教表；STEP 未生成评分或考勤，只进入教师观察。"
+        : "本课次没有助教表；STEP 已通过 NL 渠道生成模型候选，请复核评分、考勤和观察后再写入。",
       ...(llmWarning ? [llmWarning] : []),
     ],
   };

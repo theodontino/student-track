@@ -852,8 +852,8 @@ export async function generateFeedbackPlanComposition(input: FeedbackPlanGenerat
     .map((item) => item.id);
   const generationPreferenceBoundary = input.generationPreferences
     ? input.generationPreferences.moduleKeys.length
-      ? `本计划在创建阶段已确定生成结构：只能使用结尾 ${input.generationPreferences.closureType}，只能在以下模块中选择：${input.generationPreferences.moduleKeys.join(", ")}。不得在本阶段改选其他结尾或模块。`
-      : `本计划在创建阶段没有预选模块；可以在当前反馈类型的完整模块目录中自然取舍，不要为了凑数量填充模块。结尾仍固定为 ${input.generationPreferences.closureType}。`
+      ? `本计划在创建阶段已确定生成结构：只能使用结尾 ${input.generationPreferences.closureType}，只能在以下模块中选择：${input.generationPreferences.moduleKeys.join(", ")}。不得在本阶段改选其他结尾或模块。详略为 ${input.generationPreferences.length ?? "inherit"}，语气为 ${input.generationPreferences.tone ?? "inherit"}。`
+      : `本计划在创建阶段没有预选模块；可以在当前反馈类型的完整模块目录中自然取舍，不要为了凑数量填充模块。结尾仍固定为 ${input.generationPreferences.closureType}。详略为 ${input.generationPreferences.length ?? "inherit"}，语气为 ${input.generationPreferences.tone ?? "inherit"}。`
     : "本计划没有保存生成结构偏好，按反馈类型的完整允许目录选择。";
   const baseProtocolBoundary = `当前类型允许的 module key 只有：${allowedModules.join(", ")}。
 当前类型允许的 closureType 只有：${allowedClosures.join(", ")}。

@@ -1,3 +1,5 @@
+import type { LessonFeedbackMaterial } from "@/lib/feedback-materials";
+
 export interface FeedbackScriptEntry {
   lessonNumber: number;
   topic: string;
@@ -5,10 +7,12 @@ export interface FeedbackScriptEntry {
   perfectPrivateFeedback: string;
   errorPrivateFeedback: string;
   note: string;
+  /** Present in library v2; old v1 entries are normalized on read. */
+  material?: LessonFeedbackMaterial;
 }
 
 export interface FeedbackScriptLibrary {
-  version: 1;
+  version: 2;
   name: string;
   entries: FeedbackScriptEntry[];
   warnings: string[];

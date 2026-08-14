@@ -105,8 +105,8 @@ export function FeedbackScriptLibraryPanel({ workspace }: { workspace: Workspace
     <div className="feedback-script-library">
       <div className="feedback-script-library__heading">
         <div>
-          <strong>学期话术库</strong>
-          <span>每学期上传一次；选择课次后再明确套用，不会自动覆盖当前材料。</span>
+          <strong>学期公共材料库（原话术库）</strong>
+          <span>每学期上传一次；材料按课次结构化保存，选择后再明确套用，不会自动覆盖当前材料。</span>
         </div>
         {data.library && <Badge tone="success">已保存 {data.library.entries.length} 课</Badge>}
       </div>

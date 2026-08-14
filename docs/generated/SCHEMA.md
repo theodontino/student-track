@@ -19,6 +19,20 @@ erDiagram
     TEXT code
     TEXT name
   }
+  ClassGroup {
+    TEXT id PK
+    TEXT semesterId FK
+    TEXT leadClassId FK
+    TEXT name
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
+  ClassGroupMembership {
+    TEXT id PK
+    TEXT groupId FK
+    TEXT classId UK,FK
+    DATETIME createdAt
+  }
   ClassSession {
     TEXT id PK
     TEXT code UK
@@ -26,6 +40,8 @@ erDiagram
     INTEGER semesterNumber
     TEXT date
     TEXT classId FK
+    TEXT commonMaterialSnapshot
+    DATETIME commonMaterialConfirmedAt
     DATETIME createdAt
   }
   Communication {
@@ -117,7 +133,20 @@ erDiagram
     TEXT itemManifest
     TEXT manifestHash
     BOOLEAN isRepeat
+    TEXT batchExportRunId FK
     DATETIME createdAt
+  }
+  FeedbackIntakeRun {
+    TEXT id PK
+    TEXT sessionCode FK
+    TEXT sourceFingerprint UK
+    TEXT sourceManifest
+    TEXT status
+    TEXT appliedSummary
+    TEXT issues
+    TEXT planId
+    DATETIME createdAt
+    DATETIME updatedAt
   }
   FeedbackPlan {
     TEXT id PK
@@ -142,6 +171,34 @@ erDiagram
     DATETIME approvedAt
     DATETIME exportedAt
     DATETIME archivedAt
+    TEXT batchId FK
+    INTEGER batchOrder
+  }
+  FeedbackPlanBatch {
+    TEXT id PK
+    TEXT requestKey UK
+    TEXT semesterId FK
+    TEXT type
+    TEXT outputRequirement
+    TEXT generationMode
+    TEXT status
+    TEXT currentPlanId
+    TEXT failedPlanId
+    TEXT sharedLessonRevisionId FK
+    INTEGER planRevision
+    DATETIME createdAt
+    DATETIME updatedAt
+    DATETIME archivedAt
+  }
+  FeedbackPlanBatchExportRun {
+    TEXT id PK
+    TEXT batchId FK
+    TEXT mode
+    TEXT itemManifest
+    TEXT manifestHash
+    TEXT workbookSha256
+    BOOLEAN isRepeat
+    DATETIME createdAt
   }
   FeedbackPlanItem {
     TEXT id PK
@@ -197,6 +254,34 @@ erDiagram
     DATETIME purgedAt
     DATETIME staleAt
     DATETIME createdAt
+    DATETIME updatedAt
+  }
+  GroupLesson {
+    TEXT id PK
+    TEXT groupId FK
+    TEXT title
+    INTEGER sequence
+    TEXT materialSnapshot
+    INTEGER revision
+    DATETIME confirmedAt
+    DATETIME createdAt
+    DATETIME updatedAt
+  }
+  GroupLessonRevision {
+    TEXT id PK
+    TEXT groupLessonId FK
+    INTEGER revision
+    TEXT materialSnapshot
+    DATETIME confirmedAt
+  }
+  GroupLessonSession {
+    TEXT id PK
+    TEXT groupLessonId FK
+    TEXT sessionId UK,FK
+    TEXT syncStatus
+    TEXT differenceSummary
+    BOOLEAN comparable
+    DATETIME confirmedAt
     DATETIME updatedAt
   }
   Label {
@@ -453,10 +538,14 @@ erDiagram
     DATETIME createdAt
     DATETIME updatedAt
   }
+  Class o|--o{ ClassGroup : "leadClassId"
   Class o|--o{ ClassSession : "classId"
   Class ||--o{ FeedbackPlan : "classId"
   Class ||--o{ StudentClassEnrollment : "classId"
   Class ||--o{ TeacherTask : "classId"
+  Class ||--o| ClassGroupMembership : "classId"
+  ClassGroup ||--o{ ClassGroupMembership : "groupId"
+  ClassGroup ||--o{ GroupLesson : "groupId"
   ClassSession o|--o{ FeedbackPlan : "rangeEndSessionId"
   ClassSession o|--o{ FeedbackPlan : "rangeStartSessionId"
   ClassSession o|--o{ FeedbackPlan : "sessionId"
@@ -466,6 +555,8 @@ erDiagram
   ClassSession ||--o{ Attendance : "sessionId"
   ClassSession ||--o{ Communication : "sessionId"
   ClassSession ||--o{ Event : "sessionId"
+  ClassSession ||--o{ FeedbackIntakeRun : "sessionCode"
+  ClassSession ||--o| GroupLessonSession : "sessionId"
   Communication o|--o{ DraftRecord : "communicationId"
   Communication ||--o{ CommunicationRevision : "communicationId"
   Communication ||--o{ TeacherObservationSource : "communicationId"
@@ -476,15 +567,23 @@ erDiagram
   FeedbackPlan ||--o{ FeedbackExportRun : "planId"
   FeedbackPlan ||--o{ FeedbackPlanItem : "planId"
   FeedbackPlan ||--o{ TeacherTask : "planId"
+  FeedbackPlanBatch o|--o{ FeedbackPlan : "batchId"
+  FeedbackPlanBatch ||--o{ FeedbackPlanBatchExportRun : "batchId"
+  FeedbackPlanBatchExportRun o|--o{ FeedbackExportRun : "batchExportRunId"
   FeedbackPlanItem o|--o{ FeedbackAttachment : "planItemId"
   FeedbackPlanItem o|--o{ GenerationRecord : "feedbackPlanItemId"
   FeedbackPlanItem o|--o{ TeacherTask : "planItemId"
   GenerationRecord o|--o{ FeedbackPlanItem : "selectedGenerationId"
   GenerationRecord o|--o{ GenerationRecord : "parentGenerationId"
+  GroupLesson ||--o{ GroupLessonRevision : "groupLessonId"
+  GroupLesson ||--o{ GroupLessonSession : "groupLessonId"
+  GroupLessonRevision o|--o{ FeedbackPlanBatch : "sharedLessonRevisionId"
   Label ||--o{ StudentLabel : "labelId"
   Semester ||--o{ Class : "semesterId"
+  Semester ||--o{ ClassGroup : "semesterId"
   Semester ||--o{ ClassSession : "semesterId"
   Semester ||--o{ FeedbackPlan : "semesterId"
+  Semester ||--o{ FeedbackPlanBatch : "semesterId"
   Semester ||--o{ StudentClassEnrollment : "semesterId"
   Student o|--o{ FeedbackPlanItem : "studentId"
   Student o|--o{ TeacherTask : "studentId"
@@ -531,6 +630,30 @@ erDiagram
 
 复合唯一约束：`semesterId + code`。
 
+### ClassGroup
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `semesterId` | `TEXT` | 是 | FK |
+| `leadClassId` | `TEXT` | 否 | FK |
+| `name` | `TEXT` | 是 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`semesterId + name`。
+
+### ClassGroupMembership
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupId` | `TEXT` | 是 | FK |
+| `classId` | `TEXT` | 是 | unique, FK |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+复合唯一约束：`groupId + classId`。
+
 ### ClassSession
 
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
@@ -541,6 +664,8 @@ erDiagram
 | `semesterNumber` | `INTEGER` | 是 |  |
 | `date` | `TEXT` | 是 |  |
 | `classId` | `TEXT` | 否 | FK |
+| `commonMaterialSnapshot` | `TEXT` | 否 |  |
+| `commonMaterialConfirmedAt` | `DATETIME` | 否 |  |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
@@ -667,7 +792,24 @@ erDiagram
 | `itemManifest` | `TEXT` | 是 | default: '[]' |
 | `manifestHash` | `TEXT` | 是 |  |
 | `isRepeat` | `BOOLEAN` | 是 | default: false |
+| `batchExportRunId` | `TEXT` | 否 | FK |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+
+### FeedbackIntakeRun
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `sessionCode` | `TEXT` | 是 | FK |
+| `sourceFingerprint` | `TEXT` | 是 | unique |
+| `sourceManifest` | `TEXT` | 是 | default: '[]' |
+| `status` | `TEXT` | 是 | default: 'ready' |
+| `appliedSummary` | `TEXT` | 是 | default: '{}' |
+| `issues` | `TEXT` | 是 | default: '[]' |
+| `planId` | `TEXT` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
 
 
 ### FeedbackPlan
@@ -696,6 +838,43 @@ erDiagram
 | `approvedAt` | `DATETIME` | 否 |  |
 | `exportedAt` | `DATETIME` | 否 |  |
 | `archivedAt` | `DATETIME` | 否 |  |
+| `batchId` | `TEXT` | 否 | FK |
+| `batchOrder` | `INTEGER` | 否 |  |
+
+复合唯一约束：`batchId + classId`、`batchId + batchOrder`。
+
+### FeedbackPlanBatch
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `requestKey` | `TEXT` | 是 | unique |
+| `semesterId` | `TEXT` | 是 | FK |
+| `type` | `TEXT` | 是 |  |
+| `outputRequirement` | `TEXT` | 是 |  |
+| `generationMode` | `TEXT` | 是 | default: 'standard' |
+| `status` | `TEXT` | 是 | default: 'ready' |
+| `currentPlanId` | `TEXT` | 否 |  |
+| `failedPlanId` | `TEXT` | 否 |  |
+| `sharedLessonRevisionId` | `TEXT` | 否 | FK |
+| `planRevision` | `INTEGER` | 是 | default: 1 |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+| `archivedAt` | `DATETIME` | 否 |  |
+
+
+### FeedbackPlanBatchExportRun
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `batchId` | `TEXT` | 是 | FK |
+| `mode` | `TEXT` | 是 |  |
+| `itemManifest` | `TEXT` | 是 | default: '[]' |
+| `manifestHash` | `TEXT` | 是 |  |
+| `workbookSha256` | `TEXT` | 是 |  |
+| `isRepeat` | `BOOLEAN` | 是 | default: false |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
 ### FeedbackPlanItem
@@ -762,6 +941,49 @@ erDiagram
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `updatedAt` | `DATETIME` | 是 |  |
 
+
+### GroupLesson
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupId` | `TEXT` | 是 | FK |
+| `title` | `TEXT` | 是 |  |
+| `sequence` | `INTEGER` | 是 |  |
+| `materialSnapshot` | `TEXT` | 是 | default: '{}' |
+| `revision` | `INTEGER` | 是 | default: 0 |
+| `confirmedAt` | `DATETIME` | 否 |  |
+| `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`groupId + sequence`。
+
+### GroupLessonRevision
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupLessonId` | `TEXT` | 是 | FK |
+| `revision` | `INTEGER` | 是 |  |
+| `materialSnapshot` | `TEXT` | 是 |  |
+| `confirmedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+
+复合唯一约束：`groupLessonId + revision`。
+
+### GroupLessonSession
+
+| 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
+|---|---|---|---|
+| `id` | `TEXT` | 是 | PK |
+| `groupLessonId` | `TEXT` | 是 | FK |
+| `sessionId` | `TEXT` | 是 | unique, FK |
+| `syncStatus` | `TEXT` | 是 |  |
+| `differenceSummary` | `TEXT` | 否 |  |
+| `comparable` | `BOOLEAN` | 是 | default: true |
+| `confirmedAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `updatedAt` | `DATETIME` | 是 |  |
+
+复合唯一约束：`groupLessonId + sessionId`。
 
 ### Label
 

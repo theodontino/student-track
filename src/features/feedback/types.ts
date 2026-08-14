@@ -18,6 +18,14 @@ export interface FeedbackContextResponse {
     classId: string;
   };
   className: string;
+  groupProgress?: {
+    group: { id: string; name: string };
+    leadClass: { id: string; code: string; name: string | null } | null;
+    isLeadClass: boolean;
+    lesson: { id: string; title: string; sequence: number; revision: number; confirmedAt: string | null; revisions: Array<{ id: string; revision: number; confirmedAt: string }>; draftMaterial: LessonFeedbackMaterial; confirmedMaterial: LessonFeedbackMaterial | null; hasUnconfirmedChanges: boolean } | null;
+    status: "linked" | "independent" | "lead_required";
+  } | null;
+  sessionCommonMaterial?: { material: LessonFeedbackMaterial; confirmedAt: string | null } | null;
   total: number;
   students: FeedbackContextStudent[];
   routing?: Array<{

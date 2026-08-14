@@ -36,7 +36,7 @@ export function StudentEditorDialog({ workspace }: { workspace: Workspace }) {
         </FormField>
         <FormField id="student-label" label="标签" description="输入后按回车，或选择下方常用标签。">
           <div className="student-editor-form__label-input">
-            <Input id="student-label" value={workspace.labelInput} onChange={(event) => workspace.setLabelInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); workspace.addLabel(); } }} />
+            <Input id="student-label" value={workspace.labelInput} onChange={(event) => workspace.setLabelInput(event.target.value)} onKeyDown={(event) => { if (!event.nativeEvent.isComposing && event.key === "Enter") { event.preventDefault(); workspace.addLabel(); } }} />
             <Button type="button" variant="secondary" onClick={() => workspace.addLabel()}>添加</Button>
           </div>
           <div className="student-editor-form__presets">{PRESET_TAGS.filter((tag) => !workspace.form.labelNames.includes(tag)).map((tag) => <button key={tag} type="button" onClick={() => workspace.addLabel(tag)}>{tag}</button>)}</div>

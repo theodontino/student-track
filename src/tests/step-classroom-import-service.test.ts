@@ -6,6 +6,7 @@ import {
   STEP_PROMPT_VERSION,
   STEP_PROMPT_VERSION_V2,
   StepClassroomImportError,
+  createStepObservationOnlyResult,
   mergeStepClassroomResult,
   parseStepClassroomEnvelope,
 } from "@/services/step-classroom-import-service";
@@ -104,6 +105,40 @@ describe("STEP classroom import envelope", () => {
       "题1：快，独立完成",
       "题1备注：完成很快（待教师复核）",
     ]);
+  });
+
+  it("uses NL candidates only when there is no assistant roster", () => {
+    const { payload } = parseStepClassroomEnvelope(makeExport());
+    const result = mergeStepClassroomResult(payload, {
+      students: [{
+        name: "安然",
+        scores: { A: 5, B: 4, C: null },
+        events: ["模型候选事件"],
+        communication: null,
+      }],
+      alert_suggestion: "",
+    }, { useNlCandidates: true });
+
+    expect(result.students[0]).toMatchObject({
+      scores: { A: 5, B: 4, C: null },
+      present: true,
+      events: expect.arrayContaining(["题1：快，独立完成", "模型候选事件"]),
+    });
+  });
+
+  it("turns STEP facts into teacher observations when an assistant roster exists", () => {
+    const { payload } = parseStepClassroomEnvelope(makeExport());
+    const result = createStepObservationOnlyResult(payload);
+
+    expect(result.students[0]).not.toHaveProperty("present");
+    expect(result.students[0]).toMatchObject({
+      scores: { A: null, B: null, C: null },
+      events: [],
+      teacherInterventions: expect.arrayContaining([
+        expect.objectContaining({ observedProblem: "题1：快，独立完成" }),
+        expect.objectContaining({ observedProblem: "题1备注：完成很快" }),
+      ]),
+    });
   });
 
   it("accepts legacy V2 semantics and discards gesture coordinates", () => {

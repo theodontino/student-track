@@ -9,6 +9,10 @@ export interface LessonFeedbackMaterial {
   version: 1;
   sessionCode?: string;
   scriptLessonNumber?: number;
+  semesterScriptSource?: {
+    lessonNumber: number;
+    libraryUpdatedAt: string;
+  };
   perfectPrivateTemplate?: string;
   errorPrivateTemplate?: string;
   lessonSummary?: string;

@@ -20,6 +20,10 @@ export const LessonFeedbackMaterialSchema: z.ZodType<LessonFeedbackMaterial> = z
   version: z.literal(1),
   sessionCode: text(128).optional(),
   scriptLessonNumber: z.number().int().min(1).max(1000).optional(),
+  semesterScriptSource: z.object({
+    lessonNumber: z.number().int().min(1).max(1000),
+    libraryUpdatedAt: requiredText(100),
+  }).optional(),
   perfectPrivateTemplate: text(100000).optional(),
   errorPrivateTemplate: text(100000).optional(),
   lessonSummary: text(2000).optional(),

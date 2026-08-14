@@ -58,6 +58,10 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   const setAssessmentBriefRaw = (value: string) => patchCore({ assessmentBriefRaw: value });
   const setLessonMaterial = (value: LessonFeedbackMaterial) => patchCore({ lessonMaterial: value });
   const [contextStudents, setContextStudents] = useState<FeedbackContextStudent[]>([]);
+  const [contextSessionId, setContextSessionId] = useState("");
+  const [groupProgress, setGroupProgress] = useState<FeedbackContextResponse["groupProgress"]>(null);
+  const [sessionCommonMaterial, setSessionCommonMaterial] = useState<FeedbackContextResponse["sessionCommonMaterial"]>(null);
+  const loadedGroupMaterialKey = useRef("");
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
   const [contextReloadKey, setContextReloadKey] = useState(0);
@@ -151,15 +155,26 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   }, [contextHydrated, semesterId]);
 
   useEffect(() => {
-    if (!sessionCode) { setContextStudents([]); setContextError(""); return; }
+    if (!sessionCode) { setContextStudents([]); setContextSessionId(""); setGroupProgress(null); setSessionCommonMaterial(null); setContextError(""); return; }
     let cancelled = false;
     setContextLoading(true); setContextError("");
     requestJson<FeedbackContextResponse>(`/api/report/feedback-context?sessionCode=${encodeURIComponent(sessionCode)}&semesterId=${encodeURIComponent(semesterId)}`)
-      .then((data) => { if (!cancelled) setContextStudents(data.students ?? []); })
-      .catch((reason) => { if (!cancelled) { setContextStudents([]); setContextError(errorMessage(reason, "读取反馈上下文失败")); } })
+      .then((data) => { if (!cancelled) { setContextStudents(data.students ?? []); setContextSessionId(data.session?.id ?? ""); setGroupProgress(data.groupProgress ?? null); setSessionCommonMaterial(data.sessionCommonMaterial ?? null); } })
+      .catch((reason) => { if (!cancelled) { setContextStudents([]); setContextSessionId(""); setGroupProgress(null); setSessionCommonMaterial(null); setContextError(errorMessage(reason, "读取反馈上下文失败")); } })
       .finally(() => { if (!cancelled) setContextLoading(false); });
     return () => { cancelled = true; };
   }, [contextReloadKey, semesterId, sessionCode]);
+
+  useEffect(() => {
+    const shared = groupProgress?.lesson?.confirmedMaterial;
+    const key = groupProgress?.lesson ? `${groupProgress.lesson.id}:${groupProgress.lesson.revision}` : "";
+    if (!shared || !key || loadedGroupMaterialKey.current === key || groupFeedbackRaw.trim() || assessmentBriefRaw.trim()) return;
+    loadedGroupMaterialKey.current = key;
+    setGroupFeedbackRaw(shared.groupFeedbackRaw ?? "");
+    setAssessmentBriefRaw(shared.assessmentBriefRaw ?? "");
+    setLessonMaterial({ ...shared, sessionCode });
+    setStatus(`已载入班级组第 ${groupProgress?.lesson?.sequence} 讲的已确认共同材料。`);
+  }, [assessmentBriefRaw, groupFeedbackRaw, groupProgress, sessionCode, setAssessmentBriefRaw, setGroupFeedbackRaw, setLessonMaterial, setStatus]);
 
   function withoutLessonSummary(material: LessonFeedbackMaterial) {
     const { lessonSummary: _summary, lessonSummarySourceHash: _hash, lessonSummaryStatus: _status, ...source } = material;
@@ -168,15 +183,43 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
   }
   function updateGroupFeedbackRaw(value: string) { setGroupFeedbackRaw(value); setLessonMaterial(withoutLessonSummary(lessonMaterial)); }
   function updateAssessmentBriefRaw(value: string) { setAssessmentBriefRaw(value); setLessonMaterial(withoutLessonSummary(lessonMaterial)); }
-  function organizeLessonMaterial() { setLessonMaterial({ ...parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode), scriptLessonNumber: lessonMaterial.scriptLessonNumber, perfectPrivateTemplate: lessonMaterial.perfectPrivateTemplate, errorPrivateTemplate: lessonMaterial.errorPrivateTemplate }); setStatus("课程材料已整理，可在创建反馈计划时固化。"); }
+  async function saveGroupLessonDraft(material: LessonFeedbackMaterial) {
+    const lesson = groupProgress?.lesson;
+    if (!lesson) return;
+    const title = lesson.title === `第 ${lesson.sequence} 讲` && material.lessonTitle?.trim() ? material.lessonTitle.trim() : undefined;
+    await requestJson(`/api/group-lessons/${encodeURIComponent(lesson.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ material, ...(title ? { title } : {}) }),
+    });
+    setContextReloadKey((value) => value + 1);
+  }
+  function organizeLessonMaterial() {
+    const organized = { ...parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw, sessionCode), scriptLessonNumber: lessonMaterial.scriptLessonNumber, perfectPrivateTemplate: lessonMaterial.perfectPrivateTemplate, errorPrivateTemplate: lessonMaterial.errorPrivateTemplate };
+    setLessonMaterial(organized);
+    setStatus(groupProgress?.lesson ? `课程材料已整理，正在保存为班级组第 ${groupProgress.lesson.sequence} 讲草稿。` : "课程材料已整理，可在创建反馈计划时固化。");
+    if (groupProgress?.lesson) void saveGroupLessonDraft(organized).then(() => setStatus(`已保存为班级组第 ${groupProgress.lesson?.sequence} 讲草稿；确认后同组其他班可复用。`)).catch((reason) => setError(errorMessage(reason, "保存共同课草稿失败")));
+  }
+  async function confirmGroupLessonMaterial() {
+    if (!groupProgress?.lesson) return;
+    setError("");
+    try {
+      await saveGroupLessonDraft(lessonMaterial);
+      await requestJson(`/api/group-lessons/${encodeURIComponent(groupProgress.lesson.id)}/confirm`, { method: "POST" });
+      setStatus(`班级组第 ${groupProgress.lesson.sequence} 讲材料已确认，同组其他班可以复用。`);
+      setContextReloadKey((value) => value + 1);
+    } catch (reason) { setError(errorMessage(reason, "确认共同课材料失败")); }
+  }
   function clearLessonMaterials() { setGroupFeedbackRaw(""); setAssessmentBriefRaw(""); setLessonMaterial(createEmptyLessonFeedbackMaterial(sessionCode)); setStatus("课程材料已清空。"); }
   function updateLessonMaterialSection(key: "lessonTitle" | "classroomContent" | "classroomFocus" | "classroomExplanation" | "homework" | "assessmentFocus" | "correctionAdvice" | "otherNotes", value: string) {
     setLessonMaterial({ ...withoutLessonSummary(lessonMaterial), sessionCode, [key]: key === "lessonTitle" ? value : value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) });
   }
-  function applyFeedbackScriptEntry(entry: { groupFeedback: string; topic: string; lessonNumber: number; perfectPrivateFeedback?: string; errorPrivateFeedback?: string }) {
-    const parsed = parseLessonFeedbackMaterial(entry.groupFeedback, "", sessionCode);
-    setGroupFeedbackRaw(entry.groupFeedback); setAssessmentBriefRaw("");
-    setLessonMaterial({ ...parsed, lessonTitle: parsed.lessonTitle || entry.topic, scriptLessonNumber: entry.lessonNumber, perfectPrivateTemplate: entry.perfectPrivateFeedback, errorPrivateTemplate: entry.errorPrivateFeedback });
+  function applyFeedbackScriptEntry(entry: { groupFeedback: string; topic: string; lessonNumber: number; perfectPrivateFeedback?: string; errorPrivateFeedback?: string; material?: LessonFeedbackMaterial }) {
+    const parsed = entry.material
+      ? { ...entry.material, sessionCode }
+      : parseLessonFeedbackMaterial(entry.groupFeedback, "", sessionCode);
+    setGroupFeedbackRaw(entry.groupFeedback); setAssessmentBriefRaw(parsed.assessmentBriefRaw ?? "");
+    setLessonMaterial({ ...parsed, lessonTitle: parsed.lessonTitle || entry.topic, scriptLessonNumber: entry.lessonNumber, perfectPrivateTemplate: parsed.perfectPrivateTemplate ?? entry.perfectPrivateFeedback, errorPrivateTemplate: parsed.errorPrivateTemplate ?? entry.errorPrivateFeedback });
     setStatus(`已套用第 ${entry.lessonNumber} 课话术，可继续检查和整理。`);
   }
   function resetInputState(nextSessionCode = sessionCode) { setGroupFeedbackRaw(""); setAssessmentBriefRaw(""); setLessonMaterial(createEmptyLessonFeedbackMaterial(nextSessionCode)); assessmentPdfs.setItems([]); }
@@ -187,8 +230,9 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     if (!semesterId || !className) { setError("请先选择学期和班级"); return; }
     setCreatingSession(true); setError("");
     try {
-      const data = await requestJson<{ code: string }>(`/api/semesters/${semesterId}/session`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ className, date: newSessionDate }) });
-      setSessionRefreshKey((value) => value + 1); onSessionChange(data.code); setStatus(`已新建 ${data.code}，可继续录入本节课的课堂回顾。`);
+      const data = await requestJson<{ code: string; groupProgress?: { status: string; group: { name: string }; lesson: { sequence: number } | null } | null }>(`/api/semesters/${semesterId}/session`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ className, date: newSessionDate }) });
+      setSessionRefreshKey((value) => value + 1); onSessionChange(data.code);
+      setStatus(data.groupProgress?.lesson ? `已新建 ${data.code}，并进入 ${data.groupProgress.group.name} 第 ${data.groupProgress.lesson.sequence} 讲。` : data.groupProgress ? `已新建 ${data.code}；当前暂作为独立课次，请稍后检查班级组共同进度。` : `已新建 ${data.code}，可继续录入本节课的课堂回顾。`);
     } catch (reason) { setError(errorMessage(reason, "新建课次失败")); }
     finally { setCreatingSession(false); }
   }
@@ -270,18 +314,20 @@ export function useFeedbackWorkspace(initialStep?: FeedbackStep) {
     setRawText(legacyDraft); sessionStorage.removeItem("student-track:nl-input-draft"); sessionStorage.removeItem("chem-track:nl-input-draft"); setLegacyDraftAvailable(false); setParseStatus("已载入课堂录入草稿。"); setActiveStep("extract");
   }
   const lessonMaterialNeedsOrganization = lessonMaterial.groupFeedbackRaw !== groupFeedbackRaw.trim() || lessonMaterial.assessmentBriefRaw !== assessmentBriefRaw.trim();
+  const reloadContext = () => setContextReloadKey((value) => value + 1);
   return {
     activeStep, setActiveStep, context, contextHydrated, sessionRefreshKey, newSessionDate, setNewSessionDate, creatingSession,
     rawText, setRawText, parsing, assistantImporting, parseStatus, streamContent, draftId, parsedResult, reviewResult, corrections,
-    confirming, confirmed, error, status, contextStudents, contextLoading, contextError, students,
+    confirming, confirmed, error, status, contextStudents, contextSessionId, contextLoading, contextError, students, groupProgress, sessionCommonMaterial,
     groupFeedbackRaw, assessmentBriefRaw, lessonMaterial, assessmentStudents, confirmedAssessmentEvidence,
     assessmentImports: assessmentPdfs.items, assessmentBatchBusy: assessmentPdfs.busy, assessmentFolderPlan: assessmentPdfs.folderPlan,
     assessmentConfirmedCount: assessmentPdfs.confirmedCount, assessmentReadyCount: assessmentPdfs.readyCount, assessmentAttentionCount: assessmentPdfs.attentionCount,
-    lessonMaterialNeedsOrganization, updateGroupFeedbackRaw, updateAssessmentBriefRaw, organizeLessonMaterial, clearLessonMaterials, updateLessonMaterialSection, applyFeedbackScriptEntry,
+    lessonMaterialNeedsOrganization, updateGroupFeedbackRaw, updateAssessmentBriefRaw, organizeLessonMaterial, confirmGroupLessonMaterial, clearLessonMaterials, updateLessonMaterialSection, applyFeedbackScriptEntry,
     importAssessmentPdfs: assessmentPdfs.importPdfs, importAssessmentFolder: assessmentPdfs.importFolder, matchAssessmentItem: assessmentPdfs.matchItem, confirmAssessmentItem: assessmentPdfs.confirmItem,
     confirmAllAssessmentMatches: assessmentPdfs.confirmAllMatches, removeAssessmentItem: assessmentPdfs.removeItem, removeFailedAssessmentImports: assessmentPdfs.removeFailed, clearAssessmentImports: assessmentPdfs.clear,
     legacyDraftAvailable, restoreLegacyDraft, workflow: workflow.state, canParse: Boolean(rawText.trim() && sessionCode && !parsing), canConfirm: Boolean(draftId && parsedResult && !confirming),
     onSemesterChange, onClassChange, onSessionChange, createSession, setParsedAttendance, setParsedTeacherInterventions, parse, importAssistantRoster, importStepClassroom, confirm,
     setSemesterId, setClassName, setSessionCode,
+    reloadContext,
   };
 }

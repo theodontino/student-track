@@ -15,7 +15,16 @@ export async function POST(
     const date = typeof body.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
       ? body.date
       : undefined;
-    const session = await createClassSession({ semesterId, classId, classCode, date });
+    const groupProgressMode = body.groupProgressMode === "independent" ? "independent" as const : "auto" as const;
+    const commonMaterialLessonNumber = body.commonMaterialLessonNumber === null
+      ? null
+      : body.commonMaterialLessonNumber === undefined
+        ? undefined
+        : Number(body.commonMaterialLessonNumber);
+    if (commonMaterialLessonNumber !== undefined && commonMaterialLessonNumber !== null && (!Number.isInteger(commonMaterialLessonNumber) || commonMaterialLessonNumber < 1 || commonMaterialLessonNumber > 1000)) {
+      return NextResponse.json({ error: "commonMaterialLessonNumber 必须是 1-1000 的整数或 null" }, { status: 400 });
+    }
+    const session = await createClassSession({ semesterId, classId, classCode, date, groupProgressMode, commonMaterialLessonNumber });
     return NextResponse.json(session, { status: 201 });
   } catch (error) {
     console.error("POST session error:", error);
