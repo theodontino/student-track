@@ -6,6 +6,13 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.3",
+    title: "材料重置提示更清楚",
+    changes: [
+      "将临时上传材料的操作改名为“清空本轮并重新选择材料”，明确说明原始上传文件不会保存，也不会被自动重新解析。",
+    ],
+  },
+  {
     version: "1.2.2",
     title: "修复 PDF 学生匹配回归",
     changes: [
