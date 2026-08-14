@@ -115,8 +115,10 @@ async function assertNewSchema(databasePath: string) {
     }
     const studentColumns = new Set((await client.execute("PRAGMA table_info(\"Student\")")).rows.map((row) => String(row.name)));
     const classColumns = new Set((await client.execute("PRAGMA table_info(\"Class\")")).rows.map((row) => String(row.name)));
+    const classGroupColumns = new Set((await client.execute("PRAGMA table_info(\"ClassGroup\")")).rows.map((row) => String(row.name)));
     if (studentColumns.has("classId") || studentColumns.has("rosterStatus") || studentColumns.has("statusEffectiveAt")) throw new Error("Student 仍包含全局班级或花名册字段");
     if (!classColumns.has("semesterId")) throw new Error("Class 缺少 semesterId");
+    if (!classGroupColumns.has("leadClassId")) throw new Error("ClassGroup 缺少主班字段");
     const planColumns = new Set((await client.execute("PRAGMA table_info(\"FeedbackPlan\")")).rows.map((row) => String(row.name)));
     const planItemColumns = new Set((await client.execute("PRAGMA table_info(\"FeedbackPlanItem\")")).rows.map((row) => String(row.name)));
     if (!["outputRequirement", "inputSnapshot", "archivedAt", "generationMode", "generationStartedAt", "generationCompletedAt", "generationElapsedMs", "generationRunStartedAt"].every((column) => planColumns.has(column))) {
@@ -275,7 +277,7 @@ async function verifySyntheticUpgrade(projectRoot: string, temporaryDirectory: s
 
 async function main() {
   const projectRoot = process.cwd();
-  const liveDatabase = resolveDatabasePath();
+  const liveDatabase = resolveDatabasePath(process.env.DATABASE_URL ?? "file:./dev.db");
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "student-track-upgrade-"));
   const copiedDatabase = path.join(temporaryDirectory, "upgrade.db");
   try {

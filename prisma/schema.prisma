@@ -38,6 +38,7 @@ model Class {
   feedbackPlans FeedbackPlan[]
   teacherTasks  TeacherTask[]
   classGroupMembership ClassGroupMembership?
+  leadingClassGroups ClassGroup[] @relation("ClassGroupLeadClass")
 
   @@unique([semesterId, code])
   @@index([semesterId, name])
@@ -380,16 +381,19 @@ model ClassSession {
 model ClassGroup {
   id         String   @id @default(cuid())
   semesterId String
+  leadClassId String?
   name       String
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   semester   Semester               @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  leadClass  Class?                 @relation("ClassGroupLeadClass", fields: [leadClassId], references: [id], onDelete: Restrict)
   memberships ClassGroupMembership[]
   lessons     GroupLesson[]
 
   @@unique([semesterId, name])
   @@index([semesterId, updatedAt])
+  @@index([leadClassId])
 }
 
 model ClassGroupMembership {

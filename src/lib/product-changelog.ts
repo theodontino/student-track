@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.0-beta.4",
+    title: "班级组共同进度",
+    changes: [
+      "班级组可以指定主班；主班新建真实课次时推进下一讲，其他班按顺序自动跟随同一共同进度。",
+      "反馈工作台会明确提示当前班级组、主班和第几讲；真实课次的评分、考勤和课堂事件仍保持独立。",
+      "组内班级领先于主班时保留独立课次，教师可在学期详情中调整共同进度，不阻断正常记录。",
+      "反馈页整理的课程材料默认保存为当前共同课草稿，教师确认后才共享给同组其他班。",
+    ],
+  },
+  {
     version: "1.2.0-beta.3",
     title: "统一课后任务",
     changes: [

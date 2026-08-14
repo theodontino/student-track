@@ -22,6 +22,7 @@ erDiagram
   ClassGroup {
     TEXT id PK
     TEXT semesterId FK
+    TEXT leadClassId FK
     TEXT name
     DATETIME createdAt
     DATETIME updatedAt
@@ -535,6 +536,7 @@ erDiagram
     DATETIME createdAt
     DATETIME updatedAt
   }
+  Class o|--o{ ClassGroup : "leadClassId"
   Class o|--o{ ClassSession : "classId"
   Class ||--o{ FeedbackPlan : "classId"
   Class ||--o{ StudentClassEnrollment : "classId"
@@ -632,6 +634,7 @@ erDiagram
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
 | `semesterId` | `TEXT` | 是 | FK |
+| `leadClassId` | `TEXT` | 否 | FK |
 | `name` | `TEXT` | 是 |  |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 | `updatedAt` | `DATETIME` | 是 |  |

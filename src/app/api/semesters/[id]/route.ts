@@ -16,7 +16,8 @@ export async function GET(
           orderBy: { date: "desc" },
           include: {
             _count: { select: { attendances: true } },
-            class: { select: { code: true, name: true } },
+            class: { select: { id: true, code: true, name: true } },
+            groupLessonSession: { select: { groupLesson: { select: { id: true, sequence: true, title: true } } } },
           },
         },
         classes: { orderBy: { code: "asc" } },

@@ -51,11 +51,12 @@ afterAll(async () => {
 
 describe("group lesson service", () => {
   it("creates one current group for parallel classes and rejects cross-semester members", async () => {
-    const group = await createClassGroup(semesterId, { name: "合成平行班", classIds: [firstClassId, secondClassId] });
+    const group = await createClassGroup(semesterId, { name: "合成平行班", classIds: [firstClassId, secondClassId], leadClassId: firstClassId });
     groupId = group.id;
     expect(group.memberships).toHaveLength(2);
-    await expect(createClassGroup(semesterId, { name: "重复分组", classIds: [firstClassId] })).rejects.toMatchObject({ status: 409 });
-    await expect(createClassGroup(semesterId, { name: "跨学期", classIds: [otherClassId] })).rejects.toMatchObject({ status: 409 });
+    expect(group.leadClassId).toBe(firstClassId);
+    await expect(createClassGroup(semesterId, { name: "重复分组", classIds: [firstClassId], leadClassId: firstClassId })).rejects.toMatchObject({ status: 409 });
+    await expect(createClassGroup(semesterId, { name: "跨学期", classIds: [otherClassId], leadClassId: otherClassId })).rejects.toMatchObject({ status: 409 });
   });
 
   it("creates immutable confirmed material revisions", async () => {

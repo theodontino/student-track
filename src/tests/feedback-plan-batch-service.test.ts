@@ -31,7 +31,7 @@ beforeAll(async () => {
   })));
   studentIds = students.map((item) => item.id);
   await Promise.all(students.map((student, index) => prisma.event.create({ data: { studentId: student.id, sessionId: sessions[index]!.id, type: "课堂表现", description: `合成学生${index + 1}完成了课堂订正`, rawText: "固定合成测试" } })));
-  const group = await createClassGroup(semesterId, { name: `${marker}-GROUP`, classIds });
+  const group = await createClassGroup(semesterId, { name: `${marker}-GROUP`, classIds, leadClassId: classIds[0] });
   const lesson = await createGroupLesson(group.id, { title: "合成共同课", sequence: 1, material: parseLessonFeedbackMaterial("课程标题：合成共同课\n课堂内容：守恒关系", "出门测：守恒关系") });
   revisionId = (await confirmGroupLesson(lesson.id)).id;
 });

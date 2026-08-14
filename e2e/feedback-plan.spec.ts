@@ -327,6 +327,36 @@ test("unified studio can safely pause and continue an active generation queue", 
   expect(actions).toEqual(["pause_generation", "continue_generation"]);
 });
 
+test("feedback context explains class group progress and confirmed sharing", async ({ page }) => {
+  let confirmed = false;
+  await page.route("**/api/report/feedback-context**", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: {
+      ...body,
+      groupProgress: {
+        group: { id: "e2e-group-1", name: "合成平行班组" },
+        leadClass: { id: TEST_FIXTURE.class.id, code: TEST_FIXTURE.class.code, name: TEST_FIXTURE.class.name },
+        isLeadClass: true,
+        status: "linked",
+        lesson: { id: "e2e-group-lesson-1", title: "氧化还原", sequence: 3, revision: 1, confirmedAt: "2026-08-14T00:00:00.000Z", revisions: [], confirmedMaterial: null, hasUnconfirmedChanges: true },
+      },
+    } });
+  });
+  await page.route("**/api/group-lessons/e2e-group-lesson-1/confirm", async (route) => {
+    confirmed = true;
+    await route.fulfill({ json: { revision: 2 } });
+  });
+  await page.route("**/api/group-lessons/e2e-group-lesson-1", async (route) => {
+    await route.fulfill({ json: { lesson: { id: "e2e-group-lesson-1" } } });
+  });
+
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  await expect(page.getByText(/当前班属于“合成平行班组”.*第 3 讲共同进度/)).toBeVisible();
+  await page.getByRole("button", { name: "确认并共享共同材料" }).click();
+  await expect.poll(() => confirmed).toBe(true);
+});
+
 test("export never reports an unfinished queued item as program-check passed", async ({ page }) => {
   const queuedPlan = plan("", "queued", "paused");
   await page.route("**/api/report/feedback-plans**", async (route) => {

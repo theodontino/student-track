@@ -11,6 +11,11 @@ const uniqueIds = z.array(id).min(1).max(50).superRefine((items, ctx) => {
 export const ClassGroupWriteSchema = z.object({
   name: z.string().trim().min(1).max(100),
   classIds: uniqueIds,
+  leadClassId: id,
+}).superRefine((value, ctx) => {
+  if (!value.classIds.includes(value.leadClassId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["leadClassId"], message: "主班必须属于当前班级组" });
+  }
 });
 
 export const GroupLessonCreateSchema = z.object({

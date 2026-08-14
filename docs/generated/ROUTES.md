@@ -41,6 +41,7 @@
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/semesters/[id]/session` | `DELETE`, `POST` |
 | `/api/semesters` | `GET`, `POST` |
+| `/api/sessions/[id]/group-progress` | `GET`, `PUT` |
 | `/api/sessions` | `GET` |
 | `/api/settings/llm` | `DELETE`, `GET`, `PATCH`, `POST`, `PUT` |
 | `/api/students/[id]/communication-preference/candidates/[candidateId]` | `PATCH` |

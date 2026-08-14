@@ -13,6 +13,7 @@ import {
 import { safeFeedbackCommunicationTarget } from "@/lib/feedback-text-safety";
 import { CommunicationPreferenceSchema, type CommunicationPreference } from "@/lib/feedback-plan";
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
+import { getSessionGroupProgress } from "@/services/group-lesson-service";
 
 const RECENT_SESSION_LIMIT = 5;
 const COMMUNICATION_PREVIEW_LIMIT = 3;
@@ -95,6 +96,7 @@ export interface FeedbackContextResult {
     classId: string;
   };
   className: string;
+  groupProgress: Awaited<ReturnType<typeof getSessionGroupProgress>>;
   total: number;
   students: FeedbackContextStudent[];
 }
@@ -606,6 +608,7 @@ export async function buildFeedbackContext(
       classId: session.classId,
     },
     className,
+    groupProgress: await getSessionGroupProgress(session.id, prisma),
     total: contextStudents.length,
     students: contextStudents,
   };

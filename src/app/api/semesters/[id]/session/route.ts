@@ -15,7 +15,8 @@ export async function POST(
     const date = typeof body.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
       ? body.date
       : undefined;
-    const session = await createClassSession({ semesterId, classId, classCode, date });
+    const groupProgressMode = body.groupProgressMode === "independent" ? "independent" as const : "auto" as const;
+    const session = await createClassSession({ semesterId, classId, classCode, date, groupProgressMode });
     return NextResponse.json(session, { status: 201 });
   } catch (error) {
     console.error("POST session error:", error);
