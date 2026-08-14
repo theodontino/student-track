@@ -53,6 +53,11 @@ describe("class group shared progress", () => {
     });
     const follower = await createClassSession({ semesterId, classId: followerClassId, date: "2099-08-03" });
     expect(follower.groupProgress).toMatchObject({ status: "linked", lesson: { id: lead.groupProgress?.lesson?.id, sequence: 1 } });
+    const progress = await getSessionGroupProgress(follower.id);
+    expect(progress?.group.members).toEqual(expect.arrayContaining([
+      expect.objectContaining({ classId: leadClassId, session: expect.objectContaining({ id: lead.id }) }),
+      expect.objectContaining({ classId: followerClassId, session: expect.objectContaining({ id: follower.id }) }),
+    ]));
   });
 
   it("advances the lead and followers in lesson order", async () => {

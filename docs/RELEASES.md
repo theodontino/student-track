@@ -4,7 +4,7 @@
 
 | 组件 | 版本 | 与另一端的关系 |
 |---|---:|---|
-| Student Track | 1.2.0 | 统一课后任务、班级组共同进度、学期公共材料与主反馈入口；保留逐学生微操、旧工作台/API、FeedbackPlan 历史、多班批次和 no-send 边界，按 Zhuiver 归为 MINOR。 |
+| Student Track | 1.2.1 | 三段式课后任务可沿同一共同课一次处理班级组内所有已就绪班级；各班材料运行、证据、计划、批准和独立导出保持隔离，按 Zhuiver 归为 PATCH。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 原生 SwiftUI 正式版；发布 `wcc.student-track-file.v1`，只读 receipt v1，并保持不发送边界。 |
 
 两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
@@ -13,7 +13,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.2.0 | 统一课后任务、班级组共同进度、学期公共材料与主反馈入口；旧五步工作台、FeedbackPlan 历史和 handoff v1 保持兼容。 |
+| Student Track | 1.2.1 | 班级组一站式反馈复用既有 FeedbackPlanBatch；旧五步工作台、FeedbackPlan 历史、handoff v1 和 no-send 边界保持兼容。 |
 | WCG | 0.6.0 | handoff 谱系、已批准反馈草稿不发送填入、逐条实时会话定位、前 50→前 150 降级和输入框安全复核；原生 SwiftUI 正式版。 |
 
 ## 1.2 Beta 发布历史
@@ -35,8 +35,7 @@ ST ↔ STEP 当前桥接是 `experimental`，不属于 Student Track 当前稳�
 
 Student Track 的日常和稳定版门禁以自动化为准：普通改动通过 `verify:quick`，高风险与发布改动通过 `verify:release`，随后即可进入真实使用。所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化；固定次数的真实课后流程和重复人工合成演练不再阻断发布。
 
-版本级别遵循协议仓库 `Zhuiver.md`：Student Track `1.2.0` 是 MINOR，表示在保留既有
-教学工作台承诺的基础上统一课后反馈工作流；协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
+版本级别遵循协议仓库 `Zhuiver.md`：Student Track `1.2.0` 是统一课后反馈工作流的 MINOR；`1.2.1` 在既有班级组、多班批次和三段式入口上补齐一站式编排，归为 PATCH。协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
 `docs/release-evidence/` 中的 Zhuiver 记录，并通过 `npm run release:check-version`。
 
 人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及**已接受的正式跨仓协议**变化时仍使用精确提交的两端自动化；实验 STEP bridge 的当前 adapter 变化不触发正式 compatibility 流程。

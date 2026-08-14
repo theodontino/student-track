@@ -212,6 +212,10 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
                   name: true,
                   leadClassId: true,
                   leadClass: { select: { id: true, code: true, name: true } },
+                  memberships: {
+                    orderBy: { class: { code: "asc" } },
+                    select: { class: { select: { id: true, code: true, name: true } } },
+                  },
                 },
               },
             },
@@ -229,6 +233,13 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
               confirmedAt: true,
               materialSnapshot: true,
               revisions: { orderBy: { revision: "desc" }, take: 1, select: { id: true, revision: true, confirmedAt: true, materialSnapshot: true } },
+              sessionLinks: {
+                select: {
+                  session: {
+                    select: { id: true, code: true, date: true, classId: true },
+                  },
+                },
+              },
             },
           },
         },
@@ -251,8 +262,22 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
     confirmedMaterial: confirmed ? parseMaterial(confirmed.materialSnapshot) : null,
     hasUnconfirmedChanges: !confirmed || confirmed.materialSnapshot !== rawLesson.materialSnapshot,
   } : null;
+  const linkedSessionByClass = new Map(
+    (rawLesson?.sessionLinks ?? [])
+      .filter((link) => Boolean(link.session.classId))
+      .map((link) => [link.session.classId as string, link.session]),
+  );
   return {
-    group: { id: group.id, name: group.name },
+    group: {
+      id: group.id,
+      name: group.name,
+      members: group.memberships.map(({ class: classRecord }) => ({
+        classId: classRecord.id,
+        classCode: classRecord.code,
+        className: classRecord.name,
+        session: linkedSessionByClass.get(classRecord.id) ?? null,
+      })),
+    },
     leadClass: group.leadClass,
     isLeadClass: group.leadClassId === session.classId,
     lesson,

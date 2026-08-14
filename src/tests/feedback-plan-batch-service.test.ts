@@ -10,7 +10,7 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
 }));
 import { buildFeedbackPlanBatchExportWorkbook } from "@/services/feedback-export-service";
 import { continueFeedbackPlanBatch, createFeedbackPlanBatch, getFeedbackPlanBatch, pauseFeedbackPlanBatch, retryFeedbackPlanBatch, startFeedbackPlanBatch } from "@/services/feedback-plan-batch-service";
-import { confirmGroupLesson, createClassGroup, createGroupLesson } from "@/services/group-lesson-service";
+import { confirmGroupLesson, createClassGroup, createGroupLesson, setSessionGroupProgress } from "@/services/group-lesson-service";
 
 const marker = "VITEST-FEEDBACK-BATCH";
 let semesterId = "";
@@ -18,6 +18,7 @@ let classIds: string[] = [];
 let sessionIds: string[] = [];
 let studentIds: string[] = [];
 let revisionId = "";
+let lessonId = "";
 
 beforeAll(async () => {
   const semester = await prisma.semester.create({ data: { name: marker, startDate: "2098-01-01", endDate: "2098-06-30" } });
@@ -33,6 +34,8 @@ beforeAll(async () => {
   await Promise.all(students.map((student, index) => prisma.event.create({ data: { studentId: student.id, sessionId: sessions[index]!.id, type: "课堂表现", description: `合成学生${index + 1}完成了课堂订正`, rawText: "固定合成测试" } })));
   const group = await createClassGroup(semesterId, { name: `${marker}-GROUP`, classIds, leadClassId: classIds[0] });
   const lesson = await createGroupLesson(group.id, { title: "合成共同课", sequence: 1, material: parseLessonFeedbackMaterial("课程标题：合成共同课\n课堂内容：守恒关系", "出门测：守恒关系") });
+  lessonId = lesson.id;
+  await Promise.all(sessionIds.map((sessionId) => setSessionGroupProgress({ sessionId, groupLessonId: lesson.id })));
   revisionId = (await confirmGroupLesson(lesson.id)).id;
 });
 
@@ -89,6 +92,45 @@ describe("feedback plan batch service", () => {
     })).rejects.toMatchObject({ status: 404 });
     await expect(prisma.feedbackPlanBatch.count({ where: { requestKey } })).resolves.toBe(0);
     await expect(prisma.feedbackPlan.count({ where: { outputRequirement: "合成原子回滚" } })).resolves.toBe(0);
+  });
+
+  it("creates a group-lesson batch from independently confirmed intake runs", async () => {
+    const runs = await Promise.all(sessionIds.map((sessionId, index) => prisma.feedbackIntakeRun.create({
+      data: {
+        sessionCode: `2098010${index + 1}01`,
+        sourceFingerprint: `${marker}-GROUP-RUN-${index}`,
+        sourceManifest: "[]",
+        status: "applied",
+        appliedSummary: JSON.stringify({ applied: true, assessmentEvidence: {} }),
+      },
+    })));
+    await expect(createFeedbackPlanBatch({
+      requestKey: `${marker}-WRONG-LESSON`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "错误共同课",
+      groupLessonId: "missing-group-lesson",
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], intakeRunId: runs[index]!.id, studentIds: [studentIds[index]!] })),
+    })).rejects.toMatchObject({ status: 409 });
+
+    const input = {
+      requestKey: `${marker}-GROUP-INTAKE`,
+      semesterId,
+      type: "event_micro" as const,
+      outputRequirement: "班级组一站式反馈",
+      generationMode: "fast" as const,
+      groupLessonId: lessonId,
+      sharedLessonRevisionId: revisionId,
+      sharedMaterialConfirmed: true,
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], intakeRunId: runs[index]!.id, studentIds: [studentIds[index]!] })),
+    };
+    const created = await createFeedbackPlanBatch(input);
+    const repeated = await createFeedbackPlanBatch(input);
+    expect(repeated.id).toBe(created.id);
+    expect(created.plans).toHaveLength(2);
+    const linkedRuns = await prisma.feedbackIntakeRun.findMany({ where: { id: { in: runs.map((run) => run.id) } }, orderBy: { sourceFingerprint: "asc" } });
+    expect(linkedRuns.every((run) => Boolean(run.planId))).toBe(true);
+    expect(new Set(linkedRuns.map((run) => run.planId)).size).toBe(2);
   });
 
   it("stops after a failed class and resumes serially from that class", async () => {

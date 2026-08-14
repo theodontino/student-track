@@ -19,6 +19,7 @@ export const FEEDBACK_PLAN_BATCH_STATUSES = [
 
 export const FeedbackPlanBatchChildSchema = z.object({
   classId: z.string().trim().min(1).max(200),
+  intakeRunId: z.string().trim().min(1).max(200).optional(),
   sessionId: z.string().trim().min(1).max(200).optional(),
   rangeStartSessionId: z.string().trim().min(1).max(200).optional(),
   rangeEndSessionId: z.string().trim().min(1).max(200).optional(),
@@ -35,6 +36,7 @@ export const FeedbackPlanBatchCreateSchema = z.object({
   type: z.enum(["event_micro", "stage_trend"]),
   outputRequirement: z.string().trim().min(1).max(2000),
   generationMode: z.enum(["standard", "fast"]).default("standard"),
+  groupLessonId: z.string().trim().min(1).max(200).optional(),
   sharedLessonRevisionId: z.string().trim().min(1).max(200).optional(),
   sharedMaterialConfirmed: z.boolean().optional(),
   plans: z.array(FeedbackPlanBatchChildSchema).min(2).max(20),

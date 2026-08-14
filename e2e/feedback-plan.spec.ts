@@ -285,6 +285,35 @@ test("unified feedback keeps the approved three-stage strategy and focused stude
   await expect(page.getByText("当前独立课次 · 尚未确认公共材料", { exact: true })).toBeVisible();
 });
 
+test("class-group studio filters independent plans by class", async ({ page }) => {
+  const detail = plan();
+  const batch = {
+    id: "e2e-group-batch",
+    status: "running",
+    currentPlanId: detail.id,
+    plans: [
+      { id: detail.id, batchOrder: 1, status: "in_review", class: { id: "group-class-1", code: "G-01", name: "合成一班" }, progress: { total: 1, generated: 1, approved: 0, exported: 0, failed: 0 } },
+      { id: "e2e-feedback-plan-2", batchOrder: 2, status: "draft", class: { id: "group-class-2", code: "G-02", name: "合成二班" }, progress: { total: 1, generated: 0, approved: 0, exported: 0, failed: 0 } },
+    ],
+  };
+  await page.route("**/api/report/feedback-plan-batches/e2e-group-batch", (route) => route.fulfill({ json: { batch } }));
+  await page.route("**/api/report/feedback-plans**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith("/feedback-plans")) return route.fulfill({ json: { plans: [detail] } });
+    if (request.method() === "GET" && url.pathname.endsWith(`/${detail.id}`)) return route.fulfill({ json: { plan: detail } });
+    await route.continue();
+  });
+
+  await page.goto(`/feedback?step=export&stage=studio&batchId=${batch.id}&planId=${detail.id}&semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  await expect(page.getByRole("heading", { name: "班级组计划工作室" })).toBeVisible();
+  await expect(page.getByText("合成一班", { exact: true })).toBeVisible();
+  await expect(page.getByText("合成二班", { exact: true })).toBeVisible();
+  await expect(page.getByText("生成 1/1 · 批准 0 · 导出 0", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "进入下一班" })).toBeVisible();
+  await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.students[0].name);
+});
+
 test("unified studio can safely pause and continue an active generation queue", async ({ page }) => {
   let planStatus = "generating";
   const detail = () => plan("", planStatus === "paused" ? "queued" : "generating", planStatus);
@@ -360,6 +389,52 @@ test("feedback context explains class group progress and confirmed sharing", asy
   await expect(page.getByText(/当前班属于“合成平行班组”.*第 3 讲共同进度/)).toBeVisible();
   await page.getByRole("button", { name: "确认并共享共同材料" }).click();
   await expect.poll(() => confirmed).toBe(true);
+});
+
+test("unified feedback can turn one linked lesson into a class-group task", async ({ page }) => {
+  await page.route("**/api/report/feedback-context**", async (route) => {
+    const response = await route.fetch();
+    const body = JSON.parse(await response.text()) as Record<string, unknown>;
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      contentType: "application/json",
+      json: {
+        ...body,
+        groupProgress: {
+          group: {
+            id: "e2e-group-task",
+            name: "合成平行班组",
+            members: [
+              { classId: TEST_FIXTURE.class.id, classCode: TEST_FIXTURE.class.code, className: TEST_FIXTURE.class.name, session: { id: TEST_FIXTURE.sessions[0].id, code: TEST_FIXTURE.sessions[0].code, date: TEST_FIXTURE.sessions[0].date, classId: TEST_FIXTURE.class.id } },
+              { classId: "e2e-peer-class", classCode: "E2E-PEER", className: "合成同组二班", session: { id: "e2e-peer-session", code: "2099010201", date: "2099-01-02", classId: "e2e-peer-class" } },
+              { classId: "e2e-pending-class", classCode: "E2E-PENDING", className: "合成未开课班", session: null },
+            ],
+          },
+          leadClass: { id: TEST_FIXTURE.class.id, code: TEST_FIXTURE.class.code, name: TEST_FIXTURE.class.name },
+          isLeadClass: true,
+          status: "linked",
+          lesson: { id: "e2e-group-lesson-task", title: "氧化还原", sequence: 3, revision: 1, confirmedAt: "2026-08-14T00:00:00.000Z", revisions: [], confirmedMaterial: null, hasUnconfirmedChanges: true },
+        },
+      },
+    });
+  });
+
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+  const groupToggle = page.getByRole("checkbox", { name: /按班级组处理本讲反馈/ });
+  await expect(groupToggle).toBeEnabled();
+  await groupToggle.check();
+  await expect(page.getByText("合成平行班组 · 第 3 讲 · 2/3 班已就绪")).toBeVisible();
+  await expect(page.getByText("合成同组二班", { exact: true })).toBeVisible();
+  await expect(page.getByText("本讲尚未完成，已跳过", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "处理本班" })).toHaveCount(1);
+  const stored = await page.evaluate(() => JSON.parse(sessionStorage.getItem("student-track:feedback-group-flow:v1") ?? "null"));
+  expect(stored.entries).toHaveLength(2);
+  expect(stored.entries.every((entry: { selected: boolean }) => entry.selected)).toBe(true);
+  await page.reload();
+  await expect(groupToggle).toBeChecked();
+  await expect(page.getByText("合成平行班组 · 第 3 讲 · 2/3 班已就绪")).toBeVisible();
+  await expect(page.getByText("合成同组二班", { exact: true })).toBeVisible();
 });
 
 test("export never reports an unfinished queued item as program-check passed", async ({ page }) => {

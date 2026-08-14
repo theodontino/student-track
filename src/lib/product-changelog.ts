@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.1",
+    title: "班级组一站式反馈",
+    changes: [
+      "三段式课后任务可按当前共同课一次处理班级组内所有已开课班级；尚未形成真实课次的班级会明确显示并跳过。",
+      "教师逐班投入和确认助教表、STEP、PDF 与学生范围，公共课程材料和整批反馈策略只设置一次。",
+      "各班仍创建独立 FeedbackPlan，按班串行生成并在班级组工作室逐班复核、批准和导出独立 Excel。",
+      "单班流程、高级工作台的合并导出、历史计划和 WCG no-send 边界保持不变。",
+    ],
+  },
+  {
     version: "1.2.0",
     title: "1.2 正式版：公共材料与主反馈统一",
     changes: [

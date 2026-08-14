@@ -5,7 +5,7 @@ import {
   FeedbackPlanBatchCreateSchema,
   type FeedbackPlanBatchCreateInput,
 } from "@/lib/feedback-plan-batch";
-import type { FeedbackPlanCreateInput } from "@/lib/feedback-plan";
+import { FeedbackPlanAssessmentEvidenceSchema, type FeedbackPlanCreateInput } from "@/lib/feedback-plan";
 import { prisma } from "@/lib/prisma";
 import {
   continueFeedbackPlanGeneration,
@@ -103,6 +103,42 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
       throw new ApiError("反馈批次只能包含同一学期的班级", 409, "conflict", false);
     }
 
+    const childSessions = await Promise.all(input.plans.map(async (child) => {
+      const sessionRef = child.sessionId ?? child.rangeEndSessionId;
+      if (!sessionRef) return null;
+      return tx.classSession.findFirst({
+        where: { OR: [{ id: sessionRef }, { code: sessionRef }] },
+        select: {
+          id: true,
+          code: true,
+          classId: true,
+          groupLessonSession: { select: { groupLessonId: true } },
+        },
+      });
+    }));
+    input.plans.forEach((child, index) => {
+      const session = childSessions[index];
+      if (session && session.classId !== child.classId) {
+        throw new ApiError("反馈批次课次与班级不一致", 409, "conflict", false);
+      }
+      if ((input.groupLessonId || child.intakeRunId) && !session) {
+        throw new ApiError("班级组反馈必须为每个班指定真实课次", 409, "conflict", false);
+      }
+      if (input.groupLessonId && session?.groupLessonSession?.groupLessonId !== input.groupLessonId) {
+        throw new ApiError("反馈批次中的课次不属于同一共同课", 409, "conflict", false);
+      }
+    });
+
+    const intakeRuns = await Promise.all(input.plans.map(async (child, index) => {
+      if (!child.intakeRunId) return null;
+      const run = await tx.feedbackIntakeRun.findUnique({ where: { id: child.intakeRunId } });
+      if (!run) throw new ApiError("有班级的材料运行不存在", 404, "not_found", false);
+      if (run.status !== "applied") throw new ApiError("有班级尚未确认课堂事实", 409, "conflict", false);
+      if (run.sessionCode !== childSessions[index]?.code) throw new ApiError("材料运行与目标课次不一致", 409, "conflict", false);
+      if (run.planId) throw new ApiError("有班级的材料运行已经创建过反馈计划", 409, "conflict", false);
+      return run;
+    }));
+
     const revision = input.sharedLessonRevisionId
       ? await tx.groupLessonRevision.findUnique({
           where: { id: input.sharedLessonRevisionId },
@@ -112,6 +148,9 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
     if (input.sharedLessonRevisionId && !revision) throw new ApiError("已确认共同课修订不存在", 404, "not_found", false);
     if (revision && (revision.groupLesson.group.semesterId !== input.semesterId || classes.some((item) => item.classGroupMembership?.groupId !== revision.groupLesson.group.id))) {
       throw new ApiError("共同课修订与所选班级不属于同一班级组", 409, "conflict", false);
+    }
+    if (revision && input.groupLessonId && revision.groupLessonId !== input.groupLessonId) {
+      throw new ApiError("共同课修订与批次共同课不一致", 409, "conflict", false);
     }
     const sharedMaterial = revision ? LessonFeedbackMaterialSchema.parse(JSON.parse(revision.materialSnapshot)) : null;
 
@@ -126,10 +165,16 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
       },
     });
     for (const [index, child] of input.plans.entries()) {
-      const sessionRef = child.sessionId ?? child.rangeEndSessionId;
-      const session = sessionRef
-        ? await tx.classSession.findFirst({ where: { OR: [{ id: sessionRef }, { code: sessionRef }] }, select: { code: true } })
-        : null;
+      const session = childSessions[index];
+      const intakeRun = intakeRuns[index];
+      let intakeAssessmentEvidence: FeedbackPlanCreateInput["assessmentEvidence"];
+      if (intakeRun) {
+        try {
+          const snapshot = JSON.parse(intakeRun.appliedSummary) as { assessmentEvidence?: Record<string, unknown> };
+          const parsed = FeedbackPlanAssessmentEvidenceSchema.safeParse(snapshot.assessmentEvidence);
+          if (parsed.success) intakeAssessmentEvidence = parsed.data;
+        } catch { /* malformed historical summaries do not add assessment evidence */ }
+      }
       const lessonMaterial = sharedMaterial
         ? { ...sharedMaterial, ...(session?.code ? { sessionCode: session.code } : {}) }
         : child.lessonMaterial;
@@ -139,9 +184,11 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
         outputRequirement: input.outputRequirement,
         semesterId: input.semesterId,
         lessonMaterial,
+        assessmentEvidence: intakeAssessmentEvidence ?? child.assessmentEvidence,
       };
       const plan = await createFeedbackPlan(planInput, tx);
       await tx.feedbackPlan.update({ where: { id: plan.id }, data: { batchId: batch.id, batchOrder: index + 1, generationMode: input.generationMode } });
+      if (intakeRun) await tx.feedbackIntakeRun.update({ where: { id: intakeRun.id }, data: { planId: plan.id } });
     }
     const created = await tx.feedbackPlanBatch.findUnique({ where: { id: batch.id }, include: batchInclude });
     if (!created) throw new Error("反馈批次创建后无法读取");

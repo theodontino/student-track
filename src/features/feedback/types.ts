@@ -19,7 +19,16 @@ export interface FeedbackContextResponse {
   };
   className: string;
   groupProgress?: {
-    group: { id: string; name: string };
+    group: {
+      id: string;
+      name: string;
+      members?: Array<{
+        classId: string;
+        classCode: string;
+        className: string | null;
+        session: { id: string; code: string; date: string; classId: string | null } | null;
+      }>;
+    };
     leadClass: { id: string; code: string; name: string | null } | null;
     isLeadClass: boolean;
     lesson: { id: string; title: string; sequence: number; revision: number; confirmedAt: string | null; revisions: Array<{ id: string; revision: number; confirmedAt: string }>; draftMaterial: LessonFeedbackMaterial; confirmedMaterial: LessonFeedbackMaterial | null; hasUnconfirmedChanges: boolean } | null;
