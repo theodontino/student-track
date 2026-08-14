@@ -6,6 +6,15 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.0",
+    title: "1.2 正式版：公共材料与主反馈统一",
+    changes: [
+      "Beta 3–5 的统一课后任务、班级组共同进度和学期公共材料流程完成稳定化，正式作为 1.2 的默认反馈入口。",
+      "公共材料、共同课修订和独立课次快照继续只作为课程背景；反馈计划保留创建时的材料快照和逐学生微操。",
+      "高级五步工作台、旧 API、反馈历史、多班批次、手动保存和 WCG no-send 边界保持兼容。",
+    ],
+  },
+  {
     version: "1.2.0-beta.5",
     title: "公共材料与主反馈统一",
     changes: [

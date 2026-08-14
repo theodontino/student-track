@@ -545,7 +545,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
   }
 
   return <main className={styles.page}>
-    <PageHeader title="课后任务" description="一次投入材料，统一确认事实，再进入可完整微操的反馈计划。" actions={<div className={styles.headerActions}><Badge tone="info">1.2 Beta 5</Badge><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">高级工作台</Link></div>} />
+    <PageHeader title="课后任务" description="一次投入材料，统一确认事实，再进入可完整微操的反馈计划。" actions={<div className={styles.headerActions}><Badge tone="info">1.2.0</Badge><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">高级工作台</Link></div>} />
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {status && <StatusBanner tone="success">{status}</StatusBanner>}
     <FeedbackContextSection workspace={workspace} />
