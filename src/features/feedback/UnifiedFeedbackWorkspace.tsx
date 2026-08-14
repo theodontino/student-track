@@ -14,6 +14,7 @@ import { useLLMConfiguration } from "@/features/system/useLLMConfiguration";
 import type { FeedbackIntakeDecision, FeedbackIntakeIssue } from "@/services/feedback-intake-service";
 import { FeedbackContextSection } from "./FeedbackContextSection";
 import { FeedbackPlanPanel } from "./FeedbackPlanPanel";
+import FeedbackPlanManager from "./FeedbackPlanManager";
 import { useFeedbackWorkspace } from "./useFeedbackWorkspace";
 import styles from "./unified-feedback-workspace.module.css";
 
@@ -1037,6 +1038,7 @@ export default function UnifiedFeedbackWorkspace({ initialStage = "intake" }: { 
 
   return <main className={styles.page}>
     <PageHeader title="课后任务" description="一次投入材料，统一确认事实，再进入可完整微操的反馈计划。" actions={<div className={styles.headerActions}><Badge tone="info">{packageMetadata.version}</Badge><Link href="/feedback/advanced" className="ui-button ui-button--ghost ui-button--md">高级工作台</Link></div>} />
+    <FeedbackPlanManager semesterId={contextSemesterId} />
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {status && <StatusBanner tone="success">{status}</StatusBanner>}
     <FeedbackContextSection workspace={workspace} />
