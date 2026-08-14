@@ -6,6 +6,13 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.4",
+    title: "修复旧解析结果重复命中",
+    changes: [
+      "材料指纹加入解析器版本；学生匹配规则修复后，相同文件会重新解析，不再复用修复前的身份冲突结果。",
+    ],
+  },
+  {
     version: "1.2.3",
     title: "材料重置提示更清楚",
     changes: [

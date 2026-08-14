@@ -20,6 +20,7 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 200;
 const ZIP_LOCAL_HEADER = 0x04034b50;
 const ZIP_CENTRAL_HEADER = 0x02014b50;
+const INTAKE_PARSER_VERSION = 2;
 
 type IntakeSource = "upload" | "inbox";
 type IntakeKind = "assistant_roster" | "step_classroom" | "assessment_pdf";
@@ -486,7 +487,13 @@ async function inspectFeedbackIntakeInternal(
   const freshExpanded = expanded.filter((file) => !existingSignatures.has(sourceSignature({ name: file.displayName, size: file.buffer.byteLength, sourceHash: sha256(new Uint8Array(file.buffer)) })));
   const freshManifest = manifestFor(freshExpanded);
   const manifest = [...existingManifest, ...freshManifest] as Array<{ name: string; source: IntakeSource; kind: IntakeKind | "ignored"; size: number; sourceHash?: string }>;
-  const sourceFingerprint = sha256(JSON.stringify({ sessionCode: input.sessionCode, files: manifest.map((file) => ({ name: file.name, size: file.size, sourceHash: file.sourceHash ?? "" })).sort((left, right) => sourceSignature(left).localeCompare(sourceSignature(right))) }));
+  const sourceFingerprint = sha256(JSON.stringify({
+    parserVersion: INTAKE_PARSER_VERSION,
+    sessionCode: input.sessionCode,
+    files: manifest
+      .map((file) => ({ name: file.name, size: file.size, sourceHash: file.sourceHash ?? "" }))
+      .sort((left, right) => sourceSignature(left).localeCompare(sourceSignature(right))),
+  }));
   const byStudentId = new Map(roster.map((student) => [student.studentId, student]));
   const sourceFacts: IntakeSourceFact[] = [...(previous?.snapshot.sourceFacts ?? [])];
   for (const file of freshExpanded.filter((item) => classify(item) === "assistant_roster")) {
