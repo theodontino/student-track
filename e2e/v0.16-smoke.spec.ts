@@ -25,8 +25,9 @@ async function selectQuickScoreClass(page: Page) {
   }
   const classSelect = page.getByLabel("班级", { exact: true });
   await expect(classSelect).toBeEnabled();
+  await expect(classSelect.locator("option")).toHaveCount(3);
   if (await classSelect.inputValue() !== TEST_FIXTURE.class.id) {
-    await classSelect.selectOption({ label: TEST_FIXTURE.class.name });
+    await classSelect.selectOption(TEST_FIXTURE.class.id);
   }
   await expect(page.getByText(TEST_FIXTURE.students[0].name, { exact: true })).toBeVisible();
   await expect(page.getByLabel("课次", { exact: true })).toBeVisible();

@@ -98,25 +98,22 @@ test.describe.serial("v0.17.0 information architecture", () => {
       const originalSetItem = Storage.prototype.setItem;
       (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0;
       Storage.prototype.setItem = function (key, value) {
-        if (key.startsWith("student-track:workspace:")) {
+        if (key === "student-track:feedback-task-draft:v2") {
           const target = window as Window & { workspaceWriteCount?: number };
           target.workspaceWriteCount = (target.workspaceWriteCount ?? 0) + 1;
         }
         return originalSetItem.call(this, key, value);
       };
     });
-    await page.goto("/feedback/advanced");
-    await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
-    await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
-    await page.getByRole("button", { name: "2 录入 录入与提取课堂记录" }).click();
+    await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+    const requirement = page.getByLabel("总体要求");
+    await expect(requirement).toBeVisible();
     await page.waitForTimeout(500);
     await page.evaluate(() => { (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0; });
 
-    const review = page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。");
-    await review.click();
-    await review.type("连续输入保持流畅", { delay: 40 });
-    await expect(review).toBeFocused();
+    await requirement.click();
+    await requirement.type("连续输入保持流畅", { delay: 40 });
+    await expect(requirement).toBeFocused();
     await page.waitForTimeout(450);
     expect(await page.evaluate(() => (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount)).toBe(1);
   });
