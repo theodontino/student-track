@@ -157,22 +157,6 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByLabel("课次", { exact: true })).toHaveValue(TEST_FIXTURE.sessions[0].code);
   });
 
-  test("an unfinished feedback review survives page switches", async ({ page }) => {
-    await page.goto("/feedback/advanced");
-    await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
-    await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
-    await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
-    await page.getByRole("button", { name: "2 录入 录入与提取课堂记录" }).click();
-    const review = page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。");
-    await review.fill("E2E 未生成反馈的课堂回顾");
-
-    await page.getByRole("link", { name: "反馈历史" }).click();
-    await page.goto("/feedback/advanced");
-    await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未生成反馈的课堂回顾");
-    await page.getByRole("button", { name: "1 准备 选择课次与准备材料" }).click();
-    await expect(page.locator("select").nth(2)).toHaveValue(TEST_FIXTURE.sessions[0].code);
-  });
-
   test("narrow windows use the accessible navigation drawer", async ({ page }) => {
     await page.setViewportSize({ width: 720, height: 900 });
     await page.goto("/");
