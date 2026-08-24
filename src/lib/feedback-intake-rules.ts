@@ -34,3 +34,11 @@ export function isBlockingFeedbackIntakeIssue(item: { code: string; severity: Fe
     "step_note_review",
   ].includes(item.code);
 }
+
+export function isSourceScopedBoundaryIssue(item: { code: string }) {
+  return [
+    "assistant_date_mismatch",
+    "assistant_lesson_mismatch",
+    "assessment_date_mismatch",
+  ].includes(item.code);
+}

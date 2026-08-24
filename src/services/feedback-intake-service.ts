@@ -14,7 +14,7 @@ import { processDraftReview } from "@/services/review-service";
 import { createFeedbackPlan, getFeedbackPlan } from "@/services/feedback-plan-service";
 import type { FeedbackPlanCreateInput } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
-import { isBlockingFeedbackIntakeIssue } from "@/lib/feedback-intake-rules";
+import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
 import { prisma } from "@/lib/prisma";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -841,11 +841,16 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
   if (run.status === "applied" || snapshot.applied === true) return view(run);
   const runIssues = parseJson<FeedbackIntakeIssue[]>(run.issues, []);
   const resolvedIssueIds = new Set(allDecisions.map((decision) => decision.issueId));
-  const resolvedSources = new Set(allDecisions.filter((decision) => decision.sourceName).map((decision) => decision.sourceName!));
+  const ignoredSources = new Set(allDecisions.filter((decision) => decision.action === "ignore_source" && decision.sourceName).map((decision) => decision.sourceName!));
+  const acceptedSources = new Set(allDecisions.filter((decision) => decision.action === "accept_source" && decision.sourceName).map((decision) => decision.sourceName!));
+  const resolvedBySource = (item: FeedbackIntakeIssue) => Boolean(item.sourceName && (
+    ignoredSources.has(item.sourceName)
+    || (acceptedSources.has(item.sourceName) && isSourceScopedBoundaryIssue(item))
+  ));
   const unresolved = runIssues.filter((item) => (
     isBlockingFeedbackIntakeIssue(item)
     && !resolvedIssueIds.has(item.id)
-    && !Boolean(item.sourceName && resolvedSources.has(item.sourceName))
+    && !resolvedBySource(item)
   ));
   if (unresolved.length) throw new Error(`还有 ${unresolved.length} 项材料异常未处理，请先完成事实确认`);
   const merged = snapshot.sourceFacts?.length
@@ -854,7 +859,7 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
   const generatedUnresolved = merged.issues.filter((item) => (
     isBlockingFeedbackIntakeIssue(item)
     && !resolvedIssueIds.has(item.id)
-    && !Boolean(item.sourceName && resolvedSources.has(item.sourceName))
+    && !resolvedBySource(item)
   ));
   if (generatedUnresolved.length) throw new Error(`材料合并后仍有 ${generatedUnresolved.length} 项冲突未处理，请返回事实确认`);
   const effectiveSnapshot = { ...snapshot, parsedResult: merged.parsedResult, assessmentEvidence: merged.assessmentEvidence, decisions: allDecisions };

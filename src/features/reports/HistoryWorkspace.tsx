@@ -54,10 +54,8 @@ const statusLabels: Record<string, string> = {
 };
 
 function restoreHref(plan: FeedbackPlanSummary) {
-  const running = ["queued", "generating", "pause_requested", "paused"].includes(plan.status);
-  const step = running ? "generate" : ["draft", "evidence_ready", "needs_review", "stale", "generation_failed"].includes(plan.status) ? "review" : "export";
   const sessionCode = (plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session)?.code ?? "";
-  const params = new URLSearchParams({ step, planId: plan.id });
+  const params = new URLSearchParams({ planId: plan.id });
   if (plan.semester?.id) params.set("semesterId", plan.semester.id);
   if (plan.class?.id) params.set("classId", plan.class.id);
   if (plan.class?.name || plan.class?.code) params.set("class", plan.class.name ?? plan.class.code);

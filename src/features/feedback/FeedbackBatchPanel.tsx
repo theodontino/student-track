@@ -239,7 +239,7 @@ export function FeedbackBatchPanel({ initialSemesterId }: { initialSemesterId?: 
         {activeBatch && <>
           <div className="feedback-batch-panel__progress"><span style={{ width: `${activeBatch.progress.total ? Math.round(activeBatch.progress.generated / activeBatch.progress.total * 100) : 0}%` }} /></div>
           <p>已生成 {activeBatch.progress.generated}/{activeBatch.progress.total}，已批准 {activeBatch.progress.approved}，已进入批次导出 {activeBatch.progress.exported}。</p>
-          <div className="feedback-batch-panel__plans">{activeBatch.plans.map((plan) => <a key={plan.id} className={plan.id === activeBatch.currentPlanId ? "is-current" : ""} href={`/feedback?step=export&planId=${encodeURIComponent(plan.id)}`}><strong>{plan.class.code}</strong><span>{plan.class.name} · {plan.status} · {plan.progress.generated}/{plan.progress.total}</span></a>)}</div>
+          <div className="feedback-batch-panel__plans">{activeBatch.plans.map((plan) => <a key={plan.id} className={plan.id === activeBatch.currentPlanId ? "is-current" : ""} href={`/feedback?batchId=${encodeURIComponent(activeBatch.id)}&planId=${encodeURIComponent(plan.id)}`}><strong>{plan.class.code}</strong><span>{plan.class.name} · {plan.status} · {plan.progress.generated}/{plan.progress.total}</span></a>)}</div>
           <div className="feedback-batch-panel__actions">
             {activeBatch.status === "ready" && <Button onClick={() => void runAction("start")} disabled={busy}>开始逐班生成</Button>}
             {["queued", "running"].includes(activeBatch.status) && <Button variant="warning" onClick={() => void runAction("pause")} disabled={busy}>暂停</Button>}

@@ -7,148 +7,138 @@ import { requestJson } from "@/lib/api-client";
 import styles from "./feedback-plan-manager.module.css";
 
 type PlanSummary = {
-  id: string;
-  type: string;
-  status: string;
-  archivedAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  outputRequirement: string;
-  batchId?: string | null;
-  session?: { code: string; date: string; semesterNumber: number } | null;
-  rangeEndSession?: { code: string; date: string; semesterNumber: number } | null;
+  id: string; type: string; status: string; archivedAt?: string | null; batchId?: string | null;
+  session?: { code: string } | null; rangeEndSession?: { code: string } | null;
   class?: { id: string; code: string; name?: string | null } | null;
   semester?: { id: string; name: string } | null;
   itemStatusCounts: { total: number; queued: number; running: number; completed: number; failed: number };
 };
 
-const statusLabels: Record<string, string> = {
-  draft: "草稿",
-  evidence_ready: "证据就绪",
-  queued: "排队中",
-  generating: "生成中",
-  pause_requested: "暂停中",
-  paused: "已暂停",
-  generation_failed: "有失败",
-  in_review: "待复核",
-  partially_approved: "部分批准",
+type BatchSummary = {
+  id: string; status: string; archivedAt?: string | null; semester?: { id: string; name: string } | null;
+  plans: Array<{ id: string; class: { id: string; code: string; name?: string | null }; session?: { code: string } | null }>;
+  progress: { total: number; generated: number; approved: number; exported: number; failed: number; completedClasses: number; totalClasses: number };
 };
 
-const runningStatuses = new Set(["queued", "generating", "pause_requested"]);
-const manageableStatuses = new Set(["draft", "evidence_ready", "queued", "generating", "pause_requested", "paused", "generation_failed"]);
+type TaskRow = { kind: "plan"; id: string; plan: PlanSummary } | { kind: "batch"; id: string; batch: BatchSummary };
+
+const statusLabels: Record<string, string> = {
+  draft: "草稿", evidence_ready: "证据就绪", queued: "排队中", generating: "生成中", running: "生成中",
+  pause_requested: "暂停中", paused: "已暂停", generation_failed: "生成失败", failed: "生成失败",
+  in_review: "待复核", partially_approved: "部分批准", approved: "已批准", completed: "生成完成",
+};
+const runningPlanStatuses = new Set(["queued", "generating", "pause_requested"]);
+const runningBatchStatuses = new Set(["queued", "running", "pause_requested"]);
 
 function typeLabel(type: string) {
   return ({ class_update: "班级公共反馈", event_micro: "事件型微反馈", stage_trend: "阶段趋势反馈", course_end: "结课教学总结" } as Record<string, string>)[type] ?? type;
 }
 
-function restoreHref(plan: PlanSummary) {
-  const step = runningStatuses.has(plan.status)
-    ? "generate"
-    : ["draft", "evidence_ready", "generation_failed"].includes(plan.status) ? "review" : "export";
-  const session = (plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session);
-  const params = new URLSearchParams({ step, planId: plan.id });
+function planHref(plan: PlanSummary) {
+  const session = plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session;
+  const params = new URLSearchParams({ planId: plan.id });
   if (plan.semester?.id) params.set("semesterId", plan.semester.id);
-  if (plan.class?.id) params.set("classId", plan.class.id);
   if (plan.class?.name || plan.class?.code) params.set("class", plan.class.name ?? plan.class.code);
   if (session?.code) params.set("sessionCode", session.code);
   return `/feedback?${params.toString()}`;
 }
 
-function progressLabel(plan: PlanSummary) {
-  const counts = plan.itemStatusCounts;
-  return `${counts.completed}/${counts.total} 完成 · ${counts.running} 进行中 · ${counts.queued} 排队`;
+function batchHref(batch: BatchSummary) {
+  const first = batch.plans[0];
+  const params = new URLSearchParams({ batchId: batch.id });
+  if (first?.id) params.set("planId", first.id);
+  if (batch.semester?.id) params.set("semesterId", batch.semester.id);
+  if (first?.class?.name || first?.class?.code) params.set("class", first.class.name ?? first.class.code);
+  if (first?.session?.code) params.set("sessionCode", first.session.code);
+  return `/feedback?${params.toString()}`;
+}
+
+async function waitUntilStopped(kind: "plan" | "batch", id: string, running: Set<string>) {
+  const path = kind === "batch" ? "feedback-plan-batches" : "feedback-plans";
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    const current = await requestJson<Record<string, { status: string }>>(`/api/report/${path}/${encodeURIComponent(id)}`);
+    if (!running.has(current[kind].status)) return;
+  }
+  throw new Error("任务仍在停止中，请稍后再归档");
 }
 
 export default function FeedbackPlanManager({ semesterId }: { semesterId?: string }) {
   const [plans, setPlans] = useState<PlanSummary[]>([]);
+  const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+    setLoading(true); setError("");
     try {
       const query = new URLSearchParams({ archived: "false" });
       if (semesterId) query.set("semesterId", semesterId);
-      const result = await requestJson<{ plans: PlanSummary[] }>(`/api/report/feedback-plans?${query}`);
-      setPlans(result.plans.filter((plan) => !plan.archivedAt && manageableStatuses.has(plan.status)));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "读取进行中计划失败");
-    } finally {
-      setLoading(false);
-    }
+      const [planResult, batchResult] = await Promise.all([
+        requestJson<{ plans: PlanSummary[] }>(`/api/report/feedback-plans?${query}`),
+        requestJson<{ batches: BatchSummary[] }>(`/api/report/feedback-plan-batches?${query}`),
+      ]);
+      setPlans(planResult.plans.filter((plan) => !plan.archivedAt));
+      setBatches(batchResult.batches.filter((batch) => !batch.archivedAt));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "读取当前反馈任务失败"); }
+    finally { setLoading(false); }
   }, [semesterId]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const visiblePlans = useMemo(() => plans.slice(0, 12), [plans]);
+  const tasks = useMemo<TaskRow[]>(() => {
+    const childIds = new Set(batches.flatMap((batch) => batch.plans.map((plan) => plan.id)));
+    return [
+      ...batches.map((batch) => ({ kind: "batch" as const, id: batch.id, batch })),
+      ...plans.filter((plan) => !plan.batchId && !childIds.has(plan.id)).map((plan) => ({ kind: "plan" as const, id: plan.id, plan })),
+    ];
+  }, [batches, plans]);
 
-  async function clearPlan(plan: PlanSummary) {
-    if (!window.confirm(`清理“${typeLabel(plan.type)} · ${plan.class?.name ?? plan.class?.code ?? "当前班级"}”吗？\n生成中的计划会先暂停；已生成内容会归档，之后仍可从反馈历史恢复。`)) return;
-    setBusyId(plan.id);
-    setError("");
-    setNotice("");
+  async function archiveTask(task: TaskRow) {
+    const label = task.kind === "batch" ? `班级组反馈（${task.batch.plans.length} 个班级）` : `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "当前班级"}`;
+    if (!window.confirm(`归档“${label}”吗？\n已生成正文、课堂事实和导出历史都会保留；归档后同一材料可建立新任务。`)) return;
+    setBusyId(task.id); setError(""); setNotice("");
     try {
-      let status = plan.status;
-      if (runningStatuses.has(status)) {
-        await requestJson(`/api/report/feedback-plans/${encodeURIComponent(plan.id)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "pause_generation" }),
-        });
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 250));
-          const current = await requestJson<{ plan: { status: string } }>(`/api/report/feedback-plans/${encodeURIComponent(plan.id)}`);
-          status = current.plan.status;
-          if (!runningStatuses.has(status)) break;
+      if (task.kind === "batch") {
+        if (runningBatchStatuses.has(task.batch.status)) {
+          await requestJson(`/api/report/feedback-plan-batches/${encodeURIComponent(task.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "pause" }) });
+          await waitUntilStopped("batch", task.id, runningBatchStatuses);
         }
-        if (runningStatuses.has(status)) throw new Error("计划仍在停止中，请稍后再清理一次");
-      }
-
-      if (["draft", "evidence_ready"].includes(status)) {
-        await requestJson(`/api/report/feedback-plans/${encodeURIComponent(plan.id)}`, { method: "DELETE" });
-        setNotice("反馈计划已删除。");
+        await requestJson(`/api/report/feedback-plan-batches/${encodeURIComponent(task.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "archive" }) });
       } else {
-        await requestJson(`/api/report/feedback-plans/${encodeURIComponent(plan.id)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "archive" }),
-        });
-        setNotice("反馈计划已归档；生成结果和课堂事实仍保留在反馈历史中。");
+        if (runningPlanStatuses.has(task.plan.status)) {
+          await requestJson(`/api/report/feedback-plans/${encodeURIComponent(task.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "pause_generation" }) });
+          await waitUntilStopped("plan", task.id, runningPlanStatuses);
+        }
+        await requestJson(`/api/report/feedback-plans/${encodeURIComponent(task.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "archive" }) });
       }
+      setNotice("反馈任务已归档；现在可以使用相同材料重新建立任务。");
       await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "清理反馈计划失败");
-    } finally {
-      setBusyId("");
-    }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "归档反馈任务失败"); }
+    finally { setBusyId(""); }
   }
 
-  return <section className={styles.panel} aria-label="进行中的反馈计划">
+  return <section className={styles.panel} aria-label="当前反馈任务">
     <header className={styles.header}>
-      <div><strong>进行中的反馈计划</strong><span>{loading ? "正在读取…" : `${plans.length} 个计划`}</span></div>
+      <div><strong>当前反馈任务</strong><span>{loading ? "正在读取…" : `${tasks.length} 个未归档任务`}</span></div>
       <Button uiSize="sm" variant="ghost" onClick={() => void load()} disabled={loading || Boolean(busyId)}>刷新</Button>
     </header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {notice && <StatusBanner tone="success">{notice}</StatusBanner>}
-    {!loading && visiblePlans.length === 0 ? <p className={styles.empty}>当前没有正在生成或等待处理的计划。已完成、待复核或已归档计划可在<a href="/history?archived=false">反馈历史</a>中恢复。</p> : <div className={styles.list}>
-      {visiblePlans.map((plan) => {
-        const session = (plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session);
-        const isBusy = busyId === plan.id;
-        return <article key={plan.id} className={styles.row}>
-          <div className={styles.meta}>
-            <div className={styles.title}><strong>{typeLabel(plan.type)}</strong><Badge tone={runningStatuses.has(plan.status) ? "warning" : "info"}>{statusLabels[plan.status] ?? plan.status}</Badge></div>
-            <span>{plan.class?.name ?? plan.class?.code ?? "未绑定班级"} · {session?.code ?? "阶段计划"} · {progressLabel(plan)}</span>
-          </div>
-          <div className={styles.actions}>
-            <Link className="ui-button ui-button--ghost ui-button--sm" href={restoreHref(plan)}>打开</Link>
-            <Button uiSize="sm" variant="secondary" onClick={() => void clearPlan(plan)} disabled={Boolean(busyId)}>{isBusy ? "清理中…" : ["draft", "evidence_ready"].includes(plan.status) ? "删除" : "清理/归档"}</Button>
-          </div>
+    {!loading && tasks.length === 0 ? <p className={styles.empty}>当前没有未归档反馈任务。历史任务可在<Link href="/history?archived=true">反馈历史</Link>中查看。</p> : <div className={styles.list}>
+      {tasks.map((task) => {
+        const isBatch = task.kind === "batch";
+        const status = isBatch ? task.batch.status : task.plan.status;
+        const href = isBatch ? batchHref(task.batch) : planHref(task.plan);
+        const title = isBatch ? `班级组反馈 · ${task.batch.plans.length} 个班级` : typeLabel(task.plan.type);
+        const description = isBatch ? `${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准` : `${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
+        return <article key={`${task.kind}:${task.id}`} className={styles.row}>
+          <div className={styles.meta}><div className={styles.title}><strong>{title}</strong><Badge tone={(isBatch ? runningBatchStatuses : runningPlanStatuses).has(status) ? "warning" : "info"}>{statusLabels[status] ?? status}</Badge></div><span>{description}</span></div>
+          <div className={styles.actions}><Link className="ui-button ui-button--ghost ui-button--sm" href={href}>打开</Link><Button uiSize="sm" variant="secondary" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button></div>
         </article>;
       })}
     </div>}
-    {plans.length > visiblePlans.length && <Link className={styles.more} href="/history?archived=false">查看全部当前计划 →</Link>}
   </section>;
 }

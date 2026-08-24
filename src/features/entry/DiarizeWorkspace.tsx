@@ -179,7 +179,7 @@ export default function DiarizeWorkspace() {
   function sendResult() {
     if (!activeTask?.resultText) return;
     sessionStorage.setItem("student-track:feedback-draft", activeTask.resultText);
-    router.push("/feedback?step=extract");
+    router.push("/feedback/tools?tool=manual-facts");
   }
 
   return (

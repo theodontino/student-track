@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import {
   classifyFeedbackIntakeFile,
   createOrGetFeedbackIntakeRun,
+  clearFeedbackIntakeScope,
+  confirmFeedbackIntakeScope,
   expandFeedbackIntakeFiles,
   inspectFeedbackIntake,
   resolveFeedbackIntakeRun,
@@ -85,6 +87,27 @@ describe("feedback intake file preparation", () => {
     expect(resolveIntakeStudentIdentity(roster, "OLD-001", "测试甲")).toMatchObject({ match: roster[0], conflict: false });
     expect(resolveIntakeStudentIdentity(roster, "E2E-002", "测试甲")).toMatchObject({ match: undefined, conflict: true });
     expect(resolveIntakeStudentIdentity(roster, "", "测试甲")).toMatchObject({ match: roster[0], conflict: false });
+  });
+
+  it("does not let a source-level date acceptance resolve an identity conflict from the same source", async () => {
+    const run = await prisma.feedbackIntakeRun.create({
+      data: {
+        sessionCode: "2026070801",
+        sourceFingerprint: `SOURCE-SCOPE-${crypto.randomUUID()}`,
+        sourceManifest: "[]",
+        status: "needs_review",
+        issues: JSON.stringify([
+          { id: "date", code: "assessment_date_mismatch", message: "日期不一致", severity: "requires_teacher", sourceName: "同一来源.pdf" },
+          { id: "identity", code: "assessment_identity_conflict", message: "身份冲突", severity: "requires_teacher", sourceName: "同一来源.pdf" },
+        ]),
+        appliedSummary: JSON.stringify({ applied: false, parsedResult: { students: [], alert_suggestion: "" }, assessmentEvidence: {}, sourceFacts: [] }),
+      },
+    });
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: "date", action: "accept_source", sourceName: "同一来源.pdf" }],
+    }, prisma)).rejects.toThrow("还有 1 项材料异常未处理");
+    await prisma.feedbackIntakeRun.delete({ where: { id: run.id } });
   });
 
   it("classifies supported sources and ignores unrelated files", () => {
@@ -177,6 +200,30 @@ describe("feedback intake file preparation", () => {
     const repeated = await resolveFeedbackIntakeRun(result.run.id, { action: "confirm", decisions: [] }, prisma);
     expect(repeated.status).toBe("applied");
     expect(await prisma.draftRecord.count()).toBe(before + 1);
+    await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+  }, 20_000);
+
+  it("persists the confirmed class scope and clears it without deleting confirmed facts", async () => {
+    const result = await createOrGetFeedbackIntakeRun({ sessionCode: "2026070801", files: [stepFile()], db: prisma });
+    await resolveFeedbackIntakeRun(result.run.id, { action: "confirm", decisions: [] }, prisma);
+    const session = await prisma.classSession.findUniqueOrThrow({ where: { code: "2026070801" } });
+    const student = await prisma.student.findFirstOrThrow({ where: { studentId: "E2E-001" } });
+    const beforeFacts = await prisma.draftRecord.count({ where: { sessionCode: "2026070801" } });
+
+    const scoped = await confirmFeedbackIntakeScope(result.run.id, {
+      classId: session.classId!,
+      sessionCode: session.code,
+      studentIds: [student.id],
+    }, prisma);
+    expect(scoped.appliedSummary.scopeConfirmation).toMatchObject({
+      classId: session.classId,
+      sessionCode: session.code,
+      studentIds: [student.id],
+    });
+
+    const cleared = await clearFeedbackIntakeScope(result.run.id, prisma);
+    expect(cleared.appliedSummary.scopeConfirmation).toBeUndefined();
+    await expect(prisma.draftRecord.count({ where: { sessionCode: "2026070801" } })).resolves.toBe(beforeFacts);
     await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
   }, 20_000);
 

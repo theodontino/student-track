@@ -24,7 +24,7 @@ import { useLLMConfiguration } from "@/features/system/useLLMConfiguration";
 import { StudentTrendChart, type StudentTrendMetric } from "@/features/students/StudentTrendChart";
 import { FeedbackPlanGenerationConfigDialog, independentConfigFromCommon } from "./FeedbackPlanGenerationConfigDialog";
 
-type Workspace = {
+export type FeedbackPlanWorkspace = {
   activeStep: string;
   setActiveStep: (step: "prepare" | "extract" | "review" | "generate" | "export") => void;
   draftId: string;
@@ -34,6 +34,8 @@ type Workspace = {
   contextStudents: FeedbackContextStudent[];
   confirmedAssessmentEvidence: Record<string, StudentAssessmentEvidence>;
 };
+
+export type FeedbackPlanBatchControl = { active: boolean; status: string; busy?: boolean };
 
 interface PlanItem {
   id: string;
@@ -355,7 +357,13 @@ function canRegenerate(item: PlanItem) {
     && (item.reviewMode !== "teacher_edited" || item.status === "stale");
 }
 
-export function FeedbackPlanPanel({ workspace, presentation = "legacy" }: { workspace: Workspace; presentation?: "legacy" | "studio" }) {
+export interface FeedbackPlanPanelProps {
+  workspace: FeedbackPlanWorkspace;
+  presentation?: "legacy" | "studio";
+  batchControl?: FeedbackPlanBatchControl;
+}
+
+export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchControl }: FeedbackPlanPanelProps) {
   const showPanel = workspace.activeStep === "review" || workspace.activeStep === "generate" || workspace.activeStep === "export";
   const [type, setType] = useState<FeedbackPlanType>("event_micro");
   const [generationClosureType, setGenerationClosureType] = useState<string>(defaultFeedbackGenerationPreferences("event_micro").closureType);
@@ -549,12 +557,17 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy" }: { work
     void loadPlans().catch((reason) => setError(reason instanceof Error ? reason.message : "无法读取反馈计划"));
   }, [loadPlans, sessionMeta]);
   useEffect(() => {
-    if (workspace.activeStep === "prepare" || activePlan || (workspace.activeStep === "review" && !requestedPlanId) || (!requestedPlanId && (!sessionMeta || !plansLoaded))) return;
+    if (workspace.activeStep === "prepare") return;
+    if (requestedPlanId && activePlan?.id === requestedPlanId) return;
+    if (!requestedPlanId && activePlan) return;
+    if (workspace.activeStep === "review" && !requestedPlanId) return;
+    if (!requestedPlanId && (!sessionMeta || !plansLoaded)) return;
     const candidateId = requestedPlanId ?? plans.find((plan) => (
       plan.sessionId === sessionMeta?.sessionId
       || plan.rangeEndSessionId === sessionMeta?.sessionId
     ))?.id;
     if (!candidateId) return;
+    if (activePlan && activePlan.id !== candidateId) setActivePlan(null);
     let cancelled = false;
     void fetch(`/api/report/feedback-plans/${candidateId}`)
       .then(async (response) => {
@@ -1065,6 +1078,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy" }: { work
   const isGenerate = workspace.activeStep === "generate";
   const isExport = workspace.activeStep === "export";
   const studioMode = presentation === "studio" && isExport;
+  const batchMode = Boolean(batchControl?.active);
   const title = isReview ? "复核与反馈计划" : isGenerate ? "生成反馈" : studioMode ? "逐学生计划工作室" : "编辑与导出";
   const description = isReview
     ? "先确认结构化课堂记录，再填写一次总体反馈要求和对象；点击生成后进入可恢复的队列。"
@@ -1112,12 +1126,12 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy" }: { work
       {activePlan && !archivedReadOnly && activePlan.status === "draft" && <Button uiSize="sm" variant="ghost" onClick={() => void deletePlan(activePlan)} disabled={busy}>删除草稿</Button>}
     </div>
     : activePlan ? <div className="feedback-plan-header-actions">
-      {(isGenerate || studioMode) && ["queued", "generating", "pause_requested"].includes(activePlan.status) && <Button uiSize="sm" variant="secondary" onClick={() => void pausePlan(activePlan)} disabled={busy || archivedReadOnly || activePlan.status === "pause_requested"}>{activePlan.status === "pause_requested" ? "正在安全暂停…" : "暂停生成"}</Button>}
-      {(isGenerate || studioMode) && activePlan.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void continuePlan(activePlan)} disabled={busy || archivedReadOnly}>继续生成</Button>}
-      {isGenerate && activePlan.status === "generation_failed" && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly}>重试失败条目</Button>}
+      {!batchMode && (isGenerate || studioMode) && ["queued", "generating", "pause_requested"].includes(activePlan.status) && <Button uiSize="sm" variant="secondary" onClick={() => void pausePlan(activePlan)} disabled={busy || archivedReadOnly || activePlan.status === "pause_requested"}>{activePlan.status === "pause_requested" ? "正在安全暂停…" : "暂停生成"}</Button>}
+      {!batchMode && (isGenerate || studioMode) && activePlan.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void continuePlan(activePlan)} disabled={busy || archivedReadOnly}>继续生成</Button>}
+      {!batchMode && isGenerate && activePlan.status === "generation_failed" && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly}>重试失败条目</Button>}
       {isExport && staleTextCount > 0 && <Button uiSize="sm" variant="secondary" onClick={() => void retainStaleText(activePlan)} disabled={busy || archivedReadOnly}>保留现有正文（{staleTextCount}）</Button>}
       {isExport && <>
-        {studioMode && activePlan.items.some((item) => item.status === "generation_failed") && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly || !llmReady}>重试全部失败项</Button>}
+        {studioMode && !batchMode && activePlan.items.some((item) => item.status === "generation_failed") && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly || !llmReady}>重试全部失败项</Button>}
         <Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || archivedReadOnly || selectedItemIds.length === 0}>批准所选可通过项</Button>
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button>
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button>
@@ -1286,7 +1300,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy" }: { work
       return <article key={item.id} className={`feedback-plan-item ${studioMode ? "feedback-plan-item--studio" : ""}`}>
         <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 版本 {item.itemRevision}</small></span></label><div className="feedback-plan-item__badges"><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge>{item.generationConfig && <Badge tone="info">独立计划</Badge>}</div></header>
         {studioMode && <div className="feedback-plan-studio-item-actions">
-          {item.status === "generation_failed" && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan, [item.id])} disabled={busy || archivedReadOnly || !llmReady}>重试当前学生</Button>}
+          {item.status === "generation_failed" && !batchMode && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan, [item.id])} disabled={busy || archivedReadOnly || !llmReady}>重试当前学生</Button>}
           {item.studentId && item.student && <Button uiSize="sm" variant="secondary" onClick={() => openIndependentItem(item)} disabled={busy || generationConfigImmutable}>{item.generationConfig ? "调整独立设置" : "学生独立设置"}</Button>}
           <Button uiSize="sm" onClick={() => void approvePlan(activePlan, [item.id])} disabled={busy || itemDirty || itemImmutable || !item.finalText?.trim() || auditStatus(item) === "blocked"}>批准当前反馈</Button>
           {nextStudioItem && <Button uiSize="sm" variant="ghost" onClick={() => setStudioItemId(nextStudioItem.id)}>下一条需处理</Button>}
