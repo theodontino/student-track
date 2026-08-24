@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, StatusBanner } from "@/components/ui";
+import { Button, StatusBanner } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
 import { createEmptyLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type { FeedbackContextResponse } from "./types";

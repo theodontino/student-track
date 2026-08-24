@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import Link from "next/link";
 import packageMetadata from "../../../package.json";
 import SemesterPicker from "@/components/SemesterPicker";
@@ -18,7 +18,6 @@ import {
   createFeedbackTaskDraft,
   feedbackTaskReducer,
   type FeedbackTaskClassDraft,
-  type FeedbackTaskDraftV2,
   type FeedbackTaskState,
 } from "./feedback-task-state";
 import { clearFeedbackTaskDraft, readFeedbackTaskDraft, useFeedbackTaskDraftPersistence } from "./useFeedbackTaskDraft";
@@ -37,7 +36,10 @@ function initialState(): FeedbackTaskState {
 function taskUrl(patch: { planId?: string; batchId?: string; intakeRunId?: string }) {
   const url = new URL(window.location.href);
   for (const key of ["step", "advanced", "groupMode"]) url.searchParams.delete(key);
-  for (const [key, value] of Object.entries(patch)) value ? url.searchParams.set(key, value) : url.searchParams.delete(key);
+  for (const [key, value] of Object.entries(patch)) {
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  }
   window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 

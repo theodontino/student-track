@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import SemesterPicker from "@/components/SemesterPicker";
-import { Badge, Button, PageHeader, Section, StatusBanner } from "@/components/ui";
+import { Badge, PageHeader, Section, StatusBanner } from "@/components/ui";
 import { createEmptyLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import { requestJson } from "@/lib/api-client";
 import EntryWorkspace from "@/features/entry/EntryWorkspace";
