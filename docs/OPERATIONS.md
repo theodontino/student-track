@@ -56,6 +56,17 @@ STUDENT_TRACK_DATA_ROOT="$HOME/Library/Application Support/Student Track/data" n
 
 E2E 使用独立应用副本、端口、LLM 配置和转写目录，不复用已运行的开发服务，也不连接真实 LLM。
 
+需要验证一整个课程反馈周期时，运行：
+
+```bash
+npm run test:e2e:course-cycle
+```
+
+该命令按现有 migrations 从零建立一次性测试库，写入六讲、两个班级和固定合成学生，启动本机
+OpenAI-compatible 固定响应服务，再用 WebKit 跑通班级组日常反馈、阶段趋势、结课总结、暂停恢复、
+人工复核、单班与合并导出、no-send 草稿、归档和同材料重建。测试完成后会删除临时数据库、附件
+目录和应用副本。它是按需运行的课程周期验收，不加入日常 `verify:quick`，避免重复消耗开发时间。
+
 浏览器回归还覆盖响应式导航、系统中心、反馈三段流程、历史筛选恢复、URL 教学上下文、学生学期
 汇总、AI 工作流和教学总结。`/review` 是独立待复核草案入口；旧 `history?view=drafts` 和
 `history?view=ai` 只做兼容重定向，不再写入旧历史系统。

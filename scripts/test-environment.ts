@@ -87,6 +87,7 @@ export function createIsolatedTestEnvironment(): IsolatedTestEnvironment {
       DATABASE_URL: databaseUrl,
       LLM_SETTINGS_PATH: path.join(rootDir, "llm-settings.json"),
       DIARIZE_DATA_DIR: path.join(rootDir, "diarize"),
+      STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT: path.join(rootDir, "feedback-attachments"),
       LLM_API_BASE_URL: "http://127.0.0.1:9/v1",
       LLM_API_KEY: "e2e-disabled",
       LLM_MODEL: "e2e-disabled",
