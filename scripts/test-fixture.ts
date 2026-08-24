@@ -2,6 +2,7 @@ import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { assertSafeTestDatabaseUrl } from "./test-environment";
 import { TEST_FIXTURE } from "./test-fixture-data";
+import { parseLessonFeedbackMaterial } from "../src/lib/feedback-materials";
 
 export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
   assertSafeTestDatabaseUrl(databaseUrl);
@@ -11,6 +12,7 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
   try {
     await prisma.semester.create({ data: TEST_FIXTURE.semester });
     await prisma.class.create({ data: TEST_FIXTURE.class });
+    await prisma.class.create({ data: TEST_FIXTURE.classTwo });
 
     for (const student of TEST_FIXTURE.students) {
       await prisma.student.create({ data: student });
@@ -20,6 +22,12 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
           semesterId: TEST_FIXTURE.semester.id,
           classId: TEST_FIXTURE.class.id,
         },
+      });
+    }
+    for (const student of TEST_FIXTURE.groupStudents) {
+      await prisma.student.create({ data: student });
+      await prisma.studentClassEnrollment.create({
+        data: { studentId: student.id, semesterId: TEST_FIXTURE.semester.id, classId: TEST_FIXTURE.classTwo.id },
       });
     }
 
@@ -52,6 +60,12 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
         })),
       });
     }
+    await prisma.classSession.create({
+      data: { ...TEST_FIXTURE.groupSession, semesterId: TEST_FIXTURE.semester.id, classId: TEST_FIXTURE.classTwo.id },
+    });
+    await prisma.attendance.createMany({
+      data: TEST_FIXTURE.groupStudents.map((student) => ({ sessionId: TEST_FIXTURE.groupSession.id, studentId: student.id, present: true })),
+    });
 
     await prisma.sessionMetric.createMany({
       data: TEST_FIXTURE.students.map((student) => ({
@@ -65,6 +79,46 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
         scoreD: 5,
         operator: "teacher" as const,
       })),
+    });
+    await prisma.sessionMetric.createMany({
+      data: TEST_FIXTURE.groupStudents.map((student) => ({
+        id: `test-metric-${student.id}`,
+        studentId: student.id,
+        sessionId: TEST_FIXTURE.groupSession.id,
+        date: TEST_FIXTURE.groupSession.date,
+        scoreA: 4,
+        scoreB: 4,
+        scoreC: 3,
+        scoreD: 5,
+        operator: "teacher" as const,
+      })),
+    });
+
+    const material = parseLessonFeedbackMaterial("课程标题：E2E 共同课\n课堂内容：氧化还原反应", "课后任务：订正出门测");
+    await prisma.classGroup.create({
+      data: {
+        id: TEST_FIXTURE.classGroup.id,
+        semesterId: TEST_FIXTURE.semester.id,
+        leadClassId: TEST_FIXTURE.class.id,
+        name: TEST_FIXTURE.classGroup.name,
+        memberships: { create: [{ classId: TEST_FIXTURE.class.id }, { classId: TEST_FIXTURE.classTwo.id }] },
+      },
+    });
+    await prisma.groupLesson.create({
+      data: {
+        id: TEST_FIXTURE.groupLesson.id,
+        groupId: TEST_FIXTURE.classGroup.id,
+        title: "E2E 共同课",
+        sequence: 1,
+        materialSnapshot: JSON.stringify(material),
+        revision: 1,
+        confirmedAt: new Date("2026-07-08T08:00:00.000Z"),
+        revisions: { create: { id: TEST_FIXTURE.groupLesson.revisionId, revision: 1, materialSnapshot: JSON.stringify(material), confirmedAt: new Date("2026-07-08T08:00:00.000Z") } },
+        sessionLinks: { create: [
+          { sessionId: TEST_FIXTURE.sessions[1].id, syncStatus: "synced", comparable: true },
+          { sessionId: TEST_FIXTURE.groupSession.id, syncStatus: "synced", comparable: true },
+        ] },
+      },
     });
 
     await prisma.event.create({

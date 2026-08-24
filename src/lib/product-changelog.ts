@@ -6,6 +6,17 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.5",
+    title: "反馈入口收敛为单一三段流程",
+    changes: [
+      "课后工作台统一为准备任务、核对并确认、生成与复核；确认事实、确认班级范围和创建任务成为三个明确动作。",
+      "单班与班级组共用同一个计划工作室；班级组切换、暂停、继续、重试和刷新恢复由批次状态统一控制。",
+      "学生身份匹配统一为一套规则：旧学号可按当前班唯一精确姓名降级，学号与姓名指向不同学生时仍必须由教师处理。",
+      "所有未归档计划和批次都能在活动任务工具中打开或归档；归档后同一轮材料可以重新建立任务。",
+      "原五步高级工作台停止维护，高级能力迁入 /feedback/tools，并继续复用同一 IntakeRun、FeedbackPlan、Batch、历史和 no-send 边界。",
+    ],
+  },
+  {
     version: "1.2.4",
     title: "修复旧解析结果重复命中",
     changes: [

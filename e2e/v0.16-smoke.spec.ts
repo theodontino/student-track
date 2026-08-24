@@ -125,14 +125,15 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     await expect(page.getByText("历史筛选测试", { exact: true })).toBeVisible();
     await expect(page.getByText(`学生：${TEST_FIXTURE.students[0].name}`, { exact: false })).toBeVisible();
     await page.getByRole("button", { name: "恢复" }).click();
-    await expect(page).toHaveURL(/\/feedback\?.*step=review.*planId=e2e-plan-history/);
+    await expect(page).toHaveURL(/\/feedback\?.*planId=e2e-plan-history/);
     expect(externalRequests).toEqual([]);
   });
 
   test("feedback workbench exposes the plan flow without legacy batch controls", async ({ page }) => {
     const externalRequests = await blockExternalRequests(page);
     await page.goto("/feedback?step=review");
-    await expect(page.getByRole("heading", { name: "复核与反馈计划" })).toBeVisible();
+    await expect(page).toHaveURL(/\/feedback\/tools\?tool=fact-editor/);
+    await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
     await expect(page.getByRole("button", { name: "生成班级反馈" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
     expect(externalRequests).toEqual([]);

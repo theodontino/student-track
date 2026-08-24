@@ -34,8 +34,8 @@ test.describe.serial("v0.17.0 information architecture", () => {
   test("legacy routes open their v0.17 workspaces", async ({ context }) => {
     const inputPage = await context.newPage();
     await inputPage.goto("/input");
-    await expect(inputPage).toHaveURL(/\/feedback\?.*step=extract/);
-    await expect(inputPage.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+    await expect(inputPage).toHaveURL(/\/feedback\/tools\?tool=manual-facts/);
+    await expect(inputPage.getByRole("heading", { name: "高级工具" })).toBeVisible();
     await inputPage.close();
 
     const settingsPage = await context.newPage();
@@ -273,7 +273,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
   test("all remaining core workspaces avoid page-level narrow overflow", async ({ context }) => {
     test.setTimeout(90_000);
     const paths = [
-      "/", "/dashboard/classes", "/quick-score", "/feedback?step=extract", "/daily-report", "/diarize",
+      "/", "/dashboard/classes", "/quick-score", "/feedback/tools?tool=manual-facts", "/daily-report", "/diarize",
       `/students/${TEST_FIXTURE.students[0].id}?semesterId=${TEST_FIXTURE.semester.id}`,
       `/semesters/${TEST_FIXTURE.semester.id}`, "/system/integrations",
     ];

@@ -4,11 +4,6 @@ import type {
   LessonFeedbackMaterial,
   StudentAssessmentEvidence,
 } from "@/lib/feedback-materials";
-import {
-  DraftReviewResultSchema,
-  DraftStructuredResultSchema,
-  NameCorrectionSchema,
-} from "@/lib/contracts/classroom-parse";
 
 const text = (max: number) => z.string().max(max);
 const requiredText = (max: number) => text(max).trim().min(1);
@@ -83,38 +78,3 @@ export const AssessmentImportItemSchema: z.ZodType<AssessmentImportItem> = z.obj
   evidence: StudentAssessmentEvidenceSchema.nullable(),
   error: text(2000),
 });
-
-const AiWorkflowStateSchema = z.union([
-  z.object({ phase: z.literal("idle"), operation: z.literal(""), message: z.literal(""), updatedAt: z.literal("") }),
-  z.object({ phase: z.enum(["validating", "generating", "reviewing", "saving"]), operation: requiredText(200), message: text(2000), updatedAt: requiredText(100), startedAt: requiredText(100), progress: z.number().min(0).max(1).nullable() }),
-  z.object({ phase: z.literal("completed"), operation: requiredText(200), message: text(2000), updatedAt: requiredText(100), startedAt: requiredText(100), completedAt: requiredText(100) }),
-  z.object({ phase: z.literal("failed"), operation: requiredText(200), message: text(2000), updatedAt: requiredText(100), startedAt: requiredText(100), error: requiredText(2000), retryPhase: z.enum(["validating", "generating", "reviewing", "saving"]) }),
-  z.object({ phase: z.literal("cancelled"), operation: requiredText(200), message: text(2000), updatedAt: requiredText(100), startedAt: requiredText(100), cancelledAt: requiredText(100) }),
-]);
-
-// This is intentionally only the current tab's unsubmitted workspace. Durable
-// feedback history lives in FeedbackPlan; no old batch/single history shape is
-// accepted here.
-export const FeedbackWorkspaceSchema = z.object({
-  activeStep: z.enum(["prepare", "extract", "review", "generate", "export"]).optional(),
-  context: z.object({
-    semesterId: text(200),
-    className: text(200),
-    sessionCode: text(128),
-  }),
-  newSessionDate: text(32),
-  rawText: text(100000),
-  parseStatus: text(2000),
-  streamContent: text(100000),
-  draftId: text(200),
-  parsedResult: DraftStructuredResultSchema.nullable(),
-  reviewResult: DraftReviewResultSchema.nullable(),
-  corrections: z.array(NameCorrectionSchema).max(100),
-  confirmed: z.boolean(),
-  status: text(2000),
-  workflow: AiWorkflowStateSchema.optional(),
-  groupFeedbackRaw: text(100000).optional(),
-  assessmentBriefRaw: text(100000).optional(),
-  lessonMaterial: LessonFeedbackMaterialSchema.optional(),
-  assessmentImports: z.array(AssessmentImportItemSchema).max(200).optional(),
-}).passthrough();

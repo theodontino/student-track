@@ -1,12 +1,6 @@
 import type { FeedbackContextStudent } from "@/features/feedback/context-types";
-import type { TeachingContext } from "@/features/teaching-context/types";
-import type { AiWorkflowState } from "@/features/ai-workflow";
-import type { DraftReviewResult, DraftStructuredResult, NameCorrection } from "@/lib/types";
 import type { FeedbackIntensity, FeedbackRoutingReason } from "@/lib/feedback-intensity";
-import type {
-  AssessmentImportItem,
-  LessonFeedbackMaterial,
-} from "@/lib/feedback-materials";
+import type { LessonFeedbackMaterial } from "@/lib/feedback-materials";
 
 export interface FeedbackContextResponse {
   session?: {
@@ -45,31 +39,9 @@ export interface FeedbackContextResponse {
   }>;
 }
 
-export interface FeedbackWorkspaceState {
-  activeStep?: FeedbackStep;
-  context: TeachingContext;
-  newSessionDate: string;
-  rawText: string;
-  parseStatus: string;
-  streamContent: string;
-  draftId: string;
-  parsedResult: DraftStructuredResult | null;
-  reviewResult: DraftReviewResult | null;
-  corrections: NameCorrection[];
-  confirmed: boolean;
-  status: string;
-  workflow?: AiWorkflowState;
-  groupFeedbackRaw?: string;
-  assessmentBriefRaw?: string;
-  lessonMaterial?: LessonFeedbackMaterial;
-  assessmentImports?: AssessmentImportItem[];
-}
-
 export interface FeedbackStudentOption {
   id: string;
   name: string;
   class: string;
   studentId?: string;
 }
-
-export type FeedbackStep = "prepare" | "extract" | "review" | "generate" | "export";
