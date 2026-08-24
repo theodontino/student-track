@@ -77,20 +77,20 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("teaching context and an unfinished entry survive page switches", async ({ page }) => {
-    await page.goto("/feedback/advanced");
+    await page.goto("/feedback/tools?tool=manual-facts&step=input");
     await page.getByLabel("学期").selectOption(TEST_FIXTURE.semester.id);
     await page.getByLabel("班级").selectOption({ label: TEST_FIXTURE.class.name });
     await page.locator("select").nth(2).selectOption(TEST_FIXTURE.sessions[0].code);
-    await page.getByRole("button", { name: "2 录入 录入与提取课堂记录" }).click();
-    await page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。").fill("E2E 未提交课堂回顾");
+    const classroomInput = page.getByPlaceholder("例如：今天张三测验氧化还原全对，但上课走神。李四作业没交，情绪低落。给王五的妈妈打了电话讨论近况。");
+    await classroomInput.fill("E2E 未提交课堂回顾");
 
     await page.getByRole("link", { name: "教学总结" }).click();
     await expect(page).toHaveURL(new RegExp(`semesterId=${TEST_FIXTURE.semester.id}`));
     await expect(page.getByLabel(/班级选择班级/)).toHaveValue(TEST_FIXTURE.class.id);
     await expect(page.getByLabel(/课次选择课次/)).toHaveValue(TEST_FIXTURE.sessions[0].code);
 
-    await page.goto("/feedback/advanced");
-    await expect(page.getByPlaceholder("写下这节课对反馈有用的事实。未提及学生会按缺勤补齐。")).toHaveValue("E2E 未提交课堂回顾");
+    await page.goto("/feedback/tools?tool=manual-facts&step=input");
+    await expect(page.getByPlaceholder("例如：今天张三测验氧化还原全对，但上课走神。李四作业没交，情绪低落。给王五的妈妈打了电话讨论近况。")).toHaveValue("E2E 未提交课堂回顾");
   });
 
   test("workspace drafts debounce continuous text input", async ({ page }) => {

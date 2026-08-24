@@ -40,7 +40,7 @@ export default function FeedbackToolsWorkspace({ tool }: { tool: string }) {
   return <main className="feedback-workspace">
     <PageHeader title="高级工具" description="高级能力共用当前课次、材料运行和反馈任务，不再开启第二套步骤。" actions={<Link className="ui-button ui-button--ghost ui-button--md" href="/feedback">返回课后任务</Link>} />
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
-    <Section title="教学上下文" description="工具只作用于这里选择的学期、班级和真实课次。"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} className={context.context.className} onClassChange={context.setClassName} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} /></Section>
+    {currentTool !== "manual-facts" && <Section title="教学上下文" description="工具只作用于这里选择的学期、班级和真实课次。"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} className={context.context.className} onClassChange={context.setClassName} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} /></Section>}
     <nav className="feedback-tool-nav" aria-label="高级工具">{tools.map(([key, label]) => <Link key={key} href={`/feedback/tools?tool=${key}`} className={currentTool === key ? "is-active" : ""}>{label}</Link>)}</nav>
     {currentTool === "active-plans" && <FeedbackPlanManager semesterId={context.context.semesterId} />}
     {currentTool === "manual-batch" && <FeedbackBatchPanel initialSemesterId={context.context.semesterId} />}
