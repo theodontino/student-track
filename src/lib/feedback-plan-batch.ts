@@ -39,7 +39,7 @@ export const FeedbackPlanBatchCreateSchema = z.object({
   groupLessonId: z.string().trim().min(1).max(200).optional(),
   sharedLessonRevisionId: z.string().trim().min(1).max(200).optional(),
   sharedMaterialConfirmed: z.boolean().optional(),
-  plans: z.array(FeedbackPlanBatchChildSchema).min(2).max(20),
+  plans: z.array(FeedbackPlanBatchChildSchema).min(1).max(20),
 }).superRefine((value, ctx) => {
   const classIds = new Set<string>();
   value.plans.forEach((plan, index) => {

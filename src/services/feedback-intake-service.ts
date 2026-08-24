@@ -14,6 +14,7 @@ import { processDraftReview } from "@/services/review-service";
 import { createFeedbackPlan, getFeedbackPlan } from "@/services/feedback-plan-service";
 import type { FeedbackPlanCreateInput } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
+import { isBlockingFeedbackIntakeIssue } from "@/lib/feedback-intake-rules";
 import { prisma } from "@/lib/prisma";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -43,6 +44,8 @@ export interface FeedbackIntakeIssue {
   candidates?: Array<{ id: string; name: string; studentId: string }>;
   severity: "requires_teacher" | "error";
 }
+
+export { isBlockingFeedbackIntakeIssue } from "@/lib/feedback-intake-rules";
 
 export type FeedbackIntakeDecisionAction =
   | "ignore_source"
@@ -118,6 +121,14 @@ interface IntakeSnapshot {
   sourceFacts?: IntakeSourceFact[];
   decisions?: FeedbackIntakeDecision[];
   applied?: boolean;
+  scopeConfirmation?: FeedbackScopeConfirmation;
+}
+
+export interface FeedbackScopeConfirmation {
+  classId: string;
+  sessionCode: string;
+  studentIds: string[];
+  confirmedAt: string;
 }
 
 export interface FeedbackIntakeRunView {
@@ -343,19 +354,34 @@ export function resolveIntakeStudentIdentity(
   reportedStudentId: string,
   reportedName: string,
 ) {
-  const idMatch = reportedStudentId ? roster.find((student) => student.studentId === reportedStudentId) : undefined;
-  const nameCandidates = reportedName ? roster.filter((student) => student.name === reportedName) : [];
-  // Keep the established intake behavior: when the exported number is stale
-  // (or belongs to another export) but the current-class name is unique, use
-  // that canonical roster student instead of blocking the whole batch.
+  const normalizedStudentId = reportedStudentId.trim();
+  const normalizedName = reportedName.trim();
+  const idMatch = normalizedStudentId ? roster.find((student) => student.studentId === normalizedStudentId) : undefined;
+  const nameCandidates = normalizedName ? roster.filter((student) => student.name.trim() === normalizedName) : [];
   const nameMatch = nameCandidates.length === 1 ? nameCandidates[0] : undefined;
-  if (nameMatch && (!idMatch || idMatch.id !== nameMatch.id)) {
-    return { match: nameMatch, candidates: nameCandidates, conflict: false };
+  if (idMatch && normalizedName) {
+    if (nameMatch?.id === idMatch.id) {
+      return { match: idMatch, candidates: [idMatch], conflict: false, usedNameFallback: false };
+    }
+    const candidates = [idMatch, ...nameCandidates.filter((candidate) => candidate.id !== idMatch.id)];
+    return { match: undefined, candidates, conflict: true, usedNameFallback: false };
+  }
+  if (idMatch) {
+    return { match: idMatch, candidates: [idMatch], conflict: false, usedNameFallback: false };
+  }
+  if (nameMatch) {
+    return {
+      match: nameMatch,
+      candidates: nameCandidates,
+      conflict: false,
+      usedNameFallback: Boolean(normalizedStudentId),
+    };
   }
   return {
-    match: idMatch ?? (nameCandidates.length === 1 ? nameCandidates[0] : undefined),
+    match: undefined,
     candidates: nameCandidates,
     conflict: false,
+    usedNameFallback: false,
   };
 }
 
@@ -368,8 +394,9 @@ function mergeParsedResults(
   const ignoredSources = new Set(
     decisions.filter((decision) => decision.action === "ignore_source" && decision.sourceName).map((decision) => decision.sourceName),
   );
-  const acceptedIssues = new Set(
-    decisions.filter((decision) => decision.action === "accept_source").map((decision) => decision.issueId),
+  const acceptedIssues = new Set(decisions.filter((decision) => decision.action === "accept_source").map((decision) => decision.issueId));
+  const acceptedSources = new Set(
+    decisions.filter((decision) => decision.action === "accept_source" && decision.sourceName).map((decision) => decision.sourceName!),
   );
   const boundStudents = new Map(
     decisions
@@ -396,7 +423,7 @@ function mergeParsedResults(
     const blocked = fact.issues.filter((item) => (
       ["assistant_date_missing", "assistant_date_mismatch", "assistant_lesson_missing", "assistant_lesson_mismatch", "step_date_missing", "step_date_mismatch", "assessment_date_missing", "assessment_date_mismatch"].includes(item.code)
     ));
-    if (blocked.some((item) => !acceptedIssues.has(item.id))) continue;
+    if (blocked.some((item) => !acceptedIssues.has(item.id) && !Boolean(item.sourceName && acceptedSources.has(item.sourceName)))) continue;
     for (const unresolved of fact.unresolvedStudents ?? []) {
       const selectedId = boundStudents.get(unresolved.issueId);
       const selected = selectedId ? unresolved.candidates.find((candidate) => candidate.id === selectedId) : undefined;
@@ -553,6 +580,9 @@ async function inspectFeedbackIntakeInternal(
         }
         match = candidates[0];
       }
+      if (identity.usedNameFallback) {
+        sourceIssues.push(issue("student_id_fallback", `${row.name} 的学号与当前班级不一致，已按唯一姓名匹配`, sourceName));
+      }
       if (seen.has(match.id)) { sourceIssues.push(issue("duplicate_student", `${match.name} 在助教表中重复出现，已保留第一条`, sourceName)); continue; }
       seen.add(match.id);
       addStudent(parsed, { name: match.name, studentId: match.studentId, scores: { A: row.scoreA, B: row.scoreB, C: row.scoreC }, events: row.note ? [row.note] : [], communication: null, present: true });
@@ -622,6 +652,9 @@ async function inspectFeedbackIntakeInternal(
         sourceIssues.push(matchIssue);
         unresolvedAssessments.push({ issueId: matchIssue.id, evidence: { ...parsed.evidence, sourceType: "assessment_pdf", sessionCode: input.sessionCode } });
         identityMatch = undefined;
+      }
+      if (identity.usedNameFallback && identityMatch) {
+        sourceIssues.push(issue("assessment_student_id_fallback", "PDF 学号与当前班级不一致，已按唯一姓名匹配", file.displayName));
       }
       if (!parsed.evidence.reportDate) {
         sourceIssues.push(issue("assessment_date_missing", "PDF 缺少报告日期，无法自动匹配课次", file.displayName));
@@ -808,12 +841,21 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
   if (run.status === "applied" || snapshot.applied === true) return view(run);
   const runIssues = parseJson<FeedbackIntakeIssue[]>(run.issues, []);
   const resolvedIssueIds = new Set(allDecisions.map((decision) => decision.issueId));
-  const unresolved = runIssues.filter((item) => !resolvedIssueIds.has(item.id));
+  const resolvedSources = new Set(allDecisions.filter((decision) => decision.sourceName).map((decision) => decision.sourceName!));
+  const unresolved = runIssues.filter((item) => (
+    isBlockingFeedbackIntakeIssue(item)
+    && !resolvedIssueIds.has(item.id)
+    && !Boolean(item.sourceName && resolvedSources.has(item.sourceName))
+  ));
   if (unresolved.length) throw new Error(`还有 ${unresolved.length} 项材料异常未处理，请先完成事实确认`);
   const merged = snapshot.sourceFacts?.length
     ? mergeParsedResults(snapshot.sourceFacts, allDecisions)
     : { parsedResult: snapshot.parsedResult ?? { students: [], alert_suggestion: "" }, assessmentEvidence: snapshot.assessmentEvidence ?? {}, issues: [] };
-  const generatedUnresolved = merged.issues.filter((item) => !resolvedIssueIds.has(item.id));
+  const generatedUnresolved = merged.issues.filter((item) => (
+    isBlockingFeedbackIntakeIssue(item)
+    && !resolvedIssueIds.has(item.id)
+    && !Boolean(item.sourceName && resolvedSources.has(item.sourceName))
+  ));
   if (generatedUnresolved.length) throw new Error(`材料合并后仍有 ${generatedUnresolved.length} 项冲突未处理，请返回事实确认`);
   const effectiveSnapshot = { ...snapshot, parsedResult: merged.parsedResult, assessmentEvidence: merged.assessmentEvidence, decisions: allDecisions };
   const appliedSummary = {
@@ -822,12 +864,15 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
     assessmentStudentCount: Object.keys(effectiveSnapshot.assessmentEvidence ?? {}).length,
     applied: true,
   };
+  const retainedIssues = [...runIssues, ...merged.issues]
+    .filter((item) => !isBlockingFeedbackIntakeIssue(item))
+    .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index);
   if (!effectiveSnapshot.parsedResult?.students?.length) {
     const updated = await tx.feedbackIntakeRun.update({
       where: { id },
       data: {
         status: "applied",
-        issues: "[]",
+        issues: JSON.stringify(retainedIssues),
         appliedSummary: JSON.stringify(appliedSummary),
       },
     });
@@ -860,7 +905,7 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
     where: { id },
     data: {
       status: "applied",
-      issues: "[]",
+      issues: JSON.stringify(retainedIssues),
       appliedSummary: JSON.stringify(appliedSummary),
     },
   });
@@ -869,14 +914,73 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
   return isPrismaClientDb(db) ? db.$transaction((tx) => execute(tx)) : execute(db);
 }
 
-export async function resolveFeedbackIntakeRun(id: string, input: { action: "apply" | "confirm" | "resolve" | "create_plan"; decisions?: FeedbackIntakeDecision[]; plan?: Omit<FeedbackPlanCreateInput, "sessionId" | "semesterId" | "classId"> & { type?: FeedbackPlanCreateInput["type"]; commonLessonRevisionId?: string; commonMaterial?: CommonMaterialSelection } }, db: FeedbackIntakeDb = prisma) {
+export async function confirmFeedbackIntakeScope(
+  id: string,
+  input: { classId: string; sessionCode: string; studentIds: string[] },
+  db: FeedbackIntakeDb = prisma,
+) {
+  const execute = async (tx: FeedbackIntakeDb) => {
+    const run = await tx.feedbackIntakeRun.findUnique({ where: { id } });
+    if (!run) throw new Error("反馈材料运行不存在");
+    if (run.status !== "applied") throw new Error("请先确认本班材料与事实");
+    if (run.sessionCode !== input.sessionCode) throw new Error("材料运行与当前课次不一致");
+    const session = await tx.classSession.findUnique({
+      where: { code: input.sessionCode },
+      select: { classId: true, semesterId: true },
+    });
+    if (!session?.classId || session.classId !== input.classId) throw new Error("当前班级与课次不一致");
+    const studentIds = [...new Set(input.studentIds.map((studentId) => studentId.trim()).filter(Boolean))];
+    if (!studentIds.length) throw new Error("至少选择一名反馈对象");
+    const roster = await tx.student.findMany({
+      where: {
+        id: { in: studentIds },
+        enrollments: { some: { semesterId: session.semesterId, classId: session.classId, rosterStatus: "ACTIVE" } },
+      },
+      select: { id: true },
+    });
+    if (roster.length !== studentIds.length) throw new Error("反馈对象必须属于当前班级的 ACTIVE 花名册");
+    const snapshot = parseJson<IntakeSnapshot>(run.appliedSummary, {});
+    const scopeConfirmation: FeedbackScopeConfirmation = {
+      classId: session.classId,
+      sessionCode: input.sessionCode,
+      studentIds,
+      confirmedAt: new Date().toISOString(),
+    };
+    const updated = await tx.feedbackIntakeRun.update({
+      where: { id },
+      data: { appliedSummary: JSON.stringify({ ...snapshot, scopeConfirmation }) },
+    });
+    return view(updated);
+  };
+  return isPrismaClientDb(db) ? db.$transaction((tx) => execute(tx)) : execute(db);
+}
+
+export async function clearFeedbackIntakeScope(id: string, db: FeedbackIntakeDb = prisma) {
   const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
   if (!run) throw new Error("反馈材料运行不存在");
+  const snapshot = parseJson<IntakeSnapshot>(run.appliedSummary, {});
+  const next = { ...snapshot };
+  delete next.scopeConfirmation;
+  const updated = await db.feedbackIntakeRun.update({
+    where: { id },
+    data: { appliedSummary: JSON.stringify(next) },
+  });
+  return view(updated);
+}
+
+export async function resolveFeedbackIntakeRun(id: string, input: { action: "apply" | "confirm" | "resolve" | "create_plan" | "confirm_scope" | "clear_scope"; decisions?: FeedbackIntakeDecision[]; scope?: { classId: string; sessionCode: string; studentIds: string[] }; plan?: Omit<FeedbackPlanCreateInput, "sessionId" | "semesterId" | "classId"> & { type?: FeedbackPlanCreateInput["type"]; commonLessonRevisionId?: string; commonMaterial?: CommonMaterialSelection } }, db: FeedbackIntakeDb = prisma) {
+  const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
+  if (!run) throw new Error("反馈材料运行不存在");
+  if (input.action === "confirm_scope") {
+    if (!input.scope) throw new Error("缺少班级范围确认信息");
+    return confirmFeedbackIntakeScope(id, input.scope, db);
+  }
+  if (input.action === "clear_scope") return clearFeedbackIntakeScope(id, db);
   if (input.action === "apply" || input.action === "confirm" || input.action === "resolve") return applyFeedbackIntakeRun(id, db, input.decisions ?? []);
   if (run.status !== "applied") throw new Error("请先完成事实确认，再创建 FeedbackPlan");
   if (run.planId) {
     const existingPlan = await getFeedbackPlan(run.planId, db);
-    if (existingPlan) return { ...view(run), plan: existingPlan };
+    if (existingPlan && !existingPlan.archivedAt) return { ...view(run), plan: existingPlan };
   }
   const session = await db.classSession.findUnique({ where: { code: run.sessionCode }, select: { id: true, semesterId: true, classId: true } });
   if (!session?.classId) throw new Error("反馈材料目标课次不存在或未关联班级");
@@ -895,7 +999,11 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
   } as FeedbackPlanCreateInput;
   const createPlanInTransaction = async (tx: FeedbackIntakeDb) => {
     const current = await tx.feedbackIntakeRun.findUniqueOrThrow({ where: { id } });
-    if (current.planId) return { planId: current.planId };
+    if (current.planId) {
+      const currentPlan = await tx.feedbackPlan.findUnique({ where: { id: current.planId }, select: { id: true, archivedAt: true } });
+      if (currentPlan && !currentPlan.archivedAt) return { planId: current.planId };
+      await tx.feedbackIntakeRun.update({ where: { id }, data: { planId: null } });
+    }
     const plan = await createFeedbackPlan(planInput, tx);
     await tx.feedbackIntakeRun.update({ where: { id }, data: { planId: plan.id, status: "applied" } });
     return { planId: plan.id };

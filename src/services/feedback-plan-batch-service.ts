@@ -348,9 +348,19 @@ export async function retryFeedbackPlanBatch(batchId: string, db: PrismaClient =
 }
 
 export async function archiveFeedbackPlanBatch(batchId: string, db: PrismaClient = prisma) {
-  const batch = await db.feedbackPlanBatch.findUnique({ where: { id: batchId }, select: { status: true } });
-  if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
-  if (["queued", "running", "pause_requested"].includes(batch.status)) throw new ApiError("运行中的批次不能归档，请先暂停", 409, "conflict", false);
-  await db.feedbackPlanBatch.update({ where: { id: batchId }, data: { status: "archived", archivedAt: new Date(), planRevision: { increment: 1 } } });
+  await db.$transaction(async (tx) => {
+    const batch = await tx.feedbackPlanBatch.findUnique({ where: { id: batchId }, select: { status: true } });
+    if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+    if (["queued", "running", "pause_requested"].includes(batch.status)) throw new ApiError("运行中的批次不能归档，请先暂停", 409, "conflict", false);
+    const archivedAt = new Date();
+    await tx.feedbackPlan.updateMany({
+      where: { batchId, archivedAt: null },
+      data: { archivedAt, planRevision: { increment: 1 } },
+    });
+    await tx.feedbackPlanBatch.update({
+      where: { id: batchId },
+      data: { status: "archived", archivedAt, planRevision: { increment: 1 } },
+    });
+  });
   return { success: true };
 }

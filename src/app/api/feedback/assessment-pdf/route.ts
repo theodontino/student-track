@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseAssessmentPdf } from "@/services/assessment-pdf-service";
+import { resolveIntakeStudentIdentity } from "@/services/feedback-intake-service";
 
 export const runtime = "nodejs";
-
-function fileNameMatches(fileName: string, value: string) {
-  return Boolean(value) && fileName.toLocaleLowerCase().includes(value.toLocaleLowerCase());
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -46,24 +43,14 @@ export async function POST(request: NextRequest) {
       orderBy: { studentId: "asc" },
     });
     const parsed = await parseAssessmentPdf(await file.arrayBuffer(), file.name);
-    const byStudentId = parsed.reportStudentId
-      ? students.find((student) => student.studentId === parsed.reportStudentId)
-      : undefined;
-    const byName = parsed.reportStudentName
-      ? students.find((student) => student.name === parsed.reportStudentName)
-      : undefined;
-    if (byStudentId && byName && byStudentId.id !== byName.id) {
+    const identity = resolveIntakeStudentIdentity(students, parsed.reportStudentId ?? "", parsed.reportStudentName ?? "");
+    if (identity.conflict) {
       return NextResponse.json(
         { error: "PDF 内姓名和听课证号对应不同学生，请人工核对原报告" },
         { status: 409 },
       );
     }
-
-    const fileMatches = students.filter((student) => (
-      fileNameMatches(file.name, student.studentId)
-      || fileNameMatches(file.name, student.name)
-    ));
-    const matched = byStudentId ?? byName ?? (fileMatches.length === 1 ? fileMatches[0] : undefined);
+    const matched = identity.match;
     return NextResponse.json({
       fileName: file.name,
       reportStudentName: parsed.reportStudentName,
@@ -76,9 +63,9 @@ export async function POST(request: NextRequest) {
         sessionCode,
         studentId: matched?.id ?? "",
       },
-      warning: !matched
-        ? "未能自动匹配当前班级学生，请手动选择"
-        : undefined,
+      warning: identity.usedNameFallback
+        ? "报告学号与当前班级不一致，已按当前班唯一姓名匹配"
+        : !matched ? "未能自动匹配当前班级学生，请手动选择" : undefined,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "解析出门测 PDF 失败";

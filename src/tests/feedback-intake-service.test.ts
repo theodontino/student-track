@@ -77,13 +77,13 @@ function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ cont
 }
 
 describe("feedback intake file preparation", () => {
-  it("falls back from an unknown student number to one unique roster name", () => {
+  it("falls back only when the reported student number is unknown", () => {
     const roster = [
       { id: "student-a", name: "测试甲", studentId: "E2E-001" },
       { id: "student-b", name: "测试乙", studentId: "E2E-002" },
     ];
     expect(resolveIntakeStudentIdentity(roster, "OLD-001", "测试甲")).toMatchObject({ match: roster[0], conflict: false });
-    expect(resolveIntakeStudentIdentity(roster, "E2E-002", "测试甲")).toMatchObject({ match: roster[0], conflict: false });
+    expect(resolveIntakeStudentIdentity(roster, "E2E-002", "测试甲")).toMatchObject({ match: undefined, conflict: true });
     expect(resolveIntakeStudentIdentity(roster, "", "测试甲")).toMatchObject({ match: roster[0], conflict: false });
   });
 
