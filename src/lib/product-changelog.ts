@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.6",
+    title: "反馈工作室恢复与验收补强",
+    changes: [
+      "打开已有计划时直接恢复生成与复核工作室，不再短暂显示没有可恢复计划的错误提示。",
+      "活动任务中的准备、待教师批准、部分导出和证据变化等状态统一显示中文。",
+      "学生导航保持独立滚动；筛选后少量学生卡片不再被拉伸。",
+      "新增覆盖完整课程反馈周期和教师全程只操作页面的 WebKit 验收流程，使用隔离合成数据库和本机 LLM 固定响应服务。",
+    ],
+  },
+  {
     version: "1.2.5",
     title: "反馈入口收敛为单一三段流程",
     changes: [
