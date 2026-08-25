@@ -25,7 +25,7 @@ async function selectQuickScoreClass(page: Page) {
   }
   const classSelect = page.getByLabel("班级", { exact: true });
   await expect(classSelect).toBeEnabled();
-  await expect(classSelect.locator("option")).toHaveCount(3);
+  await expect(classSelect).toContainText(TEST_FIXTURE.class.name);
   if (await classSelect.inputValue() !== TEST_FIXTURE.class.id) {
     await classSelect.selectOption(TEST_FIXTURE.class.id);
   }
