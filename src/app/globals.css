@@ -723,7 +723,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .feedback-plan-studio-filters button { display: flex; justify-content: space-between; gap: .3rem; padding: .45rem .55rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-raised); color: var(--color-muted); font-size: .68rem; cursor: pointer; }
 .feedback-plan-studio-filters button.is-active { border-color: var(--color-brand-500); color: var(--color-ink); background: var(--color-info-bg); }
 .feedback-plan-studio-filters small { font: inherit; }
-.feedback-plan-studio-students { display: grid; min-height: 0; gap: .35rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.feedback-plan-studio-students { display: grid; align-content: start; grid-auto-rows: max-content; min-height: 0; gap: .35rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .feedback-plan-studio-students > button { display: flex; align-items: center; justify-content: space-between; gap: .45rem; width: 100%; padding: .58rem .62rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-ink); text-align: left; cursor: pointer; }
 .feedback-plan-studio-students > button:hover { background: var(--color-surface-raised); }
 .feedback-plan-studio-students > button.is-active { border-color: var(--color-brand-200); background: var(--color-info-bg); box-shadow: inset 3px 0 0 var(--color-brand-500); }

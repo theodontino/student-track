@@ -365,6 +365,7 @@ export interface FeedbackPlanPanelProps {
 
 export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchControl }: FeedbackPlanPanelProps) {
   const showPanel = workspace.activeStep === "review" || workspace.activeStep === "generate" || workspace.activeStep === "export";
+  const requestedPlanId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("planId");
   const [type, setType] = useState<FeedbackPlanType>("event_micro");
   const [generationClosureType, setGenerationClosureType] = useState<string>(defaultFeedbackGenerationPreferences("event_micro").closureType);
   const [generationModuleKeys, setGenerationModuleKeys] = useState<string[]>(defaultFeedbackGenerationPreferences("event_micro").moduleKeys);
@@ -377,6 +378,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   const [plans, setPlans] = useState<Plan[]>([]);
   const [plansLoaded, setPlansLoaded] = useState(false);
   const [activePlan, setActivePlan] = useState<Plan | null>(null);
+  const [planLoading, setPlanLoading] = useState(Boolean(requestedPlanId));
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [studentOverrides, setStudentOverrides] = useState<Record<string, FeedbackPlanItemGenerationConfig>>({});
   const [independentStudentTarget, setIndependentStudentTarget] = useState<{ id: string; name: string } | null>(null);
@@ -395,7 +397,6 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   const [studioItemId, setStudioItemId] = useState("");
   const candidateDefaultsKey = useRef("");
   const llmWorkspace = useLLMConfiguration();
-  const requestedPlanId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("planId");
 
   function changePlanType(nextType: FeedbackPlanType) {
     setType(nextType);
@@ -519,6 +520,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   useEffect(() => {
     setSessionMeta(null);
     setActivePlan(null);
+    setPlanLoading(Boolean(requestedPlanId));
     setPlans([]);
     setPlansLoaded(false);
     setInactiveCandidates([]);
@@ -530,7 +532,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     setRepeatExportRequest(null);
     setContextMetaError("");
     candidateDefaultsKey.current = "";
-  }, [workspace.context.semesterId, workspace.context.sessionCode]);
+  }, [requestedPlanId, workspace.context.semesterId, workspace.context.sessionCode]);
   useEffect(() => {
     if (!workspace.context.semesterId || !workspace.context.sessionCode) return;
     let cancelled = false;
@@ -566,16 +568,21 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
       plan.sessionId === sessionMeta?.sessionId
       || plan.rangeEndSessionId === sessionMeta?.sessionId
     ))?.id;
-    if (!candidateId) return;
+    if (!candidateId) {
+      setPlanLoading(false);
+      return;
+    }
     if (activePlan && activePlan.id !== candidateId) setActivePlan(null);
     let cancelled = false;
+    setPlanLoading(true);
     void fetch(`/api/report/feedback-plans/${candidateId}`)
       .then(async (response) => {
         if (!response.ok) throw new Error("无法恢复当前课次的反馈计划");
         return response.json() as Promise<{ plan: Plan }>;
       })
       .then((payload) => { if (!cancelled) setActivePlan(payload.plan); })
-      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "无法恢复反馈计划"); });
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "无法恢复反馈计划"); })
+      .finally(() => { if (!cancelled) setPlanLoading(false); });
     return () => { cancelled = true; };
   }, [activePlan, plans, plansLoaded, requestedPlanId, sessionMeta, workspace.activeStep]);
   useEffect(() => {
@@ -1146,7 +1153,8 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     {isReview && !activePlan && hasUnconfirmedDraft && <StatusBanner tone="warning">当前结构化记录尚未写入，生成入口已锁定。请先在上方完成“确认写入”；之后候选学生和证据会自动刷新。</StatusBanner>}
     {contextMetaError && <StatusBanner tone="danger"><span>当前课次信息读取失败：{contextMetaError}</span><Button uiSize="sm" variant="secondary" onClick={() => setContextMetaReloadKey((key) => key + 1)}>重试读取课次</Button></StatusBanner>}
     {archivedReadOnly && <StatusBanner tone="warning">已归档，只读；请在反馈历史中取消归档后修改。</StatusBanner>}
-    {!isReview && !activePlan && plansLoaded && <StatusBanner tone="warning"><span>当前课次还没有可恢复的反馈计划，请先回到“复核”步骤创建计划。</span><Button uiSize="sm" variant="secondary" onClick={() => workspace.setActiveStep("review")}>返回复核</Button></StatusBanner>}
+    {!isReview && !activePlan && (planLoading || !plansLoaded) && <StatusBanner tone="info">正在读取反馈计划…</StatusBanner>}
+    {!isReview && !activePlan && !planLoading && plansLoaded && !requestedPlanId && <StatusBanner tone="warning"><span>当前课次还没有可恢复的反馈计划，请先回到“复核”步骤创建计划。</span><Button uiSize="sm" variant="secondary" onClick={() => workspace.setActiveStep("review")}>返回复核</Button></StatusBanner>}
     {repeatExportRequest && activePlan?.id === repeatExportRequest.planId && <StatusBanner tone="warning"><span>相同文本已经导出过。只有确实需要重新下载时才继续。</span><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, repeatExportRequest.mode, true)} disabled={busy}>确认重复导出</Button><Button uiSize="sm" variant="ghost" onClick={() => setRepeatExportRequest(null)} disabled={busy}>取消</Button></StatusBanner>}
     {studioMode && !llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>当前没有可用的 LLM API Key 或模型。已有正文仍可编辑；生成和重试暂时锁定。</span><Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
     {studioMode && activePlan && <details className="feedback-plan-studio-models"><summary>模型角色与生成设置</summary><LLMRoleAssignmentsPanel workspace={llmWorkspace} showWecom={false} /></details>}

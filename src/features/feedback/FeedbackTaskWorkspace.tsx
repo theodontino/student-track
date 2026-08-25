@@ -26,10 +26,7 @@ import styles from "./unified-feedback-workspace.module.css";
 
 function errorMessage(reason: unknown) { return reason instanceof Error ? reason.message : "操作失败"; }
 
-function initialState(): FeedbackTaskState {
-  const params = typeof window === "undefined" ? new URLSearchParams() : new URLSearchParams(window.location.search);
-  const planId = params.get("planId") ?? "";
-  const batchId = params.get("batchId") ?? "";
+function initialState({ planId, batchId }: { planId: string; batchId: string }): FeedbackTaskState {
   return { stage: planId || batchId ? "studio" : "prepare", draft: createFeedbackTaskDraft(), planId, batchId };
 }
 
@@ -43,9 +40,9 @@ function taskUrl(patch: { planId?: string; batchId?: string; intakeRunId?: strin
   window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
-export default function FeedbackTaskWorkspace() {
+export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatchId = "" }: { initialPlanId?: string; initialBatchId?: string }) {
   const context = useFeedbackTaskContext();
-  const [state, dispatch] = useReducer(feedbackTaskReducer, undefined, initialState);
+  const [state, dispatch] = useReducer(feedbackTaskReducer, { planId: initialPlanId, batchId: initialBatchId }, initialState);
   const [runs, setRuns] = useState<Record<string, FeedbackIntakeRunClient>>({});
   const [decisions, setDecisions] = useState<Record<string, FeedbackIntakeDecision[]>>({});
   const [busy, setBusy] = useState(false);

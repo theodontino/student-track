@@ -25,7 +25,9 @@ type TaskRow = { kind: "plan"; id: string; plan: PlanSummary } | { kind: "batch"
 const statusLabels: Record<string, string> = {
   draft: "草稿", evidence_ready: "证据就绪", queued: "排队中", generating: "生成中", running: "生成中",
   pause_requested: "暂停中", paused: "已暂停", generation_failed: "生成失败", failed: "生成失败",
-  in_review: "待复核", partially_approved: "部分批准", approved: "已批准", completed: "生成完成",
+  ready: "准备就绪", in_review: "待复核", needs_review: "待教师批准", partially_approved: "部分批准",
+  approved: "已批准", partially_exported: "部分已导出", exported: "已导出", stale: "证据已变化",
+  completed: "生成完成", archived: "已归档",
 };
 const runningPlanStatuses = new Set(["queued", "generating", "pause_requested"]);
 const runningBatchStatuses = new Set(["queued", "running", "pause_requested"]);
