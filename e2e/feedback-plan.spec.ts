@@ -64,7 +64,7 @@ test("golden A: single class keeps fact, scope, and task creation as separate ac
 test("golden B: a grouped class inherits shared material but creates only one class plan", async ({ page }) => {
   await openTask(page, TEST_FIXTURE.classTwo.name, TEST_FIXTURE.groupSession.code);
   await expect(page.getByRole("checkbox", { name: /按班级组处理本讲反馈/ })).toHaveCount(0);
-  await expect(page.getByLabel("材料使用")).toHaveValue("linked_revision");
+  await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
   await uploadCurrent(page, "二班.step-classroom.txt", stepText({ classCode: TEST_FIXTURE.classTwo.code, className: TEST_FIXTURE.classTwo.name, studentId: TEST_FIXTURE.groupStudents[0].studentId, studentName: TEST_FIXTURE.groupStudents[0].name }));
   await page.getByRole("button", { name: "进入核对并确认" }).click();
   await page.getByRole("button", { name: "确认本班材料与事实" }).click();
@@ -105,10 +105,34 @@ test("new lead-class session refreshes the selector and can confirm shared cours
   const sessionSelect = page.locator(".teaching-context-selector label").filter({ hasText: "课次" }).locator("select");
   await expect(sessionSelect).not.toHaveValue("");
   await expect(page.getByText(/第 2 讲/).first()).toBeVisible();
-  await expect(page.getByLabel("选择学期公共材料")).toHaveValue("2");
+  await expect(page.getByLabel("本次课程材料")).toHaveValue("library:2");
   await expect(page.getByText("E2E 第二讲", { exact: false }).first()).toBeVisible();
 
   await page.getByRole("button", { name: "确认并共享本讲材料" }).click();
   await expect(page.getByText(/材料已确认并共享/).first()).toBeVisible();
-  await expect(page.getByLabel("材料使用")).toHaveValue("linked_revision");
+  await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
+});
+
+test("independent class uses one material selector and saves the choice before confirmation", async ({ page, request }) => {
+  await openTask(page, TEST_FIXTURE.independentClass.name, TEST_FIXTURE.independentSession.code);
+  const materialSelect = page.getByLabel("本次课程材料");
+  await expect(materialSelect).toHaveValue("library:2");
+  await expect(page.getByLabel("材料使用")).toHaveCount(0);
+  await materialSelect.selectOption("library:1");
+  await uploadCurrent(page, "独立班.step-classroom.txt", stepText({
+    classCode: TEST_FIXTURE.independentClass.code,
+    className: TEST_FIXTURE.independentClass.name,
+    studentId: TEST_FIXTURE.independentStudent.studentId,
+    studentName: TEST_FIXTURE.independentStudent.name,
+  }));
+
+  await page.getByRole("button", { name: "进入核对并确认" }).click();
+  await expect(page.getByText("第一步：确认本班材料与事实")).toBeVisible();
+  await expect(page.getByText("已采用学期公共材料第 1 课，并保存为本课公共材料。")).toBeVisible();
+
+  const response = await request.get(`/api/report/feedback-context?semesterId=${TEST_FIXTURE.semester.id}&sessionCode=${TEST_FIXTURE.independentSession.code}`);
+  expect(response.ok()).toBeTruthy();
+  const body = await response.json();
+  expect(body.sessionCommonMaterial.confirmedAt).toBeTruthy();
+  expect(body.sessionCommonMaterial.material.semesterScriptSource.lessonNumber).toBe(1);
 });

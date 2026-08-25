@@ -51,7 +51,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [scriptLibrary, setScriptLibrary] = useState<FeedbackScriptLibraryResponse>({ library: null, recommendedLessonNumber: null });
-  const [selectedCommonMaterialLesson, setSelectedCommonMaterialLesson] = useState<number | null>(null);
+  const [commonMaterialChoice, setCommonMaterialChoice] = useState("none");
   const restored = useRef(false);
   const initializedStudents = useRef(new Set<string>());
   const initializedMaterialSession = useRef("");
@@ -133,7 +133,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
   useEffect(() => {
     if (!context.context.semesterId || !context.context.sessionCode || state.stage === "studio") {
       setScriptLibrary({ library: null, recommendedLessonNumber: null });
-      setSelectedCommonMaterialLesson(null);
+      setCommonMaterialChoice("none");
       return;
     }
     let cancelled = false;
@@ -142,15 +142,18 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       .then((result) => {
         if (cancelled) return;
         setScriptLibrary(result);
+        const hasConfirmedMaterial = Boolean(
+          context.data?.groupProgress?.lesson?.revisions?.[0]
+          || context.data?.sessionCommonMaterial?.confirmedAt,
+        );
         const sourceLesson = context.data?.groupProgress?.lesson?.draftMaterial.semesterScriptSource?.lessonNumber
-          ?? context.data?.sessionCommonMaterial?.material.semesterScriptSource?.lessonNumber
           ?? result.recommendedLessonNumber;
-        setSelectedCommonMaterialLesson(sourceLesson ?? null);
+        setCommonMaterialChoice(hasConfirmedMaterial ? "current" : sourceLesson ? `library:${sourceLesson}` : "none");
       })
       .catch(() => {
         if (!cancelled) {
           setScriptLibrary({ library: null, recommendedLessonNumber: null });
-          setSelectedCommonMaterialLesson(null);
+          setCommonMaterialChoice("none");
         }
       });
     return () => { cancelled = true; };
@@ -195,38 +198,38 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
   }
 
   async function saveCommonMaterial() {
-    if (!context.data?.session || !selectedCommonMaterialLesson) return;
+    if (!context.data?.session || !commonMaterialChoice.startsWith("library:")) return false;
+    const lessonNumber = Number(commonMaterialChoice.slice("library:".length));
+    if (!Number.isInteger(lessonNumber) || lessonNumber <= 0) return false;
     setBusy(true); setError("");
     try {
-      if (context.data.groupProgress?.status === "linked" && context.data.groupProgress.lesson) {
-        await requestJson(`/api/group-lessons/${encodeURIComponent(context.data.groupProgress.lesson.id)}/common-material`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonNumber: selectedCommonMaterialLesson }),
-        });
-        setNotice(`已把学期公共材料第 ${selectedCommonMaterialLesson} 课保存为共同课草稿；尚未共享给其他班。`);
-      } else {
-        await requestJson(`/api/sessions/${encodeURIComponent(context.data.session.id)}/common-material`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonNumber: selectedCommonMaterialLesson }),
-        });
-        dispatch({ type: "draft", patch: { materialSelection: { mode: "session_snapshot" } } });
-        setNotice(`已把学期公共材料第 ${selectedCommonMaterialLesson} 课保存为本课公共材料。`);
-      }
-      context.refresh();
-    } catch (reason) { setError(errorMessage(reason)); }
+      await requestJson(`/api/sessions/${encodeURIComponent(context.data.session.id)}/common-material`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonNumber }),
+      });
+      dispatch({ type: "draft", patch: { materialSelection: { mode: "session_snapshot" } } });
+      setCommonMaterialChoice("current");
+      setNotice(`已采用学期公共材料第 ${lessonNumber} 课，并保存为本课公共材料。`);
+      await context.refresh();
+      return true;
+    } catch (reason) { setError(errorMessage(reason)); return false; }
     finally { setBusy(false); }
   }
 
   async function confirmCommonMaterial() {
     const lesson = context.data?.groupProgress?.lesson;
-    if (!lesson || !selectedCommonMaterialLesson) return;
+    if (!lesson || !commonMaterialChoice.startsWith("library:")) return;
+    const lessonNumber = Number(commonMaterialChoice.slice("library:".length));
+    if (!Number.isInteger(lessonNumber) || lessonNumber <= 0) return;
     setBusy(true); setError("");
     try {
       await requestJson(`/api/group-lessons/${encodeURIComponent(lesson.id)}/common-material`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonNumber: selectedCommonMaterialLesson }),
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonNumber }),
       });
       const result = await requestJson<{ revision: { id: string; revision: number } }>(`/api/group-lessons/${encodeURIComponent(lesson.id)}/confirm`, { method: "POST" });
       dispatch({ type: "draft", patch: { materialSelection: { mode: "linked_revision", revisionId: result.revision.id } } });
+      setCommonMaterialChoice("current");
       setNotice(`共同课第 ${lesson.sequence} 讲材料已确认并共享（修订 ${result.revision.revision}）。`);
-      context.refresh();
+      await context.refresh();
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
   }
@@ -358,25 +361,50 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     : context.data?.sessionCommonMaterial?.confirmedAt
       ? "当前独立课次已确认公共材料"
       : "当前独立课次尚未保存公共材料";
-  const commonMaterialOptions = (scriptLibrary.library?.entries ?? []).map((item) => ({
-    lessonNumber: item.lessonNumber,
+  const libraryMaterialOptions = (scriptLibrary.library?.entries ?? []).map((item) => ({
+    value: `library:${item.lessonNumber}`,
     label: `第 ${item.lessonNumber} 课${item.topic ? ` · ${item.topic}` : ""}`,
     preview: item.material?.groupFeedbackRaw ?? item.groupFeedback,
   }));
-  const selectedMaterialPreview = commonMaterialOptions.find((item) => item.lessonNumber === selectedCommonMaterialLesson)?.preview;
   const groupProgress = context.data?.groupProgress;
   const commonMaterialAction = groupProgress?.status === "linked"
     ? (groupProgress.isLeadClass ? "group" as const : "unavailable" as const)
     : groupProgress?.status === "lead_required" ? "unavailable" as const : "session" as const;
   const commonMaterialHelp = groupProgress?.status === "linked"
     ? groupProgress.isLeadClass
-      ? `当前为主班第 ${groupProgress.lesson?.sequence ?? "-"} 讲；先保存草稿，确认后其他班直接继承。`
-      : `本班跟随主班第 ${groupProgress.lesson?.sequence ?? "-"} 讲；公共材料由主班确认，本班直接继承。`
+      ? `当前为主班第 ${groupProgress.lesson?.sequence ?? "-"} 讲；改选学期材料后需确认共享，其他班才能继承。`
+      : `本班跟随主班第 ${groupProgress.lesson?.sequence ?? "-"} 讲；可使用主班已确认材料，或明确选择本次不使用。`
     : groupProgress?.status === "lead_required"
       ? "当前班级组尚未指定主班，请先在学期管理中设置主班。"
       : groupProgress?.group
-        ? "主班尚未推进到本讲；当前真实课次暂按独立课次保存材料。"
-        : "独立课次需要教师明确保存公共材料，不会自动套用。";
+        ? "主班尚未推进到本讲；所选材料将在进入核对时保存为当前真实课次材料。"
+        : "选择学期材料后，进入核对时会自动保存为本课材料并用于本次反馈。";
+  const commonMaterialOptions = [
+    { value: "none", label: "本次不使用公共材料" },
+    ...(availableMaterial ? [{ value: "current", label: "使用当前课次已确认公共材料" }] : []),
+    ...(commonMaterialAction === "unavailable" ? [] : libraryMaterialOptions.map(({ value, label }) => ({ value, label }))),
+  ];
+  const selectedMaterialPreview = commonMaterialChoice === "current"
+    ? material?.groupFeedbackRaw ?? ""
+    : libraryMaterialOptions.find((item) => item.value === commonMaterialChoice)?.preview ?? "";
+
+  function selectCommonMaterial(choice: string) {
+    setCommonMaterialChoice(choice);
+    if (choice === "none") dispatch({ type: "draft", patch: { materialSelection: { mode: "none" } } });
+    else if (choice === "current" && availableMaterial) dispatch({ type: "draft", patch: { materialSelection: availableMaterial } });
+    else dispatch({ type: "draft", patch: { materialSelection: { mode: "none" } } });
+  }
+
+  async function continueFromPreparation() {
+    if (commonMaterialChoice.startsWith("library:")) {
+      if (commonMaterialAction === "group") {
+        setError("请先确认并共享本讲材料，或选择本次不使用公共材料。");
+        return;
+      }
+      if (commonMaterialAction === "session" && !(await saveCommonMaterial())) return;
+    }
+    dispatch({ type: "stage", stage: "confirm" });
+  }
 
   return <main className={styles.page}>
     <PageHeader title="课后任务" description="准备任务，核对并确认，再进入生成与复核。全程只有这一套工作流。" actions={<div className={styles.headerActions}><Badge tone="info">{packageMetadata.version}</Badge><Link className="ui-button ui-button--ghost ui-button--md" href="/feedback/tools">高级工具</Link></div>} />
@@ -385,7 +413,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     {state.stage !== "studio" && <section className={styles.taskCard}>
       <div className="feedback-context-section"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} className={context.context.className} onClassChange={context.setClassName} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} refreshKey={context.refreshKey} /><div className="feedback-new-session"><label htmlFor="task-new-session">新课次日期</label><Input id="task-new-session" type="date" value={context.newSessionDate} onChange={(event) => context.setNewSessionDate(event.target.value)} /><Button variant="secondary" onClick={() => void context.createSession()} disabled={context.creatingSession}>{context.creatingSession ? "新建中…" : "新建课次"}</Button></div></div>
       <nav className={styles.taskRail} aria-label="反馈任务阶段"><button type="button" className={state.stage === "prepare" ? styles.activeRail : ""} onClick={() => dispatch({ type: "stage", stage: "prepare" })}><span>1</span><strong>准备任务</strong><small>统一投料</small></button><button type="button" className={state.stage === "confirm" ? styles.activeRail : ""} disabled={!currentRun} onClick={() => dispatch({ type: "stage", stage: "confirm" })}><span>2</span><strong>核对并确认</strong><small>事实与范围</small></button><button type="button" disabled><span>3</span><strong>生成与复核</strong><small>计划工作室</small></button></nav>
-      {entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} students={context.data?.students ?? []} busy={busy} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview ?? material?.groupFeedbackRaw ?? ""} availableMaterial={availableMaterial} commonMaterialOptions={commonMaterialOptions} selectedCommonMaterialLesson={selectedCommonMaterialLesson} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} onCommonMaterialLesson={setSelectedCommonMaterialLesson} onSaveCommonMaterial={() => void saveCommonMaterial()} onConfirmCommonMaterial={() => void confirmCommonMaterial()} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onEntry={(patch) => dispatch({ type: "entry", sessionCode: entry.sessionCode, patch })} onDraft={(patch) => dispatch({ type: "draft", patch })} onContinue={() => dispatch({ type: "stage", stage: "confirm" })} />}
+      {entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} students={context.data?.students ?? []} busy={busy} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} onCommonMaterialChoice={selectCommonMaterial} onConfirmCommonMaterial={() => void confirmCommonMaterial()} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onEntry={(patch) => dispatch({ type: "entry", sessionCode: entry.sessionCode, patch })} onDraft={(patch) => dispatch({ type: "draft", patch })} onContinue={() => void continueFromPreparation()} />}
       {entry && state.stage === "confirm" && <TaskConfirmationStage draft={state.draft} entry={entry} runs={runs} decisions={decisions[entry.runId] ?? []} busy={busy} onDecision={updateDecision} onConfirmFacts={() => void confirmFacts()} onConfirmScope={() => void confirmScope()} onClear={() => void clearScopes()} onBack={() => dispatch({ type: "stage", stage: "prepare" })} onCreate={() => void createTask()} />}
       {!entry && <StatusBanner tone="warning">请先选择真实课次。</StatusBanner>}
     </section>}

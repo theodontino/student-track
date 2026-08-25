@@ -13,6 +13,7 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
     await prisma.semester.create({ data: TEST_FIXTURE.semester });
     await prisma.class.create({ data: TEST_FIXTURE.class });
     await prisma.class.create({ data: TEST_FIXTURE.classTwo });
+    await prisma.class.create({ data: TEST_FIXTURE.independentClass });
 
     for (const student of TEST_FIXTURE.students) {
       await prisma.student.create({ data: student });
@@ -30,6 +31,14 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
         data: { studentId: student.id, semesterId: TEST_FIXTURE.semester.id, classId: TEST_FIXTURE.classTwo.id },
       });
     }
+    await prisma.student.create({ data: TEST_FIXTURE.independentStudent });
+    await prisma.studentClassEnrollment.create({
+      data: {
+        studentId: TEST_FIXTURE.independentStudent.id,
+        semesterId: TEST_FIXTURE.semester.id,
+        classId: TEST_FIXTURE.independentClass.id,
+      },
+    });
 
     const logicLabel = await prisma.label.create({
       data: { id: "test-label-1", name: "#逻辑强" },
@@ -65,6 +74,12 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
     });
     await prisma.attendance.createMany({
       data: TEST_FIXTURE.groupStudents.map((student) => ({ sessionId: TEST_FIXTURE.groupSession.id, studentId: student.id, present: true })),
+    });
+    await prisma.classSession.create({
+      data: { ...TEST_FIXTURE.independentSession, semesterId: TEST_FIXTURE.semester.id, classId: TEST_FIXTURE.independentClass.id },
+    });
+    await prisma.attendance.create({
+      data: { sessionId: TEST_FIXTURE.independentSession.id, studentId: TEST_FIXTURE.independentStudent.id, present: true },
     });
 
     await prisma.sessionMetric.createMany({

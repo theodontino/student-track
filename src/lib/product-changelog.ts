@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.9",
+    title: "课程公共材料只需选择一次",
+    changes: [
+      "准备任务中的“选择学期公共材料”和“材料使用”合并为一个“本次课程材料”选择器。",
+      "独立课次选择材料后，进入核对时自动保存本课快照并用于当前反馈，无需再点击一次保存。",
+      "共同课改选材料仍需教师确认共享；跟随班可以采用已确认材料或明确选择本次不使用。",
+      "WebKit 回归新增独立班单选择器与保存采用一致性验证。",
+    ],
+  },
+  {
     version: "1.2.8",
     title: "反馈工作流收口为单班",
     changes: [

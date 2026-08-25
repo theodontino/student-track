@@ -212,7 +212,7 @@ test.describe("完整课程反馈周期", () => {
       leadSession = { id: createdLead!.id, code: createdLead!.code };
 
       await expect(page.getByText(/班级组第 6 讲 · 公共材料草稿待确认/)).toBeVisible();
-      await expect(page.getByLabel("选择学期公共材料")).toHaveValue("6");
+      await expect(page.getByLabel("本次课程材料")).toHaveValue("library:6");
       await expect(page.getByText(dailyLesson.topic, { exact: false }).first()).toBeVisible();
 
       const beforeConfirm = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
@@ -223,11 +223,9 @@ test.describe("完整课程反馈周期", () => {
       expect(beforeBody.groupProgress.lesson.draftMaterial.lessonTitle).toBe(dailyLesson.topic);
       groupLessonId = beforeBody.groupProgress.lesson.id;
 
-      await page.getByRole("button", { name: "保存为共同课草稿" }).click();
-      await expect(page.getByText("已把学期公共材料第 6 课保存为共同课草稿；尚未共享给其他班。")).toBeVisible();
       await page.getByRole("button", { name: "确认并共享本讲材料" }).click();
       await expect(page.getByText(/材料已确认并共享/).first()).toBeVisible();
-      await expect(page.getByLabel("材料使用")).toHaveValue("linked_revision");
+      await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
 
       const afterConfirm = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
       await expectOk(afterConfirm);
@@ -254,8 +252,8 @@ test.describe("完整课程反馈周期", () => {
       secondSession = { id: createdSecond!.id, code: createdSecond!.code };
 
       await expect(page.getByText(/本班跟随主班第 6 讲/)).toBeVisible();
-      await expect(page.getByLabel("选择学期公共材料")).toBeDisabled();
-      await expect(page.getByLabel("材料使用")).toHaveValue("linked_revision");
+      await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
+      await expect(page.getByLabel("本次课程材料")).toBeEnabled();
       const followerContext = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${secondSession.code}`);
       await expectOk(followerContext);
       const followerBody = await followerContext.json();

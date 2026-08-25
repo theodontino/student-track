@@ -85,7 +85,7 @@ test.describe("教师纯页面课后验收", () => {
       await expect(page.getByText("2 个来源")).toBeVisible();
       await expect(page.getByText(/旧学号按唯一姓名匹配|需核对/).first()).toBeVisible();
 
-      await page.getByLabel("材料使用").selectOption("linked_revision");
+      await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
       await page.getByLabel("生成方式").selectOption("fast");
       await page.getByRole("button", { name: "详细", exact: true }).click();
       await page.getByRole("button", { name: "专业", exact: true }).click();

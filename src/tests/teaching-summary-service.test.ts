@@ -74,10 +74,10 @@ describe("teaching summary facts", () => {
     expect(date.analysis).toBeNull();
     expect(date.cache.status).toBe("miss");
     expect(date.facts.totals).toMatchObject({
-      sessionCount: 2,
+      sessionCount: 3,
       pendingDraftCount: 1,
       communicationCount: 0,
-      missingFeedbackHistoryCount: 2,
+      missingFeedbackHistoryCount: 3,
     });
     expect(date.facts.pendingItems.map((item) => item.type)).toEqual(expect.arrayContaining([
       "missing-metrics", "pending-drafts", "feedback-history-missing",
