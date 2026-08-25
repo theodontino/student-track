@@ -56,8 +56,6 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
   const initializedStudents = useRef(new Set<string>());
   const initializedMaterialSession = useRef("");
   const entry = activeTaskEntry(state);
-  const groupLesson = context.data?.groupProgress?.lesson;
-  const group = context.data?.groupProgress?.group;
 
   useFeedbackTaskDraftPersistence(state.draft, context.hydrated && state.stage !== "studio");
 
@@ -75,8 +73,13 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     if (!context.hydrated || restored.current || state.planId || state.batchId) return;
     restored.current = true;
     const saved = readFeedbackTaskDraft();
-    if (saved) dispatch({ type: "restore", draft: saved });
-  }, [context.hydrated, state.batchId, state.planId]);
+    if (saved) {
+      const current = saved.entries.find((item) => item.sessionCode === context.context.sessionCode)
+        ?? saved.entries.find((item) => item.sessionCode === saved.activeSessionCode)
+        ?? saved.entries[0];
+      dispatch({ type: "restore", draft: { ...saved, mode: "single", groupLessonId: "", entries: current ? [{ ...current, selected: true }] : [], activeSessionCode: current?.sessionCode ?? "" } });
+    }
+  }, [context.context.sessionCode, context.hydrated, state.batchId, state.planId]);
 
   const loadRun = useCallback(async (runId: string) => {
     const result = await requestJson<{ run: FeedbackIntakeRunClient }>(`/api/feedback/intake/runs/${encodeURIComponent(runId)}`);
@@ -95,7 +98,9 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     const session = context.data.session;
     const existing = state.draft.entries.find((item) => item.sessionCode === session.code);
     if (existing) {
-      if (state.draft.activeSessionCode !== session.code) dispatch({ type: "draft", patch: { activeSessionCode: session.code } });
+      if (state.draft.mode !== "single" || state.draft.entries.length !== 1 || state.draft.activeSessionCode !== session.code) {
+        dispatch({ type: "draft", patch: { mode: "single", groupLessonId: "", entries: [{ ...existing, selected: true }], activeSessionCode: session.code } });
+      }
       if (!initializedStudents.current.has(session.code) && existing.studentIds.length === 0 && context.data.students.length) {
         initializedStudents.current.add(session.code);
         dispatch({ type: "entry", sessionCode: session.code, patch: { studentIds: context.data.students.map((student) => student.id) } });
@@ -111,7 +116,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       studentIds: context.data.students.map((student) => student.id),
       selected: true,
     };
-    dispatch({ type: "entries", entries: state.draft.mode === "single" ? [current] : [...state.draft.entries, current] });
+    dispatch({ type: "entries", entries: [current] });
     dispatch({ type: "draft", patch: { activeSessionCode: session.code } });
   }, [context.context.className, context.data, state.draft.activeSessionCode, state.draft.entries, state.draft.mode, state.stage]);
 
@@ -150,30 +155,6 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       });
     return () => { cancelled = true; };
   }, [context.context.semesterId, context.context.sessionCode, context.data?.groupProgress?.lesson?.id, context.data?.session?.id, state.stage]);
-
-  function setGroupMode(enabled: boolean) {
-    if (!enabled || !groupLesson || !group) {
-      const current = state.draft.entries.find((item) => item.sessionCode === context.context.sessionCode);
-      dispatch({ type: "draft", patch: { mode: "single", groupLessonId: "", entries: current ? [current] : [], activeSessionCode: current?.sessionCode ?? context.context.sessionCode } });
-      return;
-    }
-    const previous = new Map(state.draft.entries.map((item) => [item.sessionCode, item]));
-    const entries = (group.members ?? []).flatMap((member) => member.session ? [{
-      classId: member.classId,
-      classCode: member.classCode,
-      className: member.className ?? member.classCode,
-      sessionCode: member.session.code,
-      runId: previous.get(member.session.code)?.runId ?? "",
-      studentIds: previous.get(member.session.code)?.studentIds ?? [],
-      selected: previous.get(member.session.code)?.selected ?? true,
-    }] : []);
-    dispatch({ type: "draft", patch: { mode: "group", groupLessonId: groupLesson.id, entries, activeSessionCode: context.context.sessionCode } });
-  }
-
-  function switchEntry(next: FeedbackTaskClassDraft) {
-    dispatch({ type: "draft", patch: { activeSessionCode: next.sessionCode } });
-    context.switchSession({ className: next.className, sessionCode: next.sessionCode });
-  }
 
   async function acceptRun(result: { run: FeedbackIntakeRunClient }) {
     setRuns((current) => ({ ...current, [result.run.id]: result.run }));
@@ -286,7 +267,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
   async function clearScopes() {
     setBusy(true); setError("");
     try {
-      const targets = state.draft.entries.filter((item) => item.selected && item.runId);
+      const targets = entry?.runId ? [entry] : [];
       const results = await Promise.all(targets.map((item) => requestJson<{ result: FeedbackIntakeRunClient }>(`/api/feedback/intake/runs/${encodeURIComponent(item.runId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "clear_scope" }) })));
       setRuns((current) => Object.assign({}, current, ...results.map((result) => ({ [result.result.id]: result.result }))));
       dispatch({ type: "stage", stage: "prepare" });
@@ -296,14 +277,13 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
   }
 
   async function createTask() {
-    const selectedEntries = state.draft.entries.filter((item) => item.selected && item.runId);
+    const selectedEntries = entry?.runId ? [entry] : [];
     setBusy(true); setError(""); setNotice("任务正在落账，随后启动生成…");
     try {
       const result = await requestJson<{ taskType: "plan" | "batch"; planId: string | null; firstPlanId?: string | null; batchId: string | null; generationStatus: string; warning?: string }>("/api/feedback/tasks", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          mode: state.draft.mode,
-          ...(state.draft.mode === "group" ? { groupLessonId: state.draft.groupLessonId } : {}),
+          mode: "single",
           runIds: selectedEntries.map((item) => item.runId),
           generationMode: state.draft.generationMode,
           outputRequirement: state.draft.outputRequirement,
@@ -404,10 +384,9 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     {(error || context.error) && <StatusBanner tone="danger">{error || context.error}</StatusBanner>}{notice && <StatusBanner tone="info">{notice}</StatusBanner>}
     {state.stage !== "studio" && <section className={styles.taskCard}>
       <div className="feedback-context-section"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} className={context.context.className} onClassChange={context.setClassName} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} refreshKey={context.refreshKey} /><div className="feedback-new-session"><label htmlFor="task-new-session">新课次日期</label><Input id="task-new-session" type="date" value={context.newSessionDate} onChange={(event) => context.setNewSessionDate(event.target.value)} /><Button variant="secondary" onClick={() => void context.createSession()} disabled={context.creatingSession}>{context.creatingSession ? "新建中…" : "新建课次"}</Button></div></div>
-      {groupLesson && group && <section className={styles.groupScope}><header><label><input type="checkbox" checked={state.draft.mode === "group"} onChange={(event) => setGroupMode(event.target.checked)} /><strong>按班级组处理本讲反馈</strong></label><span>{group.name} · 第 {groupLesson.sequence} 讲</span></header><p>共同材料和反馈策略只设置一次；每班材料、事实、学生、PDF、复核与导出独立。</p>{state.draft.mode === "group" && <div className={styles.groupClasses}>{state.draft.entries.map((item) => <article key={item.sessionCode} className={item.sessionCode === entry?.sessionCode ? styles.groupClassActive : ""}><label><input type="checkbox" checked={item.selected} onChange={(event) => dispatch({ type: "entry", sessionCode: item.sessionCode, patch: { selected: event.target.checked } })} /><span><strong>{item.className}</strong><small>{item.sessionCode}{item.runId ? " · 材料已读取" : " · 等待材料"}</small></span></label><Button uiSize="sm" variant="ghost" onClick={() => switchEntry(item)}>处理本班</Button></article>)}</div>}</section>}
       <nav className={styles.taskRail} aria-label="反馈任务阶段"><button type="button" className={state.stage === "prepare" ? styles.activeRail : ""} onClick={() => dispatch({ type: "stage", stage: "prepare" })}><span>1</span><strong>准备任务</strong><small>统一投料</small></button><button type="button" className={state.stage === "confirm" ? styles.activeRail : ""} disabled={!currentRun} onClick={() => dispatch({ type: "stage", stage: "confirm" })}><span>2</span><strong>核对并确认</strong><small>事实与范围</small></button><button type="button" disabled><span>3</span><strong>生成与复核</strong><small>计划工作室</small></button></nav>
       {entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} students={context.data?.students ?? []} busy={busy} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview ?? material?.groupFeedbackRaw ?? ""} availableMaterial={availableMaterial} commonMaterialOptions={commonMaterialOptions} selectedCommonMaterialLesson={selectedCommonMaterialLesson} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} onCommonMaterialLesson={setSelectedCommonMaterialLesson} onSaveCommonMaterial={() => void saveCommonMaterial()} onConfirmCommonMaterial={() => void confirmCommonMaterial()} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onEntry={(patch) => dispatch({ type: "entry", sessionCode: entry.sessionCode, patch })} onDraft={(patch) => dispatch({ type: "draft", patch })} onContinue={() => dispatch({ type: "stage", stage: "confirm" })} />}
-      {entry && state.stage === "confirm" && <TaskConfirmationStage draft={state.draft} entry={entry} runs={runs} decisions={decisions[entry.runId] ?? []} busy={busy} onSwitch={switchEntry} onDecision={updateDecision} onConfirmFacts={() => void confirmFacts()} onConfirmScope={() => void confirmScope()} onClear={() => void clearScopes()} onBack={() => dispatch({ type: "stage", stage: "prepare" })} onCreate={() => void createTask()} />}
+      {entry && state.stage === "confirm" && <TaskConfirmationStage draft={state.draft} entry={entry} runs={runs} decisions={decisions[entry.runId] ?? []} busy={busy} onDecision={updateDecision} onConfirmFacts={() => void confirmFacts()} onConfirmScope={() => void confirmScope()} onClear={() => void clearScopes()} onBack={() => dispatch({ type: "stage", stage: "prepare" })} onCreate={() => void createTask()} />}
       {!entry && <StatusBanner tone="warning">请先选择真实课次。</StatusBanner>}
     </section>}
     {state.stage === "studio" && <FeedbackTaskStudioStage semesterId={context.context.semesterId} className={context.context.className} sessionCode={context.context.sessionCode} planId={state.planId} batchId={state.batchId} context={context.data} onPlanChange={changeStudioPlan} onNewTask={() => void endAndStartNew()} />}

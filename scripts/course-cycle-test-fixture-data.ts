@@ -61,7 +61,10 @@ export const COURSE_CYCLE_FIXTURE = {
     ],
   })),
   stageRange: { startLesson: 1, endLesson: 3 },
-  dailyFeedbackLesson: 4,
+  // The final lesson is intentionally absent from the seeded database. The
+  // course-cycle browser test must create both real sessions, advance the
+  // shared GroupLesson, and confirm its public material through the UI.
+  dailyFeedbackLesson: 6,
   courseEndLesson: 6,
 } as const;
 

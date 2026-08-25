@@ -19,7 +19,7 @@ function stepText(input: { classCode: string; className: string; studentId: stri
   return `STEP_CLASSROOM_EXPORT_V1\nPROMPT_VERSION: step-classroom-interpretation-v1\n\n=== DATA BEGIN ===\n${JSON.stringify(payload)}\n=== DATA END ===\n=== PROMPT BEGIN ===\n${stepPrompt}\n=== PROMPT END ===`;
 }
 
-async function openTask(page: Page, className = TEST_FIXTURE.class.name, sessionCode = TEST_FIXTURE.sessions[1].code) {
+async function openTask(page: Page, className: string = TEST_FIXTURE.class.name, sessionCode: string = TEST_FIXTURE.sessions[1].code) {
   await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(className)}&sessionCode=${sessionCode}`);
   await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("准备任务");
@@ -61,25 +61,20 @@ test("golden A: single class keeps fact, scope, and task creation as separate ac
   await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.students[0].name);
 });
 
-test("golden B: class group stays in one controller and opens a batch studio with every class", async ({ page }) => {
-  await openTask(page);
-  await page.getByRole("checkbox", { name: /按班级组处理本讲反馈/ }).check();
-  await uploadCurrent(page, "一班.step-classroom.txt", stepText({ classCode: TEST_FIXTURE.class.code, className: TEST_FIXTURE.class.name, studentId: TEST_FIXTURE.students[0].studentId, studentName: TEST_FIXTURE.students[0].name }));
-  await page.locator("article").filter({ hasText: TEST_FIXTURE.classTwo.name }).getByRole("button", { name: "处理本班" }).click();
-  await expect(page).toHaveURL(new RegExp(`sessionCode=${TEST_FIXTURE.groupSession.code}`));
-  await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("准备任务");
+test("golden B: a grouped class inherits shared material but creates only one class plan", async ({ page }) => {
+  await openTask(page, TEST_FIXTURE.classTwo.name, TEST_FIXTURE.groupSession.code);
+  await expect(page.getByRole("checkbox", { name: /按班级组处理本讲反馈/ })).toHaveCount(0);
+  await expect(page.getByLabel("材料使用")).toHaveValue("linked_revision");
   await uploadCurrent(page, "二班.step-classroom.txt", stepText({ classCode: TEST_FIXTURE.classTwo.code, className: TEST_FIXTURE.classTwo.name, studentId: TEST_FIXTURE.groupStudents[0].studentId, studentName: TEST_FIXTURE.groupStudents[0].name }));
   await page.getByRole("button", { name: "进入核对并确认" }).click();
   await page.getByRole("button", { name: "确认本班材料与事实" }).click();
   await page.getByRole("button", { name: "确认班级、课次和反馈对象" }).click();
-  await page.locator("article").filter({ hasText: TEST_FIXTURE.class.name }).getByRole("button", { name: "核对" }).click();
-  await page.getByRole("button", { name: "确认本班材料与事实" }).click();
-  await page.getByRole("button", { name: "确认班级、课次和反馈对象" }).click();
   await page.getByRole("button", { name: /创建并开始/ }).click();
-  await expect(page).toHaveURL(/batchId=/);
-  await expect(page.getByRole("heading", { name: "班级组生成与复核" })).toBeVisible();
-  await expect(page.getByText(TEST_FIXTURE.class.name, { exact: true })).toBeVisible();
-  await expect(page.getByText(TEST_FIXTURE.classTwo.name, { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/planId=/);
+  await expect(page).not.toHaveURL(/batchId=/);
+  await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
+  await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.groupStudents[0].name);
+  await expect(page.getByLabel("计划学生导航")).not.toContainText(TEST_FIXTURE.students[0].name);
 });
 
 test("golden C: active task is visible, archivable, and the same run can create a new task", async ({ page, request }) => {

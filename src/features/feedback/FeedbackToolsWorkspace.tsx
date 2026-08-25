@@ -7,7 +7,6 @@ import { Badge, PageHeader, Section, StatusBanner } from "@/components/ui";
 import { createEmptyLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import { requestJson } from "@/lib/api-client";
 import EntryWorkspace from "@/features/entry/EntryWorkspace";
-import { FeedbackBatchPanel } from "./FeedbackBatchPanel";
 import FeedbackPlanManager from "./FeedbackPlanManager";
 import { FeedbackPlanPanel, type FeedbackPlanWorkspace } from "./FeedbackPlanPanel";
 import type { FeedbackIntakeRunClient } from "./feedback-task-types";
@@ -15,7 +14,7 @@ import { useFeedbackTaskContext } from "./useFeedbackTaskContext";
 
 const tools = [
   ["manual-facts", "人工补录"], ["fact-editor", "事实编辑器"], ["pdf-manager", "PDF 管理"], ["materials", "公共材料"],
-  ["plan-builder", "特殊计划"], ["manual-batch", "手工批次"], ["active-plans", "当前任务"], ["model-settings", "模型设置"],
+  ["plan-builder", "特殊计划"], ["active-plans", "当前任务"], ["model-settings", "模型设置"],
 ] as const;
 
 export default function FeedbackToolsWorkspace({ tool }: { tool: string }) {
@@ -43,7 +42,6 @@ export default function FeedbackToolsWorkspace({ tool }: { tool: string }) {
     {currentTool !== "manual-facts" && <Section title="教学上下文" description="工具只作用于这里选择的学期、班级和真实课次。"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} className={context.context.className} onClassChange={context.setClassName} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} /></Section>}
     <nav className="feedback-tool-nav" aria-label="高级工具">{tools.map(([key, label]) => <Link key={key} href={`/feedback/tools?tool=${key}`} className={currentTool === key ? "is-active" : ""}>{label}</Link>)}</nav>
     {currentTool === "active-plans" && <FeedbackPlanManager semesterId={context.context.semesterId} />}
-    {currentTool === "manual-batch" && <FeedbackBatchPanel initialSemesterId={context.context.semesterId} />}
     {currentTool === "plan-builder" && <FeedbackPlanPanel workspace={planWorkspace} />}
     {currentTool === "manual-facts" && <><Section title="人工课堂事实" description="人工录入和复核直接写入当前真实课次；助教表、STEP 和 ZIP 仍回到统一投料入口。"><div className="feedback-tool-actions"><Link className="ui-button ui-button--secondary ui-button--md" href={`/diarize?semesterId=${encodeURIComponent(context.context.semesterId)}&class=${encodeURIComponent(context.context.className)}&sessionCode=${encodeURIComponent(context.context.sessionCode)}`}>录音转写</Link><Link className="ui-button ui-button--ghost ui-button--md" href="/feedback">助教表 / STEP / ZIP 统一投料</Link></div></Section><EntryWorkspace /></>}
     {currentTool === "fact-editor" && <Section title="当前课次事实" description="这里浏览当前课次所有学生结构化事实；进入学生档案可做精细修改。"><div className="feedback-tool-grid">{(context.data?.students ?? []).map((student) => <article key={student.id}><div><strong>{student.name}</strong><Badge tone={student.preview.today.length ? "info" : "neutral"}>{student.preview.today.length} 条本课事实</Badge></div>{student.preview.today.length ? student.preview.today.map((fact) => <p key={fact}>{fact}</p>) : <p>暂无本课事实</p>}<Link href={`/students/${student.id}`}>打开学生档案 →</Link></article>)}</div></Section>}

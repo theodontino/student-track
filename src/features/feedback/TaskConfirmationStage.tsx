@@ -13,7 +13,6 @@ type Props = {
   runs: Record<string, FeedbackIntakeRunClient>;
   decisions: FeedbackIntakeDecision[];
   busy: boolean;
-  onSwitch: (entry: FeedbackTaskClassDraft) => void;
   onDecision: (decision: FeedbackIntakeDecision) => void;
   onConfirmFacts: () => void;
   onConfirmScope: () => void;
@@ -50,20 +49,9 @@ export function TaskConfirmationStage(props: Props) {
   const factsConfirmed = run?.status === "applied";
   const scope = run?.appliedSummary.scopeConfirmation;
   const scopeConfirmed = Boolean(scope && scope.classId === props.entry.classId && scope.sessionCode === props.entry.sessionCode && scope.studentIds.length === props.entry.studentIds.length && props.entry.studentIds.every((id) => scope.studentIds.includes(id)));
-  const selectedEntries = props.draft.entries.filter((entry) => entry.selected);
-  const allReady = selectedEntries.every((entry) => {
-    const item = props.runs[entry.runId];
-    const confirmed = item?.appliedSummary.scopeConfirmation;
-    return item?.status === "applied" && confirmed?.classId === entry.classId && confirmed.sessionCode === entry.sessionCode && confirmed.studentIds.length > 0;
-  });
+  const allReady = factsConfirmed && scopeConfirmed;
 
   return <div className={styles.reviewStage}>
-    {props.draft.mode === "group" && <section className={styles.groupScope}><header><div><strong>逐班核对</strong><p>切换班级不会更换工作流；每班事实和范围分别确认。</p></div></header><div className={styles.groupClasses}>{selectedEntries.map((entry) => {
-      const item = props.runs[entry.runId];
-      const itemScope = item?.appliedSummary.scopeConfirmation;
-      const label = itemScope ? "范围已确认" : item?.status === "applied" ? "事实已确认" : item?.issues.some(isBlockingFeedbackIntakeIssue) ? "待处理冲突" : "等待确认";
-      return <article key={entry.sessionCode} className={entry.sessionCode === props.entry.sessionCode ? styles.groupClassActive : ""}><div><strong>{entry.className}</strong><small>{entry.sessionCode}</small></div><div><Badge tone={itemScope ? "success" : item?.status === "applied" ? "info" : "warning"}>{label}</Badge><Button uiSize="sm" variant="ghost" onClick={() => props.onSwitch(entry)}>核对</Button></div></article>;
-    })}</div></section>}
     <div className={styles.summaryStrip}><div><strong>{run?.appliedSummary.appliedStudentCount ?? run?.appliedSummary.parsedResult?.students?.length ?? 0}</strong><span>已整理学生事实</span></div><div><strong>{run?.appliedSummary.assessmentStudentCount ?? Object.keys(run?.appliedSummary.assessmentEvidence ?? {}).length}</strong><span>PDF 证据</span></div><div><strong>{blocking.length}</strong><span>阻断异常</span></div><div><strong>{unresolved.length}</strong><span>尚未选择</span></div></div>
     {run?.issues.some((issue) => !isBlockingFeedbackIntakeIssue(issue)) && <StatusBanner tone="info">{run.issues.filter((issue) => !isBlockingFeedbackIntakeIssue(issue)).length} 项提示不会阻止继续，例如旧学号按唯一姓名匹配。</StatusBanner>}
     {!factsConfirmed && blocking.length > 0 && <div className={styles.issueList}>{blocking.map((issue) => {

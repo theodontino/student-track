@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.8",
+    title: "反馈工作流收口为单班",
+    changes: [
+      "课后任务只处理当前班级并创建一个 FeedbackPlan，不再显示班级组共同反馈入口。",
+      "班级组和共同课继续负责课程进度与公共材料继承；同组各班分别完成自己的反馈。",
+      "高级工具停止提供手工批次新建；既有多班批次仍可查看、导出和归档。",
+      "完整课程 WebKit 验收改为由教师页面新建共同课、确认共享材料，再验证单班反馈全流程。",
+    ],
+  },
+  {
     version: "1.2.7",
     title: "新课次与共同课材料恢复可用",
     changes: [

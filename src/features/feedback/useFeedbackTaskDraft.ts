@@ -8,7 +8,15 @@ const KEY = "student-track:feedback-task-draft:v2";
 export function readFeedbackTaskDraft(): FeedbackTaskDraftV2 | null {
   try {
     const value = JSON.parse(sessionStorage.getItem(KEY) ?? "null") as FeedbackTaskDraftV2 | null;
-    return value?.version === 2 && Array.isArray(value.entries) ? value : null;
+    if (value?.version !== 2 || !Array.isArray(value.entries)) return null;
+    const current = value.entries.find((entry) => entry.sessionCode === value.activeSessionCode) ?? value.entries[0];
+    return {
+      ...value,
+      mode: "single",
+      groupLessonId: "",
+      activeSessionCode: current?.sessionCode ?? "",
+      entries: current ? [{ ...current, selected: true }] : [],
+    };
   } catch { return null; }
 }
 

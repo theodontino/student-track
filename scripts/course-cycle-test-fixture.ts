@@ -67,7 +67,10 @@ export async function seedCourseCycleFixture(databaseUrl = process.env.DATABASE_
       },
     });
 
-    for (const lesson of fixture.lessons) {
+    // Keep five lessons as course history. Lesson six is deliberately built by
+    // the teacher-facing E2E so selector refresh and shared-material setup are
+    // part of the golden path instead of fixture assumptions.
+    for (const lesson of fixture.lessons.slice(0, -1)) {
       const material = materialFor(lesson.sequence, lesson.topic);
       for (const session of lesson.sessions) {
         await prisma.classSession.create({
