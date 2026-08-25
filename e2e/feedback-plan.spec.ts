@@ -101,3 +101,19 @@ test("golden C: active task is visible, archivable, and the same run can create 
   await expect(page).toHaveURL(/\/feedback\/tools\?tool=manual-facts/);
   await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
 });
+
+test("new lead-class session refreshes the selector and can confirm shared course material", async ({ page }) => {
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}`);
+  await page.getByLabel("新课次日期").fill("2099-01-03");
+  await page.getByRole("button", { name: "新建课次" }).click();
+
+  const sessionSelect = page.locator(".teaching-context-selector label").filter({ hasText: "课次" }).locator("select");
+  await expect(sessionSelect).not.toHaveValue("");
+  await expect(page.getByText(/第 2 讲/).first()).toBeVisible();
+  await expect(page.getByLabel("选择学期公共材料")).toHaveValue("2");
+  await expect(page.getByText("E2E 第二讲", { exact: false }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "确认并共享本讲材料" }).click();
+  await expect(page.getByText(/材料已确认并共享/).first()).toBeVisible();
+  await expect(page.getByLabel("材料使用")).toHaveValue("linked_revision");
+});

@@ -6,6 +6,15 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.7",
+    title: "新课次与共同课材料恢复可用",
+    changes: [
+      "在课后任务中新建真实课次后，课次选择器会立即刷新并切换到新课次。",
+      "主班推进的新共同课会显示学期公共材料草稿，可改选、保存草稿并由教师确认后共享给同组班级。",
+      "独立课次可以从学期公共材料库选择并保存本课材料；公共材料仍只作为课程背景。",
+    ],
+  },
+  {
     version: "1.2.6",
     title: "反馈工作室恢复与验收补强",
     changes: [

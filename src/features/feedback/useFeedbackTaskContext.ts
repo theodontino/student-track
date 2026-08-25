@@ -55,6 +55,7 @@ export function useFeedbackTaskContext() {
   return {
     ...teaching,
     data, loading, error, setError, newSessionDate, setNewSessionDate, creatingSession, createSession,
+    refreshKey,
     refresh: () => setRefreshKey((value) => value + 1), switchSession,
   };
 }

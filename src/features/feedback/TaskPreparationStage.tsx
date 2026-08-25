@@ -1,11 +1,18 @@
 "use client";
 
+import Link from "next/link";
 import { useRef } from "react";
 import { Button, SegmentedControl, Textarea } from "@/components/ui";
 import type { FeedbackContextStudent } from "./context-types";
 import type { FeedbackIntakeRunClient } from "./feedback-task-types";
 import type { FeedbackTaskClassDraft, FeedbackTaskDraftV2, MaterialSelection } from "./feedback-task-state";
 import styles from "./unified-feedback-workspace.module.css";
+
+export type CommonMaterialOption = {
+  lessonNumber: number;
+  label: string;
+  preview: string;
+};
 
 type Props = {
   draft: FeedbackTaskDraftV2;
@@ -16,10 +23,17 @@ type Props = {
   commonMaterialLabel: string;
   commonMaterialPreview: string;
   availableMaterial: MaterialSelection | null;
+  commonMaterialOptions: CommonMaterialOption[];
+  selectedCommonMaterialLesson: number | null;
+  commonMaterialAction: "group" | "session" | "unavailable";
+  commonMaterialHelp: string;
   onFiles: (files: File[]) => void;
   onScan: () => void;
   onEntry: (patch: Partial<FeedbackTaskClassDraft>) => void;
   onDraft: (patch: Partial<FeedbackTaskDraftV2>) => void;
+  onCommonMaterialLesson: (lessonNumber: number | null) => void;
+  onSaveCommonMaterial: () => void;
+  onConfirmCommonMaterial: () => void;
   onContinue: () => void;
 };
 
@@ -43,6 +57,14 @@ export function TaskPreparationStage(props: Props) {
     <section className={styles.strategy}>
       <div className={styles.strategyHeading}><div><strong>课程公共材料与反馈策略</strong><span>班级组只设置一次；公共材料只作为课程背景。</span></div></div>
       <p className={styles.commonLesson}>{props.commonMaterialLabel}</p>{props.commonMaterialPreview && <div className={styles.commonLessonPreview}>{props.commonMaterialPreview}</div>}
+      <div className={styles.commonMaterialEditor}>
+        <label className={styles.commonLessonPicker}>选择学期公共材料<select value={props.selectedCommonMaterialLesson ?? ""} disabled={props.busy || props.commonMaterialAction === "unavailable"} onChange={(event) => props.onCommonMaterialLesson(event.target.value ? Number(event.target.value) : null)}><option value="">请选择公共材料</option>{props.commonMaterialOptions.map((option) => <option key={option.lessonNumber} value={option.lessonNumber}>{option.label}</option>)}</select><small>{props.commonMaterialHelp}</small></label>
+        <div className={styles.commonMaterialActions}>
+          {props.commonMaterialAction === "group" && <><Button variant="secondary" onClick={props.onSaveCommonMaterial} disabled={props.busy || !props.selectedCommonMaterialLesson}>保存为共同课草稿</Button><Button onClick={props.onConfirmCommonMaterial} disabled={props.busy || !props.selectedCommonMaterialLesson}>确认并共享本讲材料</Button></>}
+          {props.commonMaterialAction === "session" && <Button onClick={props.onSaveCommonMaterial} disabled={props.busy || !props.selectedCommonMaterialLesson}>保存为本课公共材料</Button>}
+          {!props.commonMaterialOptions.length && <Link className="ui-button ui-button--ghost ui-button--md" href="/feedback/tools?tool=materials">管理学期公共材料</Link>}
+        </div>
+      </div>
       <label className={styles.commonLessonPicker}>材料使用<select value={props.draft.materialSelection.mode} onChange={(event) => props.onDraft({ materialSelection: event.target.value === "none" ? { mode: "none" } : props.availableMaterial ?? { mode: "none" } })}><option value="none">本次不使用公共材料</option>{props.availableMaterial && <option value={props.availableMaterial.mode}>使用当前课次已确认公共材料</option>}</select></label>
       <div className={styles.strategyRows}>
         <label>生成方式<select value={props.draft.generationMode} onChange={(event) => props.onDraft({ generationMode: event.target.value as "standard" | "fast" })}><option value="standard">标准反馈</option><option value="fast">快速草稿</option></select></label>

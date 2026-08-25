@@ -95,6 +95,24 @@ export async function seedTestFixture(databaseUrl = process.env.DATABASE_URL) {
     });
 
     const material = parseLessonFeedbackMaterial("课程标题：E2E 共同课\n课堂内容：氧化还原反应", "课后任务：订正出门测");
+    const nextMaterial = parseLessonFeedbackMaterial("课程标题：E2E 第二讲\n课堂内容：离子反应", "课后任务：整理笔记");
+    await prisma.semester.update({
+      where: { id: TEST_FIXTURE.semester.id },
+      data: {
+        feedbackScriptLibraryName: "E2E 学期公共材料库",
+        feedbackScriptLibraryUpdatedAt: new Date("2026-07-08T08:00:00.000Z"),
+        feedbackScriptLibraryJson: JSON.stringify({
+          version: 2,
+          name: "E2E 学期公共材料库",
+          warnings: [],
+          updatedAt: "2026-07-08T08:00:00.000Z",
+          entries: [
+            { lessonNumber: 1, topic: "氧化还原反应", groupFeedback: material.groupFeedbackRaw, perfectPrivateFeedback: "", errorPrivateFeedback: "", note: "", material },
+            { lessonNumber: 2, topic: "离子反应", groupFeedback: nextMaterial.groupFeedbackRaw, perfectPrivateFeedback: "", errorPrivateFeedback: "", note: "", material: nextMaterial },
+          ],
+        }),
+      },
+    });
     await prisma.classGroup.create({
       data: {
         id: TEST_FIXTURE.classGroup.id,
