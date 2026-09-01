@@ -23,10 +23,20 @@ export function useSessions(semesterId: string, classId: string, className: stri
   const [items, setItems] = useState<SessionSummary[]>([]);
   useEffect(() => {
     if (!semesterId || (!classId && !className)) { setItems([]); return; }
+    const controller = new AbortController();
+    setItems([]);
     const query = new URLSearchParams({ semesterId });
     if (classId) query.set("classId", classId);
     else query.set("className", className);
-    requestJson<SessionSummary[]>(`/api/sessions?${query}`).then(setItems).catch(() => setItems([]));
+    void requestJson<SessionSummary[]>(`/api/sessions?${query}`, { signal: controller.signal })
+      .then((sessions) => {
+        if (!controller.signal.aborted) setItems(sessions);
+      })
+      .catch((reason) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        if (!controller.signal.aborted) setItems([]);
+      });
+    return () => controller.abort();
   }, [classId, className, refreshKey, semesterId]);
   return items;
 }

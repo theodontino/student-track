@@ -1,7 +1,33 @@
-import type { FeedbackClosureType } from "@/lib/feedback-plan";
+import type {
+  FeedbackClosureType,
+  FeedbackGenerationPreferences,
+  FeedbackPlanItemGenerationConfig,
+} from "@/lib/feedback-plan";
 
 export type TaskStage = "prepare" | "confirm" | "studio";
 export type MaterialSelection = { mode: "none" } | { mode: "session_snapshot" } | { mode: "linked_revision"; revisionId: string };
+
+export type ResolvedFeedbackTaskMaterialChoice = {
+  value: string;
+  historicalLabel?: string;
+};
+
+export type FeedbackTaskPreferences = FeedbackGenerationPreferences & {
+  length: "inherit" | "short" | "standard" | "detailed";
+  tone: "inherit" | "gentle" | "professional";
+  closureType: FeedbackClosureType;
+};
+
+export type FeedbackTaskClassOverrideDraft = {
+  sessionCode: string;
+  outputRequirement?: string;
+  preferences?: Partial<FeedbackTaskPreferences>;
+};
+
+export type FeedbackTaskStudentOverrideDraft = {
+  studentId: string;
+  generationConfig: FeedbackPlanItemGenerationConfig;
+};
 
 export type FeedbackTaskClassDraft = {
   classId: string;
@@ -10,25 +36,52 @@ export type FeedbackTaskClassDraft = {
   sessionCode: string;
   runId: string;
   studentIds: string[];
+  studentSelectionInitialized: boolean;
   selected: boolean;
+};
+
+export type FeedbackTaskGroupSnapshot = {
+  groupLessonId: string;
+  activeSessionCode: string;
+  entries: FeedbackTaskClassDraft[];
+  unassignedSourceCount: number;
 };
 
 export type FeedbackTaskDraftV2 = {
   version: 2;
+  setupStage: "prepare" | "confirm";
+  requestKey: string;
   mode: "single" | "group";
   groupLessonId: string;
   activeSessionCode: string;
   entries: FeedbackTaskClassDraft[];
   materialSelection: MaterialSelection;
+  materialSelectionInitialized: boolean;
+  pendingMaterialLessonNumber: number | null;
   generationMode: "standard" | "fast";
   outputRequirement: string;
-  preferences: {
-    length: "inherit" | "short" | "standard" | "detailed";
-    tone: "inherit" | "gentle" | "professional";
-    closureType: FeedbackClosureType;
-    moduleKeys: string[];
-  };
+  preferences: FeedbackTaskPreferences;
+  classOverrides: FeedbackTaskClassOverrideDraft[];
+  studentOverrides: FeedbackTaskStudentOverrideDraft[];
+  unassignedSourceCount: number;
+  groupSnapshot: FeedbackTaskGroupSnapshot | null;
 };
+
+export function resolveFeedbackTaskMaterialChoice(
+  draft: Pick<FeedbackTaskDraftV2, "materialSelection" | "pendingMaterialLessonNumber">,
+  availableMaterial: MaterialSelection | null,
+): ResolvedFeedbackTaskMaterialChoice {
+  if (draft.pendingMaterialLessonNumber) return { value: `library:${draft.pendingMaterialLessonNumber}` };
+  if (draft.materialSelection.mode === "none") return { value: "none" };
+  if (draft.materialSelection.mode === "session_snapshot") {
+    return availableMaterial?.mode === "session_snapshot"
+      ? { value: "current" }
+      : { value: "draft:session_snapshot", historicalLabel: "使用草稿中保存的课次材料（当前不可预览）" };
+  }
+  return availableMaterial?.mode === "linked_revision" && availableMaterial.revisionId === draft.materialSelection.revisionId
+    ? { value: "current" }
+    : { value: `draft:linked_revision:${draft.materialSelection.revisionId}`, historicalLabel: "使用草稿中保存的历史共同课修订（当前不可预览）" };
+}
 
 export type FeedbackTaskState = {
   stage: TaskStage;
@@ -41,6 +94,8 @@ export type FeedbackTaskAction =
   | { type: "draft"; patch: Partial<FeedbackTaskDraftV2> }
   | { type: "entries"; entries: FeedbackTaskClassDraft[] }
   | { type: "entry"; sessionCode: string; patch: Partial<FeedbackTaskClassDraft> }
+  | { type: "class-override"; sessionCode: string; override: Omit<FeedbackTaskClassOverrideDraft, "sessionCode"> | null }
+  | { type: "student-override"; studentId: string; generationConfig: FeedbackPlanItemGenerationConfig | null }
   | { type: "stage"; stage: TaskStage }
   | { type: "task"; planId?: string; batchId?: string }
   | { type: "restore"; draft: FeedbackTaskDraftV2 };
@@ -48,14 +103,22 @@ export type FeedbackTaskAction =
 export function createFeedbackTaskDraft(): FeedbackTaskDraftV2 {
   return {
     version: 2,
+    setupStage: "prepare",
+    requestKey: crypto.randomUUID(),
     mode: "single",
     groupLessonId: "",
     activeSessionCode: "",
     entries: [],
     materialSelection: { mode: "none" },
+    materialSelectionInitialized: false,
+    pendingMaterialLessonNumber: null,
     generationMode: "standard",
     outputRequirement: "为每名入选学生生成一条可复核的家长反馈",
     preferences: { length: "inherit", tone: "inherit", closureType: "positive_recognition", moduleKeys: ["observed_moment", "teacher_interpretation"] },
+    classOverrides: [],
+    studentOverrides: [],
+    unassignedSourceCount: 0,
+    groupSnapshot: null,
   };
 }
 
@@ -63,9 +126,33 @@ export function feedbackTaskReducer(state: FeedbackTaskState, action: FeedbackTa
   if (action.type === "draft") return { ...state, draft: { ...state.draft, ...action.patch } };
   if (action.type === "entries") return { ...state, draft: { ...state.draft, entries: action.entries } };
   if (action.type === "entry") return { ...state, draft: { ...state.draft, entries: state.draft.entries.map((entry) => entry.sessionCode === action.sessionCode ? { ...entry, ...action.patch } : entry) } };
-  if (action.type === "stage") return { ...state, stage: action.stage };
+  if (action.type === "class-override") {
+    const classOverrides = state.draft.classOverrides.filter((override) => override.sessionCode !== action.sessionCode);
+    return {
+      ...state,
+      draft: {
+        ...state.draft,
+        classOverrides: action.override ? [...classOverrides, { sessionCode: action.sessionCode, ...action.override }] : classOverrides,
+      },
+    };
+  }
+  if (action.type === "student-override") {
+    const studentOverrides = state.draft.studentOverrides.filter((override) => override.studentId !== action.studentId);
+    return {
+      ...state,
+      draft: {
+        ...state.draft,
+        studentOverrides: action.generationConfig ? [...studentOverrides, { studentId: action.studentId, generationConfig: action.generationConfig }] : studentOverrides,
+      },
+    };
+  }
+  if (action.type === "stage") return {
+    ...state,
+    stage: action.stage,
+    draft: action.stage === "studio" ? state.draft : { ...state.draft, setupStage: action.stage },
+  };
   if (action.type === "task") return { ...state, stage: "studio", planId: action.planId ?? state.planId, batchId: action.batchId ?? state.batchId };
-  if (action.type === "restore") return { ...state, draft: action.draft };
+  if (action.type === "restore") return { ...state, stage: action.draft.setupStage, draft: action.draft };
   return state;
 }
 

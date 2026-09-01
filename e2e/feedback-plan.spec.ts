@@ -22,7 +22,7 @@ function stepText(input: { classCode: string; className: string; studentId: stri
 async function openTask(page: Page, className: string = TEST_FIXTURE.class.name, sessionCode: string = TEST_FIXTURE.sessions[1].code) {
   await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(className)}&sessionCode=${sessionCode}`);
   await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("准备任务");
+  await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("材料审核");
 }
 
 async function uploadCurrent(page: Page, fileName: string, contents: string) {
@@ -43,19 +43,25 @@ async function createConfirmedRun(request: APIRequestContext) {
   return runId;
 }
 
-test("golden A: single class keeps fact, scope, and task creation as separate actions", async ({ page }) => {
+test("未分组班级的建课弹窗只要求日期", async ({ page }) => {
+  await page.goto(`/semesters/${TEST_FIXTURE.semester.id}`);
+  await page.getByRole("button", { name: "新建课次", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "新建真实课次" });
+  await dialog.getByLabel("班级").selectOption(TEST_FIXTURE.independentClass.id);
+  await expect(dialog.getByLabel("上课日期")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "创建课次", exact: true })).toBeEnabled();
+  await expect(dialog.getByText("共同进度", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole("radio")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+});
+
+test("golden A: single class uses two teacher confirmations before review", async ({ page }) => {
   await openTask(page);
   await uploadCurrent(page, "课堂.step-classroom.txt", stepText({ classCode: TEST_FIXTURE.class.code, className: TEST_FIXTURE.class.name, studentId: TEST_FIXTURE.students[0].studentId, studentName: TEST_FIXTURE.students[0].name }));
-  await page.getByRole("button", { name: "进入核对并确认" }).click();
-  await expect(page.getByText("第一步：确认本班材料与事实")).toBeVisible();
+  await page.getByRole("button", { name: "确认材料并进入下一步" }).click();
+  await expect(page.getByText("本班默认反馈计划")).toBeVisible();
   await expect(page).not.toHaveURL(/planId=/);
-  await page.getByRole("button", { name: "确认本班材料与事实" }).click();
-  await expect(page.getByText("第二步：确认班级、课次和反馈对象")).toBeVisible();
-  await expect(page).not.toHaveURL(/planId=/);
-  await page.getByRole("button", { name: "确认班级、课次和反馈对象" }).click();
-  await expect(page.getByText("班级、课次和反馈对象已确认")).toBeVisible();
-  await expect(page).not.toHaveURL(/planId=/);
-  await page.getByRole("button", { name: /创建并开始/ }).click();
+  await page.getByRole("button", { name: "确认范围与计划并开始生成" }).click();
   await expect(page).toHaveURL(/planId=/);
   await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
   await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.students[0].name);
@@ -63,13 +69,13 @@ test("golden A: single class keeps fact, scope, and task creation as separate ac
 
 test("golden B: a grouped class inherits shared material but creates only one class plan", async ({ page }) => {
   await openTask(page, TEST_FIXTURE.classTwo.name, TEST_FIXTURE.groupSession.code);
-  await expect(page.getByRole("checkbox", { name: /按班级组处理本讲反馈/ })).toHaveCount(0);
+  await expect(page.getByRole("radiogroup", { name: "课后任务范围" })).toBeVisible();
+  await expect(page.getByRole("radio", { name: "本班" })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "共同课" })).toBeVisible();
   await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
   await uploadCurrent(page, "二班.step-classroom.txt", stepText({ classCode: TEST_FIXTURE.classTwo.code, className: TEST_FIXTURE.classTwo.name, studentId: TEST_FIXTURE.groupStudents[0].studentId, studentName: TEST_FIXTURE.groupStudents[0].name }));
-  await page.getByRole("button", { name: "进入核对并确认" }).click();
-  await page.getByRole("button", { name: "确认本班材料与事实" }).click();
-  await page.getByRole("button", { name: "确认班级、课次和反馈对象" }).click();
-  await page.getByRole("button", { name: /创建并开始/ }).click();
+  await page.getByRole("button", { name: "确认材料并进入下一步" }).click();
+  await page.getByRole("button", { name: "确认范围与计划并开始生成" }).click();
   await expect(page).toHaveURL(/planId=/);
   await expect(page).not.toHaveURL(/batchId=/);
   await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
@@ -97,19 +103,36 @@ test("golden C: active task is visible, archivable, and the same run can create 
   await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
 });
 
-test("new lead-class session refreshes the selector and can confirm shared course material", async ({ page }) => {
+test("new lead-class session confirms shared course material with the material action", async ({ page }) => {
   await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}`);
-  await page.getByLabel("新课次日期").fill("2099-01-03");
-  await page.getByRole("button", { name: "新建课次" }).click();
+  await page.getByRole("button", { name: "新建真实课次" }).click();
+  const dialog = page.getByRole("dialog", { name: "新建真实课次" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("上课日期").fill("2099-01-03");
+  await expect(dialog).toContainText("将新建并关联共同第 2 讲");
+  await expect(dialog.getByRole("radio", { name: /采用系统建议/ })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "更改" }).click();
+  const recommendation = dialog.getByRole("radio", { name: /采用系统建议/ });
+  await expect(recommendation).toBeVisible();
+  await expect(dialog).toContainText("建议由进度基准班开始共同第 2 讲");
+  await recommendation.check();
+  await dialog.getByRole("button", { name: "创建课次", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
 
   const sessionSelect = page.locator(".teaching-context-selector label").filter({ hasText: "课次" }).locator("select");
   await expect(sessionSelect).not.toHaveValue("");
   await expect(page.getByText(/第 2 讲/).first()).toBeVisible();
   await expect(page.getByLabel("本次课程材料")).toHaveValue("library:2");
+  await page.getByText("预览所选材料").click();
   await expect(page.getByText("E2E 第二讲", { exact: false }).first()).toBeVisible();
 
-  await page.getByRole("button", { name: "确认并共享本讲材料" }).click();
-  await expect(page.getByText(/材料已确认并共享/).first()).toBeVisible();
+  await uploadCurrent(page, "主班.step-classroom.txt", stepText({ classCode: TEST_FIXTURE.class.code, className: TEST_FIXTURE.class.name, studentId: TEST_FIXTURE.students[0].studentId, studentName: TEST_FIXTURE.students[0].name }));
+  await page.getByRole("button", { name: "STEP 报告：查看详情" }).click();
+  await page.getByRole("radio", { name: "仍作为当前课次采用" }).check();
+  await page.getByRole("button", { name: "关闭" }).click();
+  await page.getByRole("button", { name: "确认材料并进入下一步" }).click();
+  await expect(page.getByText("本班默认反馈计划")).toBeVisible();
+  await page.getByRole("button", { name: "返回材料审核" }).click();
   await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
 });
 
@@ -126,9 +149,8 @@ test("independent class uses one material selector and saves the choice before c
     studentName: TEST_FIXTURE.independentStudent.name,
   }));
 
-  await page.getByRole("button", { name: "进入核对并确认" }).click();
-  await expect(page.getByText("第一步：确认本班材料与事实")).toBeVisible();
-  await expect(page.getByText("已采用学期公共材料第 1 课，并保存为本课公共材料。")).toBeVisible();
+  await page.getByRole("button", { name: "确认材料并进入下一步" }).click();
+  await expect(page.getByText("本班默认反馈计划")).toBeVisible();
 
   const response = await request.get(`/api/report/feedback-context?semesterId=${TEST_FIXTURE.semester.id}&sessionCode=${TEST_FIXTURE.independentSession.code}`);
   expect(response.ok()).toBeTruthy();

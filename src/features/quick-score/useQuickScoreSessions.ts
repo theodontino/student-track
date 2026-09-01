@@ -5,7 +5,7 @@ import type { TeachingContext } from "@/features/teaching-context/types";
 import { teachingContextWorkspaceKey } from "@/features/teaching-context/url-context";
 import type { CardScore, SessionInfo } from "@/lib/types";
 import { useSessionWorkspace } from "@/lib/use-session-workspace";
-import { createQuickScoreSession, deleteQuickScoreSession, loadQuickScoreSession, loadQuickScoreSessions } from "./api";
+import { deleteQuickScoreSession, loadQuickScoreSession, loadQuickScoreSessions } from "./api";
 import { selectQuickScoreSession, shouldApplyQuickScoreRequest } from "./session-helpers";
 import type { OriginalScore } from "./useQuickScoreWorkspace";
 import type {
@@ -16,6 +16,11 @@ import type {
   QuickScoreStudent,
 } from "./types";
 import { isQuickScoreSessionState } from "./workspace-state";
+
+function today() {
+  const value = new Date();
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+}
 
 export function useQuickScoreSessions({
   context,
@@ -44,9 +49,8 @@ export function useQuickScoreSessions({
 }) {
   const { semesterId, className, classId = "", sessionCode } = context;
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [date, setDate] = useState(today);
   const [hasExistingScores, setHasExistingScores] = useState(false);
-  const [recordingClass, setRecordingClass] = useState(false);
   const [deletingSession, setDeletingSession] = useState(false);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const semesterRef = useRef(semesterId);
@@ -171,6 +175,9 @@ export function useQuickScoreSessions({
 
   const fetchSessions = useCallback(async () => {
     const requestId = ++sessionsRequestRef.current;
+    // Once a newer session-list refresh starts, cards selected from an older
+    // list must not be allowed to land while this refresh is still in flight.
+    cardsRequestRef.current += 1;
     const requestedSemesterId = semesterId;
     const requestedClassName = className;
     const requestedClassId = classId;
@@ -197,9 +204,9 @@ export function useQuickScoreSessions({
         pendingRestoreRef.current = null;
         return true;
       }
-      const today = new Date().toISOString().split("T")[0];
+      const currentDate = today();
       const restoredCode = pending?.sessionCode || sessionCodeRef.current;
-      const target = selectQuickScoreSession(data, restoredCode, today);
+      const target = selectQuickScoreSession(data, restoredCode, currentDate);
       if (target) {
         setSessionCode(target.code);
         return loadSessionCards(target);
@@ -243,18 +250,21 @@ export function useQuickScoreSessions({
     if (session) await loadSessionCards(session);
   }
 
-  async function createSession() {
-    if (!semesterId) return;
-    setRecordingClass(true);
+  async function acceptCreatedSession(session: { code: string; date: string }) {
+    // Creating a session changes the write target immediately. Invalidate every
+    // older card load and clear the old session snapshot before refreshing, so
+    // a failed refresh can never leave old cards attached to the new code.
+    cardsRequestRef.current += 1;
+    pendingRestoreRef.current = null;
+    setCards([]);
+    setOriginalScores(new Map());
+    setHasExistingScores(false);
+    setResult(null);
+    setDate(session.date);
     setNotice(null);
-    try {
-      await createQuickScoreSession(semesterId, className, classId || undefined);
-      if (await fetchSessions()) setNotice({ tone: "success", message: "新课次已创建并载入。" });
-    } catch (error) {
-      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "创建课次失败" });
-    } finally {
-      setRecordingClass(false);
-    }
+    sessionCodeRef.current = session.code;
+    setSessionCode(session.code);
+    if (await fetchSessions()) setNotice({ tone: "success", message: "新课次已创建并载入。" });
   }
 
   function requestDeleteSession() {
@@ -308,14 +318,13 @@ export function useQuickScoreSessions({
     date,
     setDate,
     hasExistingScores,
-    recordingClass,
     deletingSession,
     deleteConfirmationOpen,
     setDeleteConfirmationOpen,
     workspaceHydrated,
     loadSessionCards,
     changeSession,
-    createSession,
+    acceptCreatedSession,
     requestDeleteSession,
     deleteSession,
     restoreHistory,

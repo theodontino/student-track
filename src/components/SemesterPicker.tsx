@@ -5,8 +5,9 @@ import { TeachingContextSelector } from "@/features/teaching-context/TeachingCon
 interface Props {
   semesterId: string;
   onSemesterChange: (id: string) => void;
+  classId?: string;
   className: string;
-  onClassChange: (name: string) => void;
+  onClassChange: (name: string, id?: string) => void;
   sessionCode: string;
   onSessionChange: (code: string) => void;
   showDefaultOption?: boolean;
@@ -14,10 +15,10 @@ interface Props {
   refreshKey?: number;
 }
 
-export default function SemesterPicker({ semesterId, onSemesterChange, className, onClassChange, sessionCode, onSessionChange, hideSession = false, refreshKey = 0 }: Props) {
-  return <TeachingContextSelector compact hideSession={hideSession} refreshKey={refreshKey} value={{ semesterId, className, sessionCode }} onChange={(next) => {
+export default function SemesterPicker({ semesterId, onSemesterChange, classId = "", className, onClassChange, sessionCode, onSessionChange, hideSession = false, refreshKey = 0 }: Props) {
+  return <TeachingContextSelector compact hideSession={hideSession} refreshKey={refreshKey} value={{ semesterId, classId, className, sessionCode }} onChange={(next) => {
     if (next.semesterId !== semesterId) onSemesterChange(next.semesterId);
-    if (next.className !== className) onClassChange(next.className);
+    if (next.className !== className || (next.classId ?? "") !== classId) onClassChange(next.className, next.classId);
     if (next.sessionCode !== sessionCode) onSessionChange(next.sessionCode);
   }} />;
 }

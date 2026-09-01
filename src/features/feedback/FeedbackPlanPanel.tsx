@@ -86,6 +86,22 @@ interface Plan {
   exportRuns?: Array<{ id: string; mode: string; manifestHash: string; isRepeat?: boolean; createdAt: string }>;
 }
 
+export type FeedbackItemDraft = { text: string; revision: number };
+
+export function syncFeedbackItemDrafts(
+  current: Record<string, FeedbackItemDraft>,
+  incoming: Array<{ id: string; text: string; revision: number }>,
+) {
+  const next = { ...current };
+  for (const item of incoming) {
+    const existing = next[item.id];
+    const hasLocalEdit = Boolean(existing && existing.text !== item.text);
+    const serverRevisionChanged = Boolean(existing && existing.revision !== item.revision);
+    if (!existing || !hasLocalEdit || serverRevisionChanged) next[item.id] = { text: item.text, revision: item.revision };
+  }
+  return next;
+}
+
 interface RosterCandidate {
   id: string;
   name: string;
@@ -361,9 +377,10 @@ export interface FeedbackPlanPanelProps {
   workspace: FeedbackPlanWorkspace;
   presentation?: "legacy" | "studio";
   batchControl?: FeedbackPlanBatchControl;
+  focusItemId?: string;
 }
 
-export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchControl }: FeedbackPlanPanelProps) {
+export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchControl, focusItemId }: FeedbackPlanPanelProps) {
   const showPanel = workspace.activeStep === "review" || workspace.activeStep === "generate" || workspace.activeStep === "export";
   const requestedPlanId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("planId");
   const [type, setType] = useState<FeedbackPlanType>("event_micro");
@@ -385,7 +402,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   const [independentItemTarget, setIndependentItemTarget] = useState<{ item: PlanItem; studentName: string } | null>(null);
   const [inactiveCandidates, setInactiveCandidates] = useState<RosterCandidate[]>([]);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, { text: string; revision: number }>>({});
+  const [drafts, setDrafts] = useState<Record<string, FeedbackItemDraft>>({});
   const [taskDrafts, setTaskDrafts] = useState<Record<string, TaskDraft>>({});
   const [savingItemIds, setSavingItemIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -527,7 +544,6 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     setStudentOverrides({});
     setIndependentStudentTarget(null);
     setIndependentItemTarget(null);
-    setDrafts({});
     setSelectedItemIds([]);
     setRepeatExportRequest(null);
     setContextMetaError("");
@@ -615,18 +631,11 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   }, [candidateStudents, confirmedAssessmentStudentIds, rangeEndSessionId, rangeStartSessionId, recommendedStudents, type, workspace.context.sessionCode]);
   useEffect(() => {
     if (!activePlan) return;
-    setDrafts((current) => {
-      const next = { ...current };
-      for (const item of activePlan.items) {
-        if (!next[item.id] || next[item.id]!.revision !== item.itemRevision) {
-          next[item.id] = {
-            text: item.finalText ?? parseComposition(item.compositionSnapshot, activePlan.type, item.composition).draftFeedback ?? "",
-            revision: item.itemRevision,
-          };
-        }
-      }
-      return next;
-    });
+    setDrafts((current) => syncFeedbackItemDrafts(current, activePlan.items.map((item) => ({
+      id: item.id,
+      text: item.finalText ?? parseComposition(item.compositionSnapshot, activePlan.type, item.composition).draftFeedback ?? "",
+      revision: item.itemRevision,
+    }))));
     setSelectedItemIds((current) => {
       const selectable = new Set(activePlan.items
         .filter((item) => !["approved", "exported", "stale", "generating", "queued", "pause_requested"].includes(item.status))
@@ -1079,6 +1088,17 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     const visible = activePlan.items.filter((item) => studioMatches(item, studioFilter));
     if (!visible.some((item) => item.id === studioItemId)) setStudioItemId((visible[0] ?? activePlan.items[0]).id);
   }, [activePlan, presentation, studioFilter, studioItemId, studioMatches]);
+
+  useEffect(() => {
+    if (presentation !== "studio" || !focusItemId || !activePlan?.items.length) return;
+    const target = activePlan.items.find((item) => item.id === focusItemId);
+    if (!target) return;
+    const targetFilter = ["approved", "exported"].includes(target.status)
+      ? "done"
+      : target.status === "needs_review" ? "review" : "action";
+    setStudioFilter(targetFilter);
+    setStudioItemId(target.id);
+  }, [activePlan, focusItemId, presentation]);
 
   if (!showPanel) return null;
   const isReview = workspace.activeStep === "review";

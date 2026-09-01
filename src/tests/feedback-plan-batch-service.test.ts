@@ -61,8 +61,12 @@ describe("feedback plan batch service", () => {
       sharedMaterialConfirmed: true,
       plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], studentIds: [studentIds[index]!] })),
     };
-    const created = await createFeedbackPlanBatch(input);
+    const [created, concurrent] = await Promise.all([
+      createFeedbackPlanBatch(input),
+      createFeedbackPlanBatch(input),
+    ]);
     const repeated = await createFeedbackPlanBatch(input);
+    expect(concurrent.id).toBe(created.id);
     expect(repeated.id).toBe(created.id);
     expect(created.plans).toHaveLength(2);
     expect(created.plans.map((plan) => plan.batchOrder)).toEqual([1, 2]);
@@ -77,6 +81,57 @@ describe("feedback plan batch service", () => {
       return stableMaterial;
     })).toEqual([confirmedStableMaterial, confirmedStableMaterial]);
     expect(snapshots.map((plan) => JSON.parse(plan.inputSnapshot).lessonMaterial.sessionCode)).toEqual(["2098010101", "2098010201"]);
+  });
+
+  it("inherits a group strategy while preserving class and student exceptions", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-STRATEGY-INHERITANCE`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "共同要求",
+      plans: [{
+        classId: classIds[0]!,
+        sessionId: sessionIds[0]!,
+        studentIds: [studentIds[0]!],
+        outputRequirement: "一班要求",
+        generationPreferences: {
+          closureType: "teacher_resolved",
+          moduleKeys: ["teacher_intervention"],
+        },
+        studentOverrides: [{
+          studentId: studentIds[0]!,
+          generationConfig: {
+            version: 1,
+            type: "event_micro",
+            outputRequirement: "学生单独要求",
+            generationPreferences: {
+              closureType: "home_cooperation",
+              moduleKeys: ["parent_action"],
+            },
+          },
+        }],
+      }, {
+        classId: classIds[1]!,
+        sessionId: sessionIds[1]!,
+        studentIds: [studentIds[1]!],
+      }],
+    });
+    const plans = await prisma.feedbackPlan.findMany({
+      where: { batchId: batch.id },
+      orderBy: { batchOrder: "asc" },
+      select: { outputRequirement: true, inputSnapshot: true, items: { select: { generationConfigSnapshot: true } } },
+    });
+
+    expect(plans.map((plan) => plan.outputRequirement)).toEqual(["一班要求", "共同要求"]);
+    expect(JSON.parse(plans[0]!.inputSnapshot).generationPreferences).toEqual({
+      closureType: "teacher_resolved",
+      moduleKeys: ["teacher_intervention"],
+    });
+    expect(JSON.parse(plans[0]!.items[0]!.generationConfigSnapshot)).toMatchObject({
+      outputRequirement: "学生单独要求",
+      generationPreferences: { closureType: "home_cooperation", moduleKeys: ["parent_action"] },
+    });
+    expect(plans[1]!.items[0]!.generationConfigSnapshot).toBe("{}");
   });
 
   it("rolls back the whole batch when one class is invalid", async () => {
@@ -134,8 +189,51 @@ describe("feedback plan batch service", () => {
     expect(new Set(linkedRuns.map((run) => run.planId)).size).toBe(2);
   });
 
+  it("uses historical real-session links after a class leaves the current group", async () => {
+    const groupId = (await prisma.groupLesson.findUniqueOrThrow({ where: { id: lessonId }, select: { groupId: true } })).groupId;
+    await prisma.classGroupMembership.delete({ where: { classId: classIds[1]! } });
+    try {
+      const runs = await Promise.all(sessionIds.map((_sessionId, index) => prisma.feedbackIntakeRun.create({
+        data: {
+          sessionCode: `2098010${index + 1}01`,
+          sourceFingerprint: `${marker}-HISTORICAL-GROUP-RUN-${index}`,
+          sourceManifest: "[]",
+          status: "applied",
+          appliedSummary: JSON.stringify({ applied: true, assessmentEvidence: {} }),
+        },
+      })));
+      const batch = await createFeedbackPlanBatch({
+        requestKey: `${marker}-HISTORICAL-GROUP-BATCH`,
+        semesterId,
+        type: "event_micro",
+        outputRequirement: "按历史共同课真实课次生成",
+        groupLessonId: lessonId,
+        sharedLessonRevisionId: revisionId,
+        sharedMaterialConfirmed: true,
+        plans: classIds.map((classId, index) => ({
+          classId,
+          sessionId: sessionIds[index],
+          intakeRunId: runs[index]!.id,
+          studentIds: [studentIds[index]!],
+        })),
+      });
+      expect(batch.plans).toHaveLength(2);
+    } finally {
+      await prisma.classGroupMembership.create({ data: { groupId, classId: classIds[1]! } });
+    }
+  });
+
   it("adopts an unbatched plan already created from the same intake run", async () => {
     const outputRequirement = "班级组接管已有计划";
+    const studentOverride = {
+      studentId: studentIds[0]!,
+      generationConfig: {
+        version: 1 as const,
+        type: "event_micro" as const,
+        outputRequirement: "合成学生独立要求",
+        generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment"] },
+      },
+    };
     const existingPlan = await createFeedbackPlan({
       semesterId,
       classId: classIds[0]!,
@@ -143,6 +241,7 @@ describe("feedback plan batch service", () => {
       type: "event_micro",
       outputRequirement,
       studentIds: [studentIds[0]!],
+      studentOverrides: [studentOverride],
     });
     const runs = await Promise.all(sessionIds.map((sessionId, index) => prisma.feedbackIntakeRun.create({
       data: {
@@ -155,12 +254,12 @@ describe("feedback plan batch service", () => {
       },
     })));
 
-    const batch = await createFeedbackPlanBatch({
+    const baseInput = {
       requestKey: `${marker}-ADOPT-BATCH`,
       semesterId,
-      type: "event_micro",
+      type: "event_micro" as const,
       outputRequirement,
-      generationMode: "standard",
+      generationMode: "standard" as const,
       groupLessonId: lessonId,
       sharedLessonRevisionId: revisionId,
       sharedMaterialConfirmed: true,
@@ -169,8 +268,17 @@ describe("feedback plan batch service", () => {
         sessionId: sessionIds[index],
         intakeRunId: runs[index]!.id,
         studentIds: [studentIds[index]!],
+        ...(index === 0 ? { studentOverrides: [studentOverride] } : {}),
       })),
-    });
+    };
+
+    await expect(createFeedbackPlanBatch({
+      ...baseInput,
+      requestKey: `${marker}-ADOPT-BATCH-MISMATCH`,
+      plans: baseInput.plans.map((plan) => ({ ...plan, studentOverrides: undefined })),
+    })).rejects.toMatchObject({ status: 409 });
+
+    const batch = await createFeedbackPlanBatch(baseInput);
 
     expect(batch.plans).toHaveLength(2);
     expect(batch.plans[0]?.id).toBe(existingPlan.id);

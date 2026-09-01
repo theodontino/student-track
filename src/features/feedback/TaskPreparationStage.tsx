@@ -1,73 +1,137 @@
 "use client";
 
 import Link from "next/link";
-import { useRef } from "react";
-import { Button, SegmentedControl, Textarea } from "@/components/ui";
-import type { FeedbackContextStudent } from "./context-types";
+import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
+import type { FeedbackIntakeDecision } from "@/services/feedback-intake-service";
 import type { FeedbackIntakeRunClient } from "./feedback-task-types";
 import type { FeedbackTaskClassDraft, FeedbackTaskDraftV2 } from "./feedback-task-state";
+import { MaterialIntakeCard, type GroupMaterialSummary, type MaterialSourceKind, type MaterialSourceSummary } from "./MaterialIntakeCard";
 import styles from "./unified-feedback-workspace.module.css";
 
-export type CommonMaterialOption = {
-  value: string;
-  label: string;
-};
+export type { GroupMaterialSummary, MaterialIssueSummary, MaterialSourceKind, MaterialSourceStatus, MaterialSourceSummary } from "./MaterialIntakeCard";
 
-type Props = {
+export type CommonMaterialOption = { value: string; label: string };
+
+export type TaskPreparationStageProps = {
   draft: FeedbackTaskDraftV2;
   entry: FeedbackTaskClassDraft;
   run: FeedbackIntakeRunClient | null;
-  students: FeedbackContextStudent[];
+  studentTotal: number;
   busy: boolean;
+  confirmDisabled?: boolean;
   commonMaterialLabel: string;
   commonMaterialPreview: string;
   commonMaterialOptions: CommonMaterialOption[];
   commonMaterialChoice: string;
   commonMaterialAction: "group" | "session" | "unavailable";
   commonMaterialHelp: string;
+  decisions?: FeedbackIntakeDecision[];
   onFiles: (files: File[]) => void;
   onScan: () => void;
-  onEntry: (patch: Partial<FeedbackTaskClassDraft>) => void;
-  onDraft: (patch: Partial<FeedbackTaskDraftV2>) => void;
+  onUseExistingFacts: () => void;
   onCommonMaterialChoice: (choice: string) => void;
-  onConfirmCommonMaterial: () => void;
   onContinue: () => void;
+  manualFactsHref: string;
+  onIgnoreUnassigned?: () => void;
+  onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
+  materialSummary?: GroupMaterialSummary;
 };
 
-export function TaskPreparationStage(props: Props) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const folderRef = useRef<HTMLInputElement>(null);
-  const selected = new Set(props.entry.studentIds);
-  const toggleStudent = (id: string) => props.onEntry({ studentIds: selected.has(id) ? props.entry.studentIds.filter((value) => value !== id) : [...props.entry.studentIds, id] });
+const SOURCE_KINDS: MaterialSourceKind[] = ["assistant_roster", "step_classroom", "assessment_pdf"];
+
+function selectedDecision(issue: FeedbackIntakeRunClient["issues"][number], decisions: FeedbackIntakeDecision[]) {
+  return decisions.find((decision) => decision.issueId === issue.id)
+    ?? decisions.find((decision) => issue.sourceName && decision.sourceName === issue.sourceName && (
+      decision.action === "ignore_source" || (decision.action === "accept_source" && isSourceScopedBoundaryIssue(issue))
+    ));
+}
+
+function defaultMaterialSummary(run: FeedbackIntakeRunClient | null, entry: FeedbackTaskClassDraft, studentTotal: number, decisions: FeedbackIntakeDecision[]): GroupMaterialSummary {
+  const pendingIssues = run?.status === "applied" ? [] : (run?.issues ?? []).filter(isBlockingFeedbackIntakeIssue);
+  const sources: MaterialSourceSummary[] = SOURCE_KINDS.map((kind) => {
+    const files = (run?.sourceManifest ?? []).filter((source) => source.kind === kind).map((source) => source.name ?? "未命名文件");
+    const fileNames = new Set(files);
+    const issues = pendingIssues.filter((issue) => issue.sourceName && fileNames.has(issue.sourceName));
+    const unresolvedCount = issues.filter((issue) => !selectedDecision(issue, decisions)).length;
+    const status = files.length === 0 ? "missing" : run?.status === "applied" ? "applied" : unresolvedCount > 0 ? "needs_review" : "ready";
+    const summarizedIssues = issues.map((issue) => ({
+      id: issue.id,
+      code: issue.code,
+      message: issue.message,
+      runId: run?.id,
+      className: entry.className,
+      sourceName: issue.sourceName,
+      candidates: issue.candidates,
+      stage: issue.stage,
+      rowNumber: issue.rowNumber,
+      reportedStudent: issue.reportedStudent,
+      rosterHint: issue.rosterHint,
+      decision: selectedDecision(issue, decisions),
+    }));
+    const common = { kind, fileCount: files.length, issueCount: unresolvedCount, status, files, issues: summarizedIssues } satisfies MaterialSourceSummary;
+    if (kind === "assessment_pdf") {
+      const matched = run?.appliedSummary.assessmentStudentCount ?? Object.keys(run?.appliedSummary.assessmentEvidence ?? {}).length;
+      return { ...common, matched, total: studentTotal, unit: "名学生" };
+    }
+    const hasClassFailure = issues.some((issue) => issue.code.endsWith("_class_mismatch") || issue.code.endsWith("_invalid"));
+    if (kind !== "assistant_roster") return { ...common, matched: files.length > 0 && !hasClassFailure ? 1 : 0, total: 1, unit: "个班" };
+    const facts = (run?.appliedSummary.sourceFacts ?? []).filter((fact) => fact.kind === "assistant_roster" && fileNames.has(fact.key));
+    const matchedClass = facts.some((fact) => fact.assistantMatch?.matchedClass ?? !fact.issues?.some((issue) => issue.code === "assistant_class_mismatch"));
+    const matchedStudents = facts.reduce((total, fact) => total + (fact.assistantMatch?.matchedStudents
+      ?? fact.parsedResult?.students?.filter((student) => student.present !== false).length
+      ?? 0), 0);
+    const totalStudentRows = facts.reduce((total, fact) => total + (fact.assistantMatch?.totalStudentRows
+      ?? (fact.parsedResult?.students?.filter((student) => student.present !== false).length ?? 0) + (fact.unresolvedStudents?.length ?? 0)), 0);
+    const sessionState = issues.some((issue) => issue.code === "assistant_date_mismatch" || issue.code === "assistant_lesson_mismatch")
+      ? "课次待确认"
+      : issues.some((issue) => issue.code === "assistant_date_missing" || issue.code === "assistant_lesson_missing")
+        ? "课次信息不完整"
+        : "课次已匹配";
+    return {
+      ...common,
+      matched: matchedClass ? 1 : 0,
+      total: 1,
+      unit: "个班",
+      matchText: files.length ? `班级 ${matchedClass ? 1 : 0}/1 · 学生 ${matchedStudents}/${totalStudentRows} · ${sessionState}` : undefined,
+    };
+  });
+  return {
+    title: "本轮材料",
+    scopeLabel: entry.className,
+    issueCount: pendingIssues.filter((issue) => !selectedDecision(issue, decisions)).length,
+    issues: pendingIssues.map((issue) => ({ id: issue.id, code: issue.code, message: issue.message })),
+    sources,
+  };
+}
+
+export function TaskPreparationStage(props: TaskPreparationStageProps) {
+  const materialSummary = props.materialSummary ?? defaultMaterialSummary(props.run, props.entry, props.studentTotal, props.decisions ?? []);
   return <div className={styles.stageContent}>
-    <div className={styles.entrances}>
-      <div className={styles.dropzone} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); props.onFiles(Array.from(event.dataTransfer.files)); }}>
-        <span className={styles.eyebrow}>入口 A · 临时投入</span><strong>拖入文件、文件夹或 ZIP</strong><p>助教 Excel、STEP 文本、学生 PDF；所有文件先整理，不在本阶段写入事实。</p>
-        <Button variant="secondary" onClick={() => fileRef.current?.click()} disabled={props.busy}>选择材料</Button>
-        <input ref={fileRef} hidden type="file" multiple onChange={(event) => { props.onFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
-      </div>
-      <div className={styles.inbox}><span className={styles.eyebrow}>入口 B · 固定目录</span><strong>读取反馈收件箱</strong><code>~/Library/Application Support/Student Track/feedback-inbox</code><Button variant="secondary" onClick={props.onScan} disabled={props.busy}>重新扫描</Button><small>只在教师打开任务时扫描，不移动、不删除源文件。</small></div>
-    </div>
-    <div className={styles.folderRow}><Button variant="ghost" onClick={() => folderRef.current?.click()} disabled={props.busy}>选择整个报告文件夹</Button><span>适合一次投入一批学生 PDF。</span><input ref={folderRef} hidden type="file" multiple {...({ webkitdirectory: "" } as Record<string, string>)} onChange={(event) => { props.onFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} /></div>
-    {props.run && <div className={styles.runSummary}><div><strong>本班材料</strong><span>{props.run.sourceManifest.length} 个来源 · {props.run.status === "applied" ? "事实已确认" : props.run.issues.length ? `${props.run.issues.length} 项需核对` : "等待确认"}</span></div><div className={styles.fileList}>{props.run.sourceManifest.map((source, index) => <span key={`${source.name}:${index}`}>{source.kind ?? "文件"} · {source.name}</span>)}</div></div>}
-    <section className={styles.candidates}><header><div><strong>本次反馈对象</strong><span>每班独立选择；确认范围后服务端保存。</span></div><div><Button uiSize="sm" variant="ghost" onClick={() => props.onEntry({ studentIds: props.students.map((student) => student.id) })}>全选</Button><Button uiSize="sm" variant="ghost" onClick={() => props.onEntry({ studentIds: [] })}>清空</Button></div></header><div className={styles.candidateGrid}>{props.students.map((student) => <label key={student.id} className={selected.has(student.id) ? styles.candidateSelected : ""}><input type="checkbox" checked={selected.has(student.id)} onChange={() => toggleStudent(student.id)} /><span><strong>{student.name}</strong><small>{student.studentId}</small></span></label>)}</div></section>
-    <section className={styles.strategy}>
-      <div className={styles.strategyHeading}><div><strong>课程公共材料与反馈策略</strong><span>当前反馈只作用于所选班级；公共材料只作为课程背景。</span></div></div>
-      <p className={styles.commonLesson}>{props.commonMaterialLabel}</p>{props.commonMaterialPreview && <div className={styles.commonLessonPreview}>{props.commonMaterialPreview}</div>}
-      <div className={styles.commonMaterialEditor}>
-        <label className={styles.commonLessonPicker}>本次课程材料<select value={props.commonMaterialChoice} disabled={props.busy || (props.commonMaterialAction === "unavailable" && props.commonMaterialOptions.length === 1)} onChange={(event) => props.onCommonMaterialChoice(event.target.value)}>{props.commonMaterialOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><small>{props.commonMaterialHelp}</small></label>
-        <div className={styles.commonMaterialActions}>
-          {props.commonMaterialAction === "group" && props.commonMaterialChoice.startsWith("library:") && <Button onClick={props.onConfirmCommonMaterial} disabled={props.busy}>确认并共享本讲材料</Button>}
-          {!props.commonMaterialOptions.some((option) => option.value.startsWith("library:")) && <Link className="ui-button ui-button--ghost ui-button--md" href="/feedback/tools?tool=materials">管理学期公共材料</Link>}
-        </div>
-      </div>
-      <div className={styles.strategyRows}>
-        <label>生成方式<select value={props.draft.generationMode} onChange={(event) => props.onDraft({ generationMode: event.target.value as "standard" | "fast" })}><option value="standard">标准反馈</option><option value="fast">快速草稿</option></select></label>
-        <label>详略<SegmentedControl label="详略" value={props.draft.preferences.length} onChange={(value) => props.onDraft({ preferences: { ...props.draft.preferences, length: value as FeedbackTaskDraftV2["preferences"]["length"] } })} items={[{ value: "inherit", label: "随家庭偏好" }, { value: "short", label: "简洁" }, { value: "standard", label: "标准" }, { value: "detailed", label: "详细" }]} /></label>
-        <label>语气<SegmentedControl label="语气" value={props.draft.preferences.tone} onChange={(value) => props.onDraft({ preferences: { ...props.draft.preferences, tone: value as FeedbackTaskDraftV2["preferences"]["tone"] } })} items={[{ value: "inherit", label: "随现有偏好" }, { value: "gentle", label: "温和" }, { value: "professional", label: "专业" }]} /></label>
-        <label className={styles.requirement}>总体要求<Textarea rows={3} value={props.draft.outputRequirement} onChange={(event) => props.onDraft({ outputRequirement: event.target.value })} /></label>
-      </div>
+    {props.draft.mode === "single" && <section className={styles.intakePaths}>
+      <div><strong>课堂记录可以直接补录</strong><span>像 1.1.x 一样，先写课堂回顾；Excel、STEP 和测评材料都是可选补充。</span></div>
+      <Link className="ui-button ui-button--secondary ui-button--sm" href={props.manualFactsHref}>手动输入课堂记录</Link>
+    </section>}
+    <MaterialIntakeCard
+      summary={materialSummary}
+      busy={props.busy}
+      confirmDisabled={props.confirmDisabled}
+      onFiles={props.onFiles}
+      onScan={props.onScan}
+      onUseExistingFacts={props.onUseExistingFacts}
+      useExistingFactsLabel={props.draft.mode === "group" ? "这些班已有事实，直接核对" : "沿用已有事实"}
+      onConfirm={props.onContinue}
+      confirmLabel={props.draft.mode === "group" ? "确认可处理班级" : "确认事实并选择学生"}
+      confirmHint={props.draft.mode === "group" ? "各班分别写入；某一班有问题不会撤销其他班。" : "只确认本班事实；反馈计划在下一步单独建立。"}
+      onIgnoreUnassigned={props.onIgnoreUnassigned}
+      onDecision={props.onDecision}
+    />
+    <section className={styles.compactMaterialStrategy}>
+      <div><strong>课程公共材料</strong><span>{props.commonMaterialLabel}</span></div>
+      <label>本次课程材料<select value={props.commonMaterialChoice} disabled={props.busy || (props.commonMaterialAction === "unavailable" && props.commonMaterialOptions.length === 1)} onChange={(event) => props.onCommonMaterialChoice(event.target.value)}>{props.commonMaterialOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+      <small>{props.commonMaterialHelp}</small>
+      {props.commonMaterialPreview && <details><summary>预览所选材料</summary><div className={styles.commonLessonPreview}>{props.commonMaterialPreview}</div></details>}
+      {!props.commonMaterialOptions.some((option) => option.value.startsWith("library:")) && <Link className="ui-button ui-button--ghost ui-button--sm" href="/feedback/tools?tool=materials">管理学期公共材料</Link>}
+      {props.commonMaterialAction === "group" && props.commonMaterialChoice.startsWith("library:") && <p>主按钮会同时确认并共享本讲材料，不需要再单独操作。</p>}
     </section>
-    <div className={styles.actions}><div><strong>准备完成后进入核对</strong><span>不会暗中写事实、建计划或调用模型。</span></div><div><Button onClick={props.onContinue} disabled={props.busy || !props.run || !props.entry.studentIds.length}>进入核对并确认</Button></div></div>
   </div>;
 }

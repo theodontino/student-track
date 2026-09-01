@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui";
-import { SemesterDialog } from "@/features/courses";
+import { SemesterDialog, SessionDialog } from "@/features/courses";
 import ContextHeader from "./ContextHeader";
 import type { QuickScoreSemester } from "./types";
 import type { useQuickScorePage } from "./useQuickScorePage";
@@ -78,9 +78,9 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
             >{workspace.deletingSession ? "删除中…" : "删除课次"}</button>
           )}
           <Button
-            onClick={() => void workspace.handleRecordClass()}
-            disabled={workspace.recordingClass || !workspace.selectedSemesterId || !workspace.selectedClassId}
-          >{workspace.recordingClass ? "记录中…" : "开始上课"}</Button>
+            onClick={() => workspace.setSessionDialogOpen(true)}
+            disabled={!workspace.selectedSemesterId || !workspace.selectedClassId}
+          >开始上课</Button>
         </div>
 
         {workspace.selectedSession && (
@@ -115,6 +115,14 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
           workspace.setSemesters((current) => [semester as QuickScoreSemester, ...current]);
           workspace.setSelectedSemesterId(semester.id);
         }}
+      />
+      <SessionDialog
+        open={workspace.sessionDialogOpen}
+        semesterId={workspace.selectedSemesterId}
+        classId={workspace.selectedClassId}
+        className={workspace.selectedClass}
+        onClose={() => workspace.setSessionDialogOpen(false)}
+        onSaved={workspace.handleSessionCreated}
       />
     </>
   );

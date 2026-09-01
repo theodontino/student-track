@@ -6,7 +6,16 @@ import {
   FeedbackPlanBatchCreateSchema,
   type FeedbackPlanBatchCreateInput,
 } from "@/lib/feedback-plan-batch";
-import { FeedbackPlanAssessmentEvidenceSchema, type FeedbackPlanCreateInput } from "@/lib/feedback-plan";
+import {
+  FeedbackGenerationPreferencesSchema,
+  FeedbackPlanItemGenerationConfigSchema,
+  FeedbackPlanAssessmentEvidenceSchema,
+  defaultFeedbackGenerationPreferences,
+  type FeedbackGenerationPreferences,
+  type FeedbackPlanCreateInput,
+  type FeedbackPlanItemGenerationConfig,
+  type FeedbackPlanStudentOverride,
+} from "@/lib/feedback-plan";
 import { prisma } from "@/lib/prisma";
 import {
   continueFeedbackPlanGeneration,
@@ -29,7 +38,15 @@ const batchInclude = {
       session: { select: { id: true, code: true, date: true } },
       rangeStartSession: { select: { id: true, code: true, date: true } },
       rangeEndSession: { select: { id: true, code: true, date: true } },
-      items: { select: { id: true, status: true, studentId: true } },
+      items: {
+        orderBy: { createdAt: "asc" as const },
+        select: {
+          id: true,
+          status: true,
+          studentId: true,
+          student: { select: { id: true, name: true, studentId: true } },
+        },
+      },
     },
   },
   exportRuns: { orderBy: { createdAt: "desc" as const } },
@@ -46,6 +63,62 @@ function itemCounts(items: Array<{ status: string }>) {
     exported: count(["exported"]),
     failed: count(["generation_failed"]),
   };
+}
+
+function comparablePreferences(value: FeedbackGenerationPreferences) {
+  return {
+    closureType: value.closureType,
+    length: value.length ?? "inherit",
+    tone: value.tone ?? "inherit",
+    moduleKeys: value.moduleKeys,
+  };
+}
+
+function preferencesFromPlanSnapshot(snapshot: string, planType: FeedbackPlanCreateInput["type"]) {
+  try {
+    const value = JSON.parse(snapshot) as { generationPreferences?: unknown };
+    const parsed = FeedbackGenerationPreferencesSchema.safeParse(value.generationPreferences);
+    if (parsed.success) return parsed.data;
+  } catch { /* an old malformed snapshot cannot prove compatibility */ }
+  return defaultFeedbackGenerationPreferences(planType);
+}
+
+function itemConfigFromSnapshot(snapshot: string): FeedbackPlanItemGenerationConfig | null | undefined {
+  try {
+    const value = JSON.parse(snapshot) as unknown;
+    if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) return null;
+    const parsed = FeedbackPlanItemGenerationConfigSchema.safeParse(value);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function studentOverridesMatch(
+  items: Array<{ studentId: string | null; generationConfigSnapshot: string }>,
+  overrides: FeedbackPlanStudentOverride[] = [],
+) {
+  const requested = new Map(overrides.map((override) => [override.studentId, override.generationConfig]));
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (!item.studentId) continue;
+    seen.add(item.studentId);
+    const existing = itemConfigFromSnapshot(item.generationConfigSnapshot);
+    const expected = requested.get(item.studentId) ?? null;
+    if (existing === undefined || Boolean(existing) !== Boolean(expected)) return false;
+    if (existing && expected && JSON.stringify({
+      version: existing.version,
+      type: existing.type,
+      outputRequirement: existing.outputRequirement,
+      generationPreferences: comparablePreferences(existing.generationPreferences),
+    }) !== JSON.stringify({
+      version: expected.version,
+      type: expected.type,
+      outputRequirement: expected.outputRequirement,
+      generationPreferences: comparablePreferences(expected.generationPreferences),
+    })) return false;
+  }
+  return overrides.every((override) => seen.has(override.studentId));
 }
 
 export function toFeedbackPlanBatchView<T extends {
@@ -96,7 +169,8 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
   // The request key is unique, so use a fresh key while preserving the old batch.
   const batchRequestKey = existing?.archivedAt ? randomUUID() : input.requestKey;
 
-  return db.$transaction(async (tx) => {
+  try {
+    return await db.$transaction(async (tx) => {
     const semester = await tx.semester.findUnique({ where: { id: input.semesterId }, select: { id: true } });
     if (!semester) throw new ApiError("学期不存在", 404, "not_found", false);
     const classes = await tx.class.findMany({
@@ -151,9 +225,10 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
           type: true,
           outputRequirement: true,
           generationMode: true,
+          inputSnapshot: true,
           batchId: true,
           archivedAt: true,
-          items: { select: { studentId: true } },
+          items: { select: { studentId: true, generationConfigSnapshot: true } },
         },
       });
       // Intake runs can outlive a plan: cleanup archives or removes the old
@@ -162,12 +237,17 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
       // block batch adoption.
       if (!existingPlan) return { run, existingPlanId: null };
       if (existingPlan.archivedAt) return { run, existingPlanId: null };
+      const childOutputRequirement = child.outputRequirement ?? input.outputRequirement;
+      const childPreferences = child.generationPreferences ?? defaultFeedbackGenerationPreferences(input.type);
+      const existingPreferences = preferencesFromPlanSnapshot(existingPlan.inputSnapshot, input.type);
       if (existingPlan.batchId
         || existingPlan.semesterId !== input.semesterId
         || existingPlan.classId !== child.classId
         || existingPlan.sessionId !== childSessions[index]?.id
         || existingPlan.type !== input.type
-        || existingPlan.outputRequirement !== input.outputRequirement
+        || existingPlan.outputRequirement !== childOutputRequirement
+        || JSON.stringify(comparablePreferences(existingPreferences)) !== JSON.stringify(comparablePreferences(childPreferences))
+        || !studentOverridesMatch(existingPlan.items, child.studentOverrides)
         || existingPlan.generationMode !== input.generationMode) {
         throw new ApiError("已有反馈计划不能并入当前班级组批次", 409, "conflict", false);
       }
@@ -188,7 +268,10 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
         })
       : null;
     if (input.sharedLessonRevisionId && !revision) throw new ApiError("已确认共同课修订不存在", 404, "not_found", false);
-    if (revision && (revision.groupLesson.group.semesterId !== input.semesterId || classes.some((item) => item.classGroupMembership?.groupId !== revision.groupLesson.group.id))) {
+    if (revision && (
+      revision.groupLesson.group.semesterId !== input.semesterId
+      || (!input.groupLessonId && classes.some((item) => item.classGroupMembership?.groupId !== revision.groupLesson.group.id))
+    )) {
       throw new ApiError("共同课修订与所选班级不属于同一班级组", 409, "conflict", false);
     }
     if (revision && input.groupLessonId && revision.groupLessonId !== input.groupLessonId) {
@@ -224,7 +307,7 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
       const planInput: FeedbackPlanCreateInput = {
         ...child,
         type: input.type,
-        outputRequirement: input.outputRequirement,
+        outputRequirement: child.outputRequirement ?? input.outputRequirement,
         semesterId: input.semesterId,
         lessonMaterial,
         assessmentEvidence: intakeAssessmentEvidence ?? child.assessmentEvidence,
@@ -239,8 +322,15 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
     }
     const created = await tx.feedbackPlanBatch.findUnique({ where: { id: batch.id }, include: batchInclude });
     if (!created) throw new Error("反馈批次创建后无法读取");
-    return toFeedbackPlanBatchView(created);
-  });
+      return toFeedbackPlanBatchView(created);
+    });
+  } catch (error) {
+    if (batchRequestKey === input.requestKey) {
+      const raced = await db.feedbackPlanBatch.findUnique({ where: { requestKey: input.requestKey }, include: batchInclude });
+      if (raced && !raced.archivedAt) return toFeedbackPlanBatchView(raced);
+    }
+    throw error;
+  }
 }
 
 const batchJobs = new Map<string, Promise<void>>();

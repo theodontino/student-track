@@ -21,10 +21,10 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 200;
 const ZIP_LOCAL_HEADER = 0x04034b50;
 const ZIP_CENTRAL_HEADER = 0x02014b50;
-const INTAKE_PARSER_VERSION = 2;
+const INTAKE_PARSER_VERSION = 3;
 
 type IntakeSource = "upload" | "inbox";
-type IntakeKind = "assistant_roster" | "step_classroom" | "assessment_pdf";
+export type IntakeKind = "assistant_roster" | "step_classroom" | "assessment_pdf";
 
 export interface IntakeFile {
   name: string;
@@ -32,7 +32,7 @@ export interface IntakeFile {
   source: IntakeSource;
 }
 
-interface ExpandedFile extends IntakeFile {
+export interface ExpandedFeedbackIntakeFile extends IntakeFile {
   displayName: string;
 }
 
@@ -42,6 +42,10 @@ export interface FeedbackIntakeIssue {
   message: string;
   sourceName?: string;
   candidates?: Array<{ id: string; name: string; studentId: string }>;
+  stage?: "class" | "student" | "session" | "fact";
+  rowNumber?: number;
+  reportedStudent?: { name: string; studentId: string };
+  rosterHint?: string;
   severity: "requires_teacher" | "error";
 }
 
@@ -51,6 +55,7 @@ export type FeedbackIntakeDecisionAction =
   | "ignore_source"
   | "accept_source"
   | "bind_student"
+  | "skip_student"
   | "use_assistant"
   | "use_step"
   | "skip_attendance"
@@ -98,6 +103,12 @@ interface IntakeSourceFact {
   parsedResult?: DraftStructuredResult;
   assessmentEvidence?: Record<string, unknown>;
   issues: FeedbackIntakeIssue[];
+  assistantMatch?: {
+    matchedClass: boolean;
+    matchedStudents: number;
+    totalStudentRows: number;
+    sessionStatus: "matched" | "missing" | "mismatch";
+  };
   unresolvedStudents?: Array<{
     issueId: string;
     student: ParsedStudent;
@@ -166,7 +177,7 @@ function zipError(message: string): never {
   throw new Error(`ZIP：${message}`);
 }
 
-function expandZip(file: IntakeFile): ExpandedFile[] {
+function expandZip(file: IntakeFile): ExpandedFeedbackIntakeFile[] {
   const buffer = Buffer.from(file.buffer);
   const searchStart = Math.max(0, buffer.length - 65_557);
   const endOffset = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]), buffer.length - 4);
@@ -174,7 +185,7 @@ function expandZip(file: IntakeFile): ExpandedFile[] {
   const entryCount = buffer.readUInt16LE(endOffset + 10);
   const centralOffset = buffer.readUInt32LE(endOffset + 16);
   if (entryCount > MAX_ZIP_ENTRIES) zipError(`条目超过 ${MAX_ZIP_ENTRIES} 个`);
-  const result: ExpandedFile[] = [];
+  const result: ExpandedFeedbackIntakeFile[] = [];
   let cursor = centralOffset;
   for (let index = 0; index < entryCount; index += 1) {
     if (cursor + 46 > buffer.length || buffer.readUInt32LE(cursor) !== ZIP_CENTRAL_HEADER) zipError("中央目录格式无效");
@@ -209,7 +220,7 @@ function expandZip(file: IntakeFile): ExpandedFile[] {
 }
 
 function expandFiles(files: IntakeFile[], expansionIssues?: FeedbackIntakeIssue[]) {
-  const expanded: ExpandedFile[] = [];
+  const expanded: ExpandedFeedbackIntakeFile[] = [];
   for (const file of files) {
     try {
       if (file.buffer.byteLength > MAX_FILE_BYTES) throw new Error(`文件不能超过 ${MAX_FILE_BYTES / 1024 / 1024} MB：${file.name}`);
@@ -228,7 +239,7 @@ export function expandFeedbackIntakeFiles(files: IntakeFile[]) {
   return expandFiles(files);
 }
 
-function classify(file: ExpandedFile): IntakeKind | "ignored" {
+function classify(file: ExpandedFeedbackIntakeFile): IntakeKind | "ignored" {
   const lower = file.name.toLocaleLowerCase();
   if (lower.split(/[\\/]/).pop()?.startsWith("~$")) return "ignored";
   if (lower.endsWith(".xlsx")) return "assistant_roster";
@@ -241,8 +252,8 @@ function classify(file: ExpandedFile): IntakeKind | "ignored" {
   return "ignored";
 }
 
-export function classifyFeedbackIntakeFile(name: string): IntakeKind | "ignored" {
-  return classify({ name, displayName: name, buffer: new ArrayBuffer(0), source: "upload" });
+export function classifyFeedbackIntakeFile(name: string, buffer = new ArrayBuffer(0)): IntakeKind | "ignored" {
+  return classify({ name, displayName: name, buffer, source: "upload" });
 }
 
 function issue(code: string, message: string, sourceName?: string, severity: FeedbackIntakeIssue["severity"] = "requires_teacher", candidates?: FeedbackIntakeIssue["candidates"]): FeedbackIntakeIssue {
@@ -330,7 +341,7 @@ function addStudent(target: Map<string, ParsedStudent>, student: ParsedStudent) 
   });
 }
 
-function manifestFor(files: ExpandedFile[]) {
+function manifestFor(files: ExpandedFeedbackIntakeFile[]) {
   return files.map((file) => ({
     name: file.displayName,
     source: file.source,
@@ -448,6 +459,17 @@ function mergeParsedResults(
       });
     }
     for (const student of fact.parsedResult?.students ?? []) {
+      // Parser v2 completed a partial assistant sheet to the whole roster even
+      // when the same sheet still had an unresolved identity row. Those
+      // synthetic absences had no student number and can make an old saved run
+      // impossible to confirm. They were not source facts, so omit only this
+      // legacy shape while retaining every actually matched row.
+      if (
+        fact.kind === "assistant_roster"
+        && (fact.unresolvedStudents?.length ?? 0) > 0
+        && student.present === false
+        && !student.studentId
+      ) continue;
       const key = studentKey(student);
       const existing = merged.get(key);
       if (!existing) { merged.set(key, { ...student }); continue; }
@@ -540,16 +562,47 @@ async function inspectFeedbackIntakeInternal(
     }
     const targetRows = rows.filter((row) => row.classCode === classInfo.code || row.className === classInfo.name);
     if (!targetRows.length) {
-      sourceIssues.push(issue("assistant_class_mismatch", `助教表中没有找到 ${classInfo.name ?? classInfo.code} 的课堂记录`, sourceName, "error"));
-      sourceFacts.push({ key: sourceName, kind: "assistant_roster", sourceNames: [sourceName], issues: sourceIssues });
+      sourceIssues.push({
+        ...issue("assistant_class_mismatch", `助教表中没有找到 ${classInfo.name ?? classInfo.code} 的课堂记录`, sourceName, "error"),
+        stage: "class",
+      });
+      sourceFacts.push({
+        key: sourceName,
+        kind: "assistant_roster",
+        sourceNames: [sourceName],
+        issues: sourceIssues,
+        assistantMatch: { matchedClass: false, matchedStudents: 0, totalStudentRows: 0, sessionStatus: "matched" },
+      });
       continue;
     }
-    const dates = [...new Set(targetRows.map((row) => row.date))];
-    const lessonNumbers = [...new Set(targetRows.map((row) => row.lessonNumber))];
-    if (dates.includes("")) sourceIssues.push(issue("assistant_date_missing", "助教表缺少日期，无法自动匹配课次", sourceName));
-    for (const date of dates.filter(Boolean)) if (date !== session.date) sourceIssues.push(issue("assistant_date_mismatch", `助教表日期 ${date} 与课次日期 ${session.date} 不一致`, sourceName));
-    if (lessonNumbers.includes("")) sourceIssues.push(issue("assistant_lesson_missing", "助教表缺少课次，无法自动匹配当前课次", sourceName));
-    for (const lessonNumber of lessonNumbers.filter(Boolean)) if (!lessonNumberMatches(lessonNumber, session.semesterNumber)) sourceIssues.push(issue("assistant_lesson_mismatch", `助教表课次 ${lessonNumber} 与当前第 ${session.semesterNumber} 次课不一致`, sourceName));
+    const reportedIds = [...new Set(targetRows.map((row) => row.studentId).filter(Boolean))];
+    const reportedNames = [...new Set(targetRows.map((row) => row.name).filter(Boolean))];
+    const knownReportedStudents = await db.student.findMany({
+      where: { OR: [
+        ...(reportedIds.length ? [{ studentId: { in: reportedIds } }] : []),
+        ...(reportedNames.length ? [{ name: { in: reportedNames } }] : []),
+      ] },
+      select: {
+        id: true,
+        name: true,
+        studentId: true,
+        enrollments: {
+          where: { semesterId: session.semesterId },
+          select: { classId: true, rosterStatus: true, class: { select: { name: true } } },
+        },
+      },
+    });
+    const rosterHintFor = (row: (typeof targetRows)[number]) => {
+      const idMatch = row.studentId ? knownReportedStudents.find((student) => student.studentId === row.studentId) : undefined;
+      const nameMatches = knownReportedStudents.filter((student) => student.name.trim() === row.name.trim());
+      const known = idMatch ?? (nameMatches.length === 1 ? nameMatches[0] : undefined);
+      if (!known) return "学生库中没有找到该学生";
+      const currentEnrollment = known.enrollments.find((enrollment) => enrollment.classId === session.classId);
+      if (currentEnrollment?.rosterStatus === "INACTIVE") return "该学生在当前班花名册中已停用";
+      const otherEnrollment = known.enrollments.find((enrollment) => enrollment.classId !== session.classId);
+      if (otherEnrollment) return `该学生当前归属${otherEnrollment.class.name ?? "其他班级"}${otherEnrollment.rosterStatus === "INACTIVE" ? "，且花名册已停用" : ""}`;
+      return "学生档案存在，但不属于当前学期的当前班花名册";
+    };
     const parsed = new Map<string, ParsedStudent>();
     const unresolvedStudents: NonNullable<IntakeSourceFact["unresolvedStudents"]> = [];
     const seen = new Set<string>();
@@ -558,7 +611,13 @@ async function inspectFeedbackIntakeInternal(
       let match = identity.match;
       const candidates = identity.candidates;
       if (identity.conflict) {
-        const mismatch = issue("student_identity_conflict", `${row.fileName} 第 ${row.rowNumber} 行学号与姓名无法同时匹配当前班级学生`, sourceName, "requires_teacher", candidates);
+        const mismatch = {
+          ...issue("student_identity_conflict", `${row.fileName} 第 ${row.rowNumber} 行学号与姓名无法同时匹配当前班级学生`, sourceName, "requires_teacher", candidates),
+          stage: "student" as const,
+          rowNumber: row.rowNumber,
+          reportedStudent: { name: row.name, studentId: row.studentId },
+          rosterHint: "学号与姓名指向不同的当前班学生",
+        };
         sourceIssues.push(mismatch);
         unresolvedStudents.push({
           issueId: mismatch.id,
@@ -569,7 +628,13 @@ async function inspectFeedbackIntakeInternal(
       }
       if (!match) {
         if (candidates.length !== 1) {
-          const mismatch = issue("student_mismatch", `${row.fileName} 第 ${row.rowNumber} 行无法唯一匹配当前班级学生`, sourceName, "requires_teacher", candidates);
+          const mismatch = {
+            ...issue("student_mismatch", `${row.fileName} 第 ${row.rowNumber} 行无法唯一匹配当前班级学生`, sourceName, "requires_teacher", candidates),
+            stage: "student" as const,
+            rowNumber: row.rowNumber,
+            reportedStudent: { name: row.name, studentId: row.studentId },
+            rosterHint: candidates.length > 1 ? "当前班存在多名同名学生" : rosterHintFor(row),
+          };
           sourceIssues.push(mismatch);
           unresolvedStudents.push({
             issueId: mismatch.id,
@@ -587,8 +652,36 @@ async function inspectFeedbackIntakeInternal(
       seen.add(match.id);
       addStudent(parsed, { name: match.name, studentId: match.studentId, scores: { A: row.scoreA, B: row.scoreB, C: row.scoreC }, events: row.note ? [row.note] : [], communication: null, present: true });
     }
-    const completed = parsed.size ? completeClassAttendance({ students: [...parsed.values()], alert_suggestion: "" }, roster) : undefined;
-    sourceFacts.push({ key: sourceName, kind: "assistant_roster", sourceNames: [sourceName], parsedResult: completed, issues: sourceIssues, unresolvedStudents });
+    const dates = [...new Set(targetRows.map((row) => row.date))];
+    const lessonNumbers = [...new Set(targetRows.map((row) => row.lessonNumber))];
+    if (dates.includes("")) sourceIssues.push({ ...issue("assistant_date_missing", "助教表缺少日期，无法自动匹配课次", sourceName), stage: "session" });
+    for (const date of dates.filter(Boolean)) if (date !== session.date) sourceIssues.push({ ...issue("assistant_date_mismatch", `助教表日期 ${date} 与课次日期 ${session.date} 不一致`, sourceName), stage: "session" });
+    if (lessonNumbers.includes("")) sourceIssues.push({ ...issue("assistant_lesson_missing", "助教表缺少课次，无法自动匹配当前课次", sourceName), stage: "session" });
+    for (const lessonNumber of lessonNumbers.filter(Boolean)) if (!lessonNumberMatches(lessonNumber, session.semesterNumber)) sourceIssues.push({ ...issue("assistant_lesson_mismatch", `助教表课次 ${lessonNumber} 与当前第 ${session.semesterNumber} 次课不一致`, sourceName), stage: "session" });
+    const sessionIssues = sourceIssues.filter((item) => item.stage === "session");
+    // An identity exception means this source is not a trustworthy full-class
+    // roster. Keep its valid rows, but do not infer that every omitted ACTIVE
+    // student was absent. That lets a teacher skip only the bad row without
+    // turning the rest of a partial exception sheet into false absences.
+    const completed = parsed.size
+      ? unresolvedStudents.length
+        ? { students: [...parsed.values()], alert_suggestion: "" }
+        : completeClassAttendance({ students: [...parsed.values()], alert_suggestion: "" }, roster)
+      : undefined;
+    sourceFacts.push({
+      key: sourceName,
+      kind: "assistant_roster",
+      sourceNames: [sourceName],
+      parsedResult: completed,
+      issues: sourceIssues,
+      unresolvedStudents,
+      assistantMatch: {
+        matchedClass: true,
+        matchedStudents: seen.size,
+        totalStudentRows: targetRows.length,
+        sessionStatus: sessionIssues.some((item) => item.code.endsWith("_mismatch")) ? "mismatch" : sessionIssues.length ? "missing" : "matched",
+      },
+    });
   }
 
   for (const file of freshExpanded.filter((item) => classify(item) === "step_classroom")) {
@@ -774,6 +867,11 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
   const previousSnapshot = previousRun ? parseJson<IntakeSnapshot>(previousRun.appliedSummary, {}) : undefined;
   const inspection = await inspectFeedbackIntakeInternal(input, previousRun ? { sourceManifest: parseJson(previousRun.sourceManifest, []), snapshot: previousSnapshot ?? {} } : undefined);
   if (previousRun) {
+    // Inbox scans can present the same files again. If no source changed, keep
+    // the teacher's confirmation, decisions and saved scope exactly as-is.
+    if (inspection.sourceFingerprint === previousRun.sourceFingerprint) {
+      return { run: view(previousRun), inspection, duplicate: true };
+    }
     // A browser can restore an older empty/partial run while another tab (or a
     // previous scan) has already persisted the same complete source batch. The
     // fingerprint is intentionally unique, so reuse that canonical run instead
@@ -998,6 +1096,7 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
     classId: session.classId,
     sessionId: session.id,
     ...(input.plan?.studentIds ? { studentIds: input.plan.studentIds } : {}),
+    ...(input.plan?.studentOverrides ? { studentOverrides: input.plan.studentOverrides } : {}),
     ...(input.plan?.generationPreferences ? { generationPreferences: input.plan.generationPreferences } : {}),
     ...(confirmedLessonMaterial ? { lessonMaterial: confirmedLessonMaterial } : {}),
     ...(Object.keys(snapshot.assessmentEvidence ?? {}).length ? { assessmentEvidence: snapshot.assessmentEvidence } : {}),

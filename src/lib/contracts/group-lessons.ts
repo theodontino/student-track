@@ -14,7 +14,7 @@ export const ClassGroupWriteSchema = z.object({
   leadClassId: id,
 }).superRefine((value, ctx) => {
   if (!value.classIds.includes(value.leadClassId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["leadClassId"], message: "主班必须属于当前班级组" });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["leadClassId"], message: "进度基准班必须属于当前班级组" });
   }
 });
 

@@ -682,15 +682,87 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .student-records-metrics { grid-template-columns: 1fr; }.student-score-card__dimensions { grid-template-columns: repeat(2, 1fr); }
 }
 
-.class-group-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--space-3); }
-.class-group-list, .group-lesson-list { display: grid; gap: var(--space-3); }
-.class-group-card, .group-lesson-card { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
-.class-group-card > header, .group-lesson-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
-.class-group-card > header > div:last-child, .group-lesson-heading > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
-.class-group-card p, .group-lesson-card p { margin: .25rem 0 0; color: var(--color-muted); font-size: .75rem; }
+.class-group-list { display: grid; gap: var(--space-4); padding: var(--space-4); }
+.class-group-card { min-width: 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.class-group-card__header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); padding: var(--space-4); border-bottom: 1px solid var(--color-border); background: linear-gradient(180deg, var(--color-surface-raised), var(--color-surface-subtle)); }
+.class-group-card__header p, .class-group-independent p, .class-group-secondary-panel p { margin: .25rem 0 0; color: var(--color-muted); font-size: .75rem; }
+.class-group-card__title { display: flex; align-items: center; gap: var(--space-2); }
+.class-group-card__title > strong { color: var(--color-ink); font-size: 1rem; }
+.class-group-card__title > span, .class-group-lead-badge { display: inline-flex; padding: .18rem .45rem; border-radius: 999px; background: var(--color-info-bg); color: var(--color-info-text); font-size: .65rem; font-weight: 750; }
+.class-group-lead-badge { margin-left: .4rem; vertical-align: middle; }
+.class-group-matrix-wrap { max-width: 100%; overflow: auto; border-bottom: 1px solid var(--color-border); }
+.class-group-matrix { width: 100%; min-width: 46rem; border-collapse: separate; border-spacing: 0; font-size: .75rem; }
+.class-group-matrix th, .class-group-matrix td { min-width: 11rem; padding: var(--space-3); border-right: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
+.class-group-matrix tr:last-child > * { border-bottom: 0; }
+.class-group-matrix tr > *:last-child { border-right: 0; }
+.class-group-matrix thead th { background: var(--color-surface-subtle); color: var(--color-ink-soft); font-weight: 750; }
+.class-group-matrix thead th:first-child, .class-group-matrix tbody th { position: sticky; left: 0; z-index: 1; min-width: 12rem; max-width: 14rem; }
+.class-group-matrix thead th:first-child { z-index: 2; }
+.class-group-matrix tbody th { background: var(--color-surface-raised); }
+.class-group-matrix__empty { padding: var(--space-6) !important; color: var(--color-muted); text-align: center !important; }
+.class-group-lesson-summary { display: grid; gap: .2rem; }
+.class-group-lesson-summary > strong { color: var(--color-ink); font-size: .82rem; }
+.class-group-lesson-summary > span { color: var(--color-ink-soft); font-weight: 550; }
+.class-group-lesson-summary > small { color: var(--color-muted); font-size: .66rem; font-weight: 500; }
+.class-group-lesson-details { margin-top: .35rem; }
+.class-group-lesson-details > summary, .class-group-secondary-panel > summary, .class-group-material-editor > summary { color: var(--color-brand-700); font-size: .69rem; font-weight: 700; cursor: pointer; }
+.class-group-lesson-details > div { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
+.class-group-session-cell { display: grid; align-content: start; gap: .3rem; min-height: 6.5rem; padding: .65rem; border: 1px solid; border-radius: var(--radius-md); }
+.class-group-session-cell strong { overflow-wrap: anywhere; color: var(--color-ink); font-family: var(--font-mono); font-size: .72rem; }
+.class-group-session-cell span { color: var(--color-muted); font-size: .68rem; }
+.class-group-session-cell .ui-button { align-self: end; justify-self: start; margin-top: auto; }
+.class-group-session-cell.is-linked { border-color: var(--color-success-border); background: var(--color-success-bg); }
+.class-group-session-cell.is-missing { border-style: dashed; border-color: var(--color-warning-border); background: var(--color-warning-bg); }
+.class-group-independent { display: grid; gap: var(--space-3); padding: var(--space-4); border-bottom: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-warning-bg) 55%, var(--color-surface)); }
+.class-group-independent > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.class-group-independent > header > span { display: grid; place-items: center; min-width: 1.7rem; height: 1.7rem; border-radius: 999px; background: var(--color-warning-bg); color: var(--color-warning); font-size: .72rem; font-weight: 800; }
+.class-group-independent__empty { margin: 0 !important; }
+.class-group-independent__list { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: var(--space-2); }
+.class-group-independent__item { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: .7rem; border: 1px solid var(--color-warning-border); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+.class-group-independent__item > div { display: grid; gap: .12rem; min-width: 0; }
+.class-group-independent__item strong { color: var(--color-ink-soft); font-size: .75rem; }
+.class-group-independent__item span { overflow: hidden; color: var(--color-muted); font-family: var(--font-mono); font-size: .65rem; text-overflow: ellipsis; white-space: nowrap; }
+.class-group-secondary-panel { border-bottom: 1px solid var(--color-border); background: var(--color-surface-subtle); }
+.class-group-secondary-panel:last-child { border-bottom: 0; }
+.class-group-secondary-panel > summary { padding: .75rem var(--space-4); color: var(--color-muted); }
+.class-group-secondary-panel > div { padding: 0 var(--space-4) var(--space-4); }
+.class-group-technical-list { display: grid; gap: var(--space-2); }
+.class-group-technical-list > div { display: grid; gap: .15rem; padding: .6rem .7rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-raised); }
+.class-group-technical-list span { color: var(--color-ink-soft); font-size: .72rem; }
+.class-group-technical-list small { color: var(--color-muted); font-size: .65rem; }
 .class-group-checkboxes { display: grid; gap: .5rem; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
-.class-group-checkboxes label, .class-group-inline-check { display: flex !important; grid-template-columns: none !important; align-items: center; gap: .5rem !important; }
+.class-group-checkboxes label { display: flex !important; grid-template-columns: none !important; align-items: center; gap: .5rem !important; }
 .class-group-muted { color: var(--color-muted); font-size: .75rem; }
+.class-group-material-editor { overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
+.class-group-material-editor > summary { padding: .75rem; color: var(--color-ink-soft); }
+.class-group-material-editor > div { display: grid; gap: var(--space-3); padding: 0 .75rem .75rem; }
+
+.session-intent-picker { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
+.session-intent-picker > legend { padding: 0 .35rem; color: var(--color-ink-soft); font-size: .82rem; font-weight: 750; }
+.session-intent-picker__status, .session-intent-picker__context { margin: 0; color: var(--color-muted); font-size: .75rem; }
+.session-intent-picker .ui-banner { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.session-intent-option { display: grid !important; grid-template-columns: auto minmax(0, 1fr) !important; align-items: start; gap: var(--space-2) !important; padding: .75rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised); cursor: pointer; }
+.session-intent-option:hover { border-color: var(--color-border-strong); }
+.session-intent-option.is-selected { border-color: var(--color-brand-500); background: var(--color-info-bg); box-shadow: 0 0 0 2px var(--color-focus); }
+.session-intent-option input { margin-top: .2rem; accent-color: var(--color-brand-600); }
+.session-intent-option > span, .session-intent-option--lesson > label > span { display: grid; gap: .2rem; }
+.session-intent-option strong { color: var(--color-ink); font-size: .78rem; }
+.session-intent-option strong small { display: inline-flex; margin-left: .35rem; padding: .12rem .35rem; border-radius: 999px; background: var(--color-brand-600); color: var(--color-on-brand); font-size: .58rem; vertical-align: middle; }
+.session-intent-option span span { color: var(--color-muted); font-size: .69rem; font-weight: 500; }
+.session-intent-option--lesson { grid-template-columns: 1fr !important; cursor: default; }
+.session-intent-option--lesson > label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--space-2); cursor: pointer; }
+.session-intent-option--lesson > .ui-field { margin-top: .25rem; }
+
+@media (max-width: 680px) {
+  .class-group-list { padding: var(--space-3); }
+  .class-group-card__header { align-items: stretch; flex-direction: column; }
+  .class-group-card__header > .ui-button { width: 100%; }
+  .class-group-matrix { min-width: 40rem; }
+  .class-group-matrix thead th:first-child, .class-group-matrix tbody th { min-width: 10rem; max-width: 10rem; }
+  .class-group-independent__list { grid-template-columns: 1fr; }
+  .class-group-independent__item { align-items: stretch; flex-direction: column; }
+  .class-group-independent__item .ui-button { width: 100%; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }

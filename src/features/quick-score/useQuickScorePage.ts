@@ -11,6 +11,7 @@ import { useQuickScoreWorkspace } from "./useQuickScoreWorkspace";
 export function useQuickScorePage() {
   const [notice, setNotice] = useState<QuickScoreNotice | null>(null);
   const [result, setResult] = useState<QuickScoreSaveResult | null>(null);
+  const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
   const teachingContext = useTeachingContext();
   const { context, hydrated: contextHydrated } = teachingContext;
   const { semesterId: selectedSemesterId, className: selectedClass, classId: selectedClassId = "", sessionCode: selectedSessionCode } = context;
@@ -76,12 +77,11 @@ export function useQuickScorePage() {
     deletingSession: session.deletingSession,
     genders,
     handleDeleteSession: session.deleteSession,
-    handleRecordClass: session.createSession,
+    handleSessionCreated: session.acceptCreatedSession,
     handleSessionChange: session.changeSession,
     handleSubmit: save.submit,
     hasExistingScores: session.hasExistingScores,
     notice,
-    recordingClass: session.recordingClass,
     requestDeleteSession: session.requestDeleteSession,
     restoreHistory: session.restoreHistory,
     result,
@@ -91,6 +91,7 @@ export function useQuickScorePage() {
     selectedSemesterId,
     selectedSession,
     selectedSessionCode,
+    sessionDialogOpen,
     semesters: reference.semesters,
     sessions: session.sessions,
     setDate: session.setDate,
@@ -100,6 +101,7 @@ export function useQuickScorePage() {
     setSelectedClassId,
     setSelectedSemesterId: teachingContext.setSemesterId,
     setSelectedSessionCode: teachingContext.setSessionCode,
+    setSessionDialogOpen,
     setSemesters: reference.setSemesters,
     setShowSemesterModal: reference.setShowSemesterModal,
     showSemesterModal: reference.showSemesterModal,

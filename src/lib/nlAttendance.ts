@@ -3,6 +3,7 @@ import type { ParseResult, ParsedStudent } from "@/lib/parser";
 export interface ClassStudent {
   id: string;
   name: string;
+  studentId?: string;
 }
 
 /**
@@ -23,9 +24,14 @@ export function completeClassAttendance(
     ...parsed,
     students: roster.map((student) => {
       const mentioned = byName.get(student.name);
-      if (mentioned) return { ...mentioned, present: true };
+      if (mentioned) return {
+        ...mentioned,
+        ...(mentioned.studentId || !student.studentId ? {} : { studentId: student.studentId }),
+        present: true,
+      };
       return {
         name: student.name,
+        ...(student.studentId ? { studentId: student.studentId } : {}),
         scores: { A: null, B: null, C: null },
         events: [],
         communication: null,

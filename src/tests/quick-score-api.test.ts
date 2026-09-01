@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  createQuickScoreSession,
   deleteQuickScoreSession,
   loadQuickScoreReferenceData,
   loadQuickScoreSession,
@@ -51,13 +50,11 @@ describe("quick score API boundary", () => {
     expect(fetchMock.mock.calls[2][0]).toBe("/api/semesters/semester%2F1/session?code=S%2F01");
   });
 
-  it("uses explicit JSON requests for create and save", async () => {
+  it("uses an explicit JSON request for save", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ id: "session-1", code: "S01" }, 201))
       .mockResolvedValueOnce(jsonResponse({ count: 1, attUpdated: 1 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await createQuickScoreSession("semester-1", "测试班");
     await saveQuickScores({
       scores: [{ studentId: "student-1", date: "2026-01-01", scoreA: 4, scoreB: 4, scoreC: 4 }],
       sessionCode: "S01",
@@ -65,7 +62,6 @@ describe("quick score API boundary", () => {
     });
 
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
-    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({ sessionCode: "S01" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ sessionCode: "S01" });
   });
 });

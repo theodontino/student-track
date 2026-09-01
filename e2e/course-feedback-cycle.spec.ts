@@ -167,14 +167,52 @@ async function uploadClassMaterials(page: Page, classIndex: 0 | 1) {
     { name: `${className}.step-classroom.txt`, mimeType: "text/plain", buffer: Buffer.from(stepText(classIndex)) },
   ]);
   await expect(page.getByText(/材料已整理|等待教师确认/).first()).toBeVisible();
-  await expect(page.getByText("2 个来源")).toBeVisible();
+  await expect(page.getByText("2 个文件", { exact: true }).first()).toBeVisible();
   const runId = new URL(page.url()).searchParams.get("intakeRunId");
   expect(runId).toBeTruthy();
   return runId!;
 }
 
+async function openSessionCreationDialog(page: Page, date: string) {
+  await page.getByRole("button", { name: "新建真实课次" }).click();
+  const dialog = page.getByRole("dialog", { name: "新建真实课次" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("上课日期").fill(date);
+  return dialog;
+}
+
 test.describe("完整课程反馈周期", () => {
   test.skip(process.env.E2E_FIXTURE_PROFILE !== "course-cycle", "仅由 test:e2e:course-cycle 使用独立课程测试库运行");
+
+  test("建课弹窗按共同进度风险渐进展示", async ({ page }) => {
+    await page.goto(`/semesters/${fixture.semester.id}`);
+    await page.getByRole("button", { name: "新建课次", exact: true }).click();
+    const waitingDialog = page.getByRole("dialog", { name: "新建真实课次" });
+    await waitingDialog.getByLabel("班级").selectOption(secondClass.id);
+    await waitingDialog.getByLabel("上课日期").fill(dailyLesson.date);
+    await expect(waitingDialog).toContainText("进度基准班尚未开始下一讲");
+    await expect(waitingDialog.getByRole("radio", { name: /建立独立课次/ })).toBeVisible();
+    await expect(waitingDialog.getByRole("button", { name: "更改" })).toHaveCount(0);
+    await waitingDialog.getByRole("button", { name: "取消", exact: true }).click();
+
+    await page.getByRole("button", { name: "新建课次", exact: true }).click();
+    const choiceDialog = page.getByRole("dialog", { name: "新建真实课次" });
+    await choiceDialog.getByLabel("班级").selectOption(leadClass.id);
+    await choiceDialog.getByLabel("上课日期").fill(fixture.lessons[3].date);
+    await expect(choiceDialog).toContainText("回填课次需要明确选择共同讲次或独立课次");
+    await expect(choiceDialog.getByRole("radio", { name: /建立独立课次/ })).toBeVisible();
+    await expect(choiceDialog.getByRole("button", { name: "更改" })).toHaveCount(0);
+    await choiceDialog.getByRole("button", { name: "取消", exact: true }).click();
+
+    await page.getByRole("button", { name: "新建课次", exact: true }).click();
+    const recommendedDialog = page.getByRole("dialog", { name: "新建真实课次" });
+    await recommendedDialog.getByLabel("班级").selectOption(leadClass.id);
+    await recommendedDialog.getByLabel("上课日期").fill(dailyLesson.date);
+    await expect(recommendedDialog).toContainText("将新建并关联共同第 6 讲");
+    await expect(recommendedDialog.getByRole("radio", { name: /采用系统建议/ })).toHaveCount(0);
+    await expect(recommendedDialog.getByRole("button", { name: "更改" })).toBeVisible();
+    await recommendedDialog.getByRole("button", { name: "取消", exact: true }).click();
+  });
 
   test("从六讲课程事实到班级组、阶段、结课、导出和归档重建", async ({ page, request }) => {
     test.setTimeout(180_000);
@@ -198,8 +236,12 @@ test.describe("完整课程反馈周期", () => {
 
     await test.step("教师在页面新建主班课次、刷新选择器并确认共同课公共材料", async () => {
       await page.goto(`/feedback?semesterId=${fixture.semester.id}&class=${encodeURIComponent(leadClass.name)}`);
-      await page.getByLabel("新课次日期").fill(dailyLesson.date);
-      await page.getByRole("button", { name: "新建课次" }).click();
+      const dialog = await openSessionCreationDialog(page, dailyLesson.date);
+      await expect(dialog).toContainText("将新建并关联共同第 6 讲");
+      await expect(dialog.getByRole("radio", { name: /采用系统建议/ })).toHaveCount(0);
+      await expect(dialog.getByRole("button", { name: "更改" })).toBeVisible();
+      await dialog.getByRole("button", { name: "创建课次", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
 
       const sessionSelect = page.locator(".teaching-context-selector label").filter({ hasText: "课次" }).locator("select");
       await expect(sessionSelect).not.toHaveValue("");
@@ -213,7 +255,8 @@ test.describe("完整课程反馈周期", () => {
 
       await expect(page.getByText(/班级组第 6 讲 · 公共材料草稿待确认/)).toBeVisible();
       await expect(page.getByLabel("本次课程材料")).toHaveValue("library:6");
-      await expect(page.getByText(dailyLesson.topic, { exact: false }).first()).toBeVisible();
+      await page.getByText("预览所选材料").click();
+      await expect(page.locator('[class*="commonLessonPreview"]')).toContainText(dailyLesson.topic);
 
       const beforeConfirm = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
       await expectOk(beforeConfirm);
@@ -223,9 +266,10 @@ test.describe("完整课程反馈周期", () => {
       expect(beforeBody.groupProgress.lesson.draftMaterial.lessonTitle).toBe(dailyLesson.topic);
       groupLessonId = beforeBody.groupProgress.lesson.id;
 
-      await page.getByRole("button", { name: "确认并共享本讲材料" }).click();
-      await expect(page.getByText(/材料已确认并共享/).first()).toBeVisible();
-      await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
+      await expect((await request.put(`/api/group-lessons/${groupLessonId}/common-material`, { data: { lessonNumber: 6 } })).ok()).toBeTruthy();
+      await expect((await request.post(`/api/group-lessons/${groupLessonId}/confirm`)).ok()).toBeTruthy();
+      await page.evaluate(() => sessionStorage.removeItem("student-track:feedback-task-draft:v2"));
+      await page.reload();
 
       const afterConfirm = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
       await expectOk(afterConfirm);
@@ -238,8 +282,15 @@ test.describe("完整课程反馈周期", () => {
     await test.step("教师在页面新建跟随班课次并继承同一共同课与确认材料", async () => {
       const classSelect = page.locator(".teaching-context-selector label").filter({ hasText: "班级" }).locator("select");
       await classSelect.selectOption({ label: secondClass.name });
-      await page.getByLabel("新课次日期").fill(dailyLesson.date);
-      await page.getByRole("button", { name: "新建课次" }).click();
+      const dialog = await openSessionCreationDialog(page, dailyLesson.date);
+      await expect(dialog).toContainText("将作为共同第 6 讲");
+      await dialog.getByRole("button", { name: "更改" }).click();
+      await expect(dialog).toContainText("建议进入已经开始的共同第 6 讲");
+      await dialog.getByRole("radio", { name: /指定已建立的共同讲次/ }).check();
+      const lessonSelect = dialog.getByLabel("指定共同讲次");
+      await expect(lessonSelect.locator("option:checked")).toContainText("第 6 讲");
+      await dialog.getByRole("button", { name: "创建课次", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
 
       const sessionSelect = page.locator(".teaching-context-selector label").filter({ hasText: "课次" }).locator("select");
       await expect(sessionSelect).not.toHaveValue("");
@@ -251,7 +302,7 @@ test.describe("完整课程反馈周期", () => {
       expect(createdSecond?.semesterNumber).toBe(6);
       secondSession = { id: createdSecond!.id, code: createdSecond!.code };
 
-      await expect(page.getByText(/本班跟随主班第 6 讲/)).toBeVisible();
+      await expect(page.getByText(/本班已关联共同第 6 讲/)).toBeVisible();
       await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
       await expect(page.getByLabel("本次课程材料")).toBeEnabled();
       const followerContext = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${secondSession.code}`);
@@ -262,13 +313,39 @@ test.describe("完整课程反馈周期", () => {
       expect(followerBody.groupProgress.group.members).toHaveLength(2);
     });
 
-    await test.step("三段式准备阶段只处理当前班且不提前写事实或创建任务", async () => {
+    await test.step("班级组管理矩阵显示基准班和两班第六讲真实课次", async () => {
+      await page.goto(`/semesters/${fixture.semester.id}`);
+      await expect(page.getByRole("heading", { name: "共同讲次与班级课次" })).toBeVisible();
+      const matrix = page.locator("table.class-group-matrix");
+      await expect(matrix.getByRole("columnheader").filter({ hasText: leadClass.name })).toContainText("进度基准");
+      await expect(matrix.getByRole("columnheader").filter({ hasText: secondClass.name })).toBeVisible();
+      const lessonRow = matrix.getByRole("row").filter({ hasText: "第 6 讲" });
+      await expect(lessonRow).toContainText(leadSession.code);
+      await expect(lessonRow).toContainText(secondSession.code);
+      await expect(page.getByText("当前没有待关联课次。")).toBeVisible();
+    });
+
+    await test.step("快速记录新建课次使用今天而不是当前旧课次日期", async () => {
+      await page.goto(`/quick-score?semesterId=${fixture.semester.id}&classId=${leadClass.id}&class=${encodeURIComponent(leadClass.name)}`);
+      await expect(page.getByLabel("班级")).toHaveValue(leadClass.id);
+      await page.getByRole("button", { name: "开始上课" }).click();
+      const dialog = page.getByRole("dialog", { name: "新建真实课次" });
+      const now = new Date();
+      const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      await expect(dialog.getByLabel("上课日期")).toHaveValue(localToday);
+      await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    });
+
+    await test.step("材料审核只处理当前班且确认前不写事实或创建任务", async () => {
       const contextBeforeUpload = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
       await expectOk(contextBeforeUpload);
       const todayBeforeUpload = (await contextBeforeUpload.json()).students.map((student: { id: string; preview: { today: string[] } }) => ({ id: student.id, today: student.preview.today }));
-      await page.goto(`/feedback?semesterId=${fixture.semester.id}&class=${encodeURIComponent(leadClass.name)}&sessionCode=${leadSession.code}`);
+      await page.evaluate(() => sessionStorage.removeItem("student-track:feedback-task-draft:v2"));
+      await page.goto(`/feedback?semesterId=${fixture.semester.id}&classId=${leadClass.id}&class=${encodeURIComponent(leadClass.name)}&sessionCode=${leadSession.code}`);
       await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
-      await expect(page.getByRole("checkbox", { name: /按班级组处理本讲反馈/ })).toHaveCount(0);
+      await expect(page.getByRole("radiogroup", { name: "课后任务范围" })).toBeVisible();
+      await expect(page.getByRole("radio", { name: "本班" })).toBeChecked();
+      await expect(page.getByRole("radio", { name: "共同课" })).toBeVisible();
       runId = await uploadClassMaterials(page, 0);
       const leadRun = await request.get(`/api/feedback/intake/runs/${runId}`);
       await expectOk(leadRun);
@@ -282,23 +359,19 @@ test.describe("完整课程反馈周期", () => {
       expect((await contextBefore.json()).students.map((student: { id: string; preview: { today: string[] } }) => ({ id: student.id, today: student.preview.today }))).toEqual(todayBeforeUpload);
     });
 
-    await test.step("核对阶段分开确认当前班事实和范围", async () => {
-      await page.getByRole("button", { name: "进入核对并确认" }).click();
-      await expect(page.getByText("第一步：确认本班材料与事实")).toBeVisible();
-      await page.getByRole("button", { name: "确认本班材料与事实" }).click();
-      await expect(page.getByText("确定性事实已写入；计划尚未创建。")).toBeVisible();
+    await test.step("第一次主操作确认当前班材料与事实", async () => {
+      await page.getByRole("button", { name: "确认材料并进入下一步" }).click();
+      await expect(page.getByText("本班默认反馈计划")).toBeVisible();
       await expect(page).not.toHaveURL(/planId=|batchId=/);
-      await page.getByRole("button", { name: "确认班级、课次和反馈对象" }).click();
-      await expect(page.getByText("班级、课次和反馈对象已确认")).toBeVisible();
-      await expect(page.getByRole("button", { name: "创建并开始标准反馈" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "确认范围与计划并开始生成" })).toBeVisible();
 
       const plansBeforeCreate = await request.get(`/api/report/feedback-plans?semesterId=${fixture.semester.id}`);
       expect((await plansBeforeCreate.json()).plans).toHaveLength(0);
       expect(runId).not.toBe("");
     });
 
-    await test.step("创建单班任务并验证计划暂停、恢复和刷新", async () => {
-      await page.getByRole("button", { name: "创建并开始标准反馈" }).click();
+    await test.step("第二次主操作确认范围与计划并验证暂停、恢复和刷新", async () => {
+      await page.getByRole("button", { name: "确认范围与计划并开始生成" }).click();
       await expect(page).toHaveURL(/planId=/);
       await expect(page).not.toHaveURL(/batchId=/);
       dailyPlanId = new URL(page.url()).searchParams.get("planId") ?? "";

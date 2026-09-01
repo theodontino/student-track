@@ -39,4 +39,19 @@ describe("completeClassAttendance", () => {
     expect(result.students).toHaveLength(1);
     expect(result.students[0].scores.A).toBe(4);
   });
+
+  it("keeps roster student numbers when attendance is completed", () => {
+    const result = completeClassAttendance({
+      students: [{ name: "张三", scores: { A: 5, B: null, C: null }, events: [], communication: null }],
+      alert_suggestion: "",
+    }, [
+      { id: "1", name: "张三", studentId: "S001" },
+      { id: "2", name: "李四", studentId: "S002" },
+    ]);
+
+    expect(result.students).toEqual([
+      expect.objectContaining({ name: "张三", studentId: "S001", present: true }),
+      expect.objectContaining({ name: "李四", studentId: "S002", present: false }),
+    ]);
+  });
 });

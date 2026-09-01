@@ -26,8 +26,17 @@ export const FeedbackPlanBatchChildSchema = z.object({
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
   assessmentEvidence: FeedbackPlanAssessmentEvidenceSchema.optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
+  outputRequirement: z.string().trim().min(1).max(2000).optional(),
   generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
-  studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200).optional(),
+  studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200).superRefine((overrides, ctx) => {
+    const ids = new Set<string>();
+    overrides.forEach((override, index) => {
+      if (ids.has(override.studentId)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "studentId"], message: "同一学生不能重复设置独立计划" });
+      }
+      ids.add(override.studentId);
+    });
+  }).optional(),
 });
 
 export const FeedbackPlanBatchCreateSchema = z.object({

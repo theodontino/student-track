@@ -16,6 +16,8 @@
 | `/api/export` | `POST` |
 | `/api/feedback/assessment-pdf` | `POST` |
 | `/api/feedback/assistant-roster` | `POST` |
+| `/api/feedback/intake/group-scan` | `POST` |
+| `/api/feedback/intake/group-upload` | `POST` |
 | `/api/feedback/intake/runs/[id]` | `GET`, `POST` |
 | `/api/feedback/intake/scan` | `POST` |
 | `/api/feedback/intake/upload` | `POST` |
@@ -23,7 +25,7 @@
 | `/api/feedback/tasks` | `POST` |
 | `/api/group-lessons/[id]/common-material` | `PUT` |
 | `/api/group-lessons/[id]/confirm` | `POST` |
-| `/api/group-lessons/[id]` | `PUT` |
+| `/api/group-lessons/[id]` | `DELETE`, `PUT` |
 | `/api/group-lessons/[id]/sessions` | `DELETE`, `POST` |
 | `/api/input/parse` | `POST` |
 | `/api/integrations/wecomcatch/v1/directory` | `GET` |
@@ -41,7 +43,7 @@
 | `/api/semesters/[id]/class-groups` | `GET`, `POST` |
 | `/api/semesters/[id]/classes` | `GET`, `POST` |
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
-| `/api/semesters/[id]/session` | `DELETE`, `POST` |
+| `/api/semesters/[id]/session` | `DELETE`, `GET`, `POST` |
 | `/api/semesters` | `GET`, `POST` |
 | `/api/sessions/[id]/common-material` | `PUT` |
 | `/api/sessions/[id]/group-progress` | `GET`, `PUT` |

@@ -36,6 +36,8 @@ erDiagram
   ClassSession {
     TEXT id PK
     TEXT code UK
+    TEXT creationRequestKey UK
+    TEXT creationRequestSnapshot
     TEXT semesterId FK
     INTEGER semesterNumber
     TEXT date
@@ -660,6 +662,8 @@ erDiagram
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
 | `code` | `TEXT` | 是 | unique |
+| `creationRequestKey` | `TEXT` | 否 | unique |
+| `creationRequestSnapshot` | `TEXT` | 否 |  |
 | `semesterId` | `TEXT` | 是 | FK |
 | `semesterNumber` | `INTEGER` | 是 |  |
 | `date` | `TEXT` | 是 |  |

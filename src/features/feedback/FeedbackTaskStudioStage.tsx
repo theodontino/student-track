@@ -7,7 +7,7 @@ import { createEmptyLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type { FeedbackContextResponse } from "./types";
 import type { FeedbackPlanWorkspace } from "./FeedbackPlanPanel";
 import { FeedbackPlanStudio } from "./FeedbackPlanStudio";
-import type { FeedbackBatchClient } from "./feedback-task-types";
+import type { FeedbackBatchClient, FeedbackStudioPlanTarget } from "./feedback-task-types";
 import styles from "./unified-feedback-workspace.module.css";
 
 type Props = {
@@ -17,14 +17,27 @@ type Props = {
   planId: string;
   batchId: string;
   context: FeedbackContextResponse | null;
-  onPlanChange: (plan: { id: string; className: string; sessionCode: string }) => void;
+  onPlanChange: (plan: FeedbackStudioPlanTarget) => void;
   onNewTask: () => void;
 };
 
-const terminal = new Set(["paused", "failed", "completed", "archived"]);
+export function shouldRefreshFeedbackTaskBatch(status: string) {
+  return status !== "archived";
+}
+
+export function feedbackStudioPlanTarget(plan: FeedbackBatchClient["plans"][number]): FeedbackStudioPlanTarget {
+  return {
+    id: plan.id,
+    classId: plan.class.id,
+    className: plan.class.name ?? plan.class.code,
+    sessionCode: plan.session?.code ?? "",
+  };
+}
 
 export function FeedbackTaskStudioStage(props: Props) {
   const [batch, setBatch] = useState<FeedbackBatchClient | null>(null);
+  const [batchFilter, setBatchFilter] = useState<"action" | "review" | "done" | "all">("action");
+  const [focusItemId, setFocusItemId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -37,7 +50,7 @@ export function FeedbackTaskStudioStage(props: Props) {
 
   useEffect(() => { void loadBatch().catch((reason) => setError(reason instanceof Error ? reason.message : "读取班级组任务失败")); }, [loadBatch]);
   useEffect(() => {
-    if (!batch || terminal.has(batch.status)) return;
+    if (!batch || !shouldRefreshFeedbackTaskBatch(batch.status)) return;
     const timer = window.setInterval(() => void loadBatch().catch(() => undefined), 1000);
     return () => window.clearInterval(timer);
   }, [batch, loadBatch]);
@@ -52,6 +65,18 @@ export function FeedbackTaskStudioStage(props: Props) {
     contextStudents: props.context?.students ?? [],
     confirmedAssessmentEvidence: {},
   }), [props.className, props.context, props.semesterId, props.sessionCode]);
+
+  const batchItems = useMemo(() => {
+    type BatchItem = { id: string; status: string; studentId: string | null; student?: { id: string; name: string; studentId: string } | null };
+    const plans = (batch?.plans ?? []) as Array<FeedbackBatchClient["plans"][number] & { items?: BatchItem[] }>;
+    return plans.flatMap((plan) => (plan.items ?? []).map((item) => ({ item, plan })));
+  }, [batch]);
+  const visibleBatchItems = batchItems.filter(({ item }) => {
+    if (batchFilter === "all") return true;
+    if (batchFilter === "done") return ["approved", "exported"].includes(item.status);
+    if (batchFilter === "review") return item.status === "needs_review";
+    return !["approved", "exported"].includes(item.status);
+  });
 
   async function batchAction(action: "pause" | "continue" | "retry") {
     if (!props.batchId) return;
@@ -68,10 +93,14 @@ export function FeedbackTaskStudioStage(props: Props) {
   return <div className={styles.studioStage}>
     <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成失败也会留在这里重试，不会退回确认页面。</p></div><Button variant="ghost" onClick={props.onNewTask}>结束本轮并新建任务</Button></header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}{notice && <StatusBanner tone="success">{notice}</StatusBanner>}
-    {batch && <section className={styles.batchClasses}>
-      <header><div><strong>班级组任务</strong><span>{batch.plans.length} 个独立计划 · {batch.status}</span></div><div className={styles.batchControls}>{["queued", "running", "pause_requested"].includes(batch.status) && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch.status === "pause_requested"}>暂停整个班级组</Button>}{batch.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续班级组生成</Button>}{batch.status === "failed" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}</div></header>
-      <div>{batch.plans.map((plan) => <button type="button" key={plan.id} className={plan.id === props.planId ? styles.batchClassActive : ""} onClick={() => props.onPlanChange({ id: plan.id, className: plan.class.name ?? plan.class.code, sessionCode: plan.session?.code ?? "" })}><strong>{plan.class.name ?? plan.class.code}</strong><small>生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></button>)}</div>
-    </section>}
-    <FeedbackPlanStudio workspace={workspace} batchControl={{ active: Boolean(batch), status: batch?.status ?? "", busy }} />
+    {batch && <><section className={styles.batchClasses}>
+      <header><div><strong>班级组任务</strong><span>{batch.plans.length} 个真实班级 · 统一生成状态 {batch.status}</span></div><div className={styles.batchControls}>{["queued", "running", "pause_requested"].includes(batch.status) && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch.status === "pause_requested"}>暂停整个班级组</Button>}{batch.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续班级组生成</Button>}{batch.status === "failed" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}</div></header>
+      <div>{batch.plans.map((plan) => <button type="button" key={plan.id} className={plan.id === props.planId ? styles.batchClassActive : ""} onClick={() => props.onPlanChange(feedbackStudioPlanTarget(plan))}><strong>{plan.class.name ?? plan.class.code}</strong><small>生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></button>)}</div>
+    </section>
+    <section className={styles.batchClasses} aria-label="班级组学生复核导航">
+      <header><div><strong>跨班学生清单</strong><span>按学生连续复核；班级只用于识别事实来源。</span></div><div className={styles.batchControls}>{(["action", "review", "done", "all"] as const).map((filter) => <Button key={filter} uiSize="sm" variant={batchFilter === filter ? "secondary" : "ghost"} onClick={() => setBatchFilter(filter)}>{filter === "action" ? "待处理" : filter === "review" ? "待复核" : filter === "done" ? "已完成" : "全部"} {batchItems.filter(({ item }) => filter === "all" || (filter === "done" ? ["approved", "exported"].includes(item.status) : filter === "review" ? item.status === "needs_review" : !["approved", "exported"].includes(item.status))).length}</Button>)}</div></header>
+      <div>{visibleBatchItems.length ? visibleBatchItems.map(({ item, plan }) => <button type="button" key={item.id} className={focusItemId === item.id ? styles.batchClassActive : ""} onClick={() => { setFocusItemId(item.id); props.onPlanChange(feedbackStudioPlanTarget(plan)); }}><strong>{item.student?.name ?? "学生信息待加载"}</strong><small>{plan.class.name ?? plan.class.code} · {item.student?.studentId ?? item.status}</small></button>) : <span>当前筛选下没有学生</span>}</div>
+    </section></>}
+    <FeedbackPlanStudio workspace={workspace} focusItemId={focusItemId} batchControl={{ active: Boolean(batch), status: batch?.status ?? "", busy }} />
   </div>;
 }

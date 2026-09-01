@@ -94,7 +94,34 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("workspace drafts debounce continuous text input", async ({ page }) => {
-    await page.addInitScript(() => {
+    const storedDraft = {
+      version: 2,
+      setupStage: "confirm",
+      requestKey: "e2e-draft-debounce-request",
+      mode: "single",
+      groupLessonId: "",
+      activeSessionCode: TEST_FIXTURE.sessions[0].code,
+      entries: [{
+        classId: TEST_FIXTURE.class.id,
+        classCode: TEST_FIXTURE.class.code,
+        className: TEST_FIXTURE.class.name,
+        sessionCode: TEST_FIXTURE.sessions[0].code,
+        runId: "e2e-draft-only-run",
+        studentIds: TEST_FIXTURE.students.map((student) => student.id),
+        selected: true,
+      }],
+      materialSelection: { mode: "none" },
+      materialSelectionInitialized: true,
+      pendingMaterialLessonNumber: null,
+      generationMode: "standard",
+      outputRequirement: "",
+      preferences: { length: "inherit", tone: "inherit", closureType: "positive_recognition", moduleKeys: ["observed_moment", "teacher_interpretation"] },
+      classOverrides: [],
+      studentOverrides: [],
+      unassignedSourceCount: 0,
+      groupSnapshot: null,
+    };
+    await page.addInitScript((draft) => {
       const originalSetItem = Storage.prototype.setItem;
       (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0;
       Storage.prototype.setItem = function (key, value) {
@@ -104,9 +131,12 @@ test.describe.serial("v0.17.0 information architecture", () => {
         }
         return originalSetItem.call(this, key, value);
       };
-    });
-    await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
-    const requirement = page.getByLabel("总体要求");
+      sessionStorage.setItem("student-track:feedback-task-draft:v2", JSON.stringify({
+        ...draft,
+      }));
+    }, storedDraft);
+    await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+    const requirement = page.getByLabel("总体要求").first();
     await expect(requirement).toBeVisible();
     await page.waitForTimeout(500);
     await page.evaluate(() => { (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0; });
@@ -169,10 +199,12 @@ test.describe.serial("v0.17.0 information architecture", () => {
   });
 
   test("feedback workspace does not overflow a narrow window", async ({ page }) => {
-    await page.setViewportSize({ width: 720, height: 900 });
-    await page.goto("/feedback");
-    await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    for (const width of [800, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/feedback");
+      await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${width}px should not overflow`).toBe(true);
+    }
   });
 
   test("student navigation keeps the selected semester without unrelated class parameters", async ({ page }) => {

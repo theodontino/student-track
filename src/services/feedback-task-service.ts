@@ -5,8 +5,10 @@ import { ApiError } from "@/lib/api-errors";
 import {
   FeedbackGenerationPreferencesSchema,
   FeedbackPlanAssessmentEvidenceSchema,
+  FeedbackPlanStudentOverrideSchema,
   defaultFeedbackGenerationPreferences,
   type FeedbackGenerationPreferences,
+  type FeedbackPlanStudentOverride,
 } from "@/lib/feedback-plan";
 import { prisma } from "@/lib/prisma";
 import { createFeedbackPlanBatch, startFeedbackPlanBatch } from "@/services/feedback-plan-batch-service";
@@ -19,6 +21,14 @@ const MaterialSelectionSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("none") }),
 ]);
 
+const FeedbackTaskClassOverrideSchema = z.object({
+  runId: z.string().trim().min(1).max(200),
+  outputRequirement: z.string().trim().min(1).max(2000).optional(),
+  preferences: FeedbackGenerationPreferencesSchema.optional(),
+}).refine((value) => Boolean(value.outputRequirement || value.preferences), {
+  message: "班级例外至少需要修改一项反馈要求",
+});
+
 export const FeedbackTaskRequestSchema = z.object({
   mode: z.enum(["single", "group"]),
   groupLessonId: z.string().trim().min(1).max(200).optional(),
@@ -29,6 +39,26 @@ export const FeedbackTaskRequestSchema = z.object({
   outputRequirement: z.string().trim().min(1).max(2000).default("为每名入选学生生成一条可复核的家长反馈"),
   materialSelection: MaterialSelectionSchema.optional(),
   preferences: FeedbackGenerationPreferencesSchema.optional(),
+  classOverrides: z.array(FeedbackTaskClassOverrideSchema).max(20).optional(),
+  studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200).optional(),
+}).superRefine((value, ctx) => {
+  if (value.mode === "single" && value.classOverrides?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["classOverrides"], message: "单班任务不需要班级例外" });
+  }
+  const classRunIds = new Set<string>();
+  value.classOverrides?.forEach((override, index) => {
+    if (classRunIds.has(override.runId)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["classOverrides", index, "runId"], message: "同一班级不能重复设置例外" });
+    }
+    classRunIds.add(override.runId);
+  });
+  const studentIds = new Set<string>();
+  value.studentOverrides?.forEach((override, index) => {
+    if (studentIds.has(override.studentId)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["studentOverrides", index, "studentId"], message: "同一学生不能重复设置例外" });
+    }
+    studentIds.add(override.studentId);
+  });
 });
 
 export type FeedbackTaskRequest = z.infer<typeof FeedbackTaskRequestSchema>;
@@ -120,6 +150,7 @@ async function createSingleTask(input: FeedbackTaskRequest, run: FeedbackIntakeR
       generationMode: input.generationMode,
       studentIds: snapshot.scopeConfirmation!.studentIds,
       generationPreferences: preferencesFor(input),
+      studentOverrides: input.studentOverrides,
       commonMaterial: input.materialSelection ?? { mode: "none" as const },
     } as never,
   }, db);
@@ -174,6 +205,10 @@ export async function createFeedbackTask(raw: FeedbackTaskRequest, db: PrismaCli
   }
 
   if (!input.groupLessonId) throw new ApiError("班级组任务缺少共同课", 400, "invalid_request", false);
+  const classOverridesByRunId = new Map((input.classOverrides ?? []).map((override) => [override.runId, override]));
+  for (const runId of classOverridesByRunId.keys()) {
+    if (!uniqueRunIds.includes(runId)) throw new ApiError("班级例外不属于当前班级组任务", 400, "invalid_request", false);
+  }
   const sessionCodes = orderedRuns.map((run) => run.sessionCode);
   const sessions = await db.classSession.findMany({
     where: { code: { in: sessionCodes } },
@@ -185,6 +220,20 @@ export async function createFeedbackTask(raw: FeedbackTaskRequest, db: PrismaCli
     throw new ApiError("班级组课次不存在或不属于同一学期", 409, "conflict", false);
   }
   const preferences = preferencesFor(input);
+  const studentOverridesByRunId = new Map<string, FeedbackPlanStudentOverride[]>();
+  for (const override of input.studentOverrides ?? []) {
+    const matchingRuns = orderedRuns.filter((run) => parsedSnapshot(run.appliedSummary).scopeConfirmation?.studentIds.includes(override.studentId));
+    if (matchingRuns.length !== 1) {
+      throw new ApiError(
+        matchingRuns.length ? "学生例外在多个班级中重复，请先确认花名册" : "学生例外不属于当前反馈对象",
+        400,
+        "invalid_request",
+        false,
+      );
+    }
+    const runId = matchingRuns[0]!.id;
+    studentOverridesByRunId.set(runId, [...(studentOverridesByRunId.get(runId) ?? []), override]);
+  }
   const plans = orderedRuns.map((run) => {
     const snapshot = parsedSnapshot(run.appliedSummary);
     assertScope(run, snapshot.scopeConfirmation);
@@ -193,12 +242,15 @@ export async function createFeedbackTask(raw: FeedbackTaskRequest, db: PrismaCli
       throw new ApiError("所有班级必须属于同一共同课", 409, "conflict", false);
     }
     if (snapshot.scopeConfirmation!.classId !== session.classId) throw new ApiError("班级范围确认与真实课次不一致", 409, "conflict", false);
+    const classOverride = classOverridesByRunId.get(run.id);
     return {
       classId: session.classId,
       sessionId: session.id,
       intakeRunId: run.id,
       studentIds: snapshot.scopeConfirmation!.studentIds,
-      generationPreferences: preferences,
+      outputRequirement: classOverride?.outputRequirement ?? input.outputRequirement,
+      generationPreferences: classOverride?.preferences ?? preferences,
+      studentOverrides: studentOverridesByRunId.get(run.id),
     };
   });
   const materialSelection = input.materialSelection ?? { mode: "none" as const };

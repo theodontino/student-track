@@ -356,6 +356,8 @@ model Semester {
 model ClassSession {
   id             String   @id @default(cuid())
   code           String   @unique         // YYYYMMDDNN，全局唯一标识
+  creationRequestKey String? @unique       // 新建课次请求幂等键；旧课次为空
+  creationRequestSnapshot String?          // 规范化请求快照；防止同一键被复用于不同课次
   semesterId     String
   semesterNumber Int                       // 学期内序号（1,2,3...），增删后应用层重排
   date           String                    // YYYY-MM-DD，冗余，从 code 推导方便索引

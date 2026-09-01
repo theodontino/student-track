@@ -62,14 +62,6 @@ export function loadQuickScoreSessions(semesterId: string, className: string, cl
   return requestJson<SessionInfo[]>(`/api/sessions?${params.toString()}`);
 }
 
-export function createQuickScoreSession(semesterId: string, className: string, classId?: string) {
-  return requestJson<SessionInfo>(`/api/semesters/${encodeURIComponent(semesterId)}/session`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ className, ...(classId ? { classId } : {}) }),
-  });
-}
-
 export function deleteQuickScoreSession(semesterId: string, sessionCode: string) {
   const params = new URLSearchParams({ code: sessionCode });
   return requestJson<{ deleted: boolean }>(

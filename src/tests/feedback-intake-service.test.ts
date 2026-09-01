@@ -1,4 +1,5 @@
 import { deflateRawSync } from "node:zlib";
+import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
 import { STEP_CLASSROOM_HEADER, STEP_INTERPRETATION_PROMPT, STEP_PROMPT_VERSION } from "@/services/step-classroom-import-service";
 import { prisma } from "@/lib/prisma";
@@ -53,6 +54,17 @@ function textBuffer(value: string) {
   return encoded.buffer;
 }
 
+function assistantFile(rows: unknown[][], date = "2026-07-08", lesson = "2", name = "合成助教表.xlsx") {
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ["日期", date, "课次", lesson],
+    ["姓名", "听课证号", "班级编号", "班级名称", "出门测", "课堂纪律", "课后作业", "备注"],
+    ...rows,
+  ]);
+  XLSX.utils.book_append_sheet(workbook, sheet, "课堂记录");
+  return file(name, XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer);
+}
+
 function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ contextQuestionIndex: number; text: string; recordedAt: string }> = []) {
   const payload = {
     class: { code: "E2E-CLASS", name: "E2E测试班" },
@@ -79,6 +91,91 @@ function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ cont
 }
 
 describe("feedback intake file preparation", () => {
+  it("matches assistant rows by class and student before checking the session", async () => {
+    const inspection = await inspectFeedbackIntake({
+      sessionCode: "2026070801",
+      files: [assistantFile([
+        ["测试甲", "E2E-001", "E2E-CLASS", "E2E测试班", 5, 5, 4, "合成正常记录"],
+        ["测试未入册", "TEST20999999", "E2E-CLASS", "E2E测试班", 3, 3, 3, "合成异常记录"],
+      ], "2026-07-09", "3")],
+      db: prisma,
+    });
+    const fact = inspection.sourceFacts?.find((item) => item.kind === "assistant_roster");
+    expect(fact?.assistantMatch).toEqual({ matchedClass: true, matchedStudents: 1, totalStudentRows: 2, sessionStatus: "mismatch" });
+    expect(fact?.issues.map((item) => item.stage)).toEqual(["student", "session", "session"]);
+    expect(fact?.issues[0]).toMatchObject({
+      code: "student_mismatch",
+      rowNumber: 4,
+      reportedStudent: { name: "测试未入册", studentId: "TEST20999999" },
+      rosterHint: "学生库中没有找到该学生",
+    });
+  });
+
+  it("skips one unmatched assistant row without discarding matched students from the file", async () => {
+    const marker = crypto.randomUUID();
+    const semesterId = `skip-semester-${marker}`;
+    const classId = `skip-class-${marker}`;
+    const sessionCode = `skip-session-${marker}`;
+    const students = [
+      { id: `skip-student-a-${marker}`, name: "测试甲", studentId: `SKIPA${marker.replaceAll("-", "").slice(0, 10)}`, gender: "男" },
+      { id: `skip-student-b-${marker}`, name: "测试乙", studentId: `SKIPB${marker.replaceAll("-", "").slice(0, 10)}`, gender: "女" },
+    ];
+    await prisma.semester.create({ data: { id: semesterId, name: `按行跳过-${marker}`, startDate: "2098-01-01", endDate: "2098-12-31" } });
+    await prisma.class.create({ data: { id: classId, semesterId, code: `SKIP-${marker}`, name: "按行跳过测试班" } });
+    for (const student of students) {
+      await prisma.student.create({ data: student });
+      await prisma.studentClassEnrollment.create({ data: { studentId: student.id, semesterId, classId } });
+    }
+    await prisma.classSession.create({ data: { code: sessionCode, date: "2098-07-08", semesterNumber: 2, semesterId, classId } });
+    try {
+      const result = await createOrGetFeedbackIntakeRun({
+        sessionCode,
+        files: [
+          assistantFile([
+            ["测试甲", students[0].studentId, `SKIP-${marker}`, "按行跳过测试班", 5, 5, 4, "合成正常记录"],
+            ["测试乙", students[1].studentId, `SKIP-${marker}`, "按行跳过测试班", 4, 4, 5, "合成正常记录"],
+          ], "2098-07-08", "2", "完整助教表.xlsx"),
+          assistantFile([
+            ["测试甲", students[0].studentId, `SKIP-${marker}`, "按行跳过测试班", 5, 5, 4, "重复但一致的有效记录"],
+            ["测试未入册", "TEST20999999", `SKIP-${marker}`, "按行跳过测试班", 3, 3, 3, "合成异常记录"],
+          ], "2098-07-08", "2", "异常助教表.xlsx"),
+        ],
+        db: prisma,
+      });
+      const mismatch = result.run.issues.find((item) => item.code === "student_mismatch");
+      expect(mismatch).toBeDefined();
+      const legacySnapshot = {
+        ...structuredClone(result.run.appliedSummary),
+        sourceFacts: structuredClone(result.inspection.sourceFacts ?? []),
+      };
+      const partialFact = legacySnapshot.sourceFacts.find((fact) => fact.unresolvedStudents?.length);
+      partialFact?.parsedResult?.students.push({
+        name: "测试乙",
+        scores: { A: null, B: null, C: null },
+        events: [],
+        communication: null,
+        present: false,
+      });
+      await prisma.feedbackIntakeRun.update({
+        where: { id: result.run.id },
+        data: { appliedSummary: JSON.stringify(legacySnapshot) },
+      });
+      const confirmed = await resolveFeedbackIntakeRun(result.run.id, {
+        action: "confirm",
+        decisions: [{ issueId: mismatch!.id, action: "skip_student", sourceName: mismatch!.sourceName }],
+      }, prisma);
+      expect(confirmed.status).toBe("applied");
+      expect(confirmed.appliedSummary.appliedStudentCount).toBe(2);
+    } finally {
+      await prisma.feedbackIntakeRun.deleteMany({ where: { sessionCode } });
+      await prisma.classSession.deleteMany({ where: { code: sessionCode } });
+      await prisma.studentClassEnrollment.deleteMany({ where: { semesterId } });
+      await prisma.class.deleteMany({ where: { id: classId } });
+      await prisma.semester.deleteMany({ where: { id: semesterId } });
+      await prisma.student.deleteMany({ where: { id: { in: students.map((student) => student.id) } } });
+    }
+  }, 20_000);
+
   it("falls back only when the reported student number is unknown", () => {
     const roster = [
       { id: "student-a", name: "测试甲", studentId: "E2E-001" },
@@ -228,22 +325,53 @@ describe("feedback intake file preparation", () => {
   }, 20_000);
 
   it("returns the same plan when create_plan is retried", async () => {
-    const input = { sessionCode: "2026070801", files: [stepFile()], db: prisma };
-    const result = await createOrGetFeedbackIntakeRun(input);
-    await resolveFeedbackIntakeRun(result.run.id, { action: "confirm", decisions: [] }, prisma);
     const student = await prisma.student.findFirst({ where: { studentId: "E2E-001" }, select: { id: true } });
     expect(student).not.toBeNull();
+    const sessionCode = "2096010101";
+    const session = await prisma.classSession.create({
+      data: {
+        code: sessionCode,
+        date: "2096-01-01",
+        semesterNumber: 99,
+        semesterId: "test-semester-1",
+        classId: "test-class-1",
+      },
+    });
+    const run = await prisma.feedbackIntakeRun.create({
+      data: {
+        sessionCode,
+        sourceFingerprint: `CREATE-PLAN-${crypto.randomUUID()}`,
+        sourceManifest: "[]",
+        status: "applied",
+        issues: "[]",
+        appliedSummary: JSON.stringify({
+          applied: true,
+          assessmentEvidence: {},
+          scopeConfirmation: {
+            classId: "test-class-1",
+            sessionCode,
+            studentIds: [student!.id],
+            confirmedAt: new Date().toISOString(),
+          },
+        }),
+      },
+    });
     const planInput = {
       type: "event_micro" as const,
       outputRequirement: "为测试学生生成一条可复核反馈",
       studentIds: [student!.id],
       generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment", "teacher_interpretation"], length: "detailed" as const, tone: "gentle" as const },
     };
-    const first = await resolveFeedbackIntakeRun(result.run.id, { action: "create_plan", plan: planInput }, prisma);
-    const second = await resolveFeedbackIntakeRun(result.run.id, { action: "create_plan", plan: planInput }, prisma);
-    expect("plan" in first && "plan" in second ? first.plan?.id : null).toBe("plan" in second ? second.plan?.id : null);
-    const stored = "plan" in first && first.plan ? JSON.parse(first.plan.inputSnapshot) : null;
-    expect(stored?.generationPreferences).toMatchObject({ length: "detailed", tone: "gentle" });
-    await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+    try {
+      const first = await resolveFeedbackIntakeRun(run.id, { action: "create_plan", plan: planInput }, prisma);
+      const second = await resolveFeedbackIntakeRun(run.id, { action: "create_plan", plan: planInput }, prisma);
+      expect("plan" in first && "plan" in second ? first.plan?.id : null).toBe("plan" in second ? second.plan?.id : null);
+      const stored = "plan" in first && first.plan ? JSON.parse(first.plan.inputSnapshot) : null;
+      expect(stored?.generationPreferences).toMatchObject({ length: "detailed", tone: "gentle" });
+      if ("plan" in first && first.plan) await prisma.feedbackPlan.delete({ where: { id: first.plan.id } });
+    } finally {
+      await prisma.feedbackIntakeRun.deleteMany({ where: { id: run.id } });
+      await prisma.classSession.deleteMany({ where: { id: session.id } });
+    }
   }, 20_000);
 });
