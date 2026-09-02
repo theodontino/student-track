@@ -27,6 +27,14 @@ export type ArchivedFeedbackTaskReference = {
   planIds: string[];
   sessionCodes: string[];
 };
+export type FeedbackTaskOpenTarget = {
+  planId: string;
+  batchId: string;
+  semesterId: string;
+  classId: string;
+  className: string;
+  sessionCode: string;
+};
 
 const statusLabels: Record<string, string> = {
   draft: "草稿", evidence_ready: "证据就绪", queued: "排队中", generating: "生成中", running: "生成中",
@@ -42,22 +50,38 @@ function typeLabel(type: string) {
   return ({ class_update: "班级公共反馈", event_micro: "事件型微反馈", stage_trend: "阶段趋势反馈", course_end: "结课教学总结" } as Record<string, string>)[type] ?? type;
 }
 
-function planHref(plan: PlanSummary) {
+function planOpenTarget(plan: PlanSummary): FeedbackTaskOpenTarget {
   const session = plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session;
-  const params = new URLSearchParams({ planId: plan.id });
-  if (plan.semester?.id) params.set("semesterId", plan.semester.id);
-  if (plan.class?.name || plan.class?.code) params.set("class", plan.class.name ?? plan.class.code);
-  if (session?.code) params.set("sessionCode", session.code);
-  return `/feedback?${params.toString()}`;
+  return {
+    planId: plan.id,
+    batchId: "",
+    semesterId: plan.semester?.id ?? "",
+    classId: plan.class?.id ?? "",
+    className: plan.class?.name ?? plan.class?.code ?? "",
+    sessionCode: session?.code ?? "",
+  };
 }
 
-function batchHref(batch: BatchSummary) {
+function batchOpenTarget(batch: BatchSummary): FeedbackTaskOpenTarget {
   const first = batch.plans[0];
-  const params = new URLSearchParams({ batchId: batch.id });
-  if (first?.id) params.set("planId", first.id);
-  if (batch.semester?.id) params.set("semesterId", batch.semester.id);
-  if (first?.class?.name || first?.class?.code) params.set("class", first.class.name ?? first.class.code);
-  if (first?.session?.code) params.set("sessionCode", first.session.code);
+  return {
+    planId: first?.id ?? "",
+    batchId: batch.id,
+    semesterId: batch.semester?.id ?? "",
+    classId: first?.class.id ?? "",
+    className: first?.class.name ?? first?.class.code ?? "",
+    sessionCode: first?.session?.code ?? "",
+  };
+}
+
+function taskHref(target: FeedbackTaskOpenTarget) {
+  const params = new URLSearchParams();
+  if (target.planId) params.set("planId", target.planId);
+  if (target.batchId) params.set("batchId", target.batchId);
+  if (target.semesterId) params.set("semesterId", target.semesterId);
+  if (target.classId) params.set("classId", target.classId);
+  if (target.className) params.set("class", target.className);
+  if (target.sessionCode) params.set("sessionCode", target.sessionCode);
   return `/feedback?${params.toString()}`;
 }
 
@@ -71,8 +95,9 @@ async function waitUntilStopped(kind: "plan" | "batch", id: string, running: Set
   throw new Error("任务仍在停止中，请稍后再归档");
 }
 
-export default function FeedbackPlanManager({ semesterId, onArchived }: {
+export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: {
   semesterId?: string;
+  onOpen?: (target: FeedbackTaskOpenTarget) => void;
   onArchived?: (reference: ArchivedFeedbackTaskReference) => void;
 }) {
   const [plans, setPlans] = useState<PlanSummary[]>([]);
@@ -150,12 +175,13 @@ export default function FeedbackPlanManager({ semesterId, onArchived }: {
       {tasks.map((task) => {
         const isBatch = task.kind === "batch";
         const status = isBatch ? task.batch.status : task.plan.status;
-        const href = isBatch ? batchHref(task.batch) : planHref(task.plan);
+        const openTarget = isBatch ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
+        const href = taskHref(openTarget);
         const title = isBatch ? `班级组反馈 · ${task.batch.plans.length} 个班级` : typeLabel(task.plan.type);
         const description = isBatch ? `${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准` : `${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
         return <article key={`${task.kind}:${task.id}`} className={styles.row}>
           <div className={styles.meta}><div className={styles.title}><strong>{title}</strong><Badge tone={(isBatch ? runningBatchStatuses : runningPlanStatuses).has(status) ? "warning" : "info"}>{statusLabels[status] ?? status}</Badge></div><span>{description}</span></div>
-          <div className={styles.actions}><Link className="ui-button ui-button--ghost ui-button--sm" href={href}>打开</Link><Button uiSize="sm" variant="secondary" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button></div>
+          <div className={styles.actions}>{onOpen ? <Button uiSize="sm" variant="ghost" onClick={() => onOpen(openTarget)} disabled={Boolean(busyId)}>打开</Button> : <Link className="ui-button ui-button--ghost ui-button--sm" href={href}>打开</Link>}<Button uiSize="sm" variant="secondary" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button></div>
         </article>;
       })}
     </div>}

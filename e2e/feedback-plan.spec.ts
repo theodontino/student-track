@@ -383,6 +383,31 @@ test("group task advances a ready class and later scans only the unfinished clas
       }),
     });
   });
+  await page.route("**/api/report/feedback-plans?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("archived") !== "false") return route.continue();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        plans: [{
+          id: "plan-partial-a",
+          type: "event_micro",
+          status: "in_review",
+          archivedAt: null,
+          batchId: null,
+          session: { code: TEST_FIXTURE.sessions[1].code },
+          class: { id: TEST_FIXTURE.class.id, code: TEST_FIXTURE.class.code, name: TEST_FIXTURE.class.name },
+          semester: { id: TEST_FIXTURE.semester.id, name: TEST_FIXTURE.semester.name },
+          itemStatusCounts: { total: 1, queued: 0, running: 0, completed: 1, failed: 0 },
+        }],
+      }),
+    });
+  });
+  await page.route("**/api/report/feedback-plan-batches?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("archived") !== "false") return route.continue();
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ batches: [] }) });
+  });
 
   const groupScanBodies: Array<{ groupLessonId: string; sessionCodes: string[]; runIds?: Record<string, string> }> = [];
   await page.route("**/api/feedback/intake/group-scan", async (route) => {
@@ -431,6 +456,10 @@ test("group task advances a ready class and later scans only the unfinished clas
   await expect(page.getByRole("button", { name: "继续处理 1 个未完成班" })).toBeVisible();
   expect(taskRequests).toHaveLength(1);
   expect(taskRequests[0]).toMatchObject({ mode: "group", runIds: [runA.id] });
+  const currentTasks = page.locator("details").filter({ has: page.locator("summary", { hasText: "当前反馈任务" }) });
+  await currentTasks.locator("summary").click();
+  await currentTasks.locator("article").filter({ hasText: TEST_FIXTURE.class.name }).getByRole("button", { name: "打开" }).click();
+  await expect(page.getByRole("button", { name: "继续处理 1 个未完成班" })).toBeVisible();
   await page.getByRole("button", { name: "继续处理 1 个未完成班" }).click();
   await expect(page.getByText("共同课多班任务", { exact: true })).toBeVisible();
   const classACard = groupScope.locator("article").filter({ hasText: TEST_FIXTURE.class.name });
@@ -460,6 +489,7 @@ test("golden C: active task is visible, archivable, and the same run can create 
   await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
   const taskRow = page.locator("article").filter({ has: page.locator(`a[href*="${firstPlanId}"]`) });
   await expect(taskRow.getByRole("link", { name: "打开" })).toHaveAttribute("href", new RegExp(firstPlanId));
+  await expect(taskRow.getByRole("link", { name: "打开" })).toHaveAttribute("href", new RegExp(`classId=${TEST_FIXTURE.class.id}`));
   page.once("dialog", (dialog) => dialog.accept());
   await taskRow.getByRole("button", { name: "归档" }).click();
   await expect(page.locator(`a[href*="${firstPlanId}"]`)).toHaveCount(0);
@@ -469,6 +499,54 @@ test("golden C: active task is visible, archivable, and the same run can create 
   await page.goto("/feedback/advanced?step=extract");
   await expect(page).toHaveURL(/\/feedback\/tools\?tool=manual-facts/);
   await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
+});
+
+test("current batch task opens from an empty same-page workbench without reload", async ({ page, request }) => {
+  const created = await request.post("/api/report/feedback-plan-batches", { data: {
+    requestKey: "e2e-open-current-batch",
+    semesterId: TEST_FIXTURE.semester.id,
+    type: "event_micro",
+    generationMode: "fast",
+    outputRequirement: "E2E 打开当前班级组任务",
+    plans: [
+      {
+        classId: TEST_FIXTURE.class.id,
+        sessionId: TEST_FIXTURE.sessions[1].id,
+        studentIds: [TEST_FIXTURE.students[0].id],
+      },
+      {
+        classId: TEST_FIXTURE.classTwo.id,
+        sessionId: TEST_FIXTURE.groupSession.id,
+        studentIds: [TEST_FIXTURE.groupStudents[0].id],
+      },
+    ],
+  } });
+  expect(created.ok()).toBeTruthy();
+  const batch = (await created.json()).batch as { id: string; plans: Array<{ id: string }> };
+  const firstPlanId = batch.plans[0]!.id;
+
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}`);
+  await expect(page.getByText("请先选择真实课次。")).toBeVisible();
+  const taskList = page.locator("details").filter({ has: page.locator("summary", { hasText: "当前反馈任务" }) });
+  await taskList.locator("summary").click();
+  const taskRow = taskList.locator("article").filter({ hasText: "班级组反馈 · 2 个班级" }).first();
+  const openButton = taskRow.getByRole("button", { name: "打开" });
+
+  const contextRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === "/api/report/feedback-context"
+      && url.searchParams.get("semesterId") === TEST_FIXTURE.semester.id
+      && url.searchParams.get("sessionCode") === TEST_FIXTURE.sessions[1].code;
+  });
+  await openButton.click();
+  await contextRequest;
+
+  await expect(page).toHaveURL(new RegExp(`batchId=${batch.id}`));
+  await expect(page).toHaveURL(new RegExp(`planId=${firstPlanId}`));
+  await expect(page).toHaveURL(new RegExp(`classId=${TEST_FIXTURE.class.id}`));
+  await expect(page.getByText("第三阶段", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "班级组生成与复核" })).toBeVisible();
+  await expect(page.getByText("请先选择真实课次。")).toHaveCount(0);
 });
 
 test("new lead-class session confirms shared course material with the material action", async ({ page }) => {

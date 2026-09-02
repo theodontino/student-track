@@ -11,7 +11,7 @@ import { lessonMaterialHasContent } from "@/lib/feedback-materials";
 import type { FeedbackScriptLibraryResponse } from "@/lib/feedback-script-library";
 import type { FeedbackIntakeDecision } from "@/services/feedback-intake-service";
 import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
-import FeedbackPlanManager, { type ArchivedFeedbackTaskReference } from "./FeedbackPlanManager";
+import FeedbackPlanManager, { type ArchivedFeedbackTaskReference, type FeedbackTaskOpenTarget } from "./FeedbackPlanManager";
 import { TaskPreparationStage, type GroupMaterialSummary } from "./TaskPreparationStage";
 import { TaskConfirmationStage } from "./TaskConfirmationStage";
 import { FeedbackTaskStudioStage } from "./FeedbackTaskStudioStage";
@@ -586,7 +586,11 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
 
   useEffect(() => {
     const session = context.data?.session;
-    if (state.stage !== "studio" || !contextCurrent || !groupLesson || !session) return;
+    if (state.stage !== "studio" || !contextCurrent || !session) return;
+    if (!groupLesson) {
+      setPendingGroupDraft(null);
+      return;
+    }
     const saved = readFeedbackTaskDraft({
       semesterId: context.context.semesterId,
       classId: session.classId,
@@ -594,7 +598,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       groupLessonId: groupLesson.id,
     });
     setPendingGroupDraft(saved?.mode === "group" && saved.entries.some((item) => item.selected) ? saved : null);
-  }, [context.context.semesterId, context.data?.session, contextCurrent, groupLesson, state.stage]);
+  }, [context.context.semesterId, context.data?.session, contextCurrent, groupLesson, state.batchId, state.planId, state.stage]);
 
   useEffect(() => {
     if (!context.hydrated || !currentDraftScopeKey || restoredScopeKey.current === currentDraftScopeKey || state.planId || state.batchId) return;
@@ -1533,6 +1537,20 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     context.switchSession(next);
   }
 
+  function openFeedbackTask(target: FeedbackTaskOpenTarget) {
+    if (target.planId !== state.planId || target.batchId !== state.batchId) setPendingGroupDraft(null);
+    dispatch({ type: "task", planId: target.planId, batchId: target.batchId });
+    taskUrl({ planId: target.planId, batchId: target.batchId, intakeRunId: "" });
+    context.setContext({
+      semesterId: target.semesterId || context.context.semesterId,
+      classId: target.classId,
+      className: target.className,
+      sessionCode: target.sessionCode,
+    });
+    setError("");
+    setNotice("已打开反馈任务。");
+  }
+
   function releaseArchivedTask(reference: ArchivedFeedbackTaskReference) {
     const released = releaseArchivedFeedbackTaskReferences(runs, state.draft.plannedSessionCodes, reference);
     setRuns(released.runs);
@@ -1800,7 +1818,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
 
   return <main className={styles.page}>
     <PageHeader title="课后任务" description="一个任务按“录入—规划—生成”走完；共同课可以一次投料、按班核验，统一规划后再按班生成与复核。" actions={<div className={styles.headerActions}><Badge tone="info">{packageMetadata.version}</Badge><Link className="ui-button ui-button--ghost ui-button--md" href="/feedback/tools">高级工具</Link></div>} />
-    <details><summary>当前反馈任务</summary><FeedbackPlanManager semesterId={context.context.semesterId} onArchived={releaseArchivedTask} /></details>
+    <details><summary>当前反馈任务</summary><FeedbackPlanManager semesterId={context.context.semesterId} onOpen={openFeedbackTask} onArchived={releaseArchivedTask} /></details>
     {(error || context.error) && <StatusBanner tone="danger">{error || context.error}</StatusBanner>}{notice && <StatusBanner tone="info">{notice}</StatusBanner>}
     {state.stage !== "studio" && <section className={styles.taskCard}>
       {state.stage === "prepare" && <div className="feedback-context-section"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} classId={context.context.classId} className={context.context.className} onClassChange={context.setClass} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} refreshKey={context.refreshKey} disabled={busy} /><div className="feedback-new-session"><Button variant="secondary" onClick={() => setSessionDialogOpen(true)} disabled={busy || !context.context.semesterId || !context.context.classId}>新建真实课次</Button></div></div>}
