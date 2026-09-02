@@ -853,14 +853,29 @@ function view(run: { id: string; sessionCode: string; status: string; sourceFing
   };
 }
 
+async function viewWithLivePlan(
+  run: Parameters<typeof view>[0],
+  db: FeedbackIntakeDb,
+): Promise<FeedbackIntakeRunView> {
+  if (!run.planId) return view(run);
+  const livePlan = await db.feedbackPlan.findFirst({
+    where: { id: run.planId, archivedAt: null },
+    select: { id: true },
+  });
+  return view(livePlan ? run : { ...run, planId: null });
+}
+
 export async function getFeedbackIntakeRun(id: string, db: PrismaClient = prisma) {
   const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
-  return run ? view(run) : null;
+  return run ? viewWithLivePlan(run, db) : null;
 }
 
 export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string; files: IntakeFile[]; runId?: string; db?: PrismaClient }) {
   const db = input.db ?? prisma;
-  const previousRun = input.runId ? await db.feedbackIntakeRun.findUnique({ where: { id: input.runId } }) : null;
+  const storedPreviousRun = input.runId ? await db.feedbackIntakeRun.findUnique({ where: { id: input.runId } }) : null;
+  const previousRun = storedPreviousRun
+    ? { ...storedPreviousRun, planId: (await viewWithLivePlan(storedPreviousRun, db)).planId }
+    : null;
   if (input.runId && !previousRun) throw new Error("反馈材料运行不存在");
   if (previousRun && previousRun.sessionCode !== input.sessionCode) throw new Error("不能把材料追加到另一课次");
   if (previousRun?.planId) throw new Error("这轮材料已经关联 FeedbackPlan，请重新开始一轮材料");
@@ -870,7 +885,7 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
     // Inbox scans can present the same files again. If no source changed, keep
     // the teacher's confirmation, decisions and saved scope exactly as-is.
     if (inspection.sourceFingerprint === previousRun.sourceFingerprint) {
-      return { run: view(previousRun), inspection, duplicate: true };
+      return { run: await viewWithLivePlan(previousRun, db), inspection, duplicate: true };
     }
     // A browser can restore an older empty/partial run while another tab (or a
     // previous scan) has already persisted the same complete source batch. The
@@ -880,7 +895,7 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
       where: { sourceFingerprint: inspection.sourceFingerprint, id: { not: previousRun.id } },
       orderBy: { updatedAt: "desc" },
     });
-    if (canonical) return { run: view(canonical), inspection, duplicate: true };
+    if (canonical) return { run: await viewWithLivePlan(canonical, db), inspection, duplicate: true };
     try {
       const updated = await db.feedbackIntakeRun.update({
         where: { id: previousRun.id },
@@ -892,19 +907,19 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
           appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
         },
       });
-      return { run: view(updated), inspection, duplicate: false };
+      return { run: await viewWithLivePlan(updated, db), inspection, duplicate: false };
     } catch (error) {
       const isFingerprintConflict = error instanceof Error
         && error.message.includes("Unique constraint failed on the fields: (`sourceFingerprint`)");
       if (isFingerprintConflict) {
         const canonical = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
-        if (canonical) return { run: view(canonical), inspection, duplicate: true };
+        if (canonical) return { run: await viewWithLivePlan(canonical, db), inspection, duplicate: true };
       }
       throw error;
     }
   }
   const existing = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
-  if (existing) return { run: view(existing), inspection, duplicate: true };
+  if (existing) return { run: await viewWithLivePlan(existing, db), inspection, duplicate: true };
   try {
     const run = await db.feedbackIntakeRun.create({
       data: {
@@ -916,7 +931,7 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
         appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
       },
     });
-    return { run: view(run), inspection, duplicate: false };
+    return { run: await viewWithLivePlan(run, db), inspection, duplicate: false };
   } catch (error) {
     // Two scans may pass the read-before-create check concurrently. Treat a
     // Prisma unique conflict as the same idempotent duplicate case.
@@ -924,10 +939,24 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
       && error.message.includes("Unique constraint failed on the fields: (`sourceFingerprint`)");
     if (isFingerprintConflict) {
       const canonical = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
-      if (canonical) return { run: view(canonical), inspection, duplicate: true };
+      if (canonical) return { run: await viewWithLivePlan(canonical, db), inspection, duplicate: true };
     }
     throw error;
   }
+}
+
+/**
+ * Starts or resumes intake without adding another file source. Existing
+ * SessionMetric, Attendance and Event rows remain the source of truth for the
+ * feedback context; confirming this run only records that there are no new
+ * material facts to apply.
+ */
+export async function prepareFeedbackIntakeFromExistingFacts(input: {
+  sessionCode: string;
+  runId?: string;
+  db?: PrismaClient;
+}) {
+  return createOrGetFeedbackIntakeRun({ ...input, files: [] });
 }
 
 export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = prisma, decisions: FeedbackIntakeDecision[] = []) {

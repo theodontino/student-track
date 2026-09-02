@@ -101,6 +101,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
       mode: "single",
       groupLessonId: "",
       activeSessionCode: TEST_FIXTURE.sessions[0].code,
+      plannedSessionCodes: [],
       entries: [{
         classId: TEST_FIXTURE.class.id,
         classCode: TEST_FIXTURE.class.code,
@@ -108,6 +109,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
         sessionCode: TEST_FIXTURE.sessions[0].code,
         runId: "e2e-draft-only-run",
         studentIds: TEST_FIXTURE.students.map((student) => student.id),
+        studentSelectionInitialized: true,
         selected: true,
       }],
       materialSelection: { mode: "none" },
@@ -119,22 +121,22 @@ test.describe.serial("v0.17.0 information architecture", () => {
       classOverrides: [],
       studentOverrides: [],
       unassignedSourceCount: 0,
+      unassignedSources: [],
       groupSnapshot: null,
     };
-    await page.addInitScript((draft) => {
+    const storageKey = `student-track:feedback-task-draft:v2:single:${encodeURIComponent(TEST_FIXTURE.semester.id)}:${encodeURIComponent(TEST_FIXTURE.class.id)}:${encodeURIComponent(TEST_FIXTURE.sessions[0].code)}`;
+    await page.addInitScript(({ draft, storageKey }) => {
       const originalSetItem = Storage.prototype.setItem;
       (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0;
       Storage.prototype.setItem = function (key, value) {
-        if (key === "student-track:feedback-task-draft:v2") {
+        if (key === storageKey) {
           const target = window as Window & { workspaceWriteCount?: number };
           target.workspaceWriteCount = (target.workspaceWriteCount ?? 0) + 1;
         }
         return originalSetItem.call(this, key, value);
       };
-      sessionStorage.setItem("student-track:feedback-task-draft:v2", JSON.stringify({
-        ...draft,
-      }));
-    }, storedDraft);
+      sessionStorage.setItem(storageKey, JSON.stringify(draft));
+    }, { draft: storedDraft, storageKey });
     await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
     const requirement = page.getByLabel("总体要求").first();
     await expect(requirement).toBeVisible();

@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
 import { STEP_CLASSROOM_HEADER, STEP_INTERPRETATION_PROMPT, STEP_PROMPT_VERSION } from "@/services/step-classroom-import-service";
 import { prisma } from "@/lib/prisma";
+import { archiveFeedbackPlan } from "@/services/feedback-plan-service";
 import {
   classifyFeedbackIntakeFile,
   createOrGetFeedbackIntakeRun,
@@ -10,6 +11,7 @@ import {
   confirmFeedbackIntakeScope,
   expandFeedbackIntakeFiles,
   inspectFeedbackIntake,
+  prepareFeedbackIntakeFromExistingFacts,
   resolveFeedbackIntakeRun,
   resolveIntakeStudentIdentity,
   type IntakeFile,
@@ -246,6 +248,27 @@ describe("feedback intake file preparation", () => {
     await prisma.feedbackIntakeRun.delete({ where: { id: first.run.id } });
   });
 
+  it("lets the same material run be scanned again after its plan is archived", async () => {
+    const input = { sessionCode: "2026070801", files: [stepFile()], db: prisma };
+    const prepared = await createOrGetFeedbackIntakeRun(input);
+    await resolveFeedbackIntakeRun(prepared.run.id, { action: "confirm", decisions: [] }, prisma);
+    const created = await resolveFeedbackIntakeRun(prepared.run.id, {
+      action: "create_plan",
+      plan: { type: "event_micro", outputRequirement: "归档后复用相同材料" },
+    }, prisma);
+    if (!("plan" in created) || !created.plan) throw new Error("合成反馈计划创建失败");
+
+    try {
+      await expect(createOrGetFeedbackIntakeRun({ ...input, runId: prepared.run.id })).rejects.toThrow("已经关联");
+      await archiveFeedbackPlan(created.plan.id, prisma);
+      const retried = await createOrGetFeedbackIntakeRun({ ...input, runId: prepared.run.id });
+      expect(retried).toMatchObject({ duplicate: true, run: { id: prepared.run.id, planId: null, status: "applied" } });
+    } finally {
+      await prisma.feedbackIntakeRun.deleteMany({ where: { id: prepared.run.id } });
+      await prisma.feedbackPlan.deleteMany({ where: { id: created.plan.id } });
+    }
+  });
+
   it("reuses an existing complete batch when a restored empty run has the same fingerprint", async () => {
     const existing = await createOrGetFeedbackIntakeRun({ sessionCode: "2026070801", files: [stepFile()], db: prisma });
     const restoredEmpty = await createOrGetFeedbackIntakeRun({ sessionCode: "2026070801", files: [], db: prisma });
@@ -298,6 +321,72 @@ describe("feedback intake file preparation", () => {
     expect(repeated.status).toBe("applied");
     expect(await prisma.draftRecord.count()).toBe(before + 1);
     await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+  }, 20_000);
+
+  it("confirms no-new-material intake without rewriting existing classroom facts", async () => {
+    const marker = crypto.randomUUID();
+    const sessionCode = `existing-facts-${marker}`;
+    const student = await prisma.student.findFirstOrThrow({ where: { studentId: "E2E-001" } });
+    const session = await prisma.classSession.create({
+      data: {
+        code: sessionCode,
+        date: "2097-06-01",
+        semesterNumber: 98,
+        semesterId: "test-semester-1",
+        classId: "test-class-1",
+      },
+    });
+    const metric = await prisma.sessionMetric.create({
+      data: {
+        studentId: student.id,
+        sessionId: session.id,
+        date: session.date,
+        scoreA: 5,
+        scoreB: 4,
+        scoreC: 3,
+        scoreD: 2,
+        operator: "teacher",
+      },
+    });
+    const attendance = await prisma.attendance.create({
+      data: { studentId: student.id, sessionId: session.id, present: false },
+    });
+    const event = await prisma.event.create({
+      data: {
+        studentId: student.id,
+        sessionId: session.id,
+        type: "课堂表现",
+        description: `已确认的合成课堂事实-${marker}`,
+        rawText: "教师已确认的合成测试事实",
+      },
+    });
+    const draftsBefore = await prisma.draftRecord.count({ where: { sessionCode } });
+
+    try {
+      const prepared = await prepareFeedbackIntakeFromExistingFacts({ sessionCode, db: prisma });
+      expect(prepared.run).toMatchObject({ status: "ready", sourceManifest: [] });
+
+      const confirmed = await resolveFeedbackIntakeRun(prepared.run.id, { action: "confirm", decisions: [] }, prisma);
+      expect(confirmed).toMatchObject({
+        status: "applied",
+        appliedSummary: { applied: true, appliedStudentCount: 0 },
+      });
+      await expect(prisma.draftRecord.count({ where: { sessionCode } })).resolves.toBe(draftsBefore);
+      await expect(prisma.sessionMetric.findUnique({ where: { id: metric.id } })).resolves.toMatchObject({
+        scoreA: 5,
+        scoreB: 4,
+        scoreC: 3,
+        scoreD: 2,
+        operator: "teacher",
+      });
+      await expect(prisma.attendance.findUnique({ where: { id: attendance.id } })).resolves.toMatchObject({ present: false });
+      await expect(prisma.event.findUnique({ where: { id: event.id } })).resolves.toMatchObject({
+        description: `已确认的合成课堂事实-${marker}`,
+      });
+    } finally {
+      await prisma.feedbackIntakeRun.deleteMany({ where: { sessionCode } });
+      await prisma.classSession.deleteMany({ where: { id: session.id } });
+    }
   }, 20_000);
 
   it("persists the confirmed class scope and clears it without deleting confirmed facts", async () => {

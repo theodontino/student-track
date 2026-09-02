@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   createFeedbackGroupIntake,
   parseFeedbackGroupRunIds,
+  parseFeedbackGroupSessionCodes,
   type CreateFeedbackGroupIntakeInput,
 } from "@/services/feedback-group-intake-service";
 import type { IntakeFile } from "@/services/feedback-intake-service";
@@ -12,6 +13,11 @@ export const runtime = "nodejs";
 function parseRunIds(value: FormDataEntryValue | null): Record<string, string> | undefined {
   if (value === null || String(value).trim() === "") return undefined;
   return parseFeedbackGroupRunIds(JSON.parse(String(value)) as unknown);
+}
+
+function parseSessionCodes(value: FormDataEntryValue | null): string[] | undefined {
+  if (value === null || String(value).trim() === "") return undefined;
+  return parseFeedbackGroupSessionCodes(JSON.parse(String(value)) as unknown);
 }
 
 function parseDisplayNames(value: FormDataEntryValue | null) {
@@ -37,9 +43,11 @@ export async function POST(request: NextRequest) {
       source: "upload" as const,
     })));
     const runIds = parseRunIds(formData.get("runIds"));
+    const sessionCodes = parseSessionCodes(formData.get("sessionCodes"));
     const input: CreateFeedbackGroupIntakeInput = {
       groupLessonId,
       files,
+      ...(sessionCodes ? { sessionCodes } : {}),
       ...(runIds ? { runIds } : {}),
     };
     return NextResponse.json(await createFeedbackGroupIntake(input));

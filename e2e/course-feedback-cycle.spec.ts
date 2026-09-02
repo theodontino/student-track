@@ -181,6 +181,15 @@ async function openSessionCreationDialog(page: Page, date: string) {
   return dialog;
 }
 
+async function clearFeedbackTaskDrafts(page: Page) {
+  await page.evaluate(() => {
+    const prefix = "student-track:feedback-task-draft:v2";
+    const keys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+      .filter((key): key is string => Boolean(key?.startsWith(prefix)));
+    for (const key of keys) sessionStorage.removeItem(key);
+  });
+}
+
 test.describe("完整课程反馈周期", () => {
   test.skip(process.env.E2E_FIXTURE_PROFILE !== "course-cycle", "仅由 test:e2e:course-cycle 使用独立课程测试库运行");
 
@@ -268,7 +277,7 @@ test.describe("完整课程反馈周期", () => {
 
       await expect((await request.put(`/api/group-lessons/${groupLessonId}/common-material`, { data: { lessonNumber: 6 } })).ok()).toBeTruthy();
       await expect((await request.post(`/api/group-lessons/${groupLessonId}/confirm`)).ok()).toBeTruthy();
-      await page.evaluate(() => sessionStorage.removeItem("student-track:feedback-task-draft:v2"));
+      await clearFeedbackTaskDrafts(page);
       await page.reload();
 
       const afterConfirm = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
@@ -336,16 +345,15 @@ test.describe("完整课程反馈周期", () => {
       await dialog.getByRole("button", { name: "取消", exact: true }).click();
     });
 
-    await test.step("材料审核只处理当前班且确认前不写事实或创建任务", async () => {
+    await test.step("录入只处理当前班且确认前不写事实或创建任务", async () => {
       const contextBeforeUpload = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
       await expectOk(contextBeforeUpload);
       const todayBeforeUpload = (await contextBeforeUpload.json()).students.map((student: { id: string; preview: { today: string[] } }) => ({ id: student.id, today: student.preview.today }));
-      await page.evaluate(() => sessionStorage.removeItem("student-track:feedback-task-draft:v2"));
+      await clearFeedbackTaskDrafts(page);
       await page.goto(`/feedback?semesterId=${fixture.semester.id}&classId=${leadClass.id}&class=${encodeURIComponent(leadClass.name)}&sessionCode=${leadSession.code}`);
       await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
-      await expect(page.getByRole("radiogroup", { name: "课后任务范围" })).toBeVisible();
-      await expect(page.getByRole("radio", { name: "本班" })).toBeChecked();
-      await expect(page.getByRole("radio", { name: "共同课" })).toBeVisible();
+      await expect(page.getByText("当前本班任务", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "处理同讲次多个班" })).toBeVisible();
       runId = await uploadClassMaterials(page, 0);
       const leadRun = await request.get(`/api/feedback/intake/runs/${runId}`);
       await expectOk(leadRun);
@@ -360,7 +368,7 @@ test.describe("完整课程反馈周期", () => {
     });
 
     await test.step("第一次主操作确认当前班材料与事实", async () => {
-      await page.getByRole("button", { name: "确认材料并进入下一步" }).click();
+      await page.getByRole("button", { name: "确认录入并进入规划" }).click();
       await expect(page.getByText("本班默认反馈计划")).toBeVisible();
       await expect(page).not.toHaveURL(/planId=|batchId=/);
       await expect(page.getByRole("button", { name: "确认范围与计划并开始生成" })).toBeVisible();

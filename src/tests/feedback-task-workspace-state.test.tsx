@@ -1,19 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskConfirmationStage } from "@/features/feedback/TaskConfirmationStage";
+import { includeIndependentFeedbackStudent, TaskConfirmationStage } from "@/features/feedback/TaskConfirmationStage";
 import { TaskPreparationStage } from "@/features/feedback/TaskPreparationStage";
 import { syncFeedbackItemDrafts } from "@/features/feedback/FeedbackPlanPanel";
 import {
   feedbackStudioPlanTarget,
   shouldRefreshFeedbackTaskBatch,
 } from "@/features/feedback/FeedbackTaskStudioStage";
-import { MaterialIntakeCard, materialIssueChoices, shouldAcceptMaterialFiles } from "@/features/feedback/MaterialIntakeCard";
+import { MaterialIntakeCard, MaterialIssueDecision, materialIssueChoices, shouldAcceptMaterialFiles } from "@/features/feedback/MaterialIntakeCard";
 import {
   activeFeedbackStudentsForClass,
+  createFeedbackTaskFollowUpDraft,
+  defaultFeedbackStudentIds,
+  feedbackTaskGroupRestoreAttemptKey,
+  feedbackGroupIntakeScope,
+  feedbackIntakeConfirmationOutcome,
+  feedbackTaskGroupDraftForFollowUp,
+  feedbackGroupMaterialSourceStatus,
   mergeGroupUnassignedSources,
   mergeLoadedGroupRosterEntries,
+  feedbackTaskOperationScopeToken,
+  partitionFeedbackIntakeConfirmationEntries,
   rebuildGroupSourceSummaries,
+  releaseArchivedFeedbackTaskReferences,
+  refreshFeedbackStudentSelections,
+  refreshAutomaticFeedbackStudentSelection,
   restoreFeedbackGroupMode,
+  selectedFeedbackTaskStudentOverrides,
 } from "@/features/feedback/FeedbackTaskWorkspace";
 import {
   createFeedbackTaskDraft,
@@ -60,13 +73,14 @@ function groupDraft() {
 describe("feedback task group workspace state", () => {
   it("persists group drafts and initializes newly added override collections", () => {
     const legacyDraft = Object.fromEntries(
-      Object.entries(groupDraft()).filter(([key]) => !["requestKey", "classOverrides", "studentOverrides", "materialSelectionInitialized", "pendingMaterialLessonNumber", "unassignedSourceCount"].includes(key)),
+      Object.entries(groupDraft()).filter(([key]) => !["requestKey", "plannedSessionCodes", "classOverrides", "studentOverrides", "materialSelectionInitialized", "pendingMaterialLessonNumber", "unassignedSourceCount"].includes(key)),
     );
     const restored = parseFeedbackTaskDraft(legacyDraft);
     expect(restored).toMatchObject({ mode: "group", groupLessonId: "lesson-1", entries });
     expect(restored?.requestKey).toMatch(/^[0-9a-f-]{36}$/);
     expect(restored?.classOverrides).toEqual([]);
     expect(restored?.studentOverrides).toEqual([]);
+    expect(restored?.plannedSessionCodes).toEqual([]);
     expect(restored?.materialSelectionInitialized).toBe(true);
     expect(restored?.pendingMaterialLessonNumber).toBeNull();
   });
@@ -131,6 +145,182 @@ describe("feedback task group workspace state", () => {
     expect(feedbackTaskReducer(withStudent, { type: "student-override", studentId: "student-c", generationConfig: null }).draft.studentOverrides).toEqual([]);
   });
 
+  it("includes a student when the teacher saves an independent setting", () => {
+    const entry = { ...entries[1], studentIds: [], studentSelectionInitialized: false };
+    const included = includeIndependentFeedbackStudent(entry, "student-c");
+    expect(included).toMatchObject({ studentIds: ["student-c"], studentSelectionInitialized: true });
+
+    const generationConfig = {
+      version: 1 as const,
+      type: "event_micro" as const,
+      outputRequirement: "单独说明合成学生的本课表现",
+      generationPreferences: { closureType: "positive_recognition" as const, length: "short" as const, tone: "gentle" as const, moduleKeys: ["observed_moment"] },
+    };
+    const draft = {
+      ...groupDraft(),
+      entries: [entries[0], included],
+      studentOverrides: [{ studentId: "student-c", generationConfig }],
+    };
+    expect(selectedFeedbackTaskStudentOverrides(draft)).toEqual([{ studentId: "student-c", generationConfig }]);
+  });
+
+  it("keeps unfinished classes in a fresh follow-up draft without reopening planned classes", () => {
+    const original = {
+      ...groupDraft(),
+      requestKey: "request-original",
+      entries: [entries[0], { ...entries[1], selected: false }],
+      classOverrides: [
+        { sessionCode: "session-a", outputRequirement: "一班要求" },
+        { sessionCode: "session-b", outputRequirement: "二班要求" },
+      ],
+      studentOverrides: [
+        { studentId: "student-a", generationConfig: { version: 1 as const, type: "event_micro" as const, outputRequirement: "一班学生", generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment"] } } },
+        { studentId: "student-c", generationConfig: { version: 1 as const, type: "event_micro" as const, outputRequirement: "二班学生", generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment"] } } },
+      ],
+    };
+    const followUp = createFeedbackTaskFollowUpDraft(original, ["session-a"]);
+    expect(followUp).not.toBeNull();
+    expect(followUp?.requestKey).not.toBe(original.requestKey);
+    expect(followUp?.setupStage).toBe("prepare");
+    expect(followUp?.activeSessionCode).toBe("session-b");
+    expect(followUp?.plannedSessionCodes).toEqual(["session-a"]);
+    expect(followUp?.entries.map((item) => ({ sessionCode: item.sessionCode, runId: item.runId, selected: item.selected }))).toEqual([
+      { sessionCode: "session-a", runId: "run-a", selected: false },
+      { sessionCode: "session-b", runId: "run-b", selected: true },
+    ]);
+    expect(followUp?.classOverrides).toEqual([{ sessionCode: "session-b", outputRequirement: "二班要求" }]);
+    expect(followUp?.studentOverrides.map((item) => item.studentId)).toEqual(["student-c"]);
+    expect(feedbackGroupIntakeScope(followUp!.entries, {
+      "run-a": { planId: "plan-a" },
+      "run-b": { planId: null },
+    }, followUp!.plannedSessionCodes)).toEqual({ sessionCodes: ["session-b"], runIds: { "session-b": "run-b" } });
+    expect(createFeedbackTaskFollowUpDraft(followUp!, ["session-b"])).toBeNull();
+  });
+
+  it("releases an archived plan from both the run view and the local planned ledger", () => {
+    const released = releaseArchivedFeedbackTaskReferences({
+      "run-a": { ...run(entries[0], "applied"), planId: "plan-a" },
+      "run-b": { ...run(entries[1], "applied"), planId: "plan-b" },
+    }, ["session-a", "session-b"], {
+      kind: "plan",
+      id: "plan-a",
+      planIds: ["plan-a"],
+      sessionCodes: ["session-a"],
+    });
+    expect(released.runs["run-a"]?.planId).toBeNull();
+    expect(released.runs["run-b"]?.planId).toBe("plan-b");
+    expect(released.plannedSessionCodes).toEqual(["session-b"]);
+  });
+
+  it("carries a group snapshot forward when one class creates its task in single mode", () => {
+    const singleDraft = {
+      ...groupDraft(),
+      mode: "single" as const,
+      groupLessonId: "",
+      activeSessionCode: "session-a",
+      entries: [{ ...entries[0], studentIds: ["student-b"] }],
+      plannedSessionCodes: [],
+      groupSnapshot: {
+        groupLessonId: "lesson-1",
+        activeSessionCode: "session-a",
+        entries,
+        plannedSessionCodes: [],
+        unassignedSourceCount: 0,
+        unassignedSources: [],
+      },
+    };
+    const reconstructed = feedbackTaskGroupDraftForFollowUp(singleDraft);
+    expect(reconstructed).toMatchObject({
+      mode: "group",
+      groupLessonId: "lesson-1",
+      entries: [
+        { sessionCode: "session-a", studentIds: ["student-b"] },
+        { sessionCode: "session-b", runId: "run-b" },
+      ],
+    });
+    const afterA = createFeedbackTaskFollowUpDraft(reconstructed!, ["session-a"]);
+    expect(afterA?.plannedSessionCodes).toEqual(["session-a"]);
+    expect(afterA?.entries.map((item) => item.selected)).toEqual([false, true]);
+    expect(createFeedbackTaskFollowUpDraft(afterA!, ["session-b"])).toBeNull();
+  });
+
+  it("rebuilds a single-mode follow-up from stored group settings and preserves unresolved source count", () => {
+    const storedGroupDraft = {
+      ...groupDraft(),
+      outputRequirement: "共同课统一要求",
+      generationMode: "fast" as const,
+      preferences: { ...groupDraft().preferences, length: "detailed" as const, tone: "professional" as const },
+      classOverrides: [{ sessionCode: "session-b", outputRequirement: "二班单独要求" }],
+      unassignedSourceCount: 9,
+    };
+    const singleDraft = {
+      ...groupDraft(),
+      mode: "single" as const,
+      groupLessonId: "",
+      activeSessionCode: "session-a",
+      entries: [{ ...entries[0], studentIds: ["student-b"] }],
+      outputRequirement: "一班当前独立正文",
+      plannedSessionCodes: [],
+      groupSnapshot: {
+        groupLessonId: "lesson-1",
+        activeSessionCode: "session-a",
+        entries,
+        plannedSessionCodes: ["session-a"],
+        unassignedSourceCount: 2,
+        unassignedSources: [{
+          fileName: "二班待归属.pdf",
+          kind: "assessment_pdf" as const,
+          reason: "仅有二班候选",
+          candidateClassIds: ["class-b"],
+        }],
+      },
+    };
+
+    expect(feedbackTaskGroupDraftForFollowUp(singleDraft, storedGroupDraft)).toMatchObject({
+      mode: "group",
+      groupLessonId: "lesson-1",
+      outputRequirement: "共同课统一要求",
+      generationMode: "fast",
+      preferences: { length: "detailed", tone: "professional" },
+      classOverrides: [{ sessionCode: "session-b", outputRequirement: "二班单独要求" }],
+      plannedSessionCodes: ["session-a"],
+      unassignedSourceCount: 2,
+      unassignedSources: [{ fileName: "二班待归属.pdf", candidateClassIds: ["class-b"] }],
+      entries: [
+        { sessionCode: "session-a", studentIds: ["student-b"] },
+        { sessionCode: "session-b", studentIds: ["student-c"] },
+      ],
+    });
+  });
+
+  it("changes the operation scope token when mode, active class or selected group subset changes", () => {
+    const draft = groupDraft();
+    const groupToken = feedbackTaskOperationScopeToken("semester-a", draft);
+    const subsetToken = feedbackTaskOperationScopeToken("semester-a", {
+      ...draft,
+      entries: [draft.entries[0], { ...draft.entries[1], selected: false }],
+    });
+    const singleA = {
+      ...draft,
+      mode: "single" as const,
+      groupLessonId: "",
+      activeSessionCode: "session-a",
+      entries: [entries[0]],
+    };
+    const singleB = {
+      ...singleA,
+      activeSessionCode: "session-b",
+      entries: [entries[1]],
+    };
+
+    expect(subsetToken).not.toBe(groupToken);
+    expect(feedbackTaskOperationScopeToken("semester-a", singleA)).not.toBe(groupToken);
+    expect(feedbackTaskOperationScopeToken("semester-a", singleB))
+      .not.toBe(feedbackTaskOperationScopeToken("semester-a", singleA));
+    expect(feedbackTaskOperationScopeToken("semester-a", singleA, [], { stage: "studio", planId: "plan-a", batchId: "" }))
+      .not.toBe(feedbackTaskOperationScopeToken("semester-a", singleA, [], { stage: "prepare", planId: "", batchId: "" }));
+  });
+
   it("persists whether the teacher is on materials or students and plans", () => {
     const initial: FeedbackTaskState = { stage: "prepare", draft: groupDraft(), planId: "", batchId: "" };
     const next = feedbackTaskReducer(initial, { type: "stage", stage: "confirm" });
@@ -173,7 +363,31 @@ describe("feedback task group workspace state", () => {
     expect(markup).toContain("合成二班");
     expect(markup).toContain("已调整班级默认");
     expect(markup).toContain("已单独设置");
+    expect(markup).toContain("没有推荐时默认全班");
+    expect(markup).toContain("教师已调整范围");
     expect(markup).toContain("确认范围与计划并开始生成");
+  });
+
+  it("excludes already planned classes from the confirmation page", () => {
+    const markup = renderToStaticMarkup(<TaskConfirmationStage
+      draft={{ ...groupDraft(), setupStage: "confirm" }}
+      plannedSessionCodes={["session-a"]}
+      studentsBySession={{
+        "session-a": [{ id: "student-a", name: "甲同学", studentId: "A001", labels: [], preview: { today: [], trend: "", communications: [], labels: [] } }],
+        "session-b": [{ id: "student-c", name: "丙同学", studentId: "B001", labels: [], preview: { today: [], trend: "", communications: [], labels: [] } }],
+      }}
+      scopeSummary="本轮只处理未规划班级"
+      busy={false}
+      onEntry={() => undefined}
+      onDraft={() => undefined}
+      onClassOverrideChange={() => undefined}
+      onStudentOverrideChange={() => undefined}
+      onBack={() => undefined}
+      onStart={() => undefined}
+    />);
+    expect(markup).not.toContain("合成一班");
+    expect(markup).toContain("合成二班");
+    expect(markup).toContain("1 个班、1 名学生");
   });
 
   it("keeps exactly three material rows with filenames, counts, text status and source-specific detail buttons", () => {
@@ -273,6 +487,13 @@ describe("feedback task group workspace state", () => {
     });
   });
 
+  it("rechecks the startup draft when the active member changes within one group lesson", () => {
+    const first = { semesterId: "semester-a", classId: "class-a", sessionCode: "session-a" };
+    const second = { semesterId: "semester-a", classId: "class-b", sessionCode: "session-b" };
+    expect(feedbackTaskGroupRestoreAttemptKey(first, "lesson-1"))
+      .not.toBe(feedbackTaskGroupRestoreAttemptKey(second, "lesson-1"));
+  });
+
   it("keeps historical classroom students out of the current feedback roster", () => {
     const contextStudents = [
       { id: "active-student", name: "在读学生" },
@@ -287,13 +508,139 @@ describe("feedback task group workspace state", () => {
     ]);
   });
 
+  it("refreshes the automatic recommendation when assessment evidence arrives after the roster", () => {
+    const students = [
+      { id: "student-a", feedbackRecommendationReasons: [] },
+      { id: "student-b", feedbackRecommendationReasons: [] },
+    ];
+    const automaticEntry = {
+      ...entries[0],
+      studentIds: [],
+      studentSelectionInitialized: false,
+    };
+    const afterRoster = refreshAutomaticFeedbackStudentSelection(automaticEntry, students);
+    expect(afterRoster.studentIds).toEqual(["student-a", "student-b"]);
+    expect(afterRoster.studentSelectionInitialized).toBe(false);
+
+    const afterPdf = refreshAutomaticFeedbackStudentSelection(afterRoster, students, {
+      "student-b": { source: "assessment_pdf" },
+    });
+    expect(afterPdf.studentIds).toEqual(["student-b"]);
+    expect(afterPdf.studentSelectionInitialized).toBe(false);
+  });
+
+  it("keeps a teacher's explicit empty selection and uses all active students when there is no recommendation", () => {
+    const students = [
+      { id: "student-a", feedbackRecommendationReasons: [] },
+      { id: "student-b", feedbackRecommendationReasons: [] },
+    ];
+    expect(defaultFeedbackStudentIds(students)).toEqual(["student-a", "student-b"]);
+    expect(refreshAutomaticFeedbackStudentSelection({
+      ...entries[0],
+      studentIds: [],
+      studentSelectionInitialized: true,
+    }, students, { "student-b": { source: "assessment_pdf" } }).studentIds).toEqual([]);
+  });
+
+  it("combines context recommendations and assessment evidence in roster order for either workflow mode", () => {
+    const students = [
+      { id: "student-a", feedbackRecommendationReasons: [] },
+      { id: "student-b", feedbackRecommendationReasons: ["本课需要反馈"] },
+      { id: "student-c", feedbackRecommendationReasons: [] },
+    ];
+    expect(defaultFeedbackStudentIds(students, { "student-c": { source: "assessment_pdf" } })).toEqual([
+      "student-b",
+      "student-c",
+    ]);
+  });
+
+  it("refreshes only automatic student ranges from post-intake feedback contexts", () => {
+    const automatic = { ...entries[0], studentIds: ["student-a"], studentSelectionInitialized: false };
+    const manual = { ...entries[1], studentIds: ["student-c"], studentSelectionInitialized: true };
+    const refreshed = refreshFeedbackStudentSelections(
+      [automatic, manual],
+      {
+        "session-a": [
+          { id: "student-a", feedbackRecommendationReasons: [] },
+          { id: "student-b", feedbackRecommendationReasons: ["新写入的课堂事实需要反馈"] },
+        ],
+        "session-b": [
+          { id: "student-c", feedbackRecommendationReasons: [] },
+          { id: "student-d", feedbackRecommendationReasons: ["不应覆盖教师选择"] },
+        ],
+      },
+      { "run-a": { appliedSummary: {} }, "run-b": { appliedSummary: {} } },
+    );
+    expect(refreshed[0].studentIds).toEqual(["student-b"]);
+    expect(refreshed[0].studentSelectionInitialized).toBe(false);
+    expect(refreshed[1]).toBe(manual);
+  });
+
   it("only applies successfully loaded group rosters and preserves a failed class for retry", () => {
-    const merged = mergeLoadedGroupRosterEntries(entries, new Map([
+    const latestEntries = [{ ...entries[0], selected: false }, entries[1]];
+    const merged = mergeLoadedGroupRosterEntries(latestEntries, new Map([
       ["session-a", ["student-b"]],
     ]));
     expect(merged[0].studentIds).toEqual(["student-b"]);
-    expect(merged[1]).toBe(entries[1]);
+    expect(merged[0].selected).toBe(false);
+    expect(merged[1]).toBe(latestEntries[1]);
     expect(merged[1].studentIds).toEqual(["student-c"]);
+  });
+
+  it("separates applied, blocked and confirmable classes without rolling completed classes back", () => {
+    const third = {
+      ...entries[1],
+      classId: "class-c",
+      classCode: "C",
+      className: "合成三班",
+      sessionCode: "session-c",
+      runId: "run-c",
+    };
+    const blockedIssue = {
+      id: "issue-b",
+      code: "student_mismatch",
+      message: "学生尚未匹配",
+      severity: "requires_teacher" as const,
+    };
+    const partition = partitionFeedbackIntakeConfirmationEntries(
+      [entries[0], entries[1], third],
+      {
+        "run-a": run(entries[0], "applied"),
+        "run-b": run(entries[1], "inspected", [blockedIssue]),
+        "run-c": run(third, "inspected"),
+      },
+      {},
+    );
+    expect(partition.alreadyAppliedEntries).toEqual([entries[0]]);
+    expect(partition.blockedEntries).toEqual([entries[1]]);
+    expect(partition.confirmableEntries).toEqual([third]);
+  });
+
+  it("keeps a failed class retryable while retaining successful confirmation results", () => {
+    const completedRun = run(entries[0], "applied");
+    const outcome = feedbackIntakeConfirmationOutcome(entries, [
+      { status: "fulfilled", value: { result: completedRun } },
+      { status: "rejected", reason: new Error("合成请求失败") },
+    ]);
+    expect(outcome.completed).toEqual([completedRun]);
+    expect(outcome.failedEntries).toEqual([entries[1]]);
+  });
+
+  it("preserves a teacher's explicit per-class inclusion when group mode is rebuilt", () => {
+    const prepared = entries.map((item, index) => ({ ...item, selected: index === 0 }));
+    const restored = restoreFeedbackGroupMode({
+      groupLessonId: "lesson-1",
+      members: prepared.map((item) => ({
+        classId: item.classId,
+        classCode: item.classCode,
+        className: item.className,
+        session: { code: item.sessionCode },
+      })),
+      currentEntries: prepared,
+      studentsBySession: {},
+      snapshot: null,
+    });
+    expect(restored.entries.map((item) => item.selected)).toEqual([true, false]);
   });
 
   it("restores all prepared group work after switching to one class and refreshing", () => {
@@ -318,6 +665,7 @@ describe("feedback task group workspace state", () => {
         groupLessonId: "lesson-1",
         activeSessionCode: entries[1].sessionCode,
         entries,
+        plannedSessionCodes: [],
         unassignedSourceCount: 1,
       },
     });
@@ -371,10 +719,74 @@ describe("feedback task group workspace state", () => {
     ]);
   });
 
+  it("treats optional partial coverage without blocking issues as ready", () => {
+    expect(feedbackGroupMaterialSourceStatus({
+      summaryStatus: "partial",
+      unresolvedIssueCount: 0,
+      allSelectedRunsApplied: false,
+    })).toBe("ready");
+    const markup = renderToStaticMarkup(<MaterialIntakeCard
+      summary={{
+        title: "本轮材料",
+        sources: [{
+          kind: "assessment_pdf",
+          status: feedbackGroupMaterialSourceStatus({
+            summaryStatus: "partial",
+            unresolvedIssueCount: 0,
+            allSelectedRunsApplied: false,
+          }),
+          matched: 1,
+          total: 40,
+          unit: "名学生",
+          fileCount: 1,
+          issueCount: 0,
+          files: ["合成测评.pdf"],
+        }],
+      }}
+      busy={false}
+      onFiles={() => undefined}
+      onScan={() => undefined}
+      onConfirm={() => undefined}
+    />);
+    expect(markup).toContain("已读取");
+    expect(markup).not.toContain("需核对");
+  });
+
   it("does not accept drop or input files while material intake is busy", () => {
     expect(shouldAcceptMaterialFiles(true, 1)).toBe(false);
     expect(shouldAcceptMaterialFiles(false, 0)).toBe(false);
     expect(shouldAcceptMaterialFiles(false, 2)).toBe(true);
+  });
+
+  it("locks material issue decisions and detail entry points while confirmation is busy", () => {
+    const decisionMarkup = renderToStaticMarkup(<MaterialIssueDecision
+      busy
+      issue={{
+        id: "student-issue",
+        runId: "run-a",
+        code: "student_mismatch",
+        message: "学生未匹配",
+        stage: "student",
+        candidates: [{ id: "student-a", name: "甲同学", studentId: "A001" }],
+      }}
+      onDecision={() => undefined}
+    />);
+    expect(decisionMarkup).toMatch(/<select[^>]*disabled=""/);
+    expect(decisionMarkup).toMatch(/<input[^>]*type="radio"[^>]*disabled=""/);
+
+    const cardMarkup = renderToStaticMarkup(<MaterialIntakeCard
+      summary={{
+        issueCount: 1,
+        issues: [{ id: "unassigned", message: "一份材料未归属" }],
+        sources: [{ kind: "assistant_roster", status: "needs_review", issueCount: 1, issues: [{ id: "source-issue", message: "需要核对" }] }],
+      }}
+      busy
+      onFiles={() => undefined}
+      onScan={() => undefined}
+      onConfirm={() => undefined}
+    />);
+    expect(cardMarkup).toMatch(/<button[^>]*aria-label="助教 Excel：查看详情"[^>]*disabled=""/);
+    expect(cardMarkup).toMatch(/<button[^>]*aria-haspopup="dialog"[^>]*disabled=""/);
   });
 
   it("does not present resolved intake issues as still pending", () => {
@@ -410,6 +822,12 @@ describe("feedback task group workspace state", () => {
       new Set(["二班新增.step-classroom.txt"]),
     );
     expect(continued).toEqual([unresolved]);
+    expect(mergeGroupUnassignedSources(continued, [{
+      ...unresolved,
+      reason: "仅属于本轮未选班级，已跳过",
+      blocking: false,
+      candidateClassIds: ["class-b"],
+    }], new Set())).toEqual([unresolved]);
     expect(mergeGroupUnassignedSources(continued, [], new Set(["同名学生.pdf"]))).toEqual([]);
   });
 

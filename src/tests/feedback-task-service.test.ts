@@ -8,6 +8,7 @@ vi.mock("@/services/feedback-plan-service", async (importOriginal) => ({
 
 import { createFeedbackTask } from "@/services/feedback-task-service";
 import { archiveFeedbackPlan } from "@/services/feedback-plan-service";
+import { getFeedbackIntakeRun } from "@/services/feedback-intake-service";
 
 const createdRunIds: string[] = [];
 const createdPlanIds: string[] = [];
@@ -104,8 +105,10 @@ describe("feedback task service", () => {
 
     const repeated = await createFeedbackTask(input, prisma);
     expect(repeated).toMatchObject({ taskType: "plan", planId: first.planId, generationStatus: "existing" });
+    await expect(getFeedbackIntakeRun(run.id, prisma)).resolves.toMatchObject({ planId: first.planId });
 
     await archiveFeedbackPlan(first.planId!, prisma);
+    await expect(getFeedbackIntakeRun(run.id, prisma)).resolves.toMatchObject({ planId: null });
     const rebuilt = await createFeedbackTask(input, prisma);
     expect(rebuilt.taskType).toBe("plan");
     expect(rebuilt.planId).not.toBe(first.planId);

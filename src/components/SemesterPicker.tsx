@@ -13,10 +13,11 @@ interface Props {
   showDefaultOption?: boolean;
   hideSession?: boolean;
   refreshKey?: number;
+  disabled?: boolean;
 }
 
-export default function SemesterPicker({ semesterId, onSemesterChange, classId = "", className, onClassChange, sessionCode, onSessionChange, hideSession = false, refreshKey = 0 }: Props) {
-  return <TeachingContextSelector compact hideSession={hideSession} refreshKey={refreshKey} value={{ semesterId, classId, className, sessionCode }} onChange={(next) => {
+export default function SemesterPicker({ semesterId, onSemesterChange, classId = "", className, onClassChange, sessionCode, onSessionChange, hideSession = false, refreshKey = 0, disabled = false }: Props) {
+  return <TeachingContextSelector compact hideSession={hideSession} refreshKey={refreshKey} disabled={disabled} value={{ semesterId, classId, className, sessionCode }} onChange={(next) => {
     if (next.semesterId !== semesterId) onSemesterChange(next.semesterId);
     if (next.className !== className || (next.classId ?? "") !== classId) onClassChange(next.className, next.classId);
     if (next.sessionCode !== sessionCode) onSessionChange(next.sessionCode);

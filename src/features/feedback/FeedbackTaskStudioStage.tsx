@@ -18,6 +18,8 @@ type Props = {
   batchId: string;
   context: FeedbackContextResponse | null;
   onPlanChange: (plan: FeedbackStudioPlanTarget) => void;
+  pendingClassCount?: number;
+  onResumePending?: () => void;
   onNewTask: () => void;
 };
 
@@ -91,7 +93,7 @@ export function FeedbackTaskStudioStage(props: Props) {
 
   if (!props.planId) return <StatusBanner tone="danger">任务已建立但缺少可打开的计划。请从“当前反馈任务”重新打开。</StatusBanner>;
   return <div className={styles.studioStage}>
-    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成失败也会留在这里重试，不会退回确认页面。</p></div><Button variant="ghost" onClick={props.onNewTask}>结束本轮并新建任务</Button></header>
+    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成失败也会留在这里重试，不会退回确认页面。</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}<Button variant="ghost" onClick={props.onNewTask}>结束本轮并新建任务</Button></div></header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}{notice && <StatusBanner tone="success">{notice}</StatusBanner>}
     {batch && <><section className={styles.batchClasses}>
       <header><div><strong>班级组任务</strong><span>{batch.plans.length} 个真实班级 · 统一生成状态 {batch.status}</span></div><div className={styles.batchControls}>{["queued", "running", "pause_requested"].includes(batch.status) && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch.status === "pause_requested"}>暂停整个班级组</Button>}{batch.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续班级组生成</Button>}{batch.status === "failed" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}</div></header>

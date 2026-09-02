@@ -11,13 +11,17 @@ vi.mock("@/services/assessment-pdf-service", () => ({
 
 import { prisma } from "@/lib/prisma";
 import { createEmptyLessonFeedbackMaterial } from "@/lib/feedback-materials";
-import { createFeedbackGroupIntake } from "@/services/feedback-group-intake-service";
-import type { IntakeFile } from "@/services/feedback-intake-service";
+import {
+  createFeedbackGroupIntake,
+  prepareFeedbackGroupIntakeFromExistingFacts,
+} from "@/services/feedback-group-intake-service";
+import { resolveFeedbackIntakeRun, type IntakeFile } from "@/services/feedback-intake-service";
 import {
   createClassGroup,
   createGroupLesson,
   linkGroupLessonSession,
 } from "@/services/group-lesson-service";
+import { archiveFeedbackPlan, createFeedbackPlan } from "@/services/feedback-plan-service";
 import {
   STEP_CLASSROOM_HEADER,
   STEP_INTERPRETATION_PROMPT,
@@ -276,6 +280,37 @@ describe("feedback group intake service", () => {
     ]));
   });
 
+  it("reuses a group run after its linked plan is archived but still rejects a live plan", async () => {
+    const prepared = await createFeedbackGroupIntake({ groupLessonId, files: [], db: prisma });
+    const run = prepared.runs.find((item) => item.sessionCode === sessionCodes[0])!;
+    const plan = await createFeedbackPlan({
+      semesterId,
+      classId: firstClassId,
+      sessionId: firstSessionId,
+      type: "event_micro",
+      outputRequirement: "合成归档后重建",
+      studentIds: [firstUniqueStudentId],
+    }, prisma);
+    await prisma.feedbackIntakeRun.update({ where: { id: run.id }, data: { planId: plan.id } });
+
+    const retryInput = {
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [] as IntakeFile[],
+      runIds: { [sessionCodes[0]]: run.id },
+      db: prisma,
+    };
+    try {
+      await expect(createFeedbackGroupIntake(retryInput)).rejects.toMatchObject({ status: 409 });
+      await archiveFeedbackPlan(plan.id, prisma);
+      const retried = await createFeedbackGroupIntake(retryInput);
+      expect(retried.runs).toContainEqual(expect.objectContaining({ id: run.id, planId: null }));
+    } finally {
+      await prisma.feedbackIntakeRun.update({ where: { id: run.id }, data: { planId: null } });
+      await prisma.feedbackPlan.deleteMany({ where: { id: plan.id } });
+    }
+  });
+
   it("does not reopen an already confirmed class when only another class receives a new file", async () => {
     const first = await createFeedbackGroupIntake({
       groupLessonId,
@@ -330,11 +365,175 @@ describe("feedback group intake service", () => {
     expect(secondClassAfter.appliedSummary.scopeConfirmation).toBeUndefined();
   });
 
+  it("routes a mixed retry through the full group but only updates the pending selected class", async () => {
+    const first = await createFeedbackGroupIntake({
+      groupLessonId,
+      files: [
+        stepFile(`${marker}-01`, "合成一班", `${marker}-A`, "合成甲"),
+        stepFile(`${marker}-02`, "合成二班", `${marker}-B`, "合成乙"),
+      ],
+      db: prisma,
+    });
+    const firstRun = first.runs.find((run) => run.sessionCode === sessionCodes[0])!;
+    const secondRun = first.runs.find((run) => run.sessionCode === sessionCodes[1])!;
+    await prisma.feedbackIntakeRun.update({
+      where: { id: firstRun.id },
+      data: { planId: `${marker}-PLAN-A` },
+    });
+    const firstRunBefore = await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: firstRun.id } });
+
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[1]],
+      files: [
+        intakeFile("子集重试两班助教表.xlsx", assistantWorkbook()),
+        stepFile(`${marker}-01`, "合成一班", `${marker}-A`, "合成甲"),
+        stepFile(`${marker}-02`, "合成二班", `${marker}-B`, "合成乙"),
+        intakeFile("合成甲-未选班.pdf", "%PDF unselected-class"),
+        intakeFile("合成乙-待处理班.pdf", "%PDF selected-class"),
+        stepFile(`${marker}-OUTSIDE`, "组外班", `${marker}-OUTSIDE-STUDENT`, "组外学生"),
+      ],
+      runIds: { [sessionCodes[1]]: secondRun.id },
+      db: prisma,
+    });
+
+    expect(result.classes).toHaveLength(1);
+    expect(result.classes[0]).toMatchObject({ classId: secondClassId, sessionCode: sessionCodes[1], runId: secondRun.id });
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs[0]).toMatchObject({ id: secondRun.id, sessionCode: sessionCodes[1] });
+    const selectedSourceNames = result.runs[0]!.sourceManifest.map((source) => source.name);
+    expect(selectedSourceNames).toEqual(expect.arrayContaining([
+      "子集重试两班助教表.xlsx",
+      `${marker}-02.step-classroom.txt`,
+      "合成乙-待处理班.pdf",
+    ]));
+    expect(selectedSourceNames).not.toContain(`${marker}-01.step-classroom.txt`);
+    expect(selectedSourceNames).not.toContain("合成甲-未选班.pdf");
+    expect(selectedSourceNames).not.toContain(`${marker}-OUTSIDE.step-classroom.txt`);
+    expect(result.unassigned).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fileName: "子集重试两班助教表.xlsx",
+        kind: "assistant_roster",
+        blocking: false,
+        candidateClassIds: [firstClassId],
+      }),
+      expect.objectContaining({
+        fileName: `${marker}-01.step-classroom.txt`,
+        kind: "step_classroom",
+        blocking: false,
+        candidateClassIds: [firstClassId],
+      }),
+      expect.objectContaining({
+        fileName: "合成甲-未选班.pdf",
+        kind: "assessment_pdf",
+        blocking: false,
+        candidateClassIds: [firstClassId],
+      }),
+      expect.objectContaining({
+        fileName: `${marker}-OUTSIDE.step-classroom.txt`,
+        kind: "step_classroom",
+        blocking: true,
+      }),
+    ]));
+    const firstRunAfter = await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: firstRun.id } });
+    expect(firstRunAfter).toMatchObject({
+      planId: firstRunBefore.planId,
+      sourceFingerprint: firstRunBefore.sourceFingerprint,
+      sourceManifest: firstRunBefore.sourceManifest,
+      appliedSummary: firstRunBefore.appliedSummary,
+      status: firstRunBefore.status,
+    });
+    expect(firstRunAfter.updatedAt.getTime()).toBe(firstRunBefore.updatedAt.getTime());
+  });
+
+  it("rejects an empty or unrelated selected class subset", async () => {
+    await expect(createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [],
+      files: [],
+      db: prisma,
+    })).rejects.toMatchObject({ status: 400 });
+
+    await expect(createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [`${marker}-NOT-IN-GROUP`],
+      files: [],
+      db: prisma,
+    })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("rejects run IDs outside the selected class subset", async () => {
+    const existing = await createFeedbackGroupIntake({ groupLessonId, files: [], db: prisma });
+    const firstRun = existing.runs.find((run) => run.sessionCode === sessionCodes[0])!;
+
+    await expect(createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[1]],
+      files: [],
+      runIds: { [sessionCodes[0]]: firstRun.id },
+      db: prisma,
+    })).rejects.toMatchObject({ status: 409 });
+  });
+
   it("allows a direct service caller to prepare empty runs for every linked class", async () => {
     const result = await createFeedbackGroupIntake({ groupLessonId, files: [], db: prisma });
     expect(result.runs).toHaveLength(2);
     expect(result.classes.every((item) => Boolean(item.runId))).toBe(true);
     expect(result.sourceSummaries.every((summary) => summary.status === "empty")).toBe(true);
+  });
+
+  it("confirms existing facts independently without rewriting either class", async () => {
+    const [firstMetric, secondMetric] = await Promise.all([
+      prisma.sessionMetric.upsert({
+        where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+        create: { studentId: firstUniqueStudentId, sessionId: firstSessionId, date: "2099-05-01", scoreA: 5, scoreB: 4, scoreC: 3, scoreD: 2, operator: "teacher" },
+        update: { scoreA: 5, scoreB: 4, scoreC: 3, scoreD: 2, operator: "teacher" },
+      }),
+      prisma.sessionMetric.upsert({
+        where: { studentId_sessionId: { studentId: secondUniqueStudentId, sessionId: secondSessionId } },
+        create: { studentId: secondUniqueStudentId, sessionId: secondSessionId, date: "2099-05-01", scoreA: 2, scoreB: 3, scoreC: 4, scoreD: 5, operator: "teacher" },
+        update: { scoreA: 2, scoreB: 3, scoreC: 4, scoreD: 5, operator: "teacher" },
+      }),
+    ]);
+    const [firstAttendance, secondAttendance] = await Promise.all([
+      prisma.attendance.upsert({
+        where: { sessionId_studentId: { sessionId: firstSessionId, studentId: firstUniqueStudentId } },
+        create: { sessionId: firstSessionId, studentId: firstUniqueStudentId, present: true },
+        update: { present: true },
+      }),
+      prisma.attendance.upsert({
+        where: { sessionId_studentId: { sessionId: secondSessionId, studentId: secondUniqueStudentId } },
+        create: { sessionId: secondSessionId, studentId: secondUniqueStudentId, present: false },
+        update: { present: false },
+      }),
+    ]);
+    const firstEventDescription = `${marker}-一班已有事实`;
+    const secondEventDescription = `${marker}-二班已有事实`;
+    const [firstEvent, secondEvent] = await Promise.all([
+      prisma.event.upsert({
+        where: { studentId_sessionId_description: { studentId: firstUniqueStudentId, sessionId: firstSessionId, description: firstEventDescription } },
+        create: { studentId: firstUniqueStudentId, sessionId: firstSessionId, type: "课堂表现", description: firstEventDescription, rawText: "合成事实" },
+        update: {},
+      }),
+      prisma.event.upsert({
+        where: { studentId_sessionId_description: { studentId: secondUniqueStudentId, sessionId: secondSessionId, description: secondEventDescription } },
+        create: { studentId: secondUniqueStudentId, sessionId: secondSessionId, type: "课堂表现", description: secondEventDescription, rawText: "合成事实" },
+        update: {},
+      }),
+    ]);
+
+    const prepared = await prepareFeedbackGroupIntakeFromExistingFacts({ groupLessonId, db: prisma });
+    expect(prepared.runs).toHaveLength(2);
+    for (const run of prepared.runs) {
+      await resolveFeedbackIntakeRun(run.id, { action: "confirm", decisions: [] }, prisma);
+    }
+
+    await expect(prisma.sessionMetric.findUnique({ where: { id: firstMetric.id } })).resolves.toMatchObject({ scoreA: 5, scoreB: 4, scoreC: 3, scoreD: 2 });
+    await expect(prisma.sessionMetric.findUnique({ where: { id: secondMetric.id } })).resolves.toMatchObject({ scoreA: 2, scoreB: 3, scoreC: 4, scoreD: 5 });
+    await expect(prisma.attendance.findUnique({ where: { id: firstAttendance.id } })).resolves.toMatchObject({ present: true });
+    await expect(prisma.attendance.findUnique({ where: { id: secondAttendance.id } })).resolves.toMatchObject({ present: false });
+    await expect(prisma.event.findUnique({ where: { id: firstEvent.id } })).resolves.toMatchObject({ description: firstEventDescription });
+    await expect(prisma.event.findUnique({ where: { id: secondEvent.id } })).resolves.toMatchObject({ description: secondEventDescription });
   });
 
   it("rejects an empty active roster before creating any group run", async () => {

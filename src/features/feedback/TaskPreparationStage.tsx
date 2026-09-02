@@ -108,8 +108,8 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
   const materialSummary = props.materialSummary ?? defaultMaterialSummary(props.run, props.entry, props.studentTotal, props.decisions ?? []);
   return <div className={styles.stageContent}>
     {props.draft.mode === "single" && <section className={styles.intakePaths}>
-      <div><strong>课堂记录可以直接补录</strong><span>像 1.1.x 一样，先写课堂回顾；Excel、STEP 和测评材料都是可选补充。</span></div>
-      <Link className="ui-button ui-button--secondary ui-button--sm" href={props.manualFactsHref}>手动输入课堂记录</Link>
+      <div><strong>先补录课堂记录</strong><span>可以像原来一样手动写课堂回顾；有助教表、STEP 或测评文件时，再在下面补充。</span></div>
+      <Link className="ui-button ui-button--secondary ui-button--sm" href={props.manualFactsHref}>补录课堂记录</Link>
     </section>}
     <MaterialIntakeCard
       summary={materialSummary}
@@ -118,10 +118,10 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
       onFiles={props.onFiles}
       onScan={props.onScan}
       onUseExistingFacts={props.onUseExistingFacts}
-      useExistingFactsLabel={props.draft.mode === "group" ? "这些班已有事实，直接核对" : "沿用已有事实"}
+      useExistingFactsLabel={props.draft.mode === "group" ? "没有新材料，核对各班当前记录" : "没有新材料，核对当前记录"}
       onConfirm={props.onContinue}
-      confirmLabel={props.draft.mode === "group" ? "确认可处理班级" : "确认事实并选择学生"}
-      confirmHint={props.draft.mode === "group" ? "各班分别写入；某一班有问题不会撤销其他班。" : "只确认本班事实；反馈计划在下一步单独建立。"}
+      confirmLabel={props.draft.mode === "group" ? "确认可处理班级" : "确认录入并进入规划"}
+      confirmHint={props.draft.mode === "group" ? "每个班分别确认；某一班需核对时，已完成班级不会回滚。" : "这里只确认课堂事实；反馈计划在下一步建立。"}
       onIgnoreUnassigned={props.onIgnoreUnassigned}
       onDecision={props.onDecision}
     />

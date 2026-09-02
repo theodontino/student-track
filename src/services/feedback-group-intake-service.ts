@@ -75,6 +75,7 @@ export interface FeedbackGroupIntakeResult {
 export interface CreateFeedbackGroupIntakeInput {
   groupLessonId: string;
   files: IntakeFile[];
+  sessionCodes?: string[];
   runIds?: Record<string, string>;
   db?: PrismaClient;
 }
@@ -118,6 +119,16 @@ export function parseFeedbackGroupRunIds(value: unknown): Record<string, string>
   return Object.fromEntries(entries.map(([sessionCode, runId]) => [sessionCode.trim(), String(runId).trim()]));
 }
 
+export function parseFeedbackGroupSessionCodes(value: unknown): string[] | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (!Array.isArray(value) || value.some((sessionCode) => typeof sessionCode !== "string" || !sessionCode.trim())) {
+    throw new ServiceError("sessionCodes 必须是非空课次数组", 400);
+  }
+  const sessionCodes = unique(value.map((sessionCode) => sessionCode.trim()));
+  if (!sessionCodes.length) throw new ServiceError("sessionCodes 必须是非空课次数组", 400);
+  return sessionCodes;
+}
+
 async function loadGroupSessionContexts(groupLessonId: string, db: PrismaClient) {
   const lesson = await db.groupLesson.findUnique({
     where: { id: groupLessonId },
@@ -146,7 +157,6 @@ async function loadGroupSessionContexts(groupLessonId: string, db: PrismaClient)
     if (!session.classId || !session.class) throw new ServiceError("共同课包含未关联班级的课次", 409);
     return session as typeof session & { classId: string; class: NonNullable<typeof session.class> };
   });
-
   const contexts = await Promise.all(sessions.map(async (session): Promise<GroupSessionContext> => {
     const students = await db.student.findMany({
       where: {
@@ -178,7 +188,13 @@ export async function createFeedbackGroupIntake(
   const db = input.db ?? prisma;
   const groupLessonId = input.groupLessonId.trim();
   if (!groupLessonId) throw new ServiceError("缺少共同课", 400);
-  const contexts = await loadGroupSessionContexts(groupLessonId, db);
+  const allContexts = await loadGroupSessionContexts(groupLessonId, db);
+  const selectedSessionCodes = parseFeedbackGroupSessionCodes(input.sessionCodes);
+  const allSessionCodes = new Set(allContexts.map((context) => context.sessionCode));
+  const unknownSessionCode = selectedSessionCodes?.find((sessionCode) => !allSessionCodes.has(sessionCode));
+  if (unknownSessionCode) throw new ServiceError("所选课次不属于当前共同课", 409);
+  const selectedSessionCodeSet = selectedSessionCodes ? new Set(selectedSessionCodes) : allSessionCodes;
+  const contexts = allContexts.filter((context) => selectedSessionCodeSet.has(context.sessionCode));
   const emptyRosterContext = contexts.find((context) => context.students.length === 0);
   if (emptyRosterContext) {
     throw new ServiceError(`${emptyRosterContext.className} 没有在读学生，暂时不能统一投料`, 409);
@@ -194,12 +210,17 @@ export async function createFeedbackGroupIntake(
       where: { id: { in: reusedRunIds } },
       select: { id: true, sessionCode: true, planId: true },
     });
+    const suppliedPlanIds = [...new Set(suppliedRuns.flatMap((run) => run.planId ? [run.planId] : []))];
+    const livePlanIds = new Set((await db.feedbackPlan.findMany({
+      where: { id: { in: suppliedPlanIds }, archivedAt: null },
+      select: { id: true },
+    })).map((plan) => plan.id));
     const suppliedRunById = new Map(suppliedRuns.map((run) => [run.id, run]));
     for (const [sessionCode, runId] of Object.entries(runIds ?? {})) {
       const run = suppliedRunById.get(runId);
       if (!run) throw new ServiceError("反馈材料运行不存在", 404);
       if (run.sessionCode !== sessionCode) throw new ServiceError("不能把材料运行复用到另一课次", 409);
-      if (run.planId) throw new ServiceError("这轮材料已经关联反馈计划，请重新开始一轮材料", 409);
+      if (run.planId && livePlanIds.has(run.planId)) throw new ServiceError("这轮材料已经关联反馈计划，请重新开始一轮材料", 409);
     }
   }
 
@@ -218,7 +239,7 @@ export async function createFeedbackGroupIntake(
   const unassigned: FeedbackGroupIntakeUnassigned[] = [];
   const sourceKindByName = new Map<string, IntakeKind>();
   const uniqueRoster = [...new Map(
-    contexts.flatMap((context) => context.students.map((student) => [student.id, student] as const)),
+    allContexts.flatMap((context) => context.students.map((student) => [student.id, student] as const)),
   ).values()];
 
   function routeFile(context: GroupSessionContext, file: IntakeFile, kind: IntakeKind) {
@@ -245,9 +266,9 @@ export async function createFeedbackGroupIntake(
         const targets = new Map<string, GroupSessionContext>();
         let classIdentityConflict = false;
         for (const row of rows) {
-          const codeTargets = contexts.filter((context) => context.classCode === row.classCode);
+          const codeTargets = allContexts.filter((context) => context.classCode === row.classCode);
           const nameTargets = row.className
-            ? contexts.filter((context) => context.className === row.className)
+            ? allContexts.filter((context) => context.className === row.className)
             : [];
           if (codeTargets.length && nameTargets.length && !codeTargets.some((codeTarget) => nameTargets.some((nameTarget) => nameTarget.classId === codeTarget.classId))) {
             classIdentityConflict = true;
@@ -263,7 +284,18 @@ export async function createFeedbackGroupIntake(
           unassigned.push({ fileName: file.displayName, kind, reason: "助教表中没有当前共同课班级的有效课堂记录", blocking: file.source !== "inbox" });
           continue;
         }
-        for (const target of targets.values()) routeFile(target, routedFile, kind);
+        const selectedTargets = [...targets.values()].filter((target) => selectedSessionCodeSet.has(target.sessionCode));
+        const skippedTargets = [...targets.values()].filter((target) => !selectedSessionCodeSet.has(target.sessionCode));
+        if (skippedTargets.length) {
+          unassigned.push({
+            fileName: file.displayName,
+            kind,
+            reason: "助教表中属于本轮未选班级的记录已跳过",
+            blocking: false,
+            candidateClassIds: skippedTargets.map((target) => target.classId),
+          });
+        }
+        for (const target of selectedTargets) routeFile(target, routedFile, kind);
       } catch (error) {
         unassigned.push({
           fileName: file.displayName,
@@ -278,9 +310,19 @@ export async function createFeedbackGroupIntake(
     if (kind === "step_classroom") {
       try {
         const envelope = parseStepClassroomEnvelope(Buffer.from(file.buffer).toString("utf8"));
-        const target = contexts.find((context) => context.classCode === envelope.payload.class.code);
+        const target = allContexts.find((context) => context.classCode === envelope.payload.class.code);
         if (!target) {
           unassigned.push({ fileName: file.displayName, kind, reason: `STEP 班级 ${envelope.payload.class.code} 不属于当前共同课`, blocking: file.source !== "inbox" });
+          continue;
+        }
+        if (!selectedSessionCodeSet.has(target.sessionCode)) {
+          unassigned.push({
+            fileName: file.displayName,
+            kind,
+            reason: `STEP 班级 ${envelope.payload.class.code} 未纳入本轮处理，已跳过`,
+            blocking: false,
+            candidateClassIds: [target.classId],
+          });
           continue;
         }
         routeFile(target, routedFile, kind);
@@ -299,19 +341,25 @@ export async function createFeedbackGroupIntake(
       const parsed = await parseAssessmentPdf(file.buffer, file.displayName);
       const identity = resolveIntakeStudentIdentity(uniqueRoster, parsed.reportStudentId, parsed.reportStudentName);
       const candidateStudentIds = unique(identity.candidates.map((candidate) => candidate.id));
-      const candidateClassIds = unique(contexts
+      const candidateContexts = allContexts
         .filter((context) => context.students.some((student) => candidateStudentIds.includes(student.id)))
-        .map((context) => context.classId));
+      const candidateClassIds = unique(candidateContexts.map((context) => context.classId));
+      const candidatesOnlyInUnselectedClasses = candidateContexts.length > 0
+        && candidateContexts.every((context) => !selectedSessionCodeSet.has(context.sessionCode));
       if (identity.conflict || !identity.match) {
         unassigned.push({
           fileName: file.displayName,
           kind,
-          reason: identity.conflict
+          reason: candidatesOnlyInUnselectedClasses
+            ? "PDF 候选学生均属于本轮未选班级，已跳过"
+            : identity.conflict
             ? "PDF 内学号和姓名不能唯一指向同一名组内学生"
             : candidateStudentIds.length > 1
               ? "PDF 姓名在班级组内重名，无法自动归属"
               : "PDF 未能匹配班级组花名册",
-          blocking: identity.conflict || candidateStudentIds.length > 0 || file.source !== "inbox",
+          blocking: candidatesOnlyInUnselectedClasses
+            ? false
+            : identity.conflict || candidateStudentIds.length > 0 || file.source !== "inbox",
           reportedStudentId: parsed.reportStudentId,
           reportedStudentName: parsed.reportStudentName,
           ...(candidateStudentIds.length ? { candidateStudentIds } : {}),
@@ -319,18 +367,36 @@ export async function createFeedbackGroupIntake(
         });
         continue;
       }
-      const studentContexts = contexts.filter((context) => context.students.some((student) => student.id === identity.match!.id));
+      const studentContexts = allContexts.filter((context) => context.students.some((student) => student.id === identity.match!.id));
       const reportDateContexts = studentContexts.filter((context) => context.sessionDate === parsed.evidence.reportDate);
       const target = studentContexts.length === 1
         ? studentContexts[0]
         : reportDateContexts.length === 1
           ? reportDateContexts[0]
           : undefined;
-      if (!target) {
+      if (target && !selectedSessionCodeSet.has(target.sessionCode)) {
         unassigned.push({
           fileName: file.displayName,
           kind,
-          reason: "该学生对应多个真实课次，无法自动确定 PDF 所属班级",
+          reason: "PDF 学生属于本轮未选班级，已跳过",
+          blocking: false,
+          reportedStudentId: parsed.reportStudentId,
+          reportedStudentName: parsed.reportStudentName,
+          candidateStudentIds: [identity.match.id],
+          candidateClassIds: [target.classId],
+        });
+        continue;
+      }
+      if (!target) {
+        const onlyInUnselectedClasses = studentContexts.length > 0
+          && studentContexts.every((context) => !selectedSessionCodeSet.has(context.sessionCode));
+        unassigned.push({
+          fileName: file.displayName,
+          kind,
+          reason: onlyInUnselectedClasses
+            ? "PDF 学生仅属于本轮未选班级，已跳过"
+            : "该学生对应多个真实课次，无法自动确定 PDF 所属班级",
+          blocking: onlyInUnselectedClasses ? false : undefined,
           reportedStudentId: parsed.reportStudentId,
           reportedStudentName: parsed.reportStudentName,
           candidateStudentIds: [identity.match.id],
@@ -408,7 +474,7 @@ export async function createFeedbackGroupIntake(
     }
   }
 
-  const totalStudents = new Set(uniqueRoster.map((student) => student.id)).size;
+  const totalStudents = new Set(contexts.flatMap((context) => context.students.map((student) => student.id))).size;
   const sourceSummaries: FeedbackGroupIntakeSourceSummary[] = [
     {
       kind: "assistant_roster",
@@ -467,4 +533,18 @@ export async function createFeedbackGroupIntake(
     sourceSummaries,
     unassigned,
   };
+}
+
+/**
+ * Starts or resumes one independent material run per linked class without
+ * adding another file source. This does not copy or rewrite classroom facts;
+ * each class plan continues to read its own confirmed classroom records.
+ */
+export async function prepareFeedbackGroupIntakeFromExistingFacts(input: {
+  groupLessonId: string;
+  sessionCodes?: string[];
+  runIds?: Record<string, string>;
+  db?: PrismaClient;
+}) {
+  return createFeedbackGroupIntake({ ...input, files: [] });
 }

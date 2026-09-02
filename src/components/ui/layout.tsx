@@ -47,6 +47,6 @@ export function Tabs({ items, value, onChange, label = "页面分区" }: { items
   return <div className="ui-tabs" role="tablist" aria-label={label}>{items.map((item) => <button key={item.value} type="button" role="tab" aria-selected={item.value === value} onClick={() => onChange(item.value)}>{item.label}</button>)}</div>;
 }
 
-export function SegmentedControl({ items, value, onChange, label }: { items: Array<{ value: string; label: string }>; value: string; onChange: (value: string) => void; label: string }) {
-  return <div className="ui-segmented" role="group" aria-label={label}>{items.map((item) => <button key={item.value} type="button" aria-pressed={item.value === value} onClick={() => onChange(item.value)}>{item.label}</button>)}</div>;
+export function SegmentedControl({ items, value, onChange, label, disabled = false }: { items: Array<{ value: string; label: string }>; value: string; onChange: (value: string) => void; label: string; disabled?: boolean }) {
+  return <div className="ui-segmented" role="group" aria-label={label}>{items.map((item) => <button key={item.value} type="button" aria-pressed={item.value === value} disabled={disabled} onClick={() => onChange(item.value)}>{item.label}</button>)}</div>;
 }

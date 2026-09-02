@@ -21,6 +21,12 @@ type BatchSummary = {
 };
 
 type TaskRow = { kind: "plan"; id: string; plan: PlanSummary } | { kind: "batch"; id: string; batch: BatchSummary };
+export type ArchivedFeedbackTaskReference = {
+  kind: "plan" | "batch";
+  id: string;
+  planIds: string[];
+  sessionCodes: string[];
+};
 
 const statusLabels: Record<string, string> = {
   draft: "草稿", evidence_ready: "证据就绪", queued: "排队中", generating: "生成中", running: "生成中",
@@ -65,7 +71,10 @@ async function waitUntilStopped(kind: "plan" | "batch", id: string, running: Set
   throw new Error("任务仍在停止中，请稍后再归档");
 }
 
-export default function FeedbackPlanManager({ semesterId }: { semesterId?: string }) {
+export default function FeedbackPlanManager({ semesterId, onArchived }: {
+  semesterId?: string;
+  onArchived?: (reference: ArchivedFeedbackTaskReference) => void;
+}) {
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,6 +125,14 @@ export default function FeedbackPlanManager({ semesterId }: { semesterId?: strin
         }
         await requestJson(`/api/report/feedback-plans/${encodeURIComponent(task.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "archive" }) });
       }
+      onArchived?.({
+        kind: task.kind,
+        id: task.id,
+        planIds: task.kind === "batch" ? task.batch.plans.map((plan) => plan.id) : [task.plan.id],
+        sessionCodes: task.kind === "batch"
+          ? task.batch.plans.flatMap((plan) => plan.session?.code ? [plan.session.code] : [])
+          : task.plan.session?.code ? [task.plan.session.code] : [],
+      });
       setNotice("反馈任务已归档；现在可以使用相同材料重新建立任务。");
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "归档反馈任务失败"); }

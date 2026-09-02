@@ -3,6 +3,7 @@ import type {
   FeedbackGenerationPreferences,
   FeedbackPlanItemGenerationConfig,
 } from "@/lib/feedback-plan";
+import type { FeedbackGroupIntakeUnassigned } from "./feedback-task-types";
 
 export type TaskStage = "prepare" | "confirm" | "studio";
 export type MaterialSelection = { mode: "none" } | { mode: "session_snapshot" } | { mode: "linked_revision"; revisionId: string };
@@ -36,6 +37,7 @@ export type FeedbackTaskClassDraft = {
   sessionCode: string;
   runId: string;
   studentIds: string[];
+  /** false 表示仍由推荐规则维护；教师明确调整后设为 true，后续材料不再覆盖。 */
   studentSelectionInitialized: boolean;
   selected: boolean;
 };
@@ -44,7 +46,10 @@ export type FeedbackTaskGroupSnapshot = {
   groupLessonId: string;
   activeSessionCode: string;
   entries: FeedbackTaskClassDraft[];
+  /** 已成功建立反馈任务的课次；用于后续批次保留账本但禁止重复纳入。 */
+  plannedSessionCodes: string[];
   unassignedSourceCount: number;
+  unassignedSources: FeedbackGroupIntakeUnassigned[];
 };
 
 export type FeedbackTaskDraftV2 = {
@@ -55,6 +60,8 @@ export type FeedbackTaskDraftV2 = {
   groupLessonId: string;
   activeSessionCode: string;
   entries: FeedbackTaskClassDraft[];
+  /** 已成功建立反馈任务的课次；用于后续批次保留账本但禁止重复纳入。 */
+  plannedSessionCodes: string[];
   materialSelection: MaterialSelection;
   materialSelectionInitialized: boolean;
   pendingMaterialLessonNumber: number | null;
@@ -64,6 +71,8 @@ export type FeedbackTaskDraftV2 = {
   classOverrides: FeedbackTaskClassOverrideDraft[];
   studentOverrides: FeedbackTaskStudentOverrideDraft[];
   unassignedSourceCount: number;
+  /** 未归属材料的班级候选账本；用于部分班级后续继续处理。 */
+  unassignedSources: FeedbackGroupIntakeUnassigned[];
   groupSnapshot: FeedbackTaskGroupSnapshot | null;
 };
 
@@ -109,6 +118,7 @@ export function createFeedbackTaskDraft(): FeedbackTaskDraftV2 {
     groupLessonId: "",
     activeSessionCode: "",
     entries: [],
+    plannedSessionCodes: [],
     materialSelection: { mode: "none" },
     materialSelectionInitialized: false,
     pendingMaterialLessonNumber: null,
@@ -118,6 +128,7 @@ export function createFeedbackTaskDraft(): FeedbackTaskDraftV2 {
     classOverrides: [],
     studentOverrides: [],
     unassignedSourceCount: 0,
+    unassignedSources: [],
     groupSnapshot: null,
   };
 }

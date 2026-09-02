@@ -120,21 +120,23 @@ const STAGE_PRESENTATION = {
   fact: { title: "其他事实核对", description: "确认考勤、观察和重复事实的采用方式。" },
 } as const;
 
-function IssueDecision({ issue, onDecision }: {
+export function MaterialIssueDecision({ issue, busy, onDecision }: {
   issue: MaterialIssueSummary;
+  busy: boolean;
   onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
 }) {
   const studentStage = stageForIssue(issue) === "student";
   return <>
     {studentStage && issue.reportedStudent && <p className={styles.materialReportedStudent}>表内学生：{issue.reportedStudent.name}{issue.reportedStudent.studentId ? ` · ${issue.reportedStudent.studentId}` : ""}{issue.rowNumber ? ` · 第 ${issue.rowNumber} 行` : ""}</p>}
     {issue.rosterHint && <p className={styles.materialRosterHint}>{issue.rosterHint}</p>}
-    {studentStage && issue.candidates?.length ? <label>绑定当前班学生<select value={issue.decision?.action === "bind_student" ? issue.decision.studentId : ""} onChange={(event) => issue.runId && onDecision?.(issue.runId, { issueId: issue.id ?? "", action: "bind_student", studentId: event.target.value, sourceName: issue.sourceName })}><option value="">请选择</option>{issue.candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.studentId}</option>)}</select></label> : null}
-    <div className={styles.choiceRow}>{materialIssueChoices(issue).map((choice) => <label key={choice.action}><input type="radio" name={`${issue.runId}:${issue.id}`} checked={issue.decision?.action === choice.action} onChange={() => issue.runId && onDecision?.(issue.runId, { issueId: issue.id ?? "", action: choice.action, sourceName: issue.sourceName })} />{choice.label}</label>)}</div>
+    {studentStage && issue.candidates?.length ? <label>绑定当前班学生<select value={issue.decision?.action === "bind_student" ? issue.decision.studentId : ""} disabled={busy} onChange={(event) => issue.runId && onDecision?.(issue.runId, { issueId: issue.id ?? "", action: "bind_student", studentId: event.target.value, sourceName: issue.sourceName })}><option value="">请选择</option>{issue.candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.studentId}</option>)}</select></label> : null}
+    <div className={styles.choiceRow}>{materialIssueChoices(issue).map((choice) => <label key={choice.action}><input type="radio" name={`${issue.runId}:${issue.id}`} checked={issue.decision?.action === choice.action} disabled={busy} onChange={() => issue.runId && onDecision?.(issue.runId, { issueId: issue.id ?? "", action: choice.action, sourceName: issue.sourceName })} />{choice.label}</label>)}</div>
   </>;
 }
 
-function MaterialDetail({ source, onAddFile, onAddFolder, onScan, onDecision }: {
+function MaterialDetail({ source, busy, onAddFile, onAddFolder, onScan, onDecision }: {
   source: NormalizedMaterialSource;
+  busy: boolean;
   onAddFile: () => void;
   onAddFolder: () => void;
   onScan: () => void;
@@ -162,13 +164,13 @@ function MaterialDetail({ source, onAddFile, onAddFolder, onScan, onDecision }: 
           return <article key={`${issue.id ?? "session"}:${groupIndex}`}>
             <div><strong>{issue.className ? `${issue.className} · ` : ""}课次不一致</strong>{issue.sourceName && <small>{issue.sourceName}</small>}</div>
             <ul>{items.map((item, index) => <li key={item.id ?? index}>{item.message}</li>)}</ul>
-            <IssueDecision issue={issue} onDecision={onDecision} />
+            <MaterialIssueDecision issue={issue} busy={busy} onDecision={onDecision} />
           </article>;
         })}</section>;
       }
       return <section key={stage} className={styles.materialIssueStage}><header><strong>{presentation.title}</strong><small>{presentation.description}</small></header><div className={styles.materialIssueChoices}>{stageIssues.map((issue, index) => <article key={issue.id ?? `${issue.message}:${index}`}>
         <div><strong>{issue.className ? `${issue.className} · ` : ""}{issue.message}</strong>{issue.sourceName && <small>{issue.sourceName}</small>}</div>
-        <IssueDecision issue={issue} onDecision={onDecision} />
+        <MaterialIssueDecision issue={issue} busy={busy} onDecision={onDecision} />
       </article>)}</div></section>;
     })}</div></section>}
     {source.status === "missing" && <p>这一来源是可选的；缺少它本身不会阻止确认。可以继续添加文件、选择文件夹或扫描收件箱。</p>}
@@ -218,8 +220,8 @@ export function MaterialIntakeCard({ summary, busy, confirmDisabled, confirmLabe
     onDrop={(event) => { event.preventDefault(); setDragging(false); acceptFiles(Array.from(event.dataTransfer.files)); }}
   >
     <header className={styles.materialIntakeHeader}>
-      <div><h3 id="feedback-material-title">{summary.title ?? "本轮材料"}</h3><p>材料用于补充本课事实；没有新材料时，可以直接沿用已经确认的课堂记录。</p></div>
-      <div className={styles.materialIntakeSummary}>{summary.scopeLabel && <span>{summary.scopeLabel}</span>}<strong>{fileCount} 个文件</strong>{unassignedIssueCount > 0 && <button type="button" className={styles.materialOverallIssueButton} aria-haspopup="dialog" onClick={() => setDetailKind("unassigned")}>{unassignedIssueCount} 项未归属</button>}</div>
+      <div><h3 id="feedback-material-title">{summary.title ?? "本轮材料"}</h3><p>Excel、STEP 和测评文件只用于补充本课事实；没有新材料也能继续核对当前课堂记录。</p></div>
+      <div className={styles.materialIntakeSummary}>{summary.scopeLabel && <span>{summary.scopeLabel}</span>}<strong>{fileCount} 个文件</strong>{unassignedIssueCount > 0 && <button type="button" className={styles.materialOverallIssueButton} aria-haspopup="dialog" disabled={busy} onClick={() => setDetailKind("unassigned")}>{unassignedIssueCount} 项未归属</button>}</div>
     </header>
 
     <div className={styles.materialRows}>
@@ -229,20 +231,20 @@ export function MaterialIntakeCard({ summary, busy, confirmDisabled, confirmLabe
           <div className={styles.materialSourceName}><strong>{source.label}</strong><span title={fileSummary(source)}>{fileSummary(source)}</span></div>
           <div className={styles.materialSourceCounts}>{source.matchText ? <span className={styles.materialMatchText}>{source.matchText}</span> : typeof source.matched === "number" && typeof source.total === "number" ? <span className={styles.materialMatch}><strong>{source.matched}/{source.total}</strong> {source.unit ?? ""}</span> : <span>{SOURCE_PRESENTATION[source.kind].description}</span>}</div>
           <div className={`${styles.materialSourceStatus} ${source.status === "needs_review" ? styles.materialStatusWarning : source.status === "missing" ? styles.materialStatusMissing : ""}`}><span aria-hidden="true">{status.icon}</span><strong>{source.status === "needs_review" && source.issueCount > 0 ? `${source.issueCount} 项需核对` : status.label}</strong></div>
-          <IconButton className={styles.materialMoreButton} label={`${source.label}：查看详情`} onClick={() => setDetailKind(source.kind)}>⋯</IconButton>
+          <IconButton className={styles.materialMoreButton} label={`${source.label}：查看详情`} disabled={busy} onClick={() => setDetailKind(source.kind)}>⋯</IconButton>
         </article>;
       })}
     </div>
 
     <footer className={styles.materialIntakeActions}>
-      <div><Button variant="secondary" onClick={chooseFiles} disabled={busy}>{fileCount ? "继续添加" : "添加文件"}</Button><Button variant="ghost" onClick={chooseFolder} disabled={busy}>选择文件夹</Button><Button variant="ghost" onClick={onScan} disabled={busy}>扫描收件箱</Button>{onUseExistingFacts && <Button variant="ghost" onClick={onUseExistingFacts} disabled={busy}>{useExistingFactsLabel ?? "沿用已有事实"}</Button>}</div>
+      <div><Button variant="secondary" onClick={chooseFiles} disabled={busy}>{fileCount ? "继续添加" : "添加文件"}</Button><Button variant="ghost" onClick={chooseFolder} disabled={busy}>选择文件夹</Button><Button variant="ghost" onClick={onScan} disabled={busy}>扫描收件箱</Button>{onUseExistingFacts && fileCount === 0 && <Button variant="ghost" onClick={onUseExistingFacts} disabled={busy}>{useExistingFactsLabel ?? "没有新材料，继续核对"}</Button>}</div>
       <div className={styles.materialConfirmAction}><small>{confirmHint ?? "确认后写入课堂事实，不创建反馈计划，也不调用模型。"}</small><Button onClick={onConfirm} disabled={busy || confirmDisabled}>{busy ? "处理中…" : confirmLabel ?? "确认事实并进入下一步"}</Button></div>
     </footer>
     <input ref={fileRef} hidden type="file" multiple disabled={busy} onChange={(event) => { acceptFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
     <input ref={folderRef} hidden type="file" multiple disabled={busy} {...({ webkitdirectory: "" } as Record<string, string>)} onChange={(event) => { acceptFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
 
     <Dialog open={Boolean(detailSource)} title={detailSource ? `${detailSource.label} 详情` : "材料详情"} onClose={() => setDetailKind(null)}>
-      {detailSource && <MaterialDetail source={detailSource} onAddFile={() => { setDetailKind(null); chooseFiles(); }} onAddFolder={() => { setDetailKind(null); chooseFolder(); }} onScan={() => { setDetailKind(null); onScan(); }} onDecision={onDecision} />}
+      {detailSource && <MaterialDetail source={detailSource} busy={busy} onAddFile={() => { setDetailKind(null); chooseFiles(); }} onAddFolder={() => { setDetailKind(null); chooseFolder(); }} onScan={() => { setDetailKind(null); onScan(); }} onDecision={onDecision} />}
     </Dialog>
     <Dialog open={detailKind === "unassigned"} title="未归属材料" onClose={() => setDetailKind(null)}>
       <div className={styles.materialDialog}>

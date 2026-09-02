@@ -2,8 +2,10 @@
 
 import { useEffect } from "react";
 import type { FeedbackTaskClassDraft, FeedbackTaskDraftV2, FeedbackTaskGroupSnapshot } from "./feedback-task-state";
+import type { FeedbackGroupIntakeUnassigned } from "./feedback-task-types";
 
 const LEGACY_KEY = "student-track:feedback-task-draft:v2";
+const ACTIVE_SCOPE_KEY_PREFIX = `${LEGACY_KEY}:active`;
 
 export type FeedbackTaskDraftScope = {
   semesterId: string;
@@ -18,6 +20,11 @@ export function feedbackTaskDraftScopeKey(scope: FeedbackTaskDraftScope) {
     return `${LEGACY_KEY}:group:${semesterId}:${encodeURIComponent(scope.groupLessonId)}`;
   }
   return `${LEGACY_KEY}:single:${semesterId}:${encodeURIComponent(scope.classId)}:${encodeURIComponent(scope.sessionCode)}`;
+}
+
+function feedbackTaskDraftActiveScopeKey(scope: FeedbackTaskDraftScope) {
+  if (!scope.semesterId || !scope.classId || !scope.sessionCode) return "";
+  return `${ACTIVE_SCOPE_KEY_PREFIX}:${encodeURIComponent(scope.semesterId)}:${encodeURIComponent(scope.classId)}:${encodeURIComponent(scope.sessionCode)}`;
 }
 
 function parseEntries(value: unknown): FeedbackTaskClassDraft[] {
@@ -50,6 +57,19 @@ function parseEntries(value: unknown): FeedbackTaskClassDraft[] {
   });
 }
 
+function parseUnassignedSources(value: unknown): FeedbackGroupIntakeUnassigned[] {
+  if (!Array.isArray(value)) return [];
+  const validKinds = new Set(["assistant_roster", "step_classroom", "assessment_pdf", "ignored"]);
+  return value.filter((source): source is FeedbackGroupIntakeUnassigned => Boolean(
+    source
+    && typeof source === "object"
+    && typeof source.fileName === "string"
+    && typeof source.reason === "string"
+    && typeof source.kind === "string"
+    && validKinds.has(source.kind),
+  ));
+}
+
 function parseGroupSnapshot(value: unknown): FeedbackTaskGroupSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<FeedbackTaskGroupSnapshot>;
@@ -59,10 +79,14 @@ function parseGroupSnapshot(value: unknown): FeedbackTaskGroupSnapshot | null {
   return {
     groupLessonId: candidate.groupLessonId,
     activeSessionCode: active.sessionCode,
-    entries: entries.map((entry) => ({ ...entry, selected: true })),
+    entries,
+    plannedSessionCodes: Array.isArray(candidate.plannedSessionCodes)
+      ? [...new Set(candidate.plannedSessionCodes.filter((sessionCode): sessionCode is string => typeof sessionCode === "string"))]
+      : [],
     unassignedSourceCount: typeof candidate.unassignedSourceCount === "number" && candidate.unassignedSourceCount >= 0
       ? candidate.unassignedSourceCount
       : 0,
+    unassignedSources: parseUnassignedSources(candidate.unassignedSources),
   };
 }
 
@@ -85,6 +109,9 @@ export function parseFeedbackTaskDraft(value: unknown): FeedbackTaskDraftV2 | nu
     requestKey: typeof candidate.requestKey === "string" && candidate.requestKey.length >= 8
       ? candidate.requestKey
       : crypto.randomUUID(),
+    plannedSessionCodes: Array.isArray(candidate.plannedSessionCodes)
+      ? [...new Set(candidate.plannedSessionCodes.filter((sessionCode): sessionCode is string => typeof sessionCode === "string"))]
+      : [],
     classOverrides,
     studentOverrides,
     materialSelectionInitialized: typeof candidate.materialSelectionInitialized === "boolean" ? candidate.materialSelectionInitialized : true,
@@ -92,6 +119,7 @@ export function parseFeedbackTaskDraft(value: unknown): FeedbackTaskDraftV2 | nu
       ? Number(candidate.pendingMaterialLessonNumber)
       : null,
     unassignedSourceCount: typeof candidate.unassignedSourceCount === "number" ? candidate.unassignedSourceCount : 0,
+    unassignedSources: parseUnassignedSources(candidate.unassignedSources),
     groupSnapshot: parseGroupSnapshot(candidate.groupSnapshot),
   };
   if (candidate.mode !== "group" || !candidate.groupLessonId) {
@@ -110,7 +138,7 @@ export function parseFeedbackTaskDraft(value: unknown): FeedbackTaskDraftV2 | nu
     mode: "group",
     groupLessonId: candidate.groupLessonId,
     activeSessionCode: active.sessionCode,
-    entries: entries.map((entry) => ({ ...entry, selected: true })),
+    entries,
     groupSnapshot: null,
   } as FeedbackTaskDraftV2;
 }
@@ -128,7 +156,11 @@ function scopeIsReady(scope: FeedbackTaskDraftScope) {
 
 function draftMatchesScopedStorage(draft: FeedbackTaskDraftV2, scope: FeedbackTaskDraftScope) {
   if (scope.groupLessonId) {
-    return draft.mode === "group" && draft.groupLessonId === scope.groupLessonId;
+    return draft.mode === "group"
+      && draft.groupLessonId === scope.groupLessonId
+      && (!scope.classId || !scope.sessionCode || draft.entries.some((entry) => (
+        entry.classId === scope.classId && entry.sessionCode === scope.sessionCode
+      )));
   }
   const entry = activeDraftEntry(draft);
   return draft.mode === "single"
@@ -160,23 +192,106 @@ export function readFeedbackTaskDraft(scope?: FeedbackTaskDraftScope | null): Fe
   const legacyDraft = readStoredDraft(LEGACY_KEY);
   if (!legacyDraft || !legacyDraftMatchesCurrentEntry(legacyDraft, scope)) return null;
   try {
-    sessionStorage.setItem(scopedKey, JSON.stringify(legacyDraft));
+    writeFeedbackTaskDraft(scope, legacyDraft);
     sessionStorage.removeItem(LEGACY_KEY);
   } catch { /* The matching draft is still safe to restore for this tab. */ }
   return legacyDraft;
 }
 
-export function writeFeedbackTaskDraft(scope: FeedbackTaskDraftScope, draft: FeedbackTaskDraftV2) {
+export function readFeedbackTaskStartupDraft(
+  singleScope: FeedbackTaskDraftScope,
+  groupLessonId?: string | null,
+): { source: "single" | "group"; scope: FeedbackTaskDraftScope; draft: FeedbackTaskDraftV2 } | null {
+  const normalizedSingleScope = { ...singleScope, groupLessonId: null };
+  const groupScope = { ...normalizedSingleScope, groupLessonId };
+  const singleScopeKey = feedbackTaskDraftScopeKey(normalizedSingleScope);
+  const groupScopeKey = groupLessonId ? feedbackTaskDraftScopeKey(groupScope) : "";
+  const activeScopeKey = sessionStorage.getItem(feedbackTaskDraftActiveScopeKey(normalizedSingleScope));
+  if (activeScopeKey === singleScopeKey) {
+    const singleDraft = readFeedbackTaskDraft(normalizedSingleScope);
+    if (singleDraft) return { source: "single", scope: normalizedSingleScope, draft: singleDraft };
+  }
+  if (activeScopeKey === groupScopeKey) {
+    const groupDraft = readFeedbackTaskDraft(groupScope);
+    if (groupDraft) return { source: "group", scope: groupScope, draft: groupDraft };
+  }
+
+  const singleDraft = readFeedbackTaskDraft(normalizedSingleScope);
+  if (singleDraft) return { source: "single", scope: normalizedSingleScope, draft: singleDraft };
+  if (!groupLessonId) return null;
+  const groupDraft = readFeedbackTaskDraft(groupScope);
+  return groupDraft ? { source: "group", scope: groupScope, draft: groupDraft } : null;
+}
+
+export function writeFeedbackTaskDraft(
+  scope: FeedbackTaskDraftScope,
+  draft: FeedbackTaskDraftV2,
+  options: { activate?: boolean } = {},
+) {
   if (!scopeIsReady(scope) || !draftMatchesScopedStorage(draft, scope)) return false;
-  sessionStorage.setItem(feedbackTaskDraftScopeKey(scope), JSON.stringify(draft));
+  const scopedKey = feedbackTaskDraftScopeKey(scope);
+  const previous = readStoredDraft(scopedKey);
+  sessionStorage.setItem(scopedKey, JSON.stringify(draft));
+  if (previous?.mode === "group") {
+    const currentMembers = new Set(draft.mode === "group" ? draft.entries.map((entry) => `${entry.classId}\u0000${entry.sessionCode}`) : []);
+    for (const entry of previous.entries) {
+      if (currentMembers.has(`${entry.classId}\u0000${entry.sessionCode}`)) continue;
+      const activeScopeKey = feedbackTaskDraftActiveScopeKey({ ...scope, classId: entry.classId, sessionCode: entry.sessionCode });
+      if (activeScopeKey && sessionStorage.getItem(activeScopeKey) === scopedKey) sessionStorage.removeItem(activeScopeKey);
+    }
+  }
+  if (options.activate !== false) {
+    const pointerScopes = draft.mode === "group"
+      ? draft.entries.map((entry) => ({ ...scope, classId: entry.classId, sessionCode: entry.sessionCode }))
+      : [scope];
+    for (const pointerScope of pointerScopes) {
+      const activeScopeKey = feedbackTaskDraftActiveScopeKey(pointerScope);
+      if (activeScopeKey) sessionStorage.setItem(activeScopeKey, scopedKey);
+    }
+  }
   return true;
 }
 
 export function clearFeedbackTaskDraft(scope?: FeedbackTaskDraftScope | null) {
   if (!scope || !scopeIsReady(scope)) return;
-  sessionStorage.removeItem(feedbackTaskDraftScopeKey(scope));
+  const scopedKey = feedbackTaskDraftScopeKey(scope);
+  const scopedDraft = readStoredDraft(scopedKey);
+  sessionStorage.removeItem(scopedKey);
+  const pointerScopes = scopedDraft?.mode === "group"
+    ? scopedDraft.entries.map((entry) => ({ ...scope, classId: entry.classId, sessionCode: entry.sessionCode }))
+    : [scope];
+  for (const pointerScope of pointerScopes) {
+    const activeScopeKey = feedbackTaskDraftActiveScopeKey(pointerScope);
+    if (activeScopeKey && sessionStorage.getItem(activeScopeKey) === scopedKey) sessionStorage.removeItem(activeScopeKey);
+  }
   const legacyDraft = readStoredDraft(LEGACY_KEY);
   if (legacyDraft && legacyDraftMatchesCurrentEntry(legacyDraft, scope)) sessionStorage.removeItem(LEGACY_KEY);
+}
+
+export function syncFeedbackTaskSingleDraftGroupSnapshots(input: {
+  semesterId: string;
+  groupLessonId: string;
+  entries: Array<Pick<FeedbackTaskClassDraft, "classId" | "sessionCode">>;
+  snapshot: FeedbackTaskGroupSnapshot | null;
+  clearSessionCodes?: Iterable<string>;
+}) {
+  const clearSessionCodes = new Set(input.clearSessionCodes ?? []);
+  for (const entry of input.entries) {
+    const scope: FeedbackTaskDraftScope = {
+      semesterId: input.semesterId,
+      classId: entry.classId,
+      sessionCode: entry.sessionCode,
+    };
+    if (clearSessionCodes.has(entry.sessionCode)) {
+      clearFeedbackTaskDraft(scope);
+      continue;
+    }
+    const key = feedbackTaskDraftScopeKey(scope);
+    const singleDraft = readStoredDraft(key);
+    if (singleDraft?.mode !== "single") continue;
+    if (singleDraft.groupSnapshot && singleDraft.groupSnapshot.groupLessonId !== input.groupLessonId) continue;
+    sessionStorage.setItem(key, JSON.stringify({ ...singleDraft, groupSnapshot: input.snapshot }));
+  }
 }
 
 export function useFeedbackTaskDraftPersistence(

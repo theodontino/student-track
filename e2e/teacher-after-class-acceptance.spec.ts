@@ -73,11 +73,11 @@ test.describe("教师纯页面课后验收", () => {
     const teacherTexts = new Map<string, string>();
     let planId = "";
 
-    await test.step("材料审核：投料、处理异常并一次写入事实", async () => {
+    await test.step("录入：投料、处理异常并一次写入事实", async () => {
       await page.goto(`/feedback?semesterId=${fixture.semester.id}&class=${encodeURIComponent(klass.name)}&sessionCode=${session.code}`);
       await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
-      await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("材料审核");
-      await expect(page.getByRole("button", { name: "继续添加", exact: true })).toBeEnabled();
+      await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("录入");
+      await expect(page.getByRole("button", { name: "添加文件", exact: true })).toBeEnabled();
 
       await page.locator('input[type="file"]').first().setInputFiles([
         { name: "test-teacher-roster.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: assistantRoster() },
@@ -92,18 +92,18 @@ test.describe("教师纯页面课后验收", () => {
       await page.getByRole("button", { name: "关闭" }).click();
       await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
       await expect(page.getByText(`班级组第 ${lesson.sequence} 讲`)).toBeVisible();
-      await page.getByRole("button", { name: "确认材料并进入下一步" }).click();
+      await page.getByRole("button", { name: "确认录入并进入规划" }).click();
       await expect(page.getByText("本班默认反馈计划")).toBeVisible();
       await expect(page).not.toHaveURL(/planId=|batchId=/);
     });
 
-    await test.step("学生与计划：设置默认计划并在刷新后留在第二页", async () => {
+    await test.step("规划：设置默认计划并在刷新后留在第二步", async () => {
       await page.getByLabel("生成方式").selectOption("fast");
       await page.getByRole("button", { name: "详细", exact: true }).click();
       await page.getByRole("button", { name: "专业", exact: true }).click();
       await page.getByLabel("总体要求").first().fill(outputRequirement);
       await page.reload();
-      await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("学生与计划");
+      await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("规划");
       await expect(page.getByText("本班默认反馈计划")).toBeVisible();
       await expect(page.getByLabel("生成方式")).toHaveValue("fast");
       await expect(page.getByLabel("总体要求").first()).toHaveValue(outputRequirement);
