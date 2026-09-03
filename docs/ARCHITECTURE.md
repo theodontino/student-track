@@ -19,7 +19,8 @@ Student Track 是单人维护的本地优先课后反馈自动化工具。架构
 `%LOCALAPPDATA%\Student Track\` 的同级子目录。SQLite 继续只由 `DATABASE_URL` 定位，跨平台脚本必须
 使用标准 `file:` URL，而不是拼接带反斜杠的字符串。测试数据库位于系统临时目录；Windows 的隔离
 E2E 应用用目录 junction 复用 `node_modules`，不接触真实运行目录。
-Windows 发行只提供 Core，准备和启动脚本不探测、不启动也不调用 WCG；WCG 只属于 macOS Full 的仓库外集成。
+Windows 发行只提供 Core，准备和启动脚本不探测、不启动也不调用本地 FunASR、通义听悟、阿里云 ASR
+或 WCG；全部录音转写与 WCG 只属于 macOS Full。
 
 ## 前端模块边界
 

@@ -57,7 +57,7 @@ describe("Windows Core PowerShell entrypoints", () => {
   });
 
   it("does not probe, start, or call Full-only transcription and WCG tools", () => {
-    expect(allScripts).not.toMatch(/funasr|diarize|wecom|wcg/i);
+    expect(allScripts).not.toMatch(/funasr|diarize|tingwu|aliyun|wecom|wcg/i);
   });
 
   it("runs npm steps through Node instead of spawning the Windows cmd shim", () => {

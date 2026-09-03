@@ -55,7 +55,7 @@ jobs:
           architecture: x64
           cache: npm
       - name: Validate Windows PowerShell entrypoints
-        shell: pwsh
+        shell: powershell
         run: |
           $failed = $false
           Get-ChildItem scripts/windows/*.ps1 | ForEach-Object {
