@@ -1,12 +1,10 @@
 import { createClient } from "@libsql/client";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import ts from "typescript";
-import { sqliteFileUrl } from "../src/lib/sqlite-file-url";
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,9 +56,7 @@ async function compileSchema(): Promise<TableInfo[]> {
     "--script",
   ], { cwd: root, env: { ...process.env, NO_COLOR: "1" }, maxBuffer: 10 * 1024 * 1024 });
 
-  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "student-track-docs-"));
-  const databasePath = resolve(temporaryRoot, "schema.db");
-  const client = createClient({ url: sqliteFileUrl(databasePath) });
+  const client = createClient({ url: ":memory:" });
   try {
     await client.executeMultiple(sql);
     const tableRows = await client.execute(
@@ -102,7 +98,6 @@ async function compileSchema(): Promise<TableInfo[]> {
     return tables;
   } finally {
     client.close();
-    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
