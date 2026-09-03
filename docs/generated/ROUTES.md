@@ -17,6 +17,7 @@
 | `/api/export` | `POST` |
 | `/api/feedback/assessment-pdf` | `POST` |
 | `/api/feedback/assistant-roster` | `POST` |
+| `/api/feedback/demo/ab-test` | `GET`, `POST` |
 | `/api/feedback/intake/group-scan` | `POST` |
 | `/api/feedback/intake/group-upload` | `POST` |
 | `/api/feedback/intake/runs/[id]` | `GET`, `POST` |
