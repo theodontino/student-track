@@ -181,6 +181,9 @@ jobs:
       - run: npx playwright install chromium
       - name: Run Core browser contract
         run: node --import tsx scripts/run-isolated-tests.ts playwright --fixture=core --project=chromium e2e/core-edition.spec.ts
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
       - name: Upload Windows Core verification logs
         if: always()
         uses: actions/upload-artifact@v7
