@@ -2,8 +2,8 @@ import { createClient } from "@libsql/client";
 import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { sqliteFileUrl } from "@/lib/sqlite-file-url";
 import {
   createDatabaseBackup,
   resolveDatabasePath,
@@ -15,7 +15,7 @@ import {
 let testRoot = "";
 
 async function createTestDatabase(databasePath: string) {
-  const client = createClient({ url: pathToFileURL(databasePath).href });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   for (const table of [
     "Class",
     "Student",
@@ -37,9 +37,14 @@ afterEach(async () => {
 });
 
 describe("database backup and restore", () => {
-  it("resolves standards-compliant SQLite file URLs", () => {
+  it("resolves absolute SQLite file connection strings with spaces", () => {
     const databasePath = resolve(tmpdir(), "Student Track", "database", "student-track.db");
-    expect(resolveDatabasePath(pathToFileURL(databasePath).href)).toBe(databasePath);
+    const databaseUrl = sqliteFileUrl(databasePath);
+
+    expect(databaseUrl).toBe(`file:${databasePath.replaceAll("\\", "/")}`);
+    expect(databaseUrl).toContain("Student Track");
+    expect(databaseUrl).not.toContain("%20");
+    expect(resolveDatabasePath(databaseUrl)).toBe(databasePath);
   });
 
   it("creates, verifies, and restores a consistent snapshot", async () => {
@@ -53,7 +58,7 @@ describe("database backup and restore", () => {
       verification: { integrity: "ok", rowCounts: { Student: 1 } },
     });
 
-    const client = createClient({ url: pathToFileURL(databasePath).href });
+    const client = createClient({ url: sqliteFileUrl(databasePath) });
     await client.execute("INSERT INTO Student (id) VALUES ('student-2')");
     client.close();
 

@@ -10,8 +10,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { resolveStudentTrackArchiveRoot } from "@/lib/runtime-paths";
+import { sqliteFileUrl } from "@/lib/sqlite-file-url";
 
 const REQUIRED_TABLES = [
   "Class",
@@ -47,7 +48,7 @@ export interface DatabaseBackupResult {
 }
 
 function databaseUrlForPath(databasePath: string) {
-  return pathToFileURL(resolve(databasePath)).href;
+  return sqliteFileUrl(databasePath);
 }
 
 function escapeSqlString(value: string) {

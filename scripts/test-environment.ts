@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { sqliteFileUrl } from "../src/lib/sqlite-file-url";
 
 export const TEST_TEMP_PREFIX = "student-track-test-";
 
@@ -73,7 +74,7 @@ export function createIsolatedTestEnvironment(): IsolatedTestEnvironment {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), TEST_TEMP_PREFIX));
   assertSafeTestDirectory(rootDir);
   const databasePath = path.join(rootDir, "test.db");
-  const databaseUrl = pathToFileURL(databasePath).href;
+  const databaseUrl = sqliteFileUrl(databasePath);
   assertSafeTestDatabaseUrl(databaseUrl);
 
   const env: NodeJS.ProcessEnv = {

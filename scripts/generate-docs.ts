@@ -3,9 +3,10 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import ts from "typescript";
+import { sqliteFileUrl } from "../src/lib/sqlite-file-url";
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -59,7 +60,7 @@ async function compileSchema(): Promise<TableInfo[]> {
 
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "student-track-docs-"));
   const databasePath = resolve(temporaryRoot, "schema.db");
-  const client = createClient({ url: pathToFileURL(databasePath).href });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     await client.executeMultiple(sql);
     const tableRows = await client.execute(
