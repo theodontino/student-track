@@ -1,10 +1,20 @@
 import "dotenv/config";
 
 async function main() {
-  const { purgeExpiredRecycleBin } = await import("../src/services/academic-scope-recycle-service");
-  const result = await purgeExpiredRecycleBin();
-  if (result.purgedSemesters || result.purgedClasses) {
-    console.log(`回收站清理完成：${result.purgedSemesters} 个学期，${result.purgedClasses} 个班级`);
+  const [
+    { purgeExpiredRecycleBin },
+    { prisma },
+  ] = await Promise.all([
+    import("../src/services/academic-scope-recycle-service"),
+    import("../src/lib/prisma"),
+  ]);
+  try {
+    const result = await purgeExpiredRecycleBin();
+    if (result.purgedSemesters || result.purgedClasses) {
+      console.log(`回收站清理完成：${result.purgedSemesters} 个学期，${result.purgedClasses} 个班级`);
+    }
+  } finally {
+    await prisma.$disconnect();
   }
 }
 
