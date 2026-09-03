@@ -23,11 +23,7 @@ function Assert-StudentTrackCorePrerequisites {
         throw "仅支持 Windows 10/11 x64；当前系统为 $($windows.Caption) $($windows.OSArchitecture)。"
     }
     $supportedClient = $windows.Caption -match "Windows (10|11)"
-    $githubServerTest = (
-        $AllowGitHubActionsServerForCI
-        -and $env:GITHUB_ACTIONS -eq "true"
-        -and $windows.Caption -match "Windows Server"
-    )
+    $githubServerTest = $AllowGitHubActionsServerForCI -and $env:GITHUB_ACTIONS -eq "true" -and $windows.Caption -match "Windows Server"
     if (-not $supportedClient -and -not $githubServerTest) {
         throw "仅支持 Windows 10/11 x64；当前系统为 $($windows.Caption) $($windows.OSArchitecture)。"
     }
