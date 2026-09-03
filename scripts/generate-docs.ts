@@ -203,7 +203,9 @@ async function renderRoutesDoc() {
 async function syncFile(path: string, content: string) {
   if (checkOnly) {
     const existing = await readFile(path, "utf8").catch(() => "");
-    if (existing !== content) throw new Error(`${relative(root, path)} 已过期，请运行 npm run docs:generate`);
+    if (existing.replaceAll("\r\n", "\n") !== content.replaceAll("\r\n", "\n")) {
+      throw new Error(`${relative(root, path)} 已过期，请运行 npm run docs:generate`);
+    }
     return;
   }
   await mkdir(dirname(path), { recursive: true });
