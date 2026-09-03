@@ -99,8 +99,7 @@ jobs:
             throw "准备脚本改写了既有 LLM 设置。"
           }
 
-          $databaseUrl = ([System.Uri]::new([System.IO.Path]::GetFullPath($databasePath))).AbsoluteUri
-          "DATABASE_URL=$databaseUrl" >> $env:GITHUB_ENV
+          "DATABASE_URL=$($env:DATABASE_URL)" >> $env:GITHUB_ENV
           "STUDENT_TRACK_RUNTIME_ROOT=$runtimeRoot" >> $env:GITHUB_ENV
           "STUDENT_TRACK_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
           "STUDENT_TRACK_ARCHIVES_ROOT=$(Join-Path $runtimeRoot 'archives')" >> $env:GITHUB_ENV

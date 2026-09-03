@@ -54,7 +54,8 @@ function ConvertTo-StudentTrackFileUrl {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $absolutePath = [System.IO.Path]::GetFullPath($Path)
-    return ([System.Uri]::new($absolutePath)).AbsoluteUri
+    $normalizedPath = $absolutePath.Replace('\', '/')
+    return "file:$normalizedPath"
 }
 
 function Initialize-StudentTrackCoreEnvironment {

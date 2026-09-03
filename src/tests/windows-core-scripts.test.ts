@@ -6,6 +6,7 @@ const scriptRoot = resolve(process.cwd(), "scripts", "windows");
 const common = readFileSync(resolve(scriptRoot, "StudentTrack-Core.Common.ps1"), "utf8");
 const prepare = readFileSync(resolve(scriptRoot, "Prepare-StudentTrackCore.ps1"), "utf8");
 const start = readFileSync(resolve(scriptRoot, "Start-StudentTrackCore.ps1"), "utf8");
+const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
 const allScripts = `${common}\n${prepare}\n${start}`;
 
 describe("Windows Core PowerShell entrypoints", () => {
@@ -26,6 +27,10 @@ describe("Windows Core PowerShell entrypoints", () => {
       expect(common).toContain(`Join-Path $runtimeRoot "${directory}"`);
     }
     expect(common).toContain("ConvertTo-StudentTrackFileUrl");
+    expect(common).toContain("$normalizedPath = $absolutePath.Replace('\\', '/')");
+    expect(common).toContain('return "file:$normalizedPath"');
+    expect(common).not.toContain("[System.Uri]::new");
+    expect(ciWorkflow).toContain('"DATABASE_URL=$($env:DATABASE_URL)"');
     expect(common).not.toMatch(/\$env:LLM_SETTINGS_PATH\s*=/i);
   });
 
