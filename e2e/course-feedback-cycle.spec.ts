@@ -163,6 +163,7 @@ async function startPlan(request: APIRequestContext, planId: string) {
 
 async function uploadClassMaterials(page: Page, classIndex: 0 | 1) {
   const className = fixture.classes[classIndex].name;
+  await expect(page.getByRole("button", { name: /^(添加文件|继续添加)$/ })).toBeEnabled({ timeout: 15_000 });
   const uploadFinished = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && ["/api/feedback/intake/upload", "/api/feedback/intake/group-upload"].includes(new URL(response.url()).pathname)

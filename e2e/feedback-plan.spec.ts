@@ -26,6 +26,7 @@ async function openTask(page: Page, className: string = TEST_FIXTURE.class.name,
 }
 
 async function uploadCurrent(page: Page, fileName: string, contents: string) {
+  await expect(page.getByRole("button", { name: /^(添加文件|继续添加)$/ })).toBeEnabled({ timeout: 15_000 });
   const uploadFinished = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && new URL(response.url()).pathname === "/api/feedback/intake/upload"
