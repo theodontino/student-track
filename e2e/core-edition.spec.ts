@@ -41,6 +41,18 @@ test.describe("Student Track Core edition", () => {
         await expect(item.locator("a")).toHaveCount(0);
       }
       await expect(sidebar.getByRole("link", { name: "手动评分" })).toBeVisible();
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole("button", { name: "打开导航" }).click();
+      const drawer = page.getByRole("dialog", { name: "主导航抽屉" });
+      for (const label of ["录音转写", "企微家校"]) {
+        const item = drawer.locator('.app-nav__disabled[aria-disabled="true"]', { hasText: label });
+        await expect(item).toBeVisible();
+        await expect(item.getByText("Full 版功能", { exact: true })).toBeVisible();
+        await expect(item.locator("a")).toHaveCount(0);
+      }
+      await page.getByRole("button", { name: "关闭导航" }).click();
+      await page.setViewportSize({ width: 1280, height: 720 });
     });
 
     await test.step("直达页说明不可用，受限 API 统一返回 404", async () => {
@@ -64,6 +76,27 @@ test.describe("Student Track Core edition", () => {
         expect(response.status(), path).toBe(404);
         expect(await response.json()).toEqual(unavailablePayload);
       }
+    });
+
+    await test.step("高级工具与系统配置没有绕行入口，普通 PDF API 仍可访问", async () => {
+      await page.goto("/feedback/tools?tool=manual-facts");
+      await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "录音转写" })).toHaveCount(0);
+
+      await page.goto("/system/configuration");
+      const systemNav = page.getByRole("navigation", { name: "系统中心" });
+      await expect(systemNav.getByRole("link", { name: "集成与工具" })).toHaveCount(0);
+      await expect(page.getByText("企微提取模型", { exact: true })).toHaveCount(0);
+
+      await page.goto("/system/about");
+      await expect(page.getByText("Core 版", { exact: true })).toBeVisible();
+      await expect(page.getByText(/Core 不探测、不启动也不调用 FunASR、通义听悟、阿里云 ASR 或 WCG/)).toBeVisible();
+
+      const pdfResponse = await request.post("/api/feedback/assessment-pdf", {
+        multipart: { sessionCode: "" },
+      });
+      expect(pdfResponse.status()).toBe(400);
+      expect(await pdfResponse.json()).toEqual({ error: "请先选择课次" });
     });
 
     let semesterId = "";
