@@ -209,6 +209,51 @@ describe("feedback intake file preparation", () => {
     await prisma.feedbackIntakeRun.delete({ where: { id: run.id } });
   });
 
+  it("does not mutate a known intake run after its class moves to the recycle bin", async () => {
+    const marker = crypto.randomUUID();
+    const semesterId = `recycled-intake-semester-${marker}`;
+    const classId = `recycled-intake-class-${marker}`;
+    const sessionCode = `recycled-intake-session-${marker}`;
+    await prisma.semester.create({
+      data: { id: semesterId, name: `回收投料测试-${marker}`, startDate: "2097-01-01", endDate: "2097-12-31" },
+    });
+    await prisma.class.create({
+      data: { id: classId, semesterId, code: `RECYCLED-${marker}`, name: "回收投料测试班" },
+    });
+    await prisma.classSession.create({
+      data: { code: sessionCode, date: "2097-07-08", semesterNumber: 1, semesterId, classId },
+    });
+    const appliedSummary = JSON.stringify({
+      scopeConfirmation: { classId, sessionCode, studentIds: [], confirmedAt: "2097-07-08T10:00:00.000Z" },
+    });
+    const run = await prisma.feedbackIntakeRun.create({
+      data: {
+        sessionCode,
+        sourceFingerprint: `RECYCLED-INTAKE-${marker}`,
+        sourceManifest: "[]",
+        status: "needs_review",
+        issues: "[]",
+        appliedSummary,
+      },
+    });
+    await prisma.class.update({ where: { id: classId }, data: { deletedAt: new Date() } });
+
+    try {
+      await expect(resolveFeedbackIntakeRun(run.id, { action: "clear_scope" }, prisma)).rejects.toMatchObject({
+        status: 409,
+        code: "scope_in_recycle_bin",
+      });
+      await expect(prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } }))
+        .resolves.toMatchObject({ appliedSummary });
+    } finally {
+      await prisma.class.update({ where: { id: classId }, data: { deletedAt: null } });
+      await prisma.feedbackIntakeRun.delete({ where: { id: run.id } });
+      await prisma.classSession.delete({ where: { code: sessionCode } });
+      await prisma.class.delete({ where: { id: classId } });
+      await prisma.semester.delete({ where: { id: semesterId } });
+    }
+  });
+
   it("classifies supported sources and ignores unrelated files", () => {
     expect(classifyFeedbackIntakeFile("助教课堂.xlsx")).toBe("assistant_roster");
     expect(classifyFeedbackIntakeFile("step-classroom.txt")).toBe("step_classroom");

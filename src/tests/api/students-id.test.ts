@@ -52,6 +52,90 @@ describe("/api/students/[id]", () => {
     expect(res.status).toBe(404);
   });
 
+  it("does not expose enrollment or facts from a recycled class", async () => {
+    const { GET } = await import("@/app/api/students/[id]/route");
+    const klass = await prisma.class.create({
+      data: { id: "test-student-detail-recycled-class", semesterId: "test-semester-1", code: "RECYCLED-DETAIL", name: "回收班" },
+    });
+    const student = await prisma.student.create({
+      data: {
+        id: "test-student-detail-recycled-student",
+        name: "回收班合成学生",
+        studentId: "TEST-RECYCLED-DETAIL-STUDENT",
+        gender: "女",
+        enrollments: { create: { semesterId: "test-semester-1", classId: klass.id } },
+      },
+    });
+    const session = await prisma.classSession.create({
+      data: { id: "test-student-detail-recycled-session", code: "2026063099", semesterId: "test-semester-1", semesterNumber: 99, date: "2026-06-30", classId: klass.id },
+    });
+    await prisma.attendance.create({ data: { sessionId: session.id, studentId: student.id, present: true } });
+    await prisma.sessionMetric.create({ data: { sessionId: session.id, studentId: student.id, date: session.date, scoreA: 5, scoreB: 5, scoreC: 5, scoreD: 5, operator: "teacher" } });
+    await prisma.event.create({ data: { sessionId: session.id, studentId: student.id, type: "课堂表现", description: "不应显示", rawText: "合成" } });
+    await prisma.communication.create({ data: { sessionId: session.id, studentId: student.id, target: "母亲", summary: "不应显示" } });
+    await prisma.class.update({ where: { id: klass.id }, data: { deletedAt: new Date() } });
+
+    try {
+      const response = await GET(
+        new NextRequest(`http://localhost:3000/api/students/${student.id}?semesterSummary=true&semesterId=test-semester-1`),
+        { params: Promise.resolve({ id: student.id }) },
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({ classId: null, classCode: null, sessionMetrics: [], events: [], communications: [], attendances: [] });
+    } finally {
+      await prisma.class.update({ where: { id: klass.id }, data: { deletedAt: null } });
+      await prisma.student.delete({ where: { id: student.id } });
+      await prisma.classSession.delete({ where: { id: session.id } });
+      await prisma.class.delete({ where: { id: klass.id } });
+    }
+  });
+
+  it("does not expose score history snapshots from a recycled class", async () => {
+    const { GET } = await import("@/app/api/students/[id]/history/route");
+    const [activeClass, recycledClass] = await Promise.all([
+      prisma.class.create({
+        data: { semesterId: "test-semester-1", code: "TEST-HISTORY-ACTIVE", name: "历史可用班" },
+      }),
+      prisma.class.create({
+        data: { semesterId: "test-semester-1", code: "TEST-HISTORY-RECYCLED", name: "历史回收班" },
+      }),
+    ]);
+    const [activeSession, recycledSession] = await Promise.all([
+      prisma.classSession.create({
+        data: { semesterId: "test-semester-1", classId: activeClass.id, code: "2026063097", semesterNumber: 97, date: "2026-06-29" },
+      }),
+      prisma.classSession.create({
+        data: { semesterId: "test-semester-1", classId: recycledClass.id, code: "2026063098", semesterNumber: 98, date: "2026-06-30" },
+      }),
+    ]);
+    const [visibleHistory, recycledHistory] = await Promise.all([
+      prisma.sessionMetricHistory.create({
+        data: { metricId: "test-history-active-metric", studentId: testStudent.id, sessionId: activeSession.id, date: activeSession.date, scoreA: 4, scoreB: 4, scoreC: 4, scoreD: 5, operator: "teacher", changeType: "update" },
+      }),
+      prisma.sessionMetricHistory.create({
+        data: { metricId: "test-history-recycled-metric", studentId: testStudent.id, sessionId: recycledSession.id, date: recycledSession.date, scoreA: 1, scoreB: 1, scoreC: 1, scoreD: 1, operator: "teacher", changeType: "clear" },
+      }),
+    ]);
+    await prisma.class.update({ where: { id: recycledClass.id }, data: { deletedAt: new Date() } });
+
+    try {
+      const response = await GET(
+        new NextRequest(`http://localhost:3000/api/students/${testStudent.id}/history`),
+        { params: Promise.resolve({ id: testStudent.id }) },
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json() as Array<{ id: string }>;
+      expect(body.map((item) => item.id)).toContain(visibleHistory.id);
+      expect(body.map((item) => item.id)).not.toContain(recycledHistory.id);
+    } finally {
+      await prisma.sessionMetricHistory.deleteMany({ where: { id: { in: [visibleHistory.id, recycledHistory.id] } } });
+      await prisma.class.update({ where: { id: recycledClass.id }, data: { deletedAt: null } });
+      await prisma.classSession.deleteMany({ where: { id: { in: [activeSession.id, recycledSession.id] } } });
+      await prisma.class.deleteMany({ where: { id: { in: [activeClass.id, recycledClass.id] } } });
+    }
+  });
+
   it("GET nonexistent id returns 404", async () => {
     const { GET } = await import("@/app/api/students/[id]/route");
     const req = new NextRequest("http://localhost:3000/api/students/nonexistent");

@@ -224,6 +224,7 @@ export async function listSemesterStudentIds(
   const enrollments = await db.studentClassEnrollment.findMany({
     where: {
       semesterId: input.semesterId,
+      class: { deletedAt: null, semester: { deletedAt: null } },
       ...(input.classId ? { classId: input.classId } : {}),
       ...(input.activeOnly ? { rosterStatus: "ACTIVE" } : {}),
     },
@@ -243,6 +244,7 @@ export function semesterStudentWhere(input: {
     enrollments: {
       some: {
         semesterId: input.semesterId,
+        class: { deletedAt: null, semester: { deletedAt: null } },
         ...(input.classId ? { classId: input.classId } : {}),
         ...(input.activeOnly ? { rosterStatus: "ACTIVE" } : {}),
       },

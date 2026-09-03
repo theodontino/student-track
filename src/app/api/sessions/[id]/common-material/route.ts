@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { setSessionCommonMaterial } from "@/services/common-material-service";
 import { ServiceError } from "@/services/service-error";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -13,6 +14,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     }
     return NextResponse.json(await setSessionCommonMaterial(id, lessonNumber, prisma));
   } catch (error) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     const status = error instanceof ServiceError ? error.status : 400;
     return NextResponse.json({ error: error instanceof Error ? error.message : "保存课次公共材料失败" }, { status });
   }

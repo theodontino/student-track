@@ -5,7 +5,7 @@ import { Button, ConfirmDialog, Dialog, EmptyState, Input, Section, Select, Stat
 import { requestJson } from "@/lib/api-client";
 import {
   lessonMaterialHasContent,
-  parseLessonFeedbackMaterial,
+  mergeEditedLessonMaterial,
   type LessonFeedbackMaterial,
 } from "@/lib/feedback-materials";
 
@@ -50,6 +50,7 @@ export function ClassGroupPanel({ semesterId, classes, sessions }: { semesterId:
   const [linkLessonId, setLinkLessonId] = useState("");
   const [deletingLesson, setDeletingLesson] = useState<GroupLesson | null>(null);
   const [deletingGroup, setDeletingGroup] = useState<ClassGroup | null>(null);
+  const [reapplyTarget, setReapplyTarget] = useState<GroupLesson | null>(null);
   const [saving, setSaving] = useState(false);
   const loadVersionRef = useRef(0);
 
@@ -133,6 +134,34 @@ export function ClassGroupPanel({ semesterId, classes, sessions }: { semesterId:
     setLessonDialog(true);
   }
 
+  async function reapplySemesterMaterial(lesson: GroupLesson, replaceExisting: boolean) {
+    setSaving(true);
+    setError("");
+    try {
+      await requestJson(`/api/group-lessons/${encodeURIComponent(lesson.id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reapply_semester_material", replaceExisting }),
+      });
+      setReapplyTarget(null);
+      setLessonDialog(false);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "重新套用同号材料失败");
+      setReapplyTarget(null);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function prepareReapplySemesterMaterial(lesson: GroupLesson) {
+    if (lessonMaterialHasContent(lesson.material)) {
+      setReapplyTarget(lesson);
+      return;
+    }
+    void reapplySemesterMaterial(lesson, false);
+  }
+
   async function saveLesson(event: React.FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -147,7 +176,7 @@ export function ClassGroupPanel({ semesterId, classes, sessions }: { semesterId:
         body: JSON.stringify({
           title: lessonTitle,
           sequence: lessonSequence,
-          material: parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw),
+          material: mergeEditedLessonMaterial(editingLesson?.material, groupFeedbackRaw, assessmentBriefRaw),
         }),
       });
       setLessonDialog(false);
@@ -394,8 +423,9 @@ export function ClassGroupPanel({ semesterId, classes, sessions }: { semesterId:
           <summary>课程公共材料（可稍后填写）</summary>
           <div><label>班级公共反馈或课程材料<Textarea rows={7} value={groupFeedbackRaw} onChange={(event) => setGroupFeedbackRaw(event.target.value)} /></label><label>统一测评说明<Textarea rows={5} value={assessmentBriefRaw} onChange={(event) => setAssessmentBriefRaw(event.target.value)} /></label></div>
         </details>
+        {editingLesson?.material.semesterScriptSource && <p className="dialog-form__hint">当前草稿来自学期公共材料第 {editingLesson.material.semesterScriptSource.lessonNumber} 课；重新套用只更新这份未确认草稿。</p>}
         <p className="dialog-form__hint">建立讲次不会合并各班数据。公共材料只有确认后，反馈任务才会复用。</p>
-        <div className="dialog-form__actions"><Button variant="secondary" onClick={() => setLessonDialog(false)}>取消</Button><Button type="submit" disabled={saving}>{saving ? "保存中…" : editingLesson ? "保存草稿" : "建立讲次"}</Button></div>
+        <div className="dialog-form__actions">{editingLesson && <Button variant="secondary" onClick={() => prepareReapplySemesterMaterial(editingLesson)} disabled={saving}>重新套用同号材料</Button>}<Button variant="secondary" onClick={() => setLessonDialog(false)}>取消</Button><Button type="submit" disabled={saving}>{saving ? "保存中…" : editingLesson ? "保存草稿" : "建立讲次"}</Button></div>
       </form>
     </Dialog>
 
@@ -416,6 +446,16 @@ export function ClassGroupPanel({ semesterId, classes, sessions }: { semesterId:
       </form>
     </Dialog>
 
+    <ConfirmDialog
+      open={Boolean(reapplyTarget)}
+      title="重新套用同号材料"
+      description={<>“第 {reapplyTarget?.sequence} 讲 · {reapplyTarget?.title}”已有草稿内容。确认后会用学期公共材料库中的同号材料整体替换当前草稿；确认修订、真实课次快照和反馈计划快照都不会改变。</>}
+      confirmLabel="确认替换当前草稿"
+      danger
+      busy={saving}
+      onClose={() => { if (!saving) setReapplyTarget(null); }}
+      onConfirm={() => { if (reapplyTarget) void reapplySemesterMaterial(reapplyTarget, true); }}
+    />
     <ConfirmDialog
       open={Boolean(deletingLesson)}
       title="删除空讲次"

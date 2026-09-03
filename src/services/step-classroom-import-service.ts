@@ -4,6 +4,7 @@ import { DraftStructuredResultSchema } from "@/lib/contracts/classroom-parse";
 import type { DraftStructuredResult } from "@/lib/types";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 import {
   detectStepClassroomExportVersion,
   STEP_CLASSROOM_HEADER_V1,
@@ -397,6 +398,7 @@ export async function createStepClassroomDraft(input: {
     select: { id: true, code: true, date: true, semesterId: true, classId: true, class: { select: { code: true } } },
   });
   if (!session) throw new StepClassroomImportError("目标课次不存在", 404);
+  await assertSessionAvailable(session.id, db);
   if (!session.classId || !session.class) throw new StepClassroomImportError("目标课次未关联班级");
   if (session.class.code !== envelope.payload.class.code) throw new StepClassroomImportError("STEP 班号与目标课次班级不一致", 409);
 

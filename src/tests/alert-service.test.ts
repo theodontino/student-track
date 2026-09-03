@@ -139,4 +139,19 @@ describe("semester-isolated alert dashboard", () => {
     const dashboard = await getAlertDashboard({ now: new Date("2100-01-01T12:00:00.000Z") });
     expect(dashboard.semester?.id).toBe(currentSemesterId);
   });
+
+  it("does not expose a recycled class through the dashboard", async () => {
+    await prisma.class.update({ where: { id: currentClassId }, data: { deletedAt: new Date() } });
+    try {
+      const dashboard = await getAlertDashboard({
+        semesterId: currentSemesterId,
+        now: new Date("2099-07-15T12:00:00.000Z"),
+      });
+      expect(dashboard.classOverview).toEqual([]);
+      expect(dashboard.totalStudents).toBe(0);
+      expect(dashboard.studentAlerts).toEqual([]);
+    } finally {
+      await prisma.class.update({ where: { id: currentClassId }, data: { deletedAt: null } });
+    }
+  });
 });

@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import ts from "typescript";
 
@@ -45,9 +45,10 @@ function quoteIdentifier(value: string) {
 }
 
 async function compileSchema(): Promise<TableInfo[]> {
-  const prismaBin = resolve(root, "node_modules/.bin/prisma");
+  const prismaCli = resolve(root, "node_modules/prisma/build/index.js");
   const schemaPath = resolve(root, "prisma/schema.prisma");
-  const { stdout: sql } = await execFileAsync(prismaBin, [
+  const { stdout: sql } = await execFileAsync(process.execPath, [
+    prismaCli,
     "migrate",
     "diff",
     "--from-empty",
@@ -58,7 +59,7 @@ async function compileSchema(): Promise<TableInfo[]> {
 
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "student-track-docs-"));
   const databasePath = resolve(temporaryRoot, "schema.db");
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: pathToFileURL(databasePath).href });
   try {
     await client.executeMultiple(sql);
     const tableRows = await client.execute(

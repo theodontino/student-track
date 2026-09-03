@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { ApiError } from "@/lib/api-errors";
 
 const mocks = vi.hoisted(() => ({
   getTeachingSummary: vi.fn(),
@@ -87,5 +88,24 @@ describe("teaching summary APIs", () => {
     }), { params: Promise.resolve({ id: "O1" }) });
     expect(updated.status).toBe(200);
     expect(mocks.updateTeacherObservationStatus).toHaveBeenCalledWith("O1", "handled");
+  });
+
+  it("preserves recycle-bin API errors for observation reads and writes", async () => {
+    mocks.listTeacherObservations.mockRejectedValueOnce(
+      new ApiError("班级或所属学期位于回收站，当前不可用", 409, "scope_in_recycle_bin", false),
+    );
+    const listed = await observationsGET(new NextRequest("http://localhost/api/teacher-observations?classId=C1"));
+    expect(listed.status).toBe(409);
+    await expect(listed.json()).resolves.toMatchObject({ code: "scope_in_recycle_bin", retryable: false });
+
+    mocks.updateTeacherObservationStatus.mockRejectedValueOnce(
+      new ApiError("观察所属范围位于回收站，当前不可用", 409, "scope_in_recycle_bin", false),
+    );
+    const updated = await observationPATCH(new NextRequest("http://localhost/api/teacher-observations/O1", {
+      method: "PATCH",
+      body: JSON.stringify({ status: "handled" }),
+    }), { params: Promise.resolve({ id: "O1" }) });
+    expect(updated.status).toBe(409);
+    await expect(updated.json()).resolves.toMatchObject({ code: "scope_in_recycle_bin", retryable: false });
   });
 });

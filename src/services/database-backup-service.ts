@@ -10,6 +10,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveStudentTrackArchiveRoot } from "@/lib/runtime-paths";
 
 const REQUIRED_TABLES = [
   "Class",
@@ -45,7 +47,7 @@ export interface DatabaseBackupResult {
 }
 
 function databaseUrlForPath(databasePath: string) {
-  return `file:${databasePath}`;
+  return pathToFileURL(resolve(databasePath)).href;
 }
 
 function escapeSqlString(value: string) {
@@ -64,6 +66,7 @@ export function resolveDatabasePath(databaseUrl = process.env.DATABASE_URL) {
   if (!databaseUrl?.startsWith("file:")) {
     throw new Error("当前备份工具仅支持本地 SQLite file: DATABASE_URL");
   }
+  if (databaseUrl.startsWith("file://")) return fileURLToPath(new URL(databaseUrl));
   const value = databaseUrl.slice("file:".length);
   return isAbsolute(value) ? value : resolve(/* turbopackIgnore: true */ process.cwd(), value);
 }
@@ -111,7 +114,7 @@ export async function createDatabaseBackup(options: {
   prefix?: string;
 } = {}): Promise<DatabaseBackupResult> {
   const databasePath = resolve(/* turbopackIgnore: true */ options.databasePath ?? resolveDatabasePath());
-  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolve(/* turbopackIgnore: true */ process.cwd(), "archives"));
+  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolveStudentTrackArchiveRoot());
   const prefix = options.prefix ?? "student-track";
   await mkdir(/* turbopackIgnore: true */ archiveDir, { recursive: true });
 
@@ -184,7 +187,7 @@ export async function restoreDatabaseBackup(options: {
   archiveDir?: string;
 }) {
   const databasePath = resolve(/* turbopackIgnore: true */ options.databasePath ?? resolveDatabasePath());
-  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolve(/* turbopackIgnore: true */ process.cwd(), "archives"));
+  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolveStudentTrackArchiveRoot());
   const backupPath = resolve(/* turbopackIgnore: true */ options.backupPath);
   const relativeBackupPath = relative(archiveDir, backupPath);
   if (relativeBackupPath.startsWith("..") || isAbsolute(relativeBackupPath)) {

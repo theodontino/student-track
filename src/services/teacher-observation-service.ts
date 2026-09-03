@@ -4,8 +4,10 @@ import {
   type ObservationKind,
   type ObservationStatus,
 } from "@/lib/contracts/teaching-summary";
+import { ApiError } from "@/lib/api-errors";
 import { parseFeedbackCommunicationSummary } from "@/lib/feedback-communication";
 import { prisma } from "@/lib/prisma";
+import { assertClassAvailable, assertSemesterAvailable } from "@/services/academic-scope-recycle-service";
 
 export interface ResolvedObservationCandidate {
   studentId: string;
@@ -107,7 +109,20 @@ export async function listTeacherObservations(
   options: ListTeacherObservationOptions = {},
   db: PrismaClient = prisma,
 ) {
+  if (options.classId) {
+    const klass = await assertClassAvailable(options.classId, db);
+    if (options.semesterId && klass.semesterId !== options.semesterId) {
+      throw new ApiError("班级不属于所选学期", 409, "conflict", false);
+    }
+  } else if (options.semesterId) {
+    await assertSemesterAvailable(options.semesterId, db);
+  }
   const statuses = options.statuses?.map((status) => ObservationStatusSchema.parse(status));
+  const availableSessionWhere = {
+    ...(options.semesterId ? { semesterId: options.semesterId } : {}),
+    semester: { deletedAt: null },
+    OR: [{ classId: null }, { class: { deletedAt: null } }],
+  };
   const rows = await db.teacherObservation.findMany({
     where: {
       ...(options.observationId ? { id: options.observationId } : {}),
@@ -115,15 +130,18 @@ export async function listTeacherObservations(
       ...(options.classId ? {
         student: {
           enrollments: {
-            some: { classId: options.classId, ...(options.semesterId ? { semesterId: options.semesterId } : {}) },
+            some: {
+              classId: options.classId,
+              ...(options.semesterId ? { semesterId: options.semesterId } : {}),
+              semester: { deletedAt: null },
+              class: { deletedAt: null },
+            },
           },
         },
       } : {}),
       ...(options.studentIds?.length ? { studentId: { in: options.studentIds } } : {}),
       sources: {
-        some: options.semesterId
-          ? { communication: { session: { semesterId: options.semesterId } } }
-          : {},
+        some: { communication: { session: availableSessionWhere } },
       },
     },
     orderBy: [{ status: "asc" }, { lastDetectedAt: "desc" }],
@@ -135,12 +153,18 @@ export async function listTeacherObservations(
           name: true,
           studentId: true,
           enrollments: {
-            where: options.semesterId ? { semesterId: options.semesterId } : undefined,
+            where: {
+              ...(options.semesterId ? { semesterId: options.semesterId } : {}),
+              ...(options.classId ? { classId: options.classId } : {}),
+              semester: { deletedAt: null },
+              class: { deletedAt: null },
+            },
             include: { class: { select: { id: true, code: true, name: true } } },
           },
         },
       },
       sources: {
+        where: { communication: { session: availableSessionWhere } },
         orderBy: { createdAt: "desc" },
         include: {
           communication: {
@@ -208,8 +232,12 @@ export async function updateTeacherObservationStatus(
   const validatedStatus = ObservationStatusSchema.parse(status);
   const current = await db.teacherObservation.findUnique({ where: { id } });
   if (!current) throw new Error("observation_not_found");
+  const visible = (await listTeacherObservations({ observationId: id }, db))[0];
+  if (!visible) {
+    throw new ApiError("观察所属范围位于回收站，当前不可用", 409, "scope_in_recycle_bin", false);
+  }
   if (current.status === validatedStatus) {
-    return (await listTeacherObservations({ observationId: id, statuses: [validatedStatus] }, db))[0] ?? null;
+    return visible;
   }
   await db.$transaction([
     db.teacherObservation.update({

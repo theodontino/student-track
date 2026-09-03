@@ -16,6 +16,7 @@ import type { FeedbackPlanCreateInput } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
 import { prisma } from "@/lib/prisma";
+import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
 import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -282,8 +283,11 @@ function normalizeDraftStudent(value: ParsedStudent): DraftStructuredResult["stu
 }
 
 async function readInboxFiles() {
-  const root = process.env.STUDENT_TRACK_FEEDBACK_INBOX_ROOT?.trim()
-    || path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-inbox");
+  const root = resolveStudentTrackRuntimePath(
+    "feedback-inbox",
+    "STUDENT_TRACK_FEEDBACK_INBOX_ROOT",
+    path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-inbox"),
+  );
   const result: IntakeFile[] = [];
   async function visit(directory: string) {
     let entries;
@@ -1119,6 +1123,12 @@ export async function clearFeedbackIntakeScope(id: string, db: FeedbackIntakeDb 
 export async function resolveFeedbackIntakeRun(id: string, input: { action: "apply" | "confirm" | "resolve" | "create_plan" | "confirm_scope" | "clear_scope"; decisions?: FeedbackIntakeDecision[]; scope?: { classId: string; sessionCode: string; studentIds: string[] }; plan?: Omit<FeedbackPlanCreateInput, "sessionId" | "semesterId" | "classId"> & { type?: FeedbackPlanCreateInput["type"]; commonLessonRevisionId?: string; commonMaterial?: CommonMaterialSelection } }, db: FeedbackIntakeDb = prisma) {
   const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
   if (!run) throw new Error("反馈材料运行不存在");
+  const targetSession = await db.classSession.findUnique({
+    where: { code: run.sessionCode },
+    select: { id: true },
+  });
+  if (!targetSession) throw new Error("反馈材料目标课次不存在");
+  await assertSessionAvailable(targetSession.id, db);
   if (input.action === "confirm_scope") {
     if (!input.scope) throw new Error("缺少班级范围确认信息");
     return confirmFeedbackIntakeScope(id, input.scope, db);

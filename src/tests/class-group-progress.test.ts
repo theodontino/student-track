@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import {
   createClassGroup,
   getSessionGroupProgress,
+  listSemesterClassGroups,
   setSessionGroupProgress,
   updateClassGroup,
 } from "@/services/group-lesson-service";
@@ -131,13 +132,57 @@ describe("class session creation intent", () => {
       classId: leadClass.id,
       date: "2099-08-03",
       groupProgressIntent: { type: "recommended" },
+      // This selector belongs to independent-session material only. A newly
+      // created shared lesson must always copy its own sequence number.
+      commonMaterialLessonNumber: 99,
     });
-    expect(lead.groupProgress).toMatchObject({ status: "created", lesson: { sequence: 1, title: "第 1 讲" } });
+    expect(lead.groupProgress).toMatchObject({ status: "created", lesson: { sequence: 1, title: "合成第一讲" } });
     const lesson = await prisma.groupLesson.findUniqueOrThrow({ where: { id: lead.groupProgress!.lesson!.id } });
+    expect(lesson.title).toBe("合成第一讲");
     expect(JSON.parse(lesson.materialSnapshot)).toMatchObject({
+      lessonTitle: "合成第一讲",
       groupFeedbackRaw: "第一讲公共材料",
       semesterScriptSource: { lessonNumber: 1 },
     });
+  });
+
+  it("hides a recycled lead peer and requires the active member to choose its progress", async () => {
+    const { lead, follower, group } = await createGroupFixture();
+    const leadSession = await createClassSession({
+      semesterId,
+      classId: lead.id,
+      date: "2099-09-01",
+      groupProgressIntent: { type: "recommended" },
+    });
+    const lessonId = leadSession.groupProgress!.lesson!.id;
+    await prisma.class.update({ where: { id: lead.id }, data: { deletedAt: new Date() } });
+
+    try {
+      const groups = await listSemesterClassGroups(semesterId);
+      const listedGroup = groups.find((item) => item.id === group.id);
+      expect(listedGroup).toBeDefined();
+      expect(listedGroup?.leadClassId).toBeNull();
+      expect(listedGroup?.leadClass).toBeNull();
+      expect(listedGroup?.memberships.map((membership) => membership.classId)).toEqual([follower.id]);
+      expect(listedGroup?.lessons.find((lesson) => lesson.id === lessonId)?.sessionLinks).toEqual([]);
+
+      const options = await getClassSessionCreationOptions({
+        semesterId,
+        classId: follower.id,
+        date: "2099-09-02",
+      });
+      expect(options.group?.leadClass).toBeNull();
+      expect(options.group?.isLeadClass).toBe(false);
+      expect(options.recommendation.type).toBe("choice_required");
+      const lessonOption = options.lessons.find((lesson) => lesson.id === lessonId);
+      expect(lessonOption).toMatchObject({ started: false, linkedClasses: [] });
+      expect(options.lessons.flatMap((lesson) => lesson.linkedClasses.map((linkedClass) => ({
+        classId: linkedClass.id,
+        sessionId: linkedClass.sessionId,
+      })))).toEqual([]);
+    } finally {
+      await prisma.class.update({ where: { id: lead.id }, data: { deletedAt: null } });
+    }
   });
 
   it("replays a recommended lead request without advancing to another shared lesson", async () => {

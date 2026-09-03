@@ -19,6 +19,7 @@ import { resolveFeedbackIntakeRun, type IntakeFile } from "@/services/feedback-i
 import {
   createClassGroup,
   createGroupLesson,
+  getSessionGroupProgress,
   linkGroupLessonSession,
 } from "@/services/group-lesson-service";
 import { archiveFeedbackPlan, createFeedbackPlan } from "@/services/feedback-plan-service";
@@ -480,6 +481,33 @@ describe("feedback group intake service", () => {
     expect(result.runs).toHaveLength(2);
     expect(result.classes.every((item) => Boolean(item.runId))).toBe(true);
     expect(result.sourceSummaries.every((summary) => summary.status === "empty")).toBe(true);
+  });
+
+  it("keeps the active peer usable while hiding a recycled class from group progress and intake", async () => {
+    await prisma.class.update({ where: { id: secondClassId }, data: { deletedAt: new Date() } });
+
+    try {
+      const progress = await getSessionGroupProgress(firstSessionId, prisma);
+      expect(progress?.status).toBe("linked");
+      expect(progress?.lesson?.id).toBe(groupLessonId);
+      expect(progress?.group.members).toHaveLength(1);
+      expect(progress?.group.members.map((member) => ({
+        classId: member.classId,
+        sessionId: member.session?.id,
+      }))).toEqual([{ classId: firstClassId, sessionId: firstSessionId }]);
+      await expect(getSessionGroupProgress(secondSessionId, prisma)).rejects.toMatchObject({
+        status: 409,
+        code: "scope_in_recycle_bin",
+      });
+
+      const prepared = await prepareFeedbackGroupIntakeFromExistingFacts({ groupLessonId, db: prisma });
+      expect(prepared.classes).toHaveLength(1);
+      expect(prepared.classes[0]).toMatchObject({ classId: firstClassId, sessionCode: sessionCodes[0] });
+      expect(prepared.runs).toHaveLength(1);
+      expect(prepared.runs[0]).toMatchObject({ sessionCode: sessionCodes[0] });
+    } finally {
+      await prisma.class.update({ where: { id: secondClassId }, data: { deletedAt: null } });
+    }
   });
 
   it("confirms existing facts independently without rewriting either class", async () => {

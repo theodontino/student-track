@@ -46,7 +46,7 @@ export async function GET(request: NextRequest) {
       listGenerationHistory(parsed.data, prisma),
       prisma.teachingMemory.findMany({ where: { ...scopeWhere, memoryTier: "long-term", status: "draft" }, orderBy: { generatedAt: "desc" }, take: 100 }),
       parsed.data.operations
-        ? prisma.class.findMany({ orderBy: [{ name: "asc" }, { code: "asc" }], select: { id: true, name: true, code: true } })
+        ? prisma.class.findMany({ where: { deletedAt: null, semester: { deletedAt: null } }, orderBy: [{ name: "asc" }, { code: "asc" }], select: { id: true, name: true, code: true } })
         : Promise.resolve([]),
       parsed.data.operations ? prisma.memoryCompactionRun.findMany({
         where: {
@@ -65,12 +65,19 @@ export async function GET(request: NextRequest) {
       ...students.map((item) => [item.id, item.name] as const),
       ...classes.map((item) => [item.id, item.name ?? item.code] as const),
     ]);
+    const activeClassIds = new Set(classes.map((item) => item.id));
+    const visibleDrafts = parsed.data.operations
+      ? drafts.filter((item) => item.scopeType !== "class" || activeClassIds.has(item.scopeId))
+      : drafts;
+    const visibleRuns = parsed.data.operations
+      ? undoableRuns.filter((run) => activeClassIds.has(run.classId))
+      : undoableRuns;
     return NextResponse.json({
       memories,
       history,
       classes,
-      drafts: drafts.map((item) => ({ ...item, scopeName: names.get(item.scopeId) ?? "已删除对象" })),
-      undoableRuns: undoableRuns.map((run) => ({ ...run, className: names.get(run.classId) ?? "已删除班级" })),
+      drafts: visibleDrafts.map((item) => ({ ...item, scopeName: names.get(item.scopeId) ?? "已删除对象" })),
+      undoableRuns: visibleRuns.map((run) => ({ ...run, className: names.get(run.classId) ?? "已删除班级" })),
     });
   } catch (error) {
     const safe = safeApiError(error, "读取教学记忆失败");

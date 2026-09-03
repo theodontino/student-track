@@ -60,6 +60,24 @@ interface BatchState extends PreReviewBatchStatus {
 const tasks = new Map<string, BatchState>();
 let activeTaskId: string | null = null;
 
+export async function filterAvailableWccDrafts<T extends { sessionCode: string | null }>(
+  prisma: PrismaClient,
+  drafts: T[],
+): Promise<T[]> {
+  const sessionCodes = [...new Set(drafts.flatMap((draft) => draft.sessionCode ? [draft.sessionCode] : []))];
+  if (sessionCodes.length === 0) return drafts;
+  const sessions = await prisma.classSession.findMany({
+    where: {
+      code: { in: sessionCodes },
+      semester: { deletedAt: null },
+      OR: [{ classId: null }, { class: { deletedAt: null } }],
+    },
+    select: { code: true },
+  });
+  const availableCodes = new Set(sessions.map((session) => session.code));
+  return drafts.filter((draft) => draft.sessionCode === null || availableCodes.has(draft.sessionCode));
+}
+
 export function listPreReviewTasks(): PreReviewBatchStatus[] {
   return Array.from(tasks.values()).map(stripCancel);
 }
@@ -120,7 +138,7 @@ export async function startPreReview(
   if (options.draftIds && options.draftIds.length > 0) {
     where.id = { in: options.draftIds };
   }
-  const drafts = await prisma.draftRecord.findMany({
+  const candidates = await prisma.draftRecord.findMany({
     where,
     orderBy: { createdAt: "desc" },
     take: 5000,
@@ -130,6 +148,7 @@ export async function startPreReview(
       sessionCode: true,
     },
   });
+  const drafts = await filterAvailableWccDrafts(prisma, candidates);
 
   const taskId = `prereview-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   let cancelled = false;
@@ -194,12 +213,13 @@ export async function acceptHighConfidenceDrafts(
   prisma: PrismaClient,
   threshold: number,
 ): Promise<{ scanned: number; eligible: number; confirmed: number; failed: Array<{ id: string; error: string }> }> {
-  const drafts = await prisma.draftRecord.findMany({
+  const candidates = await prisma.draftRecord.findMany({
     where: { status: "pending", id: { startsWith: "wcc-" }, sessionCode: { not: null } },
     select: { id: true, reviewResult: true, sessionCode: true },
     orderBy: { createdAt: "desc" },
     take: 2000,
   });
+  const drafts = await filterAvailableWccDrafts(prisma, candidates);
   const eligible = drafts.filter((draft) => {
     const suggestion = readPreReviewSuggestion(draft.reviewResult);
     return Boolean(suggestion && suggestion.verdict === "confirm" && suggestion.confidence >= threshold);

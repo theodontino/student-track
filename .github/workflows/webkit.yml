@@ -45,6 +45,9 @@ jobs:
   browser:
     timeout-minutes: 12
     runs-on: ubuntu-latest
+    env:
+      STUDENT_TRACK_EDITION: full
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

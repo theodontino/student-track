@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
+import { ApiError } from "@/lib/api-errors";
 import { createLLMClient, getLLMCompletionOptions, getLLMModel } from "@/lib/llm";
 import { getEffectiveLLMSettings, resolveLLMProfileId, type LLMProfileRole } from "@/lib/llm-settings";
 import { prisma } from "@/lib/prisma";
+import { assertClassAvailable, assertSemesterAvailable } from "@/services/academic-scope-recycle-service";
 
 export const HOT_SESSION_WINDOW = 5;
 export const LONG_TERM_AFTER_DAYS = 183;
@@ -315,6 +317,7 @@ async function upsertSemesterMemory(input: {
  * It never calls the LLM and never deletes a source record before the replacement snapshot is committed.
  */
 export async function compactHotGenerationRecordsForClass(classId: string, db: PrismaClient = prisma) {
+  await assertClassAvailable(classId, db);
   await clearExpiredCompactionRollbacks(db);
   const sessions = await completedSessionsForClass(classId, db);
   if (sessions.length <= HOT_SESSION_WINDOW) return { compacted: 0, runId: null as string | null };
@@ -374,6 +377,7 @@ export async function undoHotToWarmCompaction(runId: string, db: PrismaClient = 
   if (!run || run.phase !== "hot-to-warm" || run.status !== "succeeded" || !run.rollbackPayload || !run.undoUntil || run.undoUntil < new Date()) {
     throw new Error("该压缩记录无法撤销");
   }
+  await assertClassAvailable(run.classId, db);
   const entries = safeJsonParse(run.rollbackPayload);
   if (!Array.isArray(entries)) throw new Error("撤销数据无效");
   const restoredIds = entries.flatMap((entry) => {
@@ -442,6 +446,7 @@ function semesterEvidenceForRecords(input: {
 
 /** Generates one constrained class batch of long-term memory drafts when warm records become six months old. */
 export async function generateLongTermMemoryDraftsForClass(classId: string, db: PrismaClient = prisma) {
+  await assertClassAvailable(classId, db);
   await clearExpiredCompactionRollbacks(db);
   const cutoff = new Date(Date.now() - LONG_TERM_AFTER_DAYS * 86400000).toISOString().slice(0, 10);
   const sessions = await db.classSession.findMany({ where: { classId, date: { lte: cutoff } }, select: { id: true, semesterId: true, code: true } });
@@ -589,6 +594,7 @@ export async function generateLongTermMemoryDraftsForClass(classId: string, db: 
 export async function confirmLongTermMemory(id: string, content: string, db: PrismaClient = prisma) {
   const memory = await db.teachingMemory.findUnique({ where: { id } });
   if (!memory || memory.memoryTier !== "long-term") throw new Error("长期背景不存在");
+  if (memory.scopeType === "class") await assertClassAvailable(memory.scopeId, db);
   const confirmedContent = content.trim();
   if (!confirmedContent) throw new Error("长期背景不能为空");
   const generationIds = parseSourceRefs(memory.sourceRefs)
@@ -606,17 +612,74 @@ export async function confirmLongTermMemory(id: string, content: string, db: Pri
 }
 
 export async function listGenerationHistory(input: { studentId?: string; classId?: string; limit?: number }, db: PrismaClient = prisma) {
-  return db.generationRecord.findMany({ where: { ...(input.studentId ? { studentId: input.studentId } : {}), ...(input.classId ? { classId: input.classId } : {}) }, orderBy: { generatedAt: "desc" }, take: Math.min(Math.max(input.limit ?? 80, 1), 200) });
+  if (input.classId) await assertClassAvailable(input.classId, db);
+  const requestedScope: Prisma.GenerationRecordWhereInput = {
+    ...(input.studentId ? { studentId: input.studentId } : {}),
+    ...(input.classId ? { classId: input.classId } : {}),
+  };
+  let where = requestedScope;
+  if (!input.classId) {
+    const [classes, semesters, sessions] = await Promise.all([
+      db.class.findMany({ where: { deletedAt: null, semester: { deletedAt: null } }, select: { id: true } }),
+      db.semester.findMany({ where: { deletedAt: null }, select: { id: true } }),
+      db.classSession.findMany({
+        where: { semester: { deletedAt: null }, OR: [{ classId: null }, { class: { deletedAt: null } }] },
+        select: { id: true },
+      }),
+    ]);
+    const availableScope: Prisma.GenerationRecordWhereInput = {
+      OR: [
+        { classId: { in: classes.map((item) => item.id) } },
+        { classId: null, sessionId: { in: sessions.map((item) => item.id) } },
+        { classId: null, sessionId: null, semesterId: { in: semesters.map((item) => item.id) } },
+        { classId: null, sessionId: null, semesterId: null },
+      ],
+    };
+    where = { AND: [requestedScope, availableScope] };
+  }
+  return db.generationRecord.findMany({ where, orderBy: { generatedAt: "desc" }, take: Math.min(Math.max(input.limit ?? 80, 1), 200) });
 }
 
 export async function getConfirmedTeachingMemory(input: { studentId?: string; classId?: string; semesterId?: string }, db: PrismaClient = prisma) {
-  const filters = [
-    input.studentId ? { scopeType: "student", scopeId: input.studentId } : null,
-    input.classId ? { scopeType: "class", scopeId: input.classId } : null,
-  ].filter((value): value is { scopeType: string; scopeId: string } => Boolean(value));
+  const klass = input.classId ? await assertClassAvailable(input.classId, db) : null;
+  if (input.semesterId) {
+    await assertSemesterAvailable(input.semesterId, db);
+    if (klass && klass.semesterId !== input.semesterId) {
+      throw new ApiError("班级不属于所选学期", 409, "conflict", false);
+    }
+  }
+  const studentSemesterIds = input.studentId
+    ? (await db.studentClassEnrollment.findMany({
+        where: {
+          studentId: input.studentId,
+          ...(input.semesterId ? { semesterId: input.semesterId } : {}),
+          semester: { deletedAt: null },
+          class: { deletedAt: null },
+        },
+        select: { semesterId: true },
+      })).map((enrollment) => enrollment.semesterId)
+    : [];
+  const filters: Prisma.TeachingMemoryWhereInput[] = [
+    ...(input.studentId ? [{
+      scopeType: "student",
+      scopeId: input.studentId,
+      OR: [
+        { memoryTier: "long-term" },
+        { memoryTier: "semester", semesterId: { in: studentSemesterIds } },
+      ],
+    }] : []),
+    ...(input.classId && klass ? [{
+      scopeType: "class",
+      scopeId: input.classId,
+      OR: [
+        { memoryTier: "long-term" },
+        { memoryTier: "semester", semesterId: input.semesterId ?? klass.semesterId },
+      ],
+    }] : []),
+  ];
   if (!filters.length) return [];
   return db.teachingMemory.findMany({
-    where: { OR: filters, status: "confirmed", ...(input.semesterId ? { OR: [...filters.map((filter) => ({ ...filter, semesterId: input.semesterId })), ...filters.map((filter) => ({ ...filter, semesterKey: "long-term" }))] } : {}) },
+    where: { OR: filters, status: "confirmed" },
     orderBy: { updatedAt: "desc" },
   });
 }

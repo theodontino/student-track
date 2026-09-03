@@ -4,6 +4,7 @@ import type { FeedbackSections } from "@/lib/feedback-sections";
 import type { StudentRisk } from "@/services/student-risk-service";
 import { createHash } from "node:crypto";
 import { ApiError } from "@/lib/api-errors";
+import { assertProductCapability } from "@/lib/product-capability-guard";
 import { validateFeedbackPlanAttachments } from "@/services/feedback-plan-service";
 
 export interface FeedbackExportCard {
@@ -516,6 +517,7 @@ export async function buildWeComDraftPackage(
   prisma: PrismaClient,
   planId: string,
 ): Promise<WeComDraftPackageV1> {
+  assertProductCapability("wecomDraftExport");
   const plan = await prisma.feedbackPlan.findUnique({
     where: { id: planId },
     select: {

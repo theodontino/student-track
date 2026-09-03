@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { acceptHighConfidenceDrafts } from "@/services/wecom-prereview-service";
+import { acceptHighConfidenceDrafts, filterAvailableWccDrafts } from "@/services/wecom-prereview-service";
 
 const MIN_THRESHOLD = 0;
 const MAX_THRESHOLD = 1;
@@ -15,11 +15,12 @@ export async function POST(request: NextRequest) {
     const dryRun = Boolean(body.dryRun);
     if (dryRun) {
       // Cheap dry-run: count only.
-      const drafts = await prisma.draftRecord.findMany({
+      const candidates = await prisma.draftRecord.findMany({
         where: { status: "pending", id: { startsWith: "wcc-" }, sessionCode: { not: null } },
-        select: { reviewResult: true },
+        select: { reviewResult: true, sessionCode: true },
         take: 2000,
       });
+      const drafts = await filterAvailableWccDrafts(prisma, candidates);
       let eligible = 0;
       for (const draft of drafts) {
         if (!draft.reviewResult) continue;

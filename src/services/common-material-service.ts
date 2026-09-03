@@ -4,6 +4,7 @@ import { createEmptyLessonFeedbackMaterial, type LessonFeedbackMaterial } from "
 import { prisma } from "@/lib/prisma";
 import { getFeedbackScriptMaterial } from "@/services/feedback-script-library-service";
 import { ServiceError } from "@/services/service-error";
+import { assertSemesterAvailable, assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 type CommonMaterialDb = PrismaClient | Prisma.TransactionClient;
 
@@ -43,6 +44,7 @@ export async function setGroupLessonCommonMaterial(
     select: { id: true, sequence: true, materialSnapshot: true, group: { select: { semesterId: true } } },
   });
   if (!lesson) throw new ServiceError("共同课不存在", 404);
+  await assertSemesterAvailable(lesson.group.semesterId, db);
   const material = lessonNumber === null
     ? createEmptyLessonFeedbackMaterial()
     : await resolveSemesterCommonMaterial(db, lesson.group.semesterId, lessonNumber);
@@ -72,6 +74,7 @@ export async function setSessionCommonMaterial(
     },
   });
   if (!session) throw new ServiceError("课次不存在", 404);
+  await assertSessionAvailable(session.id, db);
   if (session.groupLessonSession) throw new ServiceError("当前课次已关联共同课，请在共同课材料中调整", 409);
   const material = lessonNumber === null
     ? null

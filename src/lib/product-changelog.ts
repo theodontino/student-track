@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.3.0-beta.2",
+    title: "Windows Core 与学期公共材料导入",
+    changes: [
+      "同一套源码和数据库增加构建期 Core / Full 能力身份；Core 首先支持 Windows 10/11 x64，并明确停用录音转写和企微/WCG，其他教学、LLM、导出与备份能力保留。",
+      "学期详情恢复唯一的公共材料库管理区，支持下载无真实数据的 Excel 模板、首次导入和教师确认后的整库替换；解析失败不会改动旧库。",
+      "新共同讲次会把同号学期材料完整复制为未确认草稿；已有讲次只能由教师明确重新套用，不回写确认修订、真实课次材料或反馈计划快照。",
+      "Windows PowerShell 准备与启动脚本把私有数据放在 LocalAppData，使用生产模式和回环地址，并在升级既有数据库前创建、校验备份。",
+    ],
+  },
+  {
     version: "1.3.0-beta.1",
     title: "回收站、计划状态与统一反馈队列",
     changes: [

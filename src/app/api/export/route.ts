@@ -15,6 +15,10 @@ export async function POST(request: NextRequest) {
     const sheet4Data: any[] = [];
     const sheet5Data: any[] = [];
     const enrollmentData: any[] = [];
+    const availableSessionScope = {
+      semesterId,
+      OR: [{ classId: null }, { class: { deletedAt: null } }],
+    };
     let page = 0;
     let hasMore = true;
 
@@ -25,23 +29,23 @@ export async function POST(request: NextRequest) {
         take: BATCH_SIZE,
         include: {
           enrollments: {
-            where: { semesterId },
+            where: { semesterId, class: { deletedAt: null, semester: { deletedAt: null } } },
             include: { class: { select: { id: true, code: true, name: true } } },
           },
           sessionMetrics: {
-            where: { date: { gte: startDate, lte: endDate }, session: { semesterId } },
+            where: { date: { gte: startDate, lte: endDate }, session: availableSessionScope },
             orderBy: { date: "desc" },
           },
           events: {
-            where: { session: { date: { gte: startDate, lte: endDate }, semesterId } },
+            where: { session: { ...availableSessionScope, date: { gte: startDate, lte: endDate } } },
             include: { session: { select: { date: true, code: true } } }, orderBy: { createdAt: "desc" },
           },
           communications: {
-            where: { session: { date: { gte: startDate, lte: endDate }, semesterId } },
+            where: { session: { ...availableSessionScope, date: { gte: startDate, lte: endDate } } },
             include: { session: { select: { date: true, code: true } } }, orderBy: { createdAt: "desc" },
           },
           attendances: {
-            where: { session: { date: { gte: startDate, lte: endDate }, semesterId } },
+            where: { session: { ...availableSessionScope, date: { gte: startDate, lte: endDate } } },
             include: { session: { select: { date: true, semesterNumber: true, code: true } } },
             orderBy: { session: { date: "desc" } },
           },

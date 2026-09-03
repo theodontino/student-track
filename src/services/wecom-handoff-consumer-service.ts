@@ -13,6 +13,7 @@ import {
   handoffEvidenceDates,
 } from "@/services/wecom-handoff-alignment-service";
 import { summarizeMessageDateRange } from "@/services/wecom-session-matcher";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 function stableDraftId(batchId: string, studentId: string, messageIds: string[]) {
   const digest = createHash("sha256")
@@ -59,8 +60,16 @@ export async function consumeWccHandoffPackage(
   const uniqueMessageIds = [...new Set(payload.messages.map((message) => message.id).filter(Boolean))];
   if (uniqueMessageIds.length !== payload.messages.length) throw new Error("duplicate_message_ids");
   const students = await prisma.student.findMany({
-    where: { id: selectedStudentId, enrollments: { some: {} } },
-    include: { enrollments: { include: { class: true, semester: true } } },
+    where: {
+      id: selectedStudentId,
+      enrollments: { some: { class: { deletedAt: null }, semester: { deletedAt: null } } },
+    },
+    include: {
+      enrollments: {
+        where: { class: { deletedAt: null }, semester: { deletedAt: null } },
+        include: { class: true, semester: true },
+      },
+    },
   });
   if (students.length !== 1) throw new Error("directory_conflict");
   const current = new Map(students.map((student) => [student.id, student]));
@@ -82,6 +91,8 @@ export async function consumeWccHandoffPackage(
         semesterId: evidenceSemesterId,
         classId: { in: currentClassIds },
         date: { in: evidenceDates },
+        semester: { deletedAt: null },
+        class: { deletedAt: null },
       },
       select: { code: true, classId: true, date: true, semesterId: true },
       orderBy: { code: "asc" },
@@ -251,11 +262,20 @@ export async function assignWccDraftSession(
   if (draft.status !== "pending") throw new Error("draft_not_pending");
   const session = await prisma.classSession.findUnique({
     where: { code: sessionCode },
-    select: { code: true, classId: true, semesterId: true },
+    select: { id: true, code: true, classId: true, semesterId: true },
   });
   if (!session) throw new Error("session_not_found");
+  await assertSessionAvailable(session.id, prisma);
   const student = draft.studentId
-    ? await prisma.student.findUnique({ where: { id: draft.studentId }, include: { enrollments: { select: { classId: true, semesterId: true } } } })
+    ? await prisma.student.findUnique({
+        where: { id: draft.studentId },
+        include: {
+          enrollments: {
+            where: { class: { deletedAt: null }, semester: { deletedAt: null } },
+            select: { classId: true, semesterId: true },
+          },
+        },
+      })
     : null;
   if (!student || (session.classId && !student.enrollments.some((enrollment) => enrollment.classId === session.classId && enrollment.semesterId === session.semesterId))) throw new Error("session_class_conflict");
   return prisma.draftRecord.update({ where: { id: draftId }, data: { sessionCode } });

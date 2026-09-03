@@ -12,6 +12,7 @@ import {
   type IntakeFile,
   type IntakeKind,
 } from "@/services/feedback-intake-service";
+import { assertSemesterAvailable } from "@/services/academic-scope-recycle-service";
 import { ServiceError } from "@/services/service-error";
 import { parseStepClassroomEnvelope } from "@/services/step-classroom-import-service";
 
@@ -134,7 +135,14 @@ async function loadGroupSessionContexts(groupLessonId: string, db: PrismaClient)
     where: { id: groupLessonId },
     select: {
       id: true,
+      group: { select: { semesterId: true } },
       sessionLinks: {
+        where: {
+          session: {
+            semester: { deletedAt: null },
+            class: { deletedAt: null, semester: { deletedAt: null } },
+          },
+        },
         select: {
           session: {
             select: {
@@ -151,6 +159,7 @@ async function loadGroupSessionContexts(groupLessonId: string, db: PrismaClient)
     },
   });
   if (!lesson) throw new ServiceError("共同课不存在", 404);
+  await assertSemesterAvailable(lesson.group.semesterId, db);
   if (!lesson.sessionLinks.length) throw new ServiceError("共同课还没有已关联的真实课次", 409);
 
   const sessions = lesson.sessionLinks.map(({ session }) => {

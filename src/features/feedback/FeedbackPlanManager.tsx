@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Badge, Button, StatusBanner } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
 import styles from "./feedback-plan-manager.module.css";
 
-type PlanSummary = {
+export type FeedbackPlanSummary = {
   id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; batchId?: string | null;
   session?: { code: string } | null; rangeEndSession?: { code: string } | null;
   class?: { id: string; code: string; name?: string | null } | null;
@@ -14,13 +14,13 @@ type PlanSummary = {
   itemStatusCounts: { total: number; queued: number; running: number; completed: number; failed: number };
 };
 
-type BatchSummary = {
+export type FeedbackPlanBatchSummary = {
   id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; semester?: { id: string; name: string } | null;
   plans: Array<{ id: string; class: { id: string; code: string; name?: string | null }; session?: { code: string } | null; rangeEndSession?: { code: string } | null }>;
   progress: { total: number; generated: number; approved: number; exported: number; failed: number; completedClasses: number; totalClasses: number };
 };
 
-type TaskRow = { kind: "plan"; id: string; plan: PlanSummary } | { kind: "batch"; id: string; batch: BatchSummary };
+export type FeedbackPlanTaskRow = { kind: "plan"; id: string; plan: FeedbackPlanSummary } | { kind: "batch"; id: string; batch: FeedbackPlanBatchSummary };
 export type ArchivedFeedbackTaskReference = {
   kind: "plan" | "batch";
   id: string;
@@ -40,10 +40,10 @@ export type FeedbackTaskOpenTarget = {
 const runningPlanStatuses = new Set(["queued", "generating", "pause_requested"]);
 const runningBatchStatuses = new Set(["queued", "running", "pause_requested"]);
 
-type DisplayState = "saved" | "active" | "completed";
-const displayStateLabels: Record<DisplayState, string> = { saved: "已保存", active: "活动中", completed: "已完成" };
+export type FeedbackPlanDisplayState = "saved" | "active" | "completed";
+const displayStateLabels: Record<FeedbackPlanDisplayState, string> = { saved: "已保存", active: "活动中", completed: "已完成" };
 
-function planDisplayState(plan: PlanSummary): DisplayState {
+export function feedbackPlanDisplayState(plan: FeedbackPlanSummary): FeedbackPlanDisplayState {
   const progress = plan.itemStatusCounts;
   if (progress.total > 0 && progress.completed === progress.total && progress.queued === 0 && progress.running === 0 && progress.failed === 0) return "completed";
   const started = !["draft", "ready", "evidence_ready"].includes(plan.status)
@@ -51,17 +51,45 @@ function planDisplayState(plan: PlanSummary): DisplayState {
   return started ? "active" : "saved";
 }
 
-function batchDisplayState(batch: BatchSummary): DisplayState {
+export function feedbackPlanBatchDisplayState(batch: FeedbackPlanBatchSummary): FeedbackPlanDisplayState {
   const progress = batch.progress;
   if (progress.total > 0 && progress.generated === progress.total && progress.failed === 0 && !runningBatchStatuses.has(batch.status)) return "completed";
   return ["draft", "ready"].includes(batch.status) && progress.generated === 0 ? "saved" : "active";
+}
+
+export function shouldPollFeedbackPlanTask(task: FeedbackPlanTaskRow) {
+  if (task.kind === "batch") return runningBatchStatuses.has(task.batch.status);
+  if (["paused", "generation_failed"].includes(task.plan.status)) return false;
+  return runningPlanStatuses.has(task.plan.status)
+    || task.plan.itemStatusCounts.queued > 0
+    || task.plan.itemStatusCounts.running > 0;
+}
+
+export function shouldPollFeedbackPlanTasks(tasks: FeedbackPlanTaskRow[]) {
+  return tasks.some(shouldPollFeedbackPlanTask);
+}
+
+export function feedbackPlanManagerStatusText(
+  tasks: FeedbackPlanTaskRow[],
+  currentState: FeedbackPlanDisplayState | null,
+) {
+  if (currentState) {
+    return `${currentState === "completed" ? "已完成反馈生成" : "未完成反馈生成"} · ${tasks.length} 个未归档计划`;
+  }
+  if (tasks.length === 0) return "尚未建立反馈计划";
+  const activeCount = tasks.filter((task) => (
+    task.kind === "batch"
+      ? feedbackPlanBatchDisplayState(task.batch) === "active"
+      : feedbackPlanDisplayState(task.plan) === "active"
+  )).length;
+  return `${tasks.length} 个未归档计划${activeCount ? ` · ${activeCount} 个活动中` : " · 请选择计划查看"}`;
 }
 
 function typeLabel(type: string) {
   return ({ class_update: "班级公共反馈", event_micro: "事件型微反馈", stage_trend: "阶段趋势反馈", course_end: "结课教学总结" } as Record<string, string>)[type] ?? type;
 }
 
-function planOpenTarget(plan: PlanSummary): FeedbackTaskOpenTarget {
+function planOpenTarget(plan: FeedbackPlanSummary): FeedbackTaskOpenTarget {
   const session = plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session;
   return {
     planId: plan.id,
@@ -74,7 +102,7 @@ function planOpenTarget(plan: PlanSummary): FeedbackTaskOpenTarget {
   };
 }
 
-function batchOpenTarget(batch: BatchSummary): FeedbackTaskOpenTarget {
+function batchOpenTarget(batch: FeedbackPlanBatchSummary): FeedbackTaskOpenTarget {
   const first = batch.plans[0];
   return {
     planId: first?.id ?? "",
@@ -109,37 +137,47 @@ async function waitUntilStopped(kind: "plan" | "batch", id: string, running: Set
   throw new Error("计划仍在停止中，请稍后再归档");
 }
 
-export default function FeedbackPlanManager({ currentPlanId, currentBatchId, onOpen, onArchived }: {
+export default function FeedbackPlanManager({ currentPlanId, currentBatchId, refreshKey = 0, onOpen, onArchived }: {
   semesterId?: string;
   currentPlanId?: string;
   currentBatchId?: string;
+  refreshKey?: number;
   onOpen?: (target: FeedbackTaskOpenTarget) => void;
   onArchived?: (reference: ArchivedFeedbackTaskReference) => void;
 }) {
-  const [plans, setPlans] = useState<PlanSummary[]>([]);
-  const [batches, setBatches] = useState<BatchSummary[]>([]);
+  const [plans, setPlans] = useState<FeedbackPlanSummary[]>([]);
+  const [batches, setBatches] = useState<FeedbackPlanBatchSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const loadSequence = useRef(0);
 
-  const load = useCallback(async () => {
-    setLoading(true); setError("");
+  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    const sequence = ++loadSequence.current;
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const query = new URLSearchParams({ archived: "false" });
       const [planResult, batchResult] = await Promise.all([
-        requestJson<{ plans: PlanSummary[] }>(`/api/report/feedback-plans?${query}`),
-        requestJson<{ batches: BatchSummary[] }>(`/api/report/feedback-plan-batches?${query}`),
+        requestJson<{ plans: FeedbackPlanSummary[] }>(`/api/report/feedback-plans?${query}`),
+        requestJson<{ batches: FeedbackPlanBatchSummary[] }>(`/api/report/feedback-plan-batches?${query}`),
       ]);
+      if (sequence !== loadSequence.current) return;
       setPlans(planResult.plans.filter((plan) => !plan.archivedAt));
       setBatches(batchResult.batches.filter((batch) => !batch.archivedAt));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "读取当前反馈计划失败"); }
-    finally { setLoading(false); }
+    } catch (reason) {
+      if (sequence === loadSequence.current && !silent) setError(reason instanceof Error ? reason.message : "读取当前反馈计划失败");
+    } finally {
+      if (sequence === loadSequence.current) setLoading(false);
+    }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [currentBatchId, currentPlanId, load, refreshKey]);
 
-  const tasks = useMemo<TaskRow[]>(() => {
+  const tasks = useMemo<FeedbackPlanTaskRow[]>(() => {
     const childIds = new Set(batches.flatMap((batch) => batch.plans.map((plan) => plan.id)));
     return [
       ...batches.map((batch) => ({ kind: "batch" as const, id: batch.id, batch })),
@@ -147,7 +185,7 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, onO
     ];
   }, [batches, plans]);
   const groups = useMemo(() => {
-    const bySemester = new Map<string, { name: string; tasks: TaskRow[] }>();
+    const bySemester = new Map<string, { name: string; tasks: FeedbackPlanTaskRow[] }>();
     for (const task of tasks) {
       const semester = task.kind === "batch" ? task.batch.semester : task.plan.semester;
       const key = semester?.id ?? "unknown";
@@ -158,9 +196,16 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, onO
     return [...bySemester.values()];
   }, [tasks]);
   const currentTask = tasks.find((task) => task.kind === "batch" ? task.id === currentBatchId : !currentBatchId && task.id === currentPlanId);
-  const currentState = currentTask ? (currentTask.kind === "batch" ? batchDisplayState(currentTask.batch) : planDisplayState(currentTask.plan)) : null;
+  const currentState = currentTask ? (currentTask.kind === "batch" ? feedbackPlanBatchDisplayState(currentTask.batch) : feedbackPlanDisplayState(currentTask.plan)) : null;
+  const shouldPollTasks = shouldPollFeedbackPlanTasks(tasks);
 
-  async function archiveTask(task: TaskRow) {
+  useEffect(() => {
+    if (!shouldPollTasks || loading) return;
+    const timer = window.setInterval(() => void load({ silent: true }), 1000);
+    return () => window.clearInterval(timer);
+  }, [load, loading, shouldPollTasks]);
+
+  async function archiveTask(task: FeedbackPlanTaskRow) {
     const label = task.kind === "batch" ? task.batch.displayName ?? `班级组反馈（${task.batch.plans.length} 个班级）` : task.plan.displayName ?? `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "当前班级"}`;
     if (!window.confirm(`归档“${label}”吗？\n已生成正文、课堂事实和导出历史都会保留；归档后同一材料可建立新计划。`)) return;
     setBusyId(task.id); setError(""); setNotice("");
@@ -199,7 +244,7 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, onO
 
   return <section className={styles.panel} aria-label="反馈计划选择器">
     <header className={styles.header}>
-      <div><strong>反馈计划</strong><span>{loading ? "正在读取…" : currentState ? `${currentState === "completed" ? "已完成反馈生成" : "未完成反馈生成"} · ${tasks.length} 个未归档计划` : `尚未建立反馈计划 · ${tasks.length} 个未归档计划`}</span></div>
+      <div><strong>反馈计划</strong><span>{loading ? "正在读取…" : feedbackPlanManagerStatusText(tasks, currentState)}</span></div>
       <Button uiSize="sm" variant="ghost" onClick={() => void load()} disabled={loading || Boolean(busyId)}>刷新</Button>
     </header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
@@ -207,7 +252,7 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, onO
     {!loading && tasks.length === 0 ? <p className={styles.empty}>尚未建立反馈计划。历史计划可在<Link href="/history?archived=true">反馈历史</Link>中查看。</p> : <div className={styles.list}>
       {groups.map((group) => <section className={styles.group} key={group.name}><h3>{group.name}</h3>{group.tasks.map((task) => {
         const isBatch = task.kind === "batch";
-        const displayState = isBatch ? batchDisplayState(task.batch) : planDisplayState(task.plan);
+        const displayState = isBatch ? feedbackPlanBatchDisplayState(task.batch) : feedbackPlanDisplayState(task.plan);
         const isCurrent = isBatch ? task.id === currentBatchId : !currentBatchId && task.id === currentPlanId;
         const openTarget = isBatch ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
         const href = taskHref(openTarget);

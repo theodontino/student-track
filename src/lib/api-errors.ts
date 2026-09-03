@@ -9,6 +9,7 @@ export const API_ERROR_CODES = [
   "stream_protocol_error",
   "cancelled",
   "forbidden_origin",
+  "feature_unavailable",
   "internal_error",
 ] as const;
 

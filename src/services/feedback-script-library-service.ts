@@ -6,6 +6,8 @@ import type {
   FeedbackScriptLibrary,
   FeedbackScriptLibraryResponse,
 } from "@/lib/feedback-script-library";
+import { assertSemesterAvailable } from "@/services/academic-scope-recycle-service";
+import { ServiceError } from "@/services/service-error";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_ENTRIES = 100;
@@ -87,7 +89,7 @@ export function parseFeedbackScriptWorkbook(buffer: ArrayBuffer): ParsedFeedback
   const { rows, headerRowIndex } = selected;
   const headers = (rows[headerRowIndex] ?? []).map(normalizeHeader);
   const lessonIndex = findHeaderIndex(headers, ["课次", "课次/进度", "进度"]);
-  const topicIndex = findHeaderIndex(headers, ["教研内容", "课程内容", "课题", "主题"]);
+  const topicIndex = findHeaderIndex(headers, ["课程主题", "教研内容", "课程内容", "课题", "主题"]);
   const groupIndex = findHeaderIndex(headers, ["群反馈"]);
   const assessmentIndex = findHeaderIndex(headers, ["统一测评说明", "统一出门测说明", "出门测统一说明", "测评说明"]);
   const perfectIndex = findHeaderIndex(headers, ["全对的私反馈", "全对私反馈"]);
@@ -159,7 +161,7 @@ export function parseFeedbackScriptWorkbook(buffer: ArrayBuffer): ParsedFeedback
       note,
       material: {
         ...parsedMaterial,
-        lessonTitle: parsedMaterial.lessonTitle || topic,
+        lessonTitle: topic || parsedMaterial.lessonTitle,
         scriptLessonNumber: lessonNumber,
         perfectPrivateTemplate: perfectPrivateFeedback || undefined,
         errorPrivateTemplate: errorPrivateFeedback || undefined,
@@ -187,7 +189,7 @@ function materialFromEntry(entry: FeedbackScriptEntry, updatedAt: string): Lesso
     : parseLessonFeedbackMaterial(entry.groupFeedback, "");
   return {
     ...parsed,
-    lessonTitle: parsed.lessonTitle || entry.topic,
+    lessonTitle: entry.topic || parsed.lessonTitle,
     scriptLessonNumber: entry.lessonNumber,
     perfectPrivateTemplate: parsed.perfectPrivateTemplate ?? (entry.perfectPrivateFeedback || undefined),
     errorPrivateTemplate: parsed.errorPrivateTemplate ?? (entry.errorPrivateFeedback || undefined),
@@ -246,6 +248,7 @@ export async function getFeedbackScriptLibrary(
   semesterId: string,
   sessionCode?: string,
 ): Promise<FeedbackScriptLibraryResponse> {
+  await assertSemesterAvailable(semesterId, prisma);
   const semester = await prisma.semester.findUnique({
     where: { id: semesterId },
     select: {
@@ -266,34 +269,64 @@ export async function saveFeedbackScriptLibrary(
   semesterId: string,
   buffer: ArrayBuffer,
   sessionCode?: string,
+  replaceExisting = false,
 ): Promise<FeedbackScriptLibraryResponse> {
   const parsed = parseFeedbackScriptWorkbook(buffer);
-  const existing = await prisma.semester.findUnique({ where: { id: semesterId }, select: { id: true } });
-  if (!existing) throw new Error("学期不存在");
   const updatedAt = new Date();
   const normalized = normalizeLibrary(parsed, updatedAt.toISOString());
-  const updated = await prisma.semester.update({
-    where: { id: semesterId },
-    data: {
-      feedbackScriptLibraryName: parsed.name,
-      feedbackScriptLibraryJson: JSON.stringify({
-        version: normalized.version,
-        name: normalized.name,
-        entries: normalized.entries,
-        warnings: normalized.warnings,
-      }),
-      feedbackScriptLibraryUpdatedAt: updatedAt,
-    },
-    select: {
-      feedbackScriptLibraryName: true,
-      feedbackScriptLibraryJson: true,
-      feedbackScriptLibraryUpdatedAt: true,
-    },
+  const updated = await prisma.$transaction(async (tx) => {
+    await assertSemesterAvailable(semesterId, tx);
+    const existing = await tx.semester.findUnique({
+      where: { id: semesterId },
+      select: { id: true, feedbackScriptLibraryJson: true },
+    });
+    if (!existing) throw new ServiceError("学期不存在", 404);
+    if (existing.feedbackScriptLibraryJson && !replaceExisting) {
+      throw new ServiceError("当前学期已有公共材料库，整体替换前需要明确确认", 409);
+    }
+    return tx.semester.update({
+      where: { id: semesterId },
+      data: {
+        feedbackScriptLibraryName: parsed.name,
+        feedbackScriptLibraryJson: JSON.stringify({
+          version: normalized.version,
+          name: normalized.name,
+          entries: normalized.entries,
+          warnings: normalized.warnings,
+        }),
+        feedbackScriptLibraryUpdatedAt: updatedAt,
+      },
+      select: {
+        feedbackScriptLibraryName: true,
+        feedbackScriptLibraryJson: true,
+        feedbackScriptLibraryUpdatedAt: true,
+      },
+    });
   });
   return {
     library: parseStoredLibrary(updated),
     recommendedLessonNumber: await recommendedLessonNumber(prisma, semesterId, sessionCode),
   };
+}
+
+export function createFeedbackScriptLibraryTemplate() {
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ["学期公共材料导入模板（示例内容请按需替换或删除）"],
+    ["课次", "课程主题", "群反馈", "统一测评说明", "全对的私反馈", "有错误的私反馈", "备注"],
+    [1, "示例课程主题", "示例群反馈", "示例统一测评说明", "示例全对私反馈", "示例有错误私反馈", "示例备注"],
+  ]);
+  worksheet["!cols"] = [
+    { wch: 10 },
+    { wch: 24 },
+    { wch: 42 },
+    { wch: 32 },
+    { wch: 36 },
+    { wch: 36 },
+    { wch: 24 },
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "学期公共材料");
+  return new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
 }
 
 export async function getFeedbackScriptMaterial(

@@ -9,6 +9,7 @@ import type {
   LocalToolsStatusResponse,
   LocalToolStatus,
 } from "@/lib/local-tool-status";
+import { assertProductCapability } from "@/lib/product-capability-guard";
 
 interface LocalToolStatusOptions {
   cwd?: string;
@@ -344,6 +345,7 @@ export function inspectWccHandoff(options: LocalToolStatusOptions = {}): LocalTo
 }
 
 export function getLocalToolsStatus(options: LocalToolStatusOptions = {}): LocalToolsStatusResponse {
+  assertProductCapability("localToolStatus");
   return {
     checkedAt: new Date().toISOString(),
     tools: [inspectFunASR(options), inspectWccHandoff(options)],

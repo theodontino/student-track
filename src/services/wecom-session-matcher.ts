@@ -28,7 +28,7 @@ export async function findSessionByDateAndClass(
   query: SessionByDateAndClass,
 ): Promise<string | null> {
   const session = await prisma.classSession.findFirst({
-    where: { classId: query.classId, date: query.date },
+    where: { classId: query.classId, date: query.date, semester: { deletedAt: null }, class: { deletedAt: null } },
     // date asc + code asc：date asc 处理跨日，code asc 解决同日多节时稳定取第一节。
     orderBy: [{ date: "asc" }, { code: "asc" }],
     select: { code: true },
@@ -50,7 +50,12 @@ export async function buildClassEarliestSessionMap(
   const result = new Map<string, string>();
   if (range.fromDate > range.toDate) return result;
   const sessions = await prisma.classSession.findMany({
-    where: { date: { gte: range.fromDate, lte: range.toDate }, classId: { not: null } },
+    where: {
+      date: { gte: range.fromDate, lte: range.toDate },
+      classId: { not: null },
+      semester: { deletedAt: null },
+      class: { deletedAt: null },
+    },
     select: { code: true, classId: true, date: true },
     orderBy: [{ date: "asc" }, { code: "asc" }],
   });
@@ -157,6 +162,8 @@ export async function buildClassNearestSessionMap(
   const sessions = await prisma.classSession.findMany({
     where: {
       classId: { not: null },
+      semester: { deletedAt: null },
+      class: { deletedAt: null },
       ...(args.searchAllSemesters || !args.semesterId ? {} : { semesterId: args.semesterId }),
     },
     select: { code: true, classId: true, date: true },

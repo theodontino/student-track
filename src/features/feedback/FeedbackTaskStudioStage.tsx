@@ -27,6 +27,10 @@ type QueueFilter = "action" | "review" | "done" | "all";
 type QueueItem = FeedbackBatchClient["plans"][number]["items"][number];
 type QueuePlan = FeedbackBatchClient["plans"][number];
 type QueueTarget = { planId: string; itemId: string };
+type QueueEntry = {
+  item: Pick<QueueItem, "id" | "status">;
+  plan: { id: string; class: { id: string } };
+};
 
 const filterLabels: Record<QueueFilter, string> = { action: "待处理", review: "待复核", done: "已完成", all: "全部" };
 const itemStatusLabels: Record<string, string> = {
@@ -59,17 +63,45 @@ export function feedbackQueueCategory(status: string): Exclude<QueueFilter, "all
   return "action";
 }
 
+export function feedbackQueueMatches(entry: QueueEntry, filter: QueueFilter, classFilter: string) {
+  return (classFilter === "all" || entry.plan.class.id === classFilter)
+    && (filter === "all" || feedbackQueueCategory(entry.item.status) === filter);
+}
+
+export function defaultFeedbackQueueFilter(queue: readonly QueueEntry[], classFilter: string): QueueFilter {
+  const scoped = queue.filter((entry) => classFilter === "all" || entry.plan.class.id === classFilter);
+  return (["action", "review", "done"] as const).find((filter) => scoped.some((entry) => feedbackQueueCategory(entry.item.status) === filter)) ?? "action";
+}
+
+export function resolveFeedbackQueueTarget(
+  queue: readonly QueueEntry[],
+  filter: QueueFilter,
+  classFilter: string,
+  target: QueueTarget,
+): QueueTarget | null {
+  const filtered = queue.filter((entry) => feedbackQueueMatches(entry, filter, classFilter));
+  const current = filtered.find((entry) => entry.plan.id === target.planId && entry.item.id === target.itemId);
+  const resolved = current ?? filtered[0];
+  return resolved ? { planId: resolved.plan.id, itemId: resolved.item.id } : null;
+}
+
 function initialUrlValue(name: string, fallback: string) {
   if (typeof window === "undefined") return fallback;
   return new URLSearchParams(window.location.search).get(name) || fallback;
 }
 
-function writeQueueUrl(values: { itemId?: string; queue?: QueueFilter; classId?: string }) {
+function initialQueueFilter() {
+  const value = initialUrlValue("queue", "");
+  return value === "action" || value === "review" || value === "done" || value === "all" ? value : null;
+}
+
+function writeQueueUrl(values: { itemId?: string; queue?: QueueFilter | null; classId?: string }) {
   const url = new URL(window.location.href);
   if (values.itemId) url.searchParams.set("itemId", values.itemId); else url.searchParams.delete("itemId");
-  if (values.queue && values.queue !== "action") url.searchParams.set("queue", values.queue); else url.searchParams.delete("queue");
+  if (values.queue) url.searchParams.set("queue", values.queue); else url.searchParams.delete("queue");
   if (values.classId && values.classId !== "all") url.searchParams.set("scopeClassId", values.classId); else url.searchParams.delete("scopeClassId");
-  window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}`);
+  const search = url.searchParams.toString();
+  window.history.replaceState(window.history.state, "", `${url.pathname}${search ? `?${search}` : ""}${url.hash}`);
 }
 
 function singlePlanAsQueuePlan(plan: {
@@ -93,10 +125,7 @@ export function FeedbackTaskStudioStage(props: Props) {
   const { batchId, onPlanChange, planId } = props;
   const [batch, setBatch] = useState<FeedbackBatchClient | null>(null);
   const [singlePlan, setSinglePlan] = useState<QueuePlan | null>(null);
-  const [filter, setFilter] = useState<QueueFilter>(() => {
-    const value = initialUrlValue("queue", "action");
-    return value === "review" || value === "done" || value === "all" ? value : "action";
-  });
+  const [selectedFilter, setSelectedFilter] = useState<QueueFilter | null>(initialQueueFilter);
   const [classFilter, setClassFilter] = useState(() => initialUrlValue("scopeClassId", "all"));
   const [target, setTarget] = useState<QueueTarget>(() => ({ planId, itemId: initialUrlValue("itemId", "") }));
   const [queueOpen, setQueueOpen] = useState(false);
@@ -149,38 +178,64 @@ export function FeedbackTaskStudioStage(props: Props) {
 
   const plans = useMemo(() => batch?.plans ?? (singlePlan ? [singlePlan] : []), [batch?.plans, singlePlan]);
   const queue = useMemo(() => plans.flatMap((plan) => plan.items.map((item) => ({ item, plan }))), [plans]);
-  const filteredQueue = queue.filter(({ item, plan }) => (classFilter === "all" || plan.class.id === classFilter) && (filter === "all" || feedbackQueueCategory(item.status) === filter));
+  const filter = selectedFilter ?? defaultFeedbackQueueFilter(queue, classFilter);
+  const filteredQueue = queue.filter((entry) => feedbackQueueMatches(entry, filter, classFilter));
   const counts = (Object.keys(filterLabels) as QueueFilter[]).reduce<Record<QueueFilter, number>>((result, key) => {
-    result[key] = queue.filter(({ item, plan }) => (classFilter === "all" || plan.class.id === classFilter) && (key === "all" || feedbackQueueCategory(item.status) === key)).length;
+    result[key] = queue.filter((entry) => feedbackQueueMatches(entry, key, classFilter)).length;
     return result;
   }, { action: 0, review: 0, done: 0, all: 0 });
+  const queueReady = batchId ? batch?.id === batchId : singlePlan?.id === planId;
 
   useEffect(() => {
-    if (!queue.length || (target.itemId && queue.some(({ item, plan }) => item.id === target.itemId && plan.id === target.planId))) return;
-    const first = filteredQueue[0] ?? queue[0];
-    setTarget({ planId: first.plan.id, itemId: first.item.id });
-    if (first.plan.id !== planId) onPlanChange(feedbackStudioPlanTarget(first.plan));
-    writeQueueUrl({ itemId: first.item.id, queue: filter, classId: classFilter });
-  }, [classFilter, filter, filteredQueue, onPlanChange, planId, queue, target.itemId, target.planId]);
+    if (!queueReady) return;
+    const resolved = resolveFeedbackQueueTarget(queue, filter, classFilter, { planId: target.planId, itemId: target.itemId });
+    if (!resolved) {
+      if (!target.itemId && !target.planId) return;
+      setTarget({ planId: "", itemId: "" });
+      writeQueueUrl({ itemId: "", queue: selectedFilter, classId: classFilter });
+      return;
+    }
+    if (resolved.itemId === target.itemId && resolved.planId === target.planId) return;
+    setTarget(resolved);
+    const entry = queue.find(({ item, plan }) => item.id === resolved.itemId && plan.id === resolved.planId);
+    if (entry && entry.plan.id !== planId) onPlanChange(feedbackStudioPlanTarget(entry.plan));
+    writeQueueUrl({ itemId: resolved.itemId, queue: selectedFilter, classId: classFilter });
+  }, [classFilter, filter, onPlanChange, planId, queue, queueReady, selectedFilter, target.itemId, target.planId]);
 
   function selectItem(plan: QueuePlan, item: QueueItem) {
     setTarget({ planId: plan.id, itemId: item.id }); setQueueOpen(false);
-    writeQueueUrl({ itemId: item.id, queue: filter, classId: classFilter });
+    writeQueueUrl({ itemId: item.id, queue: selectedFilter, classId: classFilter });
     if (plan.id !== planId) onPlanChange(feedbackStudioPlanTarget(plan));
   }
 
   function changeFilter(next: QueueFilter) {
-    setFilter(next);
-    const first = queue.find(({ item, plan }) => (classFilter === "all" || plan.class.id === classFilter) && (next === "all" || feedbackQueueCategory(item.status) === next));
-    if (first) selectItem(first.plan, first.item);
-    writeQueueUrl({ itemId: first?.item.id ?? target.itemId, queue: next, classId: classFilter });
+    setSelectedFilter(next);
+    const resolved = resolveFeedbackQueueTarget(queue, next, classFilter, target);
+    const entry = resolved ? queue.find(({ item, plan }) => item.id === resolved.itemId && plan.id === resolved.planId) : null;
+    if (entry && resolved) {
+      setTarget(resolved); setQueueOpen(false);
+      writeQueueUrl({ itemId: resolved.itemId, queue: next, classId: classFilter });
+      if (entry.plan.id !== planId) onPlanChange(feedbackStudioPlanTarget(entry.plan));
+    }
+    else {
+      setTarget({ planId: "", itemId: "" });
+      writeQueueUrl({ itemId: "", queue: next, classId: classFilter });
+    }
   }
 
   function changeClassFilter(next: string) {
     setClassFilter(next);
-    const first = queue.find(({ item, plan }) => (next === "all" || plan.class.id === next) && (filter === "all" || feedbackQueueCategory(item.status) === filter));
-    if (first) selectItem(first.plan, first.item);
-    writeQueueUrl({ itemId: first?.item.id ?? target.itemId, queue: filter, classId: next });
+    const nextFilter = selectedFilter ?? defaultFeedbackQueueFilter(queue, next);
+    const resolved = resolveFeedbackQueueTarget(queue, nextFilter, next, target);
+    const entry = resolved ? queue.find(({ item, plan }) => item.id === resolved.itemId && plan.id === resolved.planId) : null;
+    if (entry && resolved) {
+      setTarget(resolved); setQueueOpen(false);
+      writeQueueUrl({ itemId: resolved.itemId, queue: selectedFilter, classId: next });
+      if (entry.plan.id !== planId) onPlanChange(feedbackStudioPlanTarget(entry.plan));
+    } else {
+      setTarget({ planId: "", itemId: "" });
+      writeQueueUrl({ itemId: "", queue: selectedFilter, classId: next });
+    }
   }
 
   function nextItem(currentItemId: string) {
@@ -203,20 +258,24 @@ export function FeedbackTaskStudioStage(props: Props) {
   if (!planId) return batchId && (!batch || batch.plans.length)
     ? <StatusBanner tone="info">正在打开班级组的首个班级计划…</StatusBanner>
     : <StatusBanner tone="danger">计划已建立但缺少可打开的班级单元。请从“反馈计划”重新打开。</StatusBanner>;
-  const activeQueueEntry = queue.find(({ item, plan }) => item.id === target.itemId && plan.id === target.planId) ?? queue[0];
+  const activeQueueEntry = filteredQueue.find(({ item, plan }) => item.id === target.itemId && plan.id === target.planId);
   return <div className={styles.studioStage}>
     <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成、批准和导出分别记录，失败项留在队列中重试。</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}{batch && ["queued", "running", "pause_requested"].includes(batch.status) && <Button variant="secondary" onClick={() => void batchAction("pause")} disabled={busy}>暂停整批</Button>}{batch?.status === "paused" && <Button variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续整批</Button>}{batch?.status === "failed" && <Button variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}<Button variant="ghost" onClick={props.onNewTask}>归档当前计划并新建</Button></div></header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}{notice && <StatusBanner tone="success">{notice}</StatusBanner>}
-    <button type="button" className="feedback-queue-mobile-trigger" onClick={() => setQueueOpen(true)}>{activeQueueEntry?.item.student?.name ?? "反馈队列"} · {itemStatusLabels[activeQueueEntry?.item.status ?? ""] ?? "选择条目"} · {Math.max(1, filteredQueue.findIndex(({ item, plan }) => item.id === target.itemId && plan.id === target.planId) + 1)}/{filteredQueue.length || queue.length}</button>
+    <button type="button" className="feedback-queue-mobile-trigger" onClick={() => setQueueOpen(true)}>{activeQueueEntry ? `${activeQueueEntry.item.student?.name ?? "反馈队列"} · ${itemStatusLabels[activeQueueEntry.item.status] ?? "选择条目"} · ${filteredQueue.findIndex(({ item, plan }) => item.id === target.itemId && plan.id === target.planId) + 1}/${filteredQueue.length}` : "当前筛选下没有学生任务"}</button>
     <div className="feedback-unified-studio">
       {queueOpen && <button type="button" className="feedback-queue-backdrop" aria-label="关闭反馈队列" onClick={() => setQueueOpen(false)} />}
       <aside className={`feedback-queue ${queueOpen ? "is-open" : ""}`} aria-label="反馈队列">
         <header><div><strong>反馈队列</strong><span>按班级与任务状态筛选；一次只处理一条</span></div><Button uiSize="sm" variant="ghost" onClick={() => setQueueOpen(false)}>关闭</Button></header>
         {plans.length > 1 && <label className="feedback-queue-class-filter">班级<select value={classFilter} onChange={(event) => changeClassFilter(event.target.value)}><option value="all">全部班级</option>{plans.map((plan) => <option key={plan.id} value={plan.class.id}>{plan.class.name ?? plan.class.code}</option>)}</select></label>}
         <div className="feedback-plan-studio-filters">{(Object.keys(filterLabels) as QueueFilter[]).map((key) => <button type="button" key={key} aria-pressed={filter === key} className={filter === key ? "is-active" : ""} onClick={() => changeFilter(key)}>{filterLabels[key]}<small>{counts[key]}</small></button>)}</div>
-        <nav className="feedback-queue-groups">{plans.filter((plan) => classFilter === "all" || plan.class.id === classFilter).map((plan) => <section key={plan.id}><header><div><strong>{plan.class.name ?? plan.class.code}</strong><small>生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></div>{plan.progress.failed > 0 && <Badge tone="danger">失败 {plan.progress.failed}</Badge>}</header><div>{plan.items.filter((item) => filter === "all" || feedbackQueueCategory(item.status) === filter).map((item) => { const active = target.planId === plan.id && target.itemId === item.id; return <button type="button" key={`${plan.id}:${item.id}`} aria-current={active ? "true" : undefined} className={active ? "is-active" : ""} onClick={() => selectItem(plan, item)}><span><strong>{item.student?.name ?? (item.studentId ? "学生信息待加载" : "班级公共反馈")}</strong><small>{item.student?.studentId ?? (item.studentId ? "身份待加载" : "公共条目")} · {plan.class.name ?? plan.class.code}</small></span><Badge tone={feedbackQueueCategory(item.status) === "done" ? "success" : item.status === "generation_failed" || item.status === "stale" ? "danger" : "warning"}>{itemStatusLabels[item.status] ?? item.status}</Badge></button>; })}</div></section>)}</nav>
+        <nav className="feedback-queue-groups">{!filteredQueue.length
+          ? <p className="feedback-queue-empty" role="status">当前班级与任务状态下没有学生任务。</p>
+          : plans.filter((plan) => (classFilter === "all" || plan.class.id === classFilter) && plan.items.some((item) => feedbackQueueMatches({ item, plan }, filter, classFilter))).map((plan) => <section key={plan.id}><header><div><strong>{plan.class.name ?? plan.class.code}</strong><small>生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></div>{plan.progress.failed > 0 && <Badge tone="danger">失败 {plan.progress.failed}</Badge>}</header><div>{plan.items.filter((item) => feedbackQueueMatches({ item, plan }, filter, classFilter)).map((item) => { const active = target.planId === plan.id && target.itemId === item.id; return <button type="button" key={`${plan.id}:${item.id}`} aria-current={active ? "true" : undefined} className={active ? "is-active" : ""} onClick={() => selectItem(plan, item)}><span><strong>{item.student?.name ?? (item.studentId ? "学生信息待加载" : "班级公共反馈")}</strong><small>{item.student?.studentId ?? (item.studentId ? "身份待加载" : "公共条目")} · {plan.class.name ?? plan.class.code}</small></span><Badge tone={feedbackQueueCategory(item.status) === "done" ? "success" : item.status === "generation_failed" || item.status === "stale" ? "danger" : "warning"}>{itemStatusLabels[item.status] ?? item.status}</Badge></button>; })}</div></section>)}</nav>
       </aside>
-      <div className="feedback-unified-studio__content"><FeedbackPlanStudio workspace={workspace} focusItemId={target.itemId} externalNavigator onNextItem={nextItem} batchControl={{ active: Boolean(batch), status: batch?.status ?? "", busy }} /></div>
+      <div className="feedback-unified-studio__content" aria-label="计划条目详情">{activeQueueEntry
+        ? <FeedbackPlanStudio workspace={workspace} focusItemId={activeQueueEntry.item.id} externalNavigator onNextItem={nextItem} batchControl={{ active: Boolean(batch), status: batch?.status ?? "", busy }} />
+        : <StatusBanner tone="info">{queueReady ? "当前班级与任务状态下没有学生任务，请调整左侧筛选。" : "正在读取反馈队列…"}</StatusBanner>}</div>
     </div>
   </div>;
 }

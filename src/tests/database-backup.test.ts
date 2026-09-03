@@ -2,9 +2,11 @@ import { createClient } from "@libsql/client";
 import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDatabaseBackup,
+  resolveDatabasePath,
   restoreDatabaseBackup,
   verifyDatabaseBackup,
   verifyDatabaseFile,
@@ -13,7 +15,7 @@ import {
 let testRoot = "";
 
 async function createTestDatabase(databasePath: string) {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: pathToFileURL(databasePath).href });
   for (const table of [
     "Class",
     "Student",
@@ -35,6 +37,11 @@ afterEach(async () => {
 });
 
 describe("database backup and restore", () => {
+  it("resolves standards-compliant SQLite file URLs", () => {
+    const databasePath = resolve(tmpdir(), "Student Track", "database", "student-track.db");
+    expect(resolveDatabasePath(pathToFileURL(databasePath).href)).toBe(databasePath);
+  });
+
   it("creates, verifies, and restores a consistent snapshot", async () => {
     testRoot = await mkdtemp(resolve(tmpdir(), "student-track-backup-"));
     const databasePath = resolve(testRoot, "live.db");
@@ -46,7 +53,7 @@ describe("database backup and restore", () => {
       verification: { integrity: "ok", rowCounts: { Student: 1 } },
     });
 
-    const client = createClient({ url: `file:${databasePath}` });
+    const client = createClient({ url: pathToFileURL(databasePath).href });
     await client.execute("INSERT INTO Student (id) VALUES ('student-2')");
     client.close();
 

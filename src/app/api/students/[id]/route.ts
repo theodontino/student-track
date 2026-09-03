@@ -14,7 +14,7 @@ import {
 function studentInclude(semesterId: string) {
   return {
     enrollments: {
-      where: { semesterId },
+      where: { semesterId, semester: { deletedAt: null }, class: { deletedAt: null } },
       include: { class: { select: { id: true, code: true, name: true, semesterId: true } } },
     },
     studentLabels: { include: { label: { select: { id: true, name: true } } } },
@@ -62,7 +62,12 @@ export async function GET(
     const asOfDate = localDate(new Date());
     // The detail page is semester-scoped even when a legacy caller omitted
     // semesterId: requireSemesterId has already resolved the current term.
-    const sessionFilter = { semesterId, date: { lte: asOfDate } };
+    const sessionFilter = {
+      semesterId,
+      date: { lte: asOfDate },
+      semester: { deletedAt: null },
+      OR: [{ classId: null }, { class: { deletedAt: null } }],
+    };
     const relatedSessionFilter = { session: sessionFilter };
     const metricSessionFilter = { session: { is: sessionFilter } };
 
@@ -83,7 +88,7 @@ export async function GET(
       }),
       semesterSummary
         ? prisma.attendance.findMany({
-            where: { studentId: id, session: { semesterId, date: { lte: asOfDate } } },
+            where: { studentId: id, session: sessionFilter },
             include: { session: { select: { date: true, semesterNumber: true, code: true } } },
             orderBy: [{ session: { date: "desc" } }, { createdAt: "desc" }],
           })

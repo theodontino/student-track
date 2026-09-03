@@ -4,6 +4,7 @@ import type { ParseResult, ParsedStudent } from "@/lib/parser";
 import { completeClassAttendance } from "@/lib/nlAttendance";
 import { normalizeDimensionScore } from "@/config/rules";
 import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 interface ParsedRosterRow {
   fileName: string;
@@ -185,6 +186,7 @@ export async function createAssistantRosterDraft(
     include: { class: { select: { id: true, code: true, name: true } } },
   });
   if (!session) throw new Error("课次不存在");
+  await assertSessionAvailable(session.id, prisma);
   if (!session.classId || !session.class) throw new Error("该课次未关联班级");
 
   const roster = await prisma.student.findMany({

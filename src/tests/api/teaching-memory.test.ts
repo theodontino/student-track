@@ -74,6 +74,27 @@ describe("/api/teaching-memory", () => {
     expect(mocks.runFindMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ phase: "hot-to-warm", status: "succeeded" }),
     }));
+    expect(mocks.classFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { deletedAt: null, semester: { deletedAt: null } },
+    }));
+  });
+
+  it("hides class-scoped drafts and undo runs whose class is not available", async () => {
+    mocks.teachingMemoryFindMany.mockResolvedValue([
+      { id: "memory-active", scopeType: "class", scopeId: "class-1", memoryTier: "long-term", status: "draft" },
+      { id: "memory-recycled", scopeType: "class", scopeId: "class-recycled", memoryTier: "long-term", status: "draft" },
+    ]);
+    mocks.runFindMany.mockResolvedValue([
+      { id: "run-active", classId: "class-1" },
+      { id: "run-recycled", classId: "class-recycled" },
+    ]);
+
+    const response = await GET(new NextRequest("http://127.0.0.1:3000/api/teaching-memory?operations=1"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      drafts: [{ id: "memory-active" }],
+      undoableRuns: [{ id: "run-active" }],
+    });
   });
 
   it("triggers long-term drafts for the selected class and preserves controlled skip details", async () => {

@@ -1,14 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import { GroupLessonUpdateSchema } from "@/lib/contracts/group-lessons";
-import { deleteGroupLesson, updateGroupLesson } from "@/services/group-lesson-service";
+import { deleteGroupLesson, reapplyGroupLessonSemesterMaterial, updateGroupLesson } from "@/services/group-lesson-service";
 import { ServiceError } from "@/services/service-error";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 
 function failure(error: unknown, fallback: string) {
+  if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
   if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
   if (error instanceof ZodError) return NextResponse.json({ error: "共同课参数无效" }, { status: 400 });
   console.error(fallback, error);
   return NextResponse.json({ error: fallback }, { status: 500 });
+}
+
+const GroupLessonActionSchema = z.object({
+  action: z.literal("reapply_semester_material"),
+  replaceExisting: z.boolean().default(false),
+});
+
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    const input = GroupLessonActionSchema.parse(await request.json().catch(() => null));
+    return NextResponse.json({ lesson: await reapplyGroupLessonSemesterMaterial(id, input.replaceExisting) });
+  } catch (error) {
+    return failure(error, "重新套用同号材料失败");
+  }
 }
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

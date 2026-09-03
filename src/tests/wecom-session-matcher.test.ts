@@ -83,7 +83,12 @@ describe("findSessionByDateAndClass", () => {
     });
     expect(code).toBe("2026060201");
     expect(findFirst).toHaveBeenCalledWith({
-      where: { classId: "class-1", date: "2026-06-02" },
+      where: {
+        classId: "class-1",
+        date: "2026-06-02",
+        semester: { deletedAt: null },
+        class: { deletedAt: null },
+      },
       orderBy: [{ date: "asc" }, { code: "asc" }],
       select: { code: true },
     });
@@ -145,7 +150,12 @@ describe("buildClassEarliestSessionMap", () => {
       toDate: "2026-06-07",
     });
     expect(findMany).toHaveBeenCalledWith({
-      where: { date: { gte: "2026-06-01", lte: "2026-06-07" }, classId: { not: null } },
+      where: {
+        date: { gte: "2026-06-01", lte: "2026-06-07" },
+        classId: { not: null },
+        semester: { deletedAt: null },
+        class: { deletedAt: null },
+      },
       select: { code: true, classId: true, date: true },
       orderBy: [{ date: "asc" }, { code: "asc" }],
     });
@@ -326,7 +336,12 @@ describe("buildClassNearestSessionMap", () => {
     const prisma = fakePrisma({ classSession: { findMany } });
     await buildClassNearestSessionMap(prisma, { anchorDate: "2026-06-03", semesterId: "sem-1" });
     expect(findMany).toHaveBeenCalledWith({
-      where: { classId: { not: null }, semesterId: "sem-1" },
+      where: {
+        classId: { not: null },
+        semester: { deletedAt: null },
+        class: { deletedAt: null },
+        semesterId: "sem-1",
+      },
       select: { code: true, classId: true, date: true },
     });
   });
@@ -340,7 +355,11 @@ describe("buildClassNearestSessionMap", () => {
       searchAllSemesters: true,
     });
     expect(findMany).toHaveBeenCalledWith({
-      where: { classId: { not: null } },
+      where: {
+        classId: { not: null },
+        semester: { deletedAt: null },
+        class: { deletedAt: null },
+      },
       select: { code: true, classId: true, date: true },
     });
   });

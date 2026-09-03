@@ -17,6 +17,8 @@ import {
   compactHotGenerationRecordsForClass,
   confirmLongTermMemory,
   generateLongTermMemoryDraftsForClass,
+  getConfirmedTeachingMemory,
+  listGenerationHistory,
   recordSuccessfulGeneration,
   undoHotToWarmCompaction,
 } from "@/services/generation-memory-service";
@@ -95,6 +97,72 @@ afterEach(async () => {
 });
 
 describe("generation memory retention", () => {
+  it("blocks class-scoped memory reads and writes while the class is in the recycle bin", async () => {
+    await prisma.class.update({ where: { id: TEST_FIXTURE.class.id }, data: { deletedAt: new Date() } });
+    try {
+      await expect(compactHotGenerationRecordsForClass(TEST_FIXTURE.class.id)).rejects.toMatchObject({ code: "scope_in_recycle_bin" });
+      await expect(generateLongTermMemoryDraftsForClass(TEST_FIXTURE.class.id)).rejects.toMatchObject({ code: "scope_in_recycle_bin" });
+      await expect(listGenerationHistory({ classId: TEST_FIXTURE.class.id })).rejects.toMatchObject({ code: "scope_in_recycle_bin" });
+      await expect(getConfirmedTeachingMemory({ classId: TEST_FIXTURE.class.id })).rejects.toMatchObject({ code: "scope_in_recycle_bin" });
+    } finally {
+      await prisma.class.update({ where: { id: TEST_FIXTURE.class.id }, data: { deletedAt: null } });
+    }
+  });
+
+  it("blocks an explicitly recycled semester and omits its student semester memory from aggregate reads", async () => {
+    const memory = await prisma.teachingMemory.create({
+      data: {
+        scopeType: "student",
+        scopeId: TEST_FIXTURE.students[0].id,
+        semesterKey: `semester:${TEST_FIXTURE.semester.id}`,
+        semesterId: TEST_FIXTURE.semester.id,
+        memoryTier: "semester",
+        status: "confirmed",
+        content: JSON.stringify({ version: 1, items: [] }),
+        sourceRefs: "[]",
+        sourceFingerprint: "test-recycled-semester-memory",
+      },
+    });
+    await prisma.semester.update({ where: { id: TEST_FIXTURE.semester.id }, data: { deletedAt: new Date() } });
+    try {
+      await expect(getConfirmedTeachingMemory({
+        studentId: TEST_FIXTURE.students[0].id,
+        semesterId: TEST_FIXTURE.semester.id,
+      })).rejects.toMatchObject({ code: "scope_in_recycle_bin" });
+      const aggregate = await getConfirmedTeachingMemory({ studentId: TEST_FIXTURE.students[0].id });
+      expect(aggregate.map((item) => item.id)).not.toContain(memory.id);
+    } finally {
+      await prisma.semester.update({ where: { id: TEST_FIXTURE.semester.id }, data: { deletedAt: null } });
+    }
+  });
+
+  it("omits recycled class records from the global generation history", async () => {
+    const recycledClass = await prisma.class.create({
+      data: { semesterId: TEST_FIXTURE.semester.id, code: "TEST-MEMORY-RECYCLED", name: "回收记忆班", deletedAt: new Date() },
+    });
+    const base = {
+      taskType: "feedback",
+      stage: "routine",
+      lifecycle: "hot",
+      semesterId: TEST_FIXTURE.semester.id,
+      sourceRefs: "[]",
+      promptVersion: "test-v1",
+      modelName: "test",
+      modelSettings: "{}",
+      outputSnapshot: "{}",
+    } as const;
+    const active = await prisma.generationRecord.create({ data: { ...base, classId: TEST_FIXTURE.class.id, sourceFingerprint: "test-global-history-active" } });
+    const recycled = await prisma.generationRecord.create({ data: { ...base, classId: recycledClass.id, sourceFingerprint: "test-global-history-recycled" } });
+    try {
+      const history = await listGenerationHistory({});
+      expect(history.map((item) => item.id)).toContain(active.id);
+      expect(history.map((item) => item.id)).not.toContain(recycled.id);
+    } finally {
+      await prisma.class.delete({ where: { id: recycledClass.id } });
+    }
+  });
+
+
   it("keeps the latest five completed sessions hot, compacts older adopted output, and can undo", async () => {
     for (let index = 0; index < extraSessionIds.length; index += 1) {
       const number = index + 3;

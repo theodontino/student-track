@@ -328,6 +328,28 @@ describe("core transactional workflows", () => {
     await prisma.classSession.delete({ where: { id: created.id } });
   });
 
+  it("blocks core session writes while the class is in the recycle bin", async () => {
+    const blankSession = await prisma.classSession.create({
+      data: {
+        code: `BLANK-${randomUUID().slice(0, 8)}`,
+        semesterId,
+        semesterNumber: 2,
+        date: "2098-02-03",
+        classId,
+      },
+    });
+    const draft = await prisma.draftRecord.create({
+      data: { rawText: "合成测试", parsedResult: JSON.stringify({ students: [], alert_suggestion: "" }), sessionCode },
+    });
+    draftIds.push(draft.id);
+    await prisma.class.update({ where: { id: classId }, data: { deletedAt: new Date() } });
+
+    await expect(updateSessionAttendance(sessionId, [{ studentId: studentIds[0], present: false }])).rejects.toMatchObject({ status: 409 });
+    await expect(processDraftReview({ draftId: draft.id, action: "reject" })).rejects.toMatchObject({ status: 409 });
+    await expect(deleteClassSession({ semesterId, code: blankSession.code })).rejects.toMatchObject({ status: 409 });
+    await expect(prisma.classSession.findUnique({ where: { id: blankSession.id } })).resolves.not.toBeNull();
+  });
+
   it("excludes inactive students from a newly created attendance roster without changing history", async () => {
     await prisma.studentClassEnrollment.update({
       where: { studentId_semesterId: { studentId: studentIds[1], semesterId } },

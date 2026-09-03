@@ -247,6 +247,19 @@ export function createEmptyLessonFeedbackMaterial(sessionCode = ""): LessonFeedb
   return { ...EMPTY_MATERIAL, sessionCode };
 }
 
+export function mergeEditedLessonMaterial(
+  existing: LessonFeedbackMaterial | undefined,
+  groupFeedbackRaw: string,
+  assessmentBriefRaw: string,
+) {
+  const parsed = parseLessonFeedbackMaterial(groupFeedbackRaw, assessmentBriefRaw);
+  return {
+    ...existing,
+    ...parsed,
+    lessonTitle: parsed.lessonTitle || existing?.lessonTitle || "",
+  };
+}
+
 export function parseLessonFeedbackMaterial(
   groupFeedbackRaw: string,
   assessmentBriefRaw: string,
@@ -364,6 +377,8 @@ export function lessonMaterialHasContent(material: LessonFeedbackMaterial) {
     material.groupFeedbackRaw
     || material.assessmentBriefRaw
     || material.lessonTitle
+    || material.perfectPrivateTemplate
+    || material.errorPrivateTemplate
     || material.classroomContent.length
     || material.classroomFocus.length
     || material.classroomExplanation.length

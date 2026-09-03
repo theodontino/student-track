@@ -16,6 +16,7 @@ import {
   getTeachingSummary,
 } from "@/services/teaching-summary-service";
 import {
+  listTeacherObservations,
   persistObservationCandidates,
   updateTeacherObservationStatus,
 } from "@/services/teacher-observation-service";
@@ -32,6 +33,25 @@ beforeEach(() => {
 });
 
 describe("teaching summary facts", () => {
+  it("blocks a recycled class session and excludes it from a date summary", async () => {
+    await prisma.class.update({ where: { id: TEST_FIXTURE.class.id }, data: { deletedAt: new Date() } });
+    try {
+      await expect(buildTeachingSummaryContext(TeachingSummaryRequestSchema.parse({
+        scope: { type: "session", sessionCode: TEST_FIXTURE.sessions[0].code },
+        includeCommunications: false,
+      }))).rejects.toMatchObject({ code: "scope_in_recycle_bin" });
+
+      const date = await buildTeachingSummaryContext(TeachingSummaryRequestSchema.parse({
+        scope: { type: "date", semesterId: TEST_FIXTURE.semester.id, date: TEST_FIXTURE.sessions[1].date },
+        includeCommunications: false,
+      }));
+      expect(date.facts.sessions.map((session) => session.classId)).not.toContain(TEST_FIXTURE.class.id);
+      expect(date.facts.sessions.map((session) => session.code)).not.toContain(TEST_FIXTURE.sessions[1].code);
+    } finally {
+      await prisma.class.update({ where: { id: TEST_FIXTURE.class.id }, data: { deletedAt: null } });
+    }
+  });
+
   it("builds deterministic session and date facts without calling an LLM", async () => {
     await prisma.feedbackPlan.create({
       data: {
@@ -279,6 +299,36 @@ describe("teaching summary facts", () => {
 });
 
 describe("teacher observation persistence", () => {
+  it("hides recycled evidence and blocks status changes through a direct observation id", async () => {
+    await persistObservationCandidates(prisma, [{
+      studentId: TEST_FIXTURE.students[0].id,
+      kind: "repeated-parent-concern",
+      topic: "recycle-boundary",
+      title: "回收范围观察",
+      evidenceSummary: "仅用于回收边界测试。",
+      communicationIds: ["test-communication-1"],
+      relatedSessionId: TEST_FIXTURE.sessions[0].id,
+    }], "test-v1");
+    const observation = await prisma.teacherObservation.findFirstOrThrow({
+      where: { topic: "recycle-boundary" },
+    });
+
+    await prisma.class.update({ where: { id: TEST_FIXTURE.class.id }, data: { deletedAt: new Date() } });
+    try {
+      await expect(listTeacherObservations({ observationId: observation.id })).resolves.toEqual([]);
+      await expect(listTeacherObservations({ classId: TEST_FIXTURE.class.id })).rejects.toMatchObject({
+        code: "scope_in_recycle_bin",
+      });
+      await expect(updateTeacherObservationStatus(observation.id, "handled")).rejects.toMatchObject({
+        code: "scope_in_recycle_bin",
+      });
+      await expect(prisma.teacherObservation.findUnique({ where: { id: observation.id } }))
+        .resolves.toMatchObject({ status: "new" });
+    } finally {
+      await prisma.class.update({ where: { id: TEST_FIXTURE.class.id }, data: { deletedAt: null } });
+    }
+  });
+
   it("deduplicates sources, preserves state without new evidence and reopens on new evidence", async () => {
     const first = {
       studentId: TEST_FIXTURE.students[0].id,

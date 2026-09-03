@@ -7,12 +7,18 @@ import { AppIcon } from "@/components/AppIcon";
 import { IconButton } from "@/components/ui";
 import { applyTeachingContext, readStoredTeachingContext } from "@/features/teaching-context/url-context";
 import { useWeComAccess } from "@/features/useWeComAccess";
+import {
+  getProductCapabilities,
+  type ProductCapabilities,
+  type ProductCapability,
+} from "@/lib/product-edition";
 
 type NavigationItem = {
   href: string;
   label: string;
   icon: Parameters<typeof AppIcon>[0]["name"];
   context?: "semester" | "full";
+  capability?: ProductCapability;
 };
 
 const baseGroups: Array<{ label: string; items: NavigationItem[] }> = [
@@ -23,7 +29,7 @@ const baseGroups: Array<{ label: string; items: NavigationItem[] }> = [
   { label: "教学工作", items: [
     { href: "/feedback", label: "课后工作台", icon: "feedback", context: "full" },
     { href: "/quick-score", label: "手动评分", icon: "score", context: "full" },
-    { href: "/diarize", label: "录音转写", icon: "audio" },
+    { href: "/diarize", label: "录音转写", icon: "audio", capability: "audioTranscription" },
   ] },
   { label: "学生与课程", items: [
     { href: "/students", label: "学生档案", icon: "students", context: "semester" },
@@ -43,18 +49,18 @@ function isActive(pathname: string, href: string) {
   return pathname.startsWith(href);
 }
 
-function getNavigationGroups(wecomEnabled: boolean) {
-  if (!wecomEnabled) return baseGroups;
+function getNavigationGroups(wecomEnabled: boolean, capabilities: ProductCapabilities) {
+  if (capabilities.wecomIntegration && !wecomEnabled) return baseGroups;
   return [
     ...baseGroups.slice(0, 4),
-    { label: "家校工具", items: [{ href: "/wecom", label: "企微家校", icon: "wecom" as const }] },
+    { label: "家校工具", items: [{ href: "/wecom", label: "企微家校", icon: "wecom" as const, capability: "wecomIntegration" as const }] },
     ...baseGroups.slice(4),
   ];
 }
 
-function Navigation({ pathname, wecomEnabled, onNavigate }: { pathname: string; wecomEnabled: boolean; onNavigate?: () => void }) {
+function Navigation({ pathname, wecomEnabled, capabilities, onNavigate }: { pathname: string; wecomEnabled: boolean; capabilities: ProductCapabilities; onNavigate?: () => void }) {
   const router = useRouter();
-  const groups = getNavigationGroups(wecomEnabled);
+  const groups = getNavigationGroups(wecomEnabled, capabilities);
 
   function navigateWithContext(event: React.MouseEvent<HTMLAnchorElement>, item: NavigationItem) {
     onNavigate?.();
@@ -82,6 +88,9 @@ function Navigation({ pathname, wecomEnabled, onNavigate }: { pathname: string; 
             <p>{group.label}</p>
             {group.items.map((item) => {
               const active = isActive(pathname, item.href);
+              if (item.capability && !capabilities[item.capability]) {
+                return <span key={item.href} className="app-nav__disabled" aria-disabled="true"><AppIcon name={item.icon} /><span>{item.label}</span><small>Full 版功能</small></span>;
+              }
               return <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={active ? "is-active" : ""} onClick={(event) => navigateWithContext(event, item)}><AppIcon name={item.icon} />{item.label}</Link>;
             })}
           </div>
@@ -100,7 +109,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const { enabled: wecomEnabled } = useWeComAccess();
-  const groups = useMemo(() => getNavigationGroups(wecomEnabled), [wecomEnabled]);
+  const capabilities = getProductCapabilities();
+  const groups = useMemo(() => getNavigationGroups(wecomEnabled, capabilities), [capabilities, wecomEnabled]);
   const currentLabel = useMemo(() => groups.flatMap((group) => group.items).find((item) => isActive(pathname, item.href))?.label ?? "Student Track", [groups, pathname]);
 
   useEffect(() => setOpen(false), [pathname]);
@@ -120,12 +130,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-shell">
       <a className="app-skip-link" href="#main-content">跳到主要内容</a>
-      <aside className="app-sidebar"><Navigation pathname={pathname} wecomEnabled={wecomEnabled} /></aside>
+      <aside className="app-sidebar"><Navigation pathname={pathname} wecomEnabled={wecomEnabled} capabilities={capabilities} /></aside>
       <div className="app-mobile-bar">
         <IconButton label="打开导航" onClick={() => setOpen(true)}><AppIcon name="menu" /></IconButton>
         <div><small>Student Track</small><strong>{currentLabel}</strong></div>
       </div>
-      {open && <div className="app-drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}><aside className="app-drawer" role="dialog" aria-modal="true" aria-label="主导航抽屉"><IconButton autoFocus label="关闭导航" className="app-drawer__close" onClick={() => setOpen(false)}><AppIcon name="close" /></IconButton><Navigation pathname={pathname} wecomEnabled={wecomEnabled} onNavigate={() => setOpen(false)} /></aside></div>}
+      {open && <div className="app-drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}><aside className="app-drawer" role="dialog" aria-modal="true" aria-label="主导航抽屉"><IconButton autoFocus label="关闭导航" className="app-drawer__close" onClick={() => setOpen(false)}><AppIcon name="close" /></IconButton><Navigation pathname={pathname} wecomEnabled={wecomEnabled} capabilities={capabilities} onNavigate={() => setOpen(false)} /></aside></div>}
       <main id="main-content" className="app-content" tabIndex={-1}><div key={pathname} className="app-route-frame">{children}</div></main>
     </div>
   );

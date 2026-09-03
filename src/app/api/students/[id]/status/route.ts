@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireSemesterId } from "@/services/student-enrollment-service";
+import { assertClassInSemester, requireSemesterId } from "@/services/student-enrollment-service";
 import { ServiceError } from "@/services/service-error";
 
 const STATUS_MAP = { active: "ACTIVE", inactive: "INACTIVE" } as const;
@@ -22,6 +22,7 @@ export async function PATCH(
       include: { student: { select: { id: true, name: true } } },
     });
     if (!current) return NextResponse.json({ error: "学生在所选学期没有班级归属" }, { status: 404 });
+    await assertClassInSemester(prisma, current.classId, semesterId);
     if (current.rosterStatus === requested) {
       return NextResponse.json({ id, semesterId, rosterStatus: current.rosterStatus, statusEffectiveAt: current.statusEffectiveAt, changed: false });
     }

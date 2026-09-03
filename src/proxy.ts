@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAllowedLocalApiRequest } from "@/lib/local-api-request";
+import { FEATURE_UNAVAILABLE_MESSAGE } from "@/lib/product-capability-guard";
+import { isProductApiPathAvailable } from "@/lib/product-api-access";
 
 export function proxy(request: NextRequest) {
   const host = request.headers.get("host");
@@ -16,6 +18,12 @@ export function proxy(request: NextRequest) {
     return NextResponse.json(
       { error: "本地接口仅接受同源回环请求", code: "forbidden_origin", retryable: false },
       { status: 403 },
+    );
+  }
+  if (!isProductApiPathAvailable(request.nextUrl.pathname)) {
+    return NextResponse.json(
+      { error: FEATURE_UNAVAILABLE_MESSAGE, code: "feature_unavailable", retryable: false },
+      { status: 404 },
     );
   }
   return NextResponse.next();

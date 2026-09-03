@@ -32,6 +32,7 @@ export type TaskPreparationStageProps = {
   onCommonMaterialChoice: (choice: string) => void;
   onContinue: () => void;
   manualFactsHref: string;
+  semesterMaterialsHref?: string;
   onIgnoreUnassigned?: () => void;
   onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
   materialSummary?: GroupMaterialSummary;
@@ -132,7 +133,7 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
       <label>本次课程材料<select value={props.commonMaterialChoice} disabled={props.busy || (props.commonMaterialAction === "unavailable" && props.commonMaterialOptions.length === 1)} onChange={(event) => props.onCommonMaterialChoice(event.target.value)}>{props.commonMaterialOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       <small>{props.commonMaterialHelp}</small>
       {props.commonMaterialPreview && <details><summary>预览所选材料</summary><div className={styles.commonLessonPreview}>{props.commonMaterialPreview}</div></details>}
-      {!props.commonMaterialOptions.some((option) => option.value.startsWith("library:")) && <Link className="ui-button ui-button--ghost ui-button--sm" href="/feedback/tools?tool=materials">管理学期公共材料</Link>}
+      {!props.commonMaterialOptions.some((option) => option.value.startsWith("library:")) && <Link className="ui-button ui-button--ghost ui-button--sm" href={props.semesterMaterialsHref ?? "/semesters"}>管理学期公共材料</Link>}
       {props.commonMaterialAction === "group" && props.commonMaterialChoice.startsWith("library:") && <p>主按钮会同时确认并共享本讲材料，不需要再单独操作。</p>}
     </section>
   </div>;

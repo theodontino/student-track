@@ -6,7 +6,7 @@ export async function GET() {
   try {
     const semesters = await prisma.semester.findMany({
       where: { deletedAt: null },
-      include: { sessions: { orderBy: { date: "desc" } } },
+      include: { sessions: { where: { OR: [{ classId: null }, { class: { deletedAt: null } }] }, orderBy: { date: "desc" } } },
       orderBy: { createdAt: "desc" },
     });
     return NextResponse.json(

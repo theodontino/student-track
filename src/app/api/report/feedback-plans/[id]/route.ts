@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 import { assertFeedbackPlanAvailable } from "@/services/academic-scope-recycle-service";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
+import { assertProductCapability } from "@/lib/product-capability-guard";
 import {
   FeedbackPlanAssessmentEvidenceSchema,
   FeedbackPlanCloneDraftSchema,
@@ -94,8 +95,9 @@ export async function DELETE(_request: NextRequest, context: Context) {
 export async function POST(request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
-    await assertFeedbackPlanAvailable(id);
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+    if (body?.action === "export_wecom_drafts") assertProductCapability("wecomDraftExport");
+    await assertFeedbackPlanAvailable(id);
     if (!body || typeof body.action !== "string") throw new ApiError("反馈计划操作无效", 400, "invalid_request", false);
     if (body.action === "clone_draft") {
       const parsed = FeedbackPlanCloneDraftSchema.safeParse(body);
