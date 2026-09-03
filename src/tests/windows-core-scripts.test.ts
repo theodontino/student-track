@@ -7,6 +7,7 @@ const common = readFileSync(resolve(scriptRoot, "StudentTrack-Core.Common.ps1"),
 const prepare = readFileSync(resolve(scriptRoot, "Prepare-StudentTrackCore.ps1"), "utf8");
 const start = readFileSync(resolve(scriptRoot, "Start-StudentTrackCore.ps1"), "utf8");
 const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+const verifyAgent = readFileSync(resolve(process.cwd(), "scripts", "verify-agent.ts"), "utf8");
 const allScripts = `${common}\n${prepare}\n${start}`;
 
 describe("Windows Core PowerShell entrypoints", () => {
@@ -57,5 +58,10 @@ describe("Windows Core PowerShell entrypoints", () => {
 
   it("does not probe, start, or call Full-only transcription and WCG tools", () => {
     expect(allScripts).not.toMatch(/funasr|diarize|wecom|wcg/i);
+  });
+
+  it("runs npm steps through Node instead of spawning the Windows cmd shim", () => {
+    expect(verifyAgent).toContain("spawn(process.execPath, [npmCliPath, ...step.args]");
+    expect(verifyAgent).not.toContain("spawn(npmCommand");
   });
 });
