@@ -32,6 +32,9 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(common).toContain('return "file:$normalizedPath"');
     expect(common).not.toContain("[System.Uri]::new");
     expect(ciWorkflow).toContain('"DATABASE_URL=$($env:DATABASE_URL)"');
+    expect(ciWorkflow).toContain("$createdId = $created.id");
+    expect(ciWorkflow).toContain('"http://127.0.0.1:3000/api/semesters/$createdId"');
+    expect(ciWorkflow).toContain("$persisted.id -ne $createdId");
     expect(common).not.toMatch(/\$env:LLM_SETTINGS_PATH\s*=/i);
   });
 

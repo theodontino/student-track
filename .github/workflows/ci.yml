@@ -163,6 +163,7 @@ jobs:
             $body = @{ name = "Core CI 持久化学期"; startDate = "2099-01-01"; endDate = "2099-06-30" } | ConvertTo-Json
             $created = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3000/api/semesters" -ContentType "application/json" -Body $body
             if (-not $created.id) { throw "生产服务未创建最小学期。" }
+            $createdId = $created.id
           } finally {
             Stop-CoreServer $server
           }
@@ -170,8 +171,8 @@ jobs:
           $server = Start-CoreServer
           try {
             Wait-CoreServer $server
-            $semesters = @(Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/semesters")
-            if (-not ($semesters | Where-Object name -eq "Core CI 持久化学期")) {
+            $persisted = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/semesters/$createdId"
+            if ($persisted.id -ne $createdId) {
               throw "生产服务重启后未读到先前写入的学期。"
             }
           } finally {
