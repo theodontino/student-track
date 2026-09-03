@@ -58,6 +58,39 @@ afterEach(() => {
 });
 
 describe("feedback task draft storage scope", () => {
+  it("restores an old unnamed draft with the compatible default name and preserves a teacher name", () => {
+    const scope = singleScope("named");
+    const unnamed = singleDraft(scope, "run-unnamed");
+    delete (unnamed as Partial<FeedbackTaskDraftV2>).displayName;
+    sessionStorage.setItem(feedbackTaskDraftScopeKey(scope), JSON.stringify(unnamed));
+    expect(readFeedbackTaskDraft(scope)?.displayName).toBe("初版计划");
+
+    const named = { ...singleDraft(scope, "run-named"), displayName: "九月共同课反馈" };
+    expect(writeFeedbackTaskDraft(scope, named)).toBe(true);
+    expect(readFeedbackTaskDraft(scope)?.displayName).toBe("九月共同课反馈");
+  });
+
+  it("preserves the source, blank required name, and range of a current-facts revision draft", () => {
+    const scope = singleScope("revision");
+    const draft: FeedbackTaskDraftV2 = {
+      ...singleDraft(scope, ""),
+      displayName: "",
+      revisionSource: { kind: "plan", planId: "source-plan", type: "stage_trend" },
+      entries: [{
+        ...singleDraft(scope, "").entries[0],
+        rangeStartSessionId: "range-start",
+        rangeEndSessionId: "range-end",
+      }],
+    };
+
+    expect(writeFeedbackTaskDraft(scope, draft)).toBe(true);
+    expect(readFeedbackTaskDraft(scope)).toMatchObject({
+      displayName: "",
+      revisionSource: { kind: "plan", planId: "source-plan", type: "stage_trend" },
+      entries: [{ rangeStartSessionId: "range-start", rangeEndSessionId: "range-end" }],
+    });
+  });
+
   it("builds distinct single-context keys and a group key stable across active classes", () => {
     const first = singleScope("a");
     const second = { ...first, semesterId: "semester-b" };

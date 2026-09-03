@@ -2,10 +2,12 @@ import type {
   FeedbackClosureType,
   FeedbackGenerationPreferences,
   FeedbackPlanItemGenerationConfig,
+  FeedbackPlanType,
 } from "@/lib/feedback-plan";
 import type { FeedbackGroupIntakeUnassigned } from "./feedback-task-types";
 
 export type TaskStage = "prepare" | "confirm" | "studio";
+export type FeedbackTaskView = "intake" | "plan" | "studio";
 export type MaterialSelection = { mode: "none" } | { mode: "session_snapshot" } | { mode: "linked_revision"; revisionId: string };
 
 export type ResolvedFeedbackTaskMaterialChoice = {
@@ -35,6 +37,8 @@ export type FeedbackTaskClassDraft = {
   classCode: string;
   className: string;
   sessionCode: string;
+  rangeStartSessionId?: string;
+  rangeEndSessionId?: string;
   runId: string;
   studentIds: string[];
   /** false 表示仍由推荐规则维护；教师明确调整后设为 true，后续材料不再覆盖。 */
@@ -42,11 +46,31 @@ export type FeedbackTaskClassDraft = {
   selected: boolean;
 };
 
+export type FeedbackTaskRevisionSource =
+  | { kind: "plan"; planId: string; type: FeedbackPlanType }
+  | { kind: "batch"; batchId: string; type: "event_micro" | "stage_trend" };
+
+export type FeedbackTaskCurrentFactsSeed = {
+  revisionSource: FeedbackTaskRevisionSource;
+  displayName: string;
+  mode: "single" | "group";
+  groupLessonId: string;
+  activeSessionCode: string;
+  entries: FeedbackTaskClassDraft[];
+  materialSelection: MaterialSelection;
+  materialSelectionInitialized: boolean;
+  generationMode: "standard" | "fast";
+  outputRequirement: string;
+  preferences: FeedbackTaskPreferences;
+  classOverrides: FeedbackTaskClassOverrideDraft[];
+  studentOverrides: FeedbackTaskStudentOverrideDraft[];
+};
+
 export type FeedbackTaskGroupSnapshot = {
   groupLessonId: string;
   activeSessionCode: string;
   entries: FeedbackTaskClassDraft[];
-  /** 已成功建立反馈任务的课次；用于后续批次保留账本但禁止重复纳入。 */
+  /** 本轮已成功建立反馈计划的课次；用于后续班级保留账本但禁止重复纳入。 */
   plannedSessionCodes: string[];
   unassignedSourceCount: number;
   unassignedSources: FeedbackGroupIntakeUnassigned[];
@@ -54,13 +78,17 @@ export type FeedbackTaskGroupSnapshot = {
 
 export type FeedbackTaskDraftV2 = {
   version: 2;
+  /** 教师可见的计划名称；服务端建立草稿时会处理同范围重名。 */
+  displayName: string;
   setupStage: "prepare" | "confirm";
   requestKey: string;
+  /** 为空表示全新计划；存在时表示录入新事实后从该计划建立一条新修订。 */
+  revisionSource: FeedbackTaskRevisionSource | null;
   mode: "single" | "group";
   groupLessonId: string;
   activeSessionCode: string;
   entries: FeedbackTaskClassDraft[];
-  /** 已成功建立反馈任务的课次；用于后续批次保留账本但禁止重复纳入。 */
+  /** 本轮已成功建立反馈计划的课次；用于后续班级保留账本但禁止重复纳入。 */
   plannedSessionCodes: string[];
   materialSelection: MaterialSelection;
   materialSelectionInitialized: boolean;
@@ -106,14 +134,16 @@ export type FeedbackTaskAction =
   | { type: "class-override"; sessionCode: string; override: Omit<FeedbackTaskClassOverrideDraft, "sessionCode"> | null }
   | { type: "student-override"; studentId: string; generationConfig: FeedbackPlanItemGenerationConfig | null }
   | { type: "stage"; stage: TaskStage }
-  | { type: "task"; planId?: string; batchId?: string }
+  | { type: "task"; planId?: string; batchId?: string; stage?: TaskStage }
   | { type: "restore"; draft: FeedbackTaskDraftV2 };
 
 export function createFeedbackTaskDraft(): FeedbackTaskDraftV2 {
   return {
     version: 2,
+    displayName: "初版计划",
     setupStage: "prepare",
     requestKey: crypto.randomUUID(),
+    revisionSource: null,
     mode: "single",
     groupLessonId: "",
     activeSessionCode: "",
@@ -131,6 +161,19 @@ export function createFeedbackTaskDraft(): FeedbackTaskDraftV2 {
     unassignedSources: [],
     groupSnapshot: null,
   };
+}
+
+export function feedbackTaskViewForStage(stage: TaskStage): FeedbackTaskView {
+  if (stage === "prepare") return "intake";
+  if (stage === "confirm") return "plan";
+  return "studio";
+}
+
+export function feedbackTaskStageForView(view: string | null | undefined, hasPlan: boolean): TaskStage {
+  if (view === "intake") return "prepare";
+  if (view === "plan") return "confirm";
+  if (view === "studio") return hasPlan ? "studio" : "prepare";
+  return hasPlan ? "studio" : "prepare";
 }
 
 export function feedbackTaskReducer(state: FeedbackTaskState, action: FeedbackTaskAction): FeedbackTaskState {
@@ -162,7 +205,7 @@ export function feedbackTaskReducer(state: FeedbackTaskState, action: FeedbackTa
     stage: action.stage,
     draft: action.stage === "studio" ? state.draft : { ...state.draft, setupStage: action.stage },
   };
-  if (action.type === "task") return { ...state, stage: "studio", planId: action.planId ?? state.planId, batchId: action.batchId ?? state.batchId };
+  if (action.type === "task") return { ...state, stage: action.stage ?? "studio", planId: action.planId ?? state.planId, batchId: action.batchId ?? state.batchId };
   if (action.type === "restore") return { ...state, stage: action.draft.setupStage, draft: action.draft };
   return state;
 }

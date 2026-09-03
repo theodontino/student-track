@@ -4,7 +4,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import {
   FeedbackGenerationPreferencesSchema,
-  FeedbackPlanAssessmentEvidenceSchema,
+  FeedbackPlanInputSnapshotSchema,
   FeedbackPlanStudentOverrideSchema,
   defaultFeedbackGenerationPreferences,
   type FeedbackGenerationPreferences,
@@ -34,6 +34,7 @@ export const FeedbackTaskRequestSchema = z.object({
   groupLessonId: z.string().trim().min(1).max(200).optional(),
   runIds: z.array(z.string().trim().min(1).max(200)).min(1).max(20),
   requestKey: z.string().trim().min(8).max(200).optional(),
+  displayName: z.string().trim().min(1).max(120).optional(),
   generationMode: z.enum(["standard", "fast"]).default("standard"),
   type: z.enum(["event_micro", "stage_trend"]).default("event_micro"),
   outputRequirement: z.string().trim().min(1).max(2000).default("为每名入选学生生成一条可复核的家长反馈"),
@@ -93,10 +94,38 @@ function assertScope(run: { status: string; sessionCode: string }, scope: ScopeC
 }
 
 async function findExistingTask(
-  mode: FeedbackTaskRequest["mode"],
+  input: Pick<FeedbackTaskRequest, "mode" | "requestKey">,
   runs: Array<{ id: string; planId: string | null }>,
   db: PrismaClient,
 ) {
+  if (input.mode === "group" && input.requestKey) {
+    const batch = await db.feedbackPlanBatch.findUnique({
+      where: { requestKey: input.requestKey },
+      include: { plans: { orderBy: { batchOrder: "asc" }, select: { id: true } } },
+    });
+    if (batch && !batch.archivedAt) {
+      return {
+        taskType: "batch" as const,
+        planId: null,
+        batchId: batch.id,
+        firstPlanId: batch.plans[0]?.id ?? null,
+        generationStatus: "existing" as const,
+      };
+    }
+  }
+  if (input.mode === "single" && input.requestKey) {
+    const candidates = await db.feedbackPlan.findMany({
+      where: { archivedAt: null, batchId: null },
+      select: { id: true, inputSnapshot: true },
+    });
+    const existing = candidates.find((plan) => {
+      const snapshot = FeedbackPlanInputSnapshotSchema.safeParse(parsedSnapshot(plan.inputSnapshot));
+      return snapshot.success && snapshot.data.version === 2 && snapshot.data.draftRequestKey === input.requestKey;
+    });
+    return existing
+      ? { taskType: "plan" as const, planId: existing.id, batchId: null, generationStatus: "existing" as const }
+      : null;
+  }
   const linkedIds = [...new Set(runs.flatMap((run) => run.planId ? [run.planId] : []))];
   if (!linkedIds.length) return null;
   const plans = await db.feedbackPlan.findMany({
@@ -107,7 +136,7 @@ async function findExistingTask(
   const planById = new Map(plans.map((plan) => [plan.id, plan]));
   const livePlans = runs.flatMap((run) => run.planId && planById.has(run.planId) ? [planById.get(run.planId)!] : []);
 
-  if (mode === "single" && runs.length === 1 && livePlans.length === 1) {
+  if (input.mode === "single" && runs.length === 1 && livePlans.length === 1) {
     const plan = livePlans[0];
     if (!plan.batchId) return { taskType: "plan" as const, planId: plan.id, batchId: null, generationStatus: "existing" as const };
     const batch = await db.feedbackPlanBatch.findFirst({
@@ -117,26 +146,28 @@ async function findExistingTask(
     if (batch) return { taskType: "batch" as const, planId: null, batchId: batch.id, firstPlanId: batch.plans[0]?.id ?? plan.id, generationStatus: "existing" as const };
   }
 
-  const batchIds = [...new Set(livePlans.flatMap((plan) => plan.batchId ? [plan.batchId] : []))];
-  if (mode === "group" && livePlans.length === runs.length && batchIds.length === 1 && livePlans.every((plan) => plan.batchId === batchIds[0])) {
-    const batch = await db.feedbackPlanBatch.findFirst({
-      where: { id: batchIds[0], archivedAt: null },
-      include: { plans: { orderBy: { batchOrder: "asc" }, select: { id: true } } },
-    });
-    const requestedPlanIds = livePlans.map((plan) => plan.id).sort();
-    const batchPlanIds = batch?.plans.map((plan) => plan.id).sort() ?? [];
-    if (batch && requestedPlanIds.length === batchPlanIds.length && requestedPlanIds.every((id, index) => id === batchPlanIds[index])) {
-      return { taskType: "batch" as const, planId: null, batchId: batch.id, firstPlanId: batch.plans[0]?.id ?? null, generationStatus: "existing" as const };
+  if (input.mode === "group" && input.requestKey) {
+    // 新调用方用 requestKey 区分有名称的独立计划；旧 planId 指针不拥有事实。
+    return null;
+  }
+  if (input.mode === "group") {
+    // 没有 requestKey 的旧调用方仍按原来的 IntakeRun 指针恢复同一批次，
+    // 避免一次兼容请求因重复提交建立多个批次。
+    const batchIds = [...new Set(livePlans.flatMap((plan) => plan.batchId ? [plan.batchId] : []))];
+    if (livePlans.length === runs.length && batchIds.length === 1) {
+      const batch = await db.feedbackPlanBatch.findFirst({
+        where: { id: batchIds[0], archivedAt: null },
+        include: { plans: { orderBy: { batchOrder: "asc" }, select: { id: true } } },
+      });
+      const requestedPlanIds = livePlans.map((plan) => plan.id).sort();
+      const batchPlanIds = batch?.plans.map((plan) => plan.id).sort() ?? [];
+      if (batch && requestedPlanIds.length === batchPlanIds.length && requestedPlanIds.every((id, index) => id === batchPlanIds[index])) {
+        return { taskType: "batch" as const, planId: null, batchId: batch.id, firstPlanId: batch.plans[0]?.id ?? null, generationStatus: "existing" as const };
+      }
     }
   }
 
-  throw new ApiError(
-    "本轮材料已经属于其他未归档反馈任务，请先打开或归档现有任务",
-    409,
-    "conflict",
-    false,
-    { reason: "active_task_conflict", planIds: livePlans.map((plan) => plan.id), batchIds },
-  );
+  throw new ApiError("本轮材料已经关联另一份未归档计划，请打开该计划或使用新计划入口", 409, "conflict", false);
 }
 
 async function createSingleTask(input: FeedbackTaskRequest, run: FeedbackIntakeRunView, db: PrismaClient) {
@@ -145,6 +176,8 @@ async function createSingleTask(input: FeedbackTaskRequest, run: FeedbackIntakeR
   const result = await resolveFeedbackIntakeRun(run.id, {
     action: "create_plan",
     plan: {
+      ...(input.requestKey ? { requestKey: input.requestKey } : {}),
+      ...(input.displayName ? { displayName: input.displayName } : {}),
       type: input.type,
       outputRequirement: input.outputRequirement,
       generationMode: input.generationMode,
@@ -160,9 +193,6 @@ async function createSingleTask(input: FeedbackTaskRequest, run: FeedbackIntakeR
     await startFeedbackPlanGeneration({
       planId,
       generationMode: input.generationMode,
-      assessmentEvidence: FeedbackPlanAssessmentEvidenceSchema.safeParse(snapshot.assessmentEvidence ?? {}).success
-        ? FeedbackPlanAssessmentEvidenceSchema.parse(snapshot.assessmentEvidence ?? {})
-        : {},
     }, db);
     return { taskType: "plan" as const, planId, batchId: null, generationStatus: "started" as const };
   } catch (error) {
@@ -184,7 +214,7 @@ export async function createFeedbackTask(raw: FeedbackTaskRequest, db: PrismaCli
   if (runs.length !== uniqueRunIds.length) throw new ApiError("有班级的材料运行不存在", 404, "not_found", false);
   const runById = new Map(runs.map((run) => [run.id, run]));
   const orderedRuns = uniqueRunIds.map((id) => runById.get(id)!);
-  const existing = await findExistingTask(input.mode, orderedRuns, db);
+  const existing = await findExistingTask(input, orderedRuns, db);
   if (existing) return existing;
 
   if (input.mode === "single") {
@@ -257,10 +287,12 @@ export async function createFeedbackTask(raw: FeedbackTaskRequest, db: PrismaCli
   if (materialSelection.mode === "session_snapshot") throw new ApiError("班级组只能使用共同课修订或明确不使用公共材料", 400, "invalid_request", false);
   const batch = await createFeedbackPlanBatch({
     requestKey: input.requestKey ?? randomUUID(),
+    ...(input.displayName ? { displayName: input.displayName } : {}),
     semesterId,
     type: input.type,
     outputRequirement: input.outputRequirement,
     generationMode: input.generationMode,
+    generationPreferences: preferences,
     groupLessonId: input.groupLessonId,
     ...(materialSelection.mode === "linked_revision" ? { sharedLessonRevisionId: materialSelection.revisionId, sharedMaterialConfirmed: true } : {}),
     plans,

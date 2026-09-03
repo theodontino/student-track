@@ -32,7 +32,7 @@
 | `/api/quick-score` | `GET`, `POST` |
 | `/api/report/daily` | `POST` |
 | `/api/report/feedback-context` | `GET` |
-| `/api/report/feedback-plan-batches/[id]` | `GET`, `POST` |
+| `/api/report/feedback-plan-batches/[id]` | `GET`, `PATCH`, `POST` |
 | `/api/report/feedback-plan-batches` | `GET`, `POST` |
 | `/api/report/feedback-plans/[id]/attachments` | `DELETE`, `POST` |
 | `/api/report/feedback-plans/[id]` | `DELETE`, `GET`, `PATCH`, `POST` |

@@ -75,8 +75,8 @@ test.describe("教师纯页面课后验收", () => {
 
     await test.step("录入：投料、处理异常并一次写入事实", async () => {
       await page.goto(`/feedback?semesterId=${fixture.semester.id}&class=${encodeURIComponent(klass.name)}&sessionCode=${session.code}`);
-      await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
-      await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("录入");
+      await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "反馈计划阶段" })).toContainText("录入");
       await expect(page.getByRole("button", { name: "添加文件", exact: true })).toBeEnabled();
 
       await page.locator('input[type="file"]').first().setInputFiles([
@@ -92,33 +92,52 @@ test.describe("教师纯页面课后验收", () => {
       await page.getByRole("button", { name: "关闭" }).click();
       await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
       await expect(page.getByText(`班级组第 ${lesson.sequence} 讲`)).toBeVisible();
-      await page.getByRole("button", { name: "确认录入并进入规划" }).click();
-      await expect(page.getByText("本班默认反馈计划")).toBeVisible();
-      await expect(page).not.toHaveURL(/planId=|batchId=/);
+      await page.getByRole("button", { name: "确认事实并建立计划" }).click();
+      await expect(page).toHaveURL(/planId=/);
+      await expect(page).toHaveURL(/view=plan/);
+      planId = new URL(page.url()).searchParams.get("planId") ?? "";
+      expect(planId).not.toBe("");
+      await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
     });
 
     await test.step("规划：设置默认计划并在刷新后留在第二步", async () => {
       await page.getByLabel("生成方式").selectOption("fast");
-      await page.getByRole("button", { name: "详细", exact: true }).click();
-      await page.getByRole("button", { name: "专业", exact: true }).click();
+      await page.getByLabel("详略").selectOption("detailed");
+      await page.getByLabel("语气").selectOption("professional");
       await page.getByLabel("总体要求").first().fill(outputRequirement);
+      const saved = page.waitForResponse((response) => (
+        new URL(response.url()).pathname === `/api/report/feedback-plans/${planId}`
+        && response.request().method() === "PATCH"
+      ));
+      await page.keyboard.press("Meta+s");
+      expect((await saved).ok()).toBeTruthy();
+      await expect(page.getByText("计划已保存。", { exact: true })).toBeVisible();
       await page.reload();
-      await expect(page.getByRole("navigation", { name: "反馈任务阶段" })).toContainText("规划");
-      await expect(page.getByText("本班默认反馈计划")).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "反馈计划阶段" })).toContainText("规划");
+      await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
       await expect(page.getByLabel("生成方式")).toHaveValue("fast");
       await expect(page.getByLabel("总体要求").first()).toHaveValue(outputRequirement);
     });
 
-    await test.step("生成与恢复：确认范围和计划后进入工作室", async () => {
-      await page.getByRole("button", { name: "确认范围与计划并开始生成" }).click();
-      await expect(page).toHaveURL(/planId=/);
-      planId = new URL(page.url()).searchParams.get("planId") ?? "";
-      expect(planId).not.toBe("");
+    await test.step("生成与恢复：保存计划后单独启动，并可回看三步", async () => {
+      await page.getByRole("button", { name: "保存并开始生成" }).click();
+      await expect(page).toHaveURL(/view=studio/);
       await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
       await page.reload();
       await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
       await expect(page.getByText("3 名反馈对象")).toBeVisible();
       await expect(page.getByRole("button", { name: "完整导出" })).toBeDisabled();
+
+      await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
+      await expect(page).toHaveURL(/view=intake/);
+      await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
+      await expect(page).toHaveURL(/view=plan/);
+      await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
+      await expect(page.getByLabel("总体要求")).toBeDisabled();
+      await page.getByRole("button", { name: /生成 生成、复核与批准/ }).click();
+      await expect(page).toHaveURL(/view=studio/);
+      await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
     });
 
     await test.step("逐学生复核：未保存时不批准，保存正文并加入附件", async () => {

@@ -600,6 +600,8 @@ model GenerationRecord {
 // 业务快照使用版本化 JSON，最终批准文本和导出状态独立于模型原始输出。
 model FeedbackPlan {
   id                  String   @id @default(cuid())
+  displayName         String?
+  basedOnPlanId       String?
   type                String   // "class_update" | "event_micro" | "stage_trend" | "course_end"
   outputRequirement   String
   status              String   @default("draft")
@@ -634,9 +636,12 @@ model FeedbackPlan {
   attachments       FeedbackAttachment[]
   exportRuns        FeedbackExportRun[]
   batch             FeedbackPlanBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  basedOnPlan       FeedbackPlan?       @relation("FeedbackPlanRevisions", fields: [basedOnPlanId], references: [id], onDelete: SetNull)
+  derivedPlans      FeedbackPlan[]      @relation("FeedbackPlanRevisions")
 
   @@unique([batchId, batchOrder])
   @@unique([batchId, classId])
+  @@index([basedOnPlanId])
   @@index([classId, semesterId, archivedAt, updatedAt])
   @@index([classId, semesterId, type, createdAt])
   @@index([status, updatedAt])
@@ -645,12 +650,14 @@ model FeedbackPlan {
 // 12d.1 多班反馈批次只编排既有 FeedbackPlan；每班仍是独立计划和审核边界。
 model FeedbackPlanBatch {
   id                     String   @id @default(cuid())
+  displayName            String?
+  basedOnBatchId         String?
   requestKey             String   @unique
   semesterId             String
   type                   String   // "event_micro" | "stage_trend"
   outputRequirement      String
   generationMode         String   @default("standard")
-  status                 String   @default("ready")
+  status                 String   @default("draft")
   currentPlanId          String?
   failedPlanId           String?
   sharedLessonRevisionId String?
@@ -663,7 +670,10 @@ model FeedbackPlanBatch {
   sharedLessonRevision GroupLessonRevision? @relation(fields: [sharedLessonRevisionId], references: [id], onDelete: SetNull)
   plans                 FeedbackPlan[]
   exportRuns            FeedbackPlanBatchExportRun[]
+  basedOnBatch          FeedbackPlanBatch?  @relation("FeedbackPlanBatchRevisions", fields: [basedOnBatchId], references: [id], onDelete: SetNull)
+  derivedBatches        FeedbackPlanBatch[] @relation("FeedbackPlanBatchRevisions")
 
+  @@index([basedOnBatchId])
   @@index([semesterId, archivedAt, updatedAt])
   @@index([status, updatedAt])
 }

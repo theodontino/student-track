@@ -123,9 +123,10 @@ test.describe.serial("v0.16.0 core browser smoke tests", () => {
     });
     await page.goto(`/history?semesterId=${TEST_FIXTURE.semester.id}`);
     await expect(page.getByRole("heading", { name: "反馈历史" })).toBeVisible();
-    await expect(page.getByText("历史筛选测试", { exact: true })).toBeVisible();
-    await expect(page.getByText(`学生：${TEST_FIXTURE.students[0].name}`, { exact: false })).toBeVisible();
-    await page.getByRole("button", { name: "恢复" }).click();
+    const historyPlan = page.locator("article").filter({ hasText: "历史筛选测试" });
+    await expect(historyPlan).toBeVisible();
+    await expect(historyPlan.getByText(`学生：${TEST_FIXTURE.students[0].name}`, { exact: true })).toBeVisible();
+    await historyPlan.getByRole("button", { name: "恢复", exact: true }).click();
     await expect(page).toHaveURL(/\/feedback\?.*planId=e2e-plan-history/);
     expect(externalRequests).toEqual([]);
   });

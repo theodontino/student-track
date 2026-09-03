@@ -69,6 +69,7 @@ interface PlanItem {
 
 interface Plan {
   id: string;
+  displayName?: string | null;
   type: FeedbackPlanType;
   outputRequirement: string;
   status: string;
@@ -76,6 +77,7 @@ interface Plan {
   generationMode?: "standard" | "fast";
   generationStartedAt?: string | null;
   generationCompletedAt?: string | null;
+  planRevision?: number;
   sessionId?: string | null;
   rangeStartSessionId?: string | null;
   rangeEndSessionId?: string | null;
@@ -320,9 +322,9 @@ const auditIssueGuidance: Record<string, { area: string; title: string; impact: 
   empty_text: { area: "教师最终正文", title: "正文为空", impact: "没有可供教师批准和导出的反馈文本。", action: "在正文编辑框补充反馈并保存。" },
   recipient_mismatch: { area: "正文称呼", title: "反馈对象可能写错", impact: "面向家长的反馈使用了直接对学生说话的表达。", action: "把“你要……”等学生式称呼改为面向家长的表述。" },
   module_not_allowed: { area: "生成阶段结构 → 模块", title: "反馈类型与模块不匹配", impact: "当前计划类型不允许使用其中一个模块。", action: "新建计划时选择当前类型允许的模块。" },
-  evidence_ref_missing: { area: "模块引用证据", title: "模块引用的证据已经不存在", impact: "正文结构无法追溯到本计划冻结的证据。", action: "重新生成本条，或新建计划重新确定生成模块。" },
-  evidence_coverage_duplicate: { area: "正文证据覆盖", title: "同一证据被重复登记", impact: "系统无法准确判断正文是否完整保留证据。", action: "重新生成本条；如果仍出现，请保留正文并反馈此错误代码。" },
-  evidence_coverage_unknown: { area: "正文证据覆盖", title: "覆盖声明指向了无效证据", impact: "模型声明使用了不属于本课教学或测评的材料。", action: "对照本课事实和出门测详情修改正文，然后保存；必要时重新生成。" },
+  evidence_ref_missing: { area: "模块引用证据", title: "模块引用的证据已经不存在", impact: "正文结构无法追溯到本计划冻结的证据。", action: "对照事实修正正文；如需模型重写，请建立一份修正计划。" },
+  evidence_coverage_duplicate: { area: "正文证据覆盖", title: "同一证据被重复登记", impact: "系统无法准确判断正文是否完整保留证据。", action: "先修正并保存正文；如需模型重写，请建立修正计划，并保留此错误代码用于排查。" },
+  evidence_coverage_unknown: { area: "正文证据覆盖", title: "覆盖声明指向了无效证据", impact: "模型声明使用了不属于本课教学或测评的材料。", action: "对照本课事实和出门测详情修改正文，然后保存；如需模型重写，请建立修正计划。" },
   evidence_coverage_unsubstantiated: { area: "教师最终正文", title: "正文表述与原始证据对应不清", impact: "程序没有在正文中找到足够关键词来证明这句话来自对应证据。", action: "对照左侧本课事实和出门测详情，确认无误后可保留；否则改写为更贴近原始事实的表述。" },
   final_evidence_omitted: { area: "教师最终正文", title: "部分已确认证据没有写入正文", impact: "反馈可能遗漏本课事实或出门测结果，但教师可以有意删减。", action: "查看提示中的证据和下方出门测详情；需要时补入正文，不重要时可直接确认。" },
   unconfirmed_evidence: { area: "证据来源", title: "正文使用了尚未确认的材料", impact: "存在把模型猜测或未复核材料当成学生事实的风险，因此禁止批准。", action: "回到复核步骤确认对应记录，或从正文和模块中移除这项材料后重新核验。" },
@@ -364,13 +366,24 @@ function pendingAuditMessage(status: string) {
   if (status === "queued") return "本条仍在生成队列中，当前没有可供核验的最终正文。";
   if (status === "generating" || status === "pause_requested") return "本条正在生成，程序核验将在正文保存后自动执行。";
   if (status === "generation_failed") return "本条生成失败，当前结果不能视为核验通过；请在当前学生上重试。";
-  if (status === "stale") return "本条来源信息已经变化，旧核验结果不再作为批准依据；请保留现有正文并复核，或重新生成。";
+  if (status === "stale") return "本条来源信息已经变化，旧核验结果不再作为批准依据；请保留现有正文并复核，或建立修正计划。";
   return null;
 }
 
 function canRegenerate(item: PlanItem) {
-  return ["evidence_ready", "stale", "needs_review"].includes(item.status)
-    && (item.reviewMode !== "teacher_edited" || item.status === "stale");
+  return item.status === "evidence_ready";
+}
+
+const generatedPlanStatuses = new Set([
+  "queued", "generating", "pause_requested", "paused", "generation_failed",
+  "in_review", "partially_approved", "approved", "partially_exported", "exported",
+]);
+
+function planHasGenerationTrace(plan: Plan) {
+  return Boolean(plan.generationStartedAt || plan.generationCompletedAt)
+    || generatedPlanStatuses.has(plan.status)
+    || plan.items.some((item) => Boolean(item.finalText || item.selectedGeneration)
+      || ["queued", "generating", "pause_requested", "paused", "generation_failed", "needs_review", "approved", "exported"].includes(item.status));
 }
 
 export interface FeedbackPlanPanelProps {
@@ -702,24 +715,25 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   }
 
   async function generatePlan(plan: Plan, generationMode: "standard" | "fast") {
+    if (planHasGenerationTrace(plan)) {
+      setError("本计划已经启动过生成，内容和生成设置已冻结。请回到“规划”建立修正计划；失败条目请使用重试。");
+      return;
+    }
     const itemIds = plan.items
       .filter((item) => selectedItemIds.includes(item.id) && canRegenerate(item))
       .map((item) => item.id);
     if (!itemIds.length) {
-      setError("请先勾选要重新生成的条目；已批准或已导出的版本需要通过新计划保留历史。");
+      setError("请先勾选尚未开始生成的条目。");
       return;
     }
     setBusy(true); setError("");
     try {
-      const regeneratingStudentIds = plan.items
-        .filter((item) => itemIds.includes(item.id))
-        .flatMap((item) => item.studentId ? [item.studentId] : []);
       const response = await fetch(`/api/report/feedback-plans/${plan.id}`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
           action: "start_generation",
           itemIds,
           generationMode,
-          assessmentEvidence: assessmentEvidenceForStudentIds(regeneratingStudentIds),
+          ...(plan.planRevision ? { expectedPlanRevision: plan.planRevision } : {}),
         }),
       });
       if (!response.ok) {
@@ -836,6 +850,10 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
 
   async function saveIndependentItem(config: FeedbackPlanItemGenerationConfig | null) {
     if (!activePlan || !independentItemTarget) return;
+    if (planHasGenerationTrace(activePlan)) {
+      setError("已经启动生成的计划不能原位修改学生设置，请回到“规划”建立修正计划。");
+      return;
+    }
     const item = independentItemTarget.item;
     if (item.finalText?.trim() && item.reviewMode !== "teacher_edited") {
       const confirmed = window.confirm("修改独立计划会清除这位学生当前未批准的模型草稿，并需要重新生成。是否继续？");
@@ -1114,7 +1132,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     : isExport
       ? studioMode ? "一次只聚焦一名学生；左侧切换对象，右侧完成生成、证据复核、正文编辑、独立设置与批准。" : "只把已批准的教师最终文本写入 Excel；未批准条目不会进入导出。"
       : "默认展示学生、历史趋势、证据摘要、模型建议、家庭偏好和可编辑正文；其余内容在高级区域。";
-  const canGenerate = Boolean(activePlan?.items.some((item) => selectedItemIds.includes(item.id) && canRegenerate(item)));
+  const canGenerate = Boolean(activePlan && !planHasGenerationTrace(activePlan) && activePlan.items.some((item) => selectedItemIds.includes(item.id) && canRegenerate(item)));
   const staleTextCount = activePlan?.items.filter((item) => item.status === "stale" && item.finalText?.trim()).length ?? 0;
   const allItemsApproved = Boolean(activePlan?.items.length && activePlan.items.every((item) => ["approved", "exported"].includes(item.status)));
   const archivedReadOnly = Boolean(activePlan?.archivedAt);
@@ -1211,8 +1229,8 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
       </fieldset>}
       {(type === "stage_trend" || type === "course_end") && <fieldset className="feedback-plan-range"><legend>{type === "stage_trend" ? "阶段范围" : "学期范围"}</legend><p>{type === "stage_trend" ? "首次默认最近四次已完成课次，后续从上一份已批准阶段反馈之后开始。" : "默认覆盖当前学期截至当前课次的全部范围。"}</p><div className="feedback-plan-form-grid"><label><span>起始课次</span><select aria-label="反馈计划起始课次" value={rangeStartSessionId} onChange={(event) => setRangeStartSessionId(event.target.value)}><option value="">自动</option>{rangeSessions.map((session) => <option key={session.id} value={session.id}>{session.code} · {session.date} · 第{session.semesterNumber}次</option>)}</select></label><label><span>截止课次</span><select aria-label="反馈计划截止课次" value={rangeEndSessionId} onChange={(event) => setRangeEndSessionId(event.target.value)}>{rangeSessions.map((session) => <option key={session.id} value={session.id}>{session.code} · {session.date} · 第{session.semesterNumber}次</option>)}</select></label></div></fieldset>}
     </div>}
-    {isReview && activePlan && <div className="feedback-plan-existing" role="status"><strong>已恢复反馈计划：{typeLabels[activePlan.type]}</strong><span>{planStatusLabel(activePlan.status)} · {activePlan.items.length} 条目 · {activePlan.outputRequirement}</span><p>当前计划的课次、课程材料和证据快照已固定；点击上方“生成反馈”继续处理，生成中的计划请切换到“生成”查看队列。</p></div>}
-    {isReview && plans.length > 0 && <div className="feedback-plan-history"><div><strong>计划历史</strong><span>可恢复最近 8 个计划</span></div><div className="feedback-plan-history-list">{plans.slice(0, 8).map((plan) => <Button key={plan.id} uiSize="sm" variant={activePlan?.id === plan.id ? "secondary" : "ghost"} onClick={() => void openPlan(plan.id)}>{typeLabels[plan.type]} · {planStatusLabel(plan.status)} · {plan.items.length}条</Button>)}</div></div>}
+    {isReview && activePlan && <div className="feedback-plan-existing" role="status"><strong>已恢复反馈计划：{activePlan.displayName?.trim() || typeLabels[activePlan.type]}</strong><span>{typeLabels[activePlan.type]} · {planStatusLabel(activePlan.status)} · {activePlan.items.length} 条目 · {activePlan.outputRequirement}</span><p>当前计划的课次、课程材料和证据快照已固定；点击上方“生成反馈”继续处理，生成中的计划请切换到“生成”查看队列。</p></div>}
+    {isReview && plans.length > 0 && <div className="feedback-plan-history"><div><strong>计划历史</strong><span>可按名称恢复最近 8 个计划</span></div><div className="feedback-plan-history-list">{plans.slice(0, 8).map((plan) => <Button key={plan.id} uiSize="sm" variant={activePlan?.id === plan.id ? "secondary" : "ghost"} onClick={() => void openPlan(plan.id)}>{plan.displayName?.trim() || typeLabels[plan.type]} · {planStatusLabel(plan.status)} · {plan.items.length}条</Button>)}</div></div>}
     {isGenerate && activePlan && <div className="feedback-plan-generation" role="status">
       <div className="feedback-plan-generation__summary">
         <div><strong>{typeLabels[activePlan.type]}</strong><span>{planStatusLabel(activePlan.status)} · 最多同时生成 2 条</span></div>
@@ -1244,7 +1262,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
       {activePlan.items.filter((item) => item.status === "generation_failed").map((item) => <StatusBanner key={item.id} tone="danger"><span>{item.student?.name ?? "班级公共反馈"}：{item.generationError || "本条生成失败"}</span></StatusBanner>)}
       {["in_review", "approved", "partially_approved", "exported", "partially_exported"].includes(activePlan.status) && <div className="feedback-generation-complete"><div><strong>本轮生成已完成</strong><span>计时和每条耗时已保存，稍后从计划历史恢复仍可查看。</span></div><Button onClick={() => workspace.setActiveStep("export")}>查看并编辑反馈</Button></div>}
     </div>}
-    {isExport && activePlan && <div className={`feedback-plan-detail ${studioMode ? "feedback-plan-detail--studio" : ""}`}>{studioMode && <aside className="feedback-plan-studio-sidebar" aria-label="计划学生导航"><header><strong>{activePlan.items.length} 名反馈对象</strong><span>一次只处理一条</span></header><div className="feedback-plan-studio-filters">{(["action", "review", "done", "all"] as const).map((filter) => <button type="button" key={filter} className={studioFilter === filter ? "is-active" : ""} onClick={() => setStudioFilter(filter)}>{filter === "action" ? "待处理" : filter === "review" ? "待复核" : filter === "done" ? "已完成" : "全部"}<small>{activePlan.items.filter((item) => studioMatches(item, filter)).length}</small></button>)}</div><div className="feedback-plan-studio-students">{studioItems.length ? studioItems.map((item) => <button type="button" key={item.id} className={studioItemId === item.id ? "is-active" : ""} onClick={() => setStudioItemId(item.id)}><span><strong>{item.student?.name ?? "班级公共反馈"}</strong><small>{item.student?.studentId ?? "公共条目"}</small></span><Badge tone={item.status === "generation_failed" || item.status === "stale" ? "danger" : ["approved", "exported"].includes(item.status) ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge></button>) : <p>当前筛选下没有条目</p>}</div></aside>}<header className="feedback-plan-detail__heading"><div><strong>{typeLabels[activePlan.type]}</strong><span>{activePlan.outputRequirement}</span></div><Badge tone={activePlan.status === "stale" ? "danger" : activePlan.status === "approved" || activePlan.status === "exported" ? "success" : "warning"}>{planStatusLabel(activePlan.status)}</Badge></header>{!studioMode && <div className="feedback-plan-selection-toolbar"><span>已选择 {selectedItemIds.length}/{activePlan.items.length} 条</span><div><Button uiSize="sm" variant="ghost" disabled={archivedReadOnly} onClick={() => setSelectedItemIds(activePlan.items.filter((item) => !["approved", "exported", "stale", "generating", "queued"].includes(item.status)).map((item) => item.id))}>选择可批准项</Button><Button uiSize="sm" variant="ghost" disabled={archivedReadOnly} onClick={() => setSelectedItemIds([])}>清空</Button></div></div>}{visiblePlanItems.map((item) => {
+    {isExport && activePlan && <div className={`feedback-plan-detail ${studioMode ? "feedback-plan-detail--studio" : ""}`}>{studioMode && <aside className="feedback-plan-studio-sidebar" aria-label={activePlan.type === "class_update" ? "班级公共反馈导航" : "计划学生导航"}><header><strong>{activePlan.type === "class_update" ? `${activePlan.items.length} 条班级公共反馈` : `${activePlan.items.length} 名反馈对象`}</strong><span>一次只处理一条</span></header><div className="feedback-plan-studio-filters">{(["action", "review", "done", "all"] as const).map((filter) => <button type="button" key={filter} className={studioFilter === filter ? "is-active" : ""} onClick={() => setStudioFilter(filter)}>{filter === "action" ? "待处理" : filter === "review" ? "待复核" : filter === "done" ? "已完成" : "全部"}<small>{activePlan.items.filter((item) => studioMatches(item, filter)).length}</small></button>)}</div><div className="feedback-plan-studio-students">{studioItems.length ? studioItems.map((item) => <button type="button" key={item.id} className={studioItemId === item.id ? "is-active" : ""} onClick={() => setStudioItemId(item.id)}><span><strong>{item.student?.name ?? "班级公共反馈"}</strong><small>{item.student?.studentId ?? "公共条目"}</small></span><Badge tone={item.status === "generation_failed" || item.status === "stale" ? "danger" : ["approved", "exported"].includes(item.status) ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge></button>) : <p>当前筛选下没有条目</p>}</div></aside>}<header className="feedback-plan-detail__heading"><div><strong>{typeLabels[activePlan.type]}</strong><span>{activePlan.outputRequirement}</span></div><Badge tone={activePlan.status === "stale" ? "danger" : activePlan.status === "approved" || activePlan.status === "exported" ? "success" : "warning"}>{planStatusLabel(activePlan.status)}</Badge></header>{!studioMode && <div className="feedback-plan-selection-toolbar"><span>已选择 {selectedItemIds.length}/{activePlan.items.length} 条</span><div><Button uiSize="sm" variant="ghost" disabled={archivedReadOnly} onClick={() => setSelectedItemIds(activePlan.items.filter((item) => !["approved", "exported", "stale", "generating", "queued"].includes(item.status)).map((item) => item.id))}>选择可批准项</Button><Button uiSize="sm" variant="ghost" disabled={archivedReadOnly} onClick={() => setSelectedItemIds([])}>清空</Button></div></div>}{visiblePlanItems.map((item) => {
       const composition = parseComposition(item.compositionSnapshot, item.generationConfig?.type ?? activePlan.type, item.composition);
       const audit = item.audit ?? parseObject(item.auditSnapshot);
       const evidence = item.evidence ?? parseObject(item.evidenceSnapshot);
@@ -1321,7 +1339,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
           : []
       ));
       const itemImmutable = archivedReadOnly || ["approved", "exported", "generating", "queued", "pause_requested"].includes(item.status);
-      const generationConfigImmutable = itemImmutable || item.reviewMode === "teacher_edited";
+      const generationConfigImmutable = planHasGenerationTrace(activePlan) || itemImmutable || item.reviewMode === "teacher_edited";
       const auditPending = pendingAuditMessage(item.status);
       const nextStudioItem = activePlan.items.find((candidate) => candidate.id !== item.id && studioMatches(candidate, "action"))
         ?? activePlan.items.find((candidate) => candidate.id !== item.id && studioMatches(candidate, "review"));
@@ -1347,7 +1365,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
             })}
         </section>
         {item.studentId && !item.student && <StatusBanner tone="danger">学生身份没有加载完整，已禁止把该条目当作班级公共反馈。请刷新计划后重试。</StatusBanner>}
-        {item.status === "stale" && <StatusBanner tone="warning">来源信息已更新，但当前正文仍然保留。你可以直接修改并保存，点击顶部“保留现有正文”，或只勾选本条重新生成；无需删除计划。</StatusBanner>}
+        {item.status === "stale" && <StatusBanner tone="warning">来源信息已更新，但当前正文仍然保留。你可以直接修改并保存或点击顶部“保留现有正文”；需要换用最新事实或生成设置时，请回到“规划”建立另一份计划。</StatusBanner>}
         <div className="feedback-plan-review-grid">
           <aside className="feedback-plan-context-column" aria-label={`${itemLabel}反馈依据`}>
             <section className="feedback-plan-fact-card">

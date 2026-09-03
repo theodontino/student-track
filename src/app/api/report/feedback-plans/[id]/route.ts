@@ -2,22 +2,31 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
-import { FeedbackPlanAssessmentEvidenceSchema, FeedbackPlanItemPatchSchema } from "@/lib/feedback-plan";
+import {
+  FeedbackPlanAssessmentEvidenceSchema,
+  FeedbackPlanCloneDraftSchema,
+  FeedbackPlanDraftPatchSchema,
+  FeedbackPlanItemPatchSchema,
+  FeedbackPlanRenameSchema,
+} from "@/lib/feedback-plan";
 import {
   approveFeedbackPlanItems,
   archiveFeedbackPlan,
   continueFeedbackPlanGeneration,
+  cloneFeedbackPlanDraft,
   createTeacherTask,
   deleteFeedbackPlan,
   getFeedbackPlan,
   patchFeedbackPlanItem,
   pauseFeedbackPlanGeneration,
   retainStaleFeedbackPlanItems,
+  renameFeedbackPlan,
   retryFeedbackPlanGeneration,
   startFeedbackPlanGeneration,
   toFeedbackPlanDetail,
   toFeedbackPlanItemView,
   unarchiveFeedbackPlan,
+  updateFeedbackPlanDraft,
   updateTeacherTaskStatus,
 } from "@/services/feedback-plan-service";
 
@@ -43,9 +52,20 @@ export async function PATCH(request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body || body.action !== "item" || typeof body.itemId !== "string") {
-      throw new ApiError("反馈计划更新参数无效", 400, "invalid_request", false);
+    if (!body || typeof body.action !== "string") throw new ApiError("反馈计划更新参数无效", 400, "invalid_request", false);
+    if (body.action === "plan_draft") {
+      const parsed = FeedbackPlanDraftPatchSchema.safeParse(body.patch ?? {});
+      if (!parsed.success) throw new ApiError("反馈计划草稿参数无效", 400, "invalid_request", false);
+      const plan = await updateFeedbackPlanDraft(id, parsed.data);
+      return NextResponse.json({ plan: toFeedbackPlanDetail(plan) });
     }
+    if (body.action === "rename") {
+      const parsed = FeedbackPlanRenameSchema.safeParse(body);
+      if (!parsed.success) throw new ApiError("反馈计划名称参数无效", 400, "invalid_request", false);
+      const plan = await renameFeedbackPlan(id, parsed.data);
+      return NextResponse.json({ plan: toFeedbackPlanDetail(plan) });
+    }
+    if (body.action !== "item" || typeof body.itemId !== "string") throw new ApiError("反馈计划更新参数无效", 400, "invalid_request", false);
     const parsed = FeedbackPlanItemPatchSchema.safeParse(body.patch ?? {});
     if (!parsed.success) throw new ApiError("反馈计划条目参数无效", 400, "invalid_request", false);
     const plan = await getFeedbackPlan(id);
@@ -71,6 +91,12 @@ export async function POST(request: NextRequest, context: Context) {
     const { id } = await context.params;
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body.action !== "string") throw new ApiError("反馈计划操作无效", 400, "invalid_request", false);
+    if (body.action === "clone_draft") {
+      const parsed = FeedbackPlanCloneDraftSchema.safeParse(body);
+      if (!parsed.success) throw new ApiError("修正计划参数无效", 400, "invalid_request", false);
+      const plan = await cloneFeedbackPlanDraft({ planId: id, ...parsed.data });
+      return NextResponse.json({ plan: toFeedbackPlanDetail(plan) }, { status: 201 });
+    }
     if (body.action === "approve") {
       const plan = await approveFeedbackPlanItems({
         planId: id,
@@ -107,8 +133,16 @@ export async function POST(request: NextRequest, context: Context) {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
       const assessmentEvidence = FeedbackPlanAssessmentEvidenceSchema.safeParse(body.assessmentEvidence ?? {});
       if (!assessmentEvidence.success) throw new ApiError("测评证据参数无效", 400, "invalid_request", false);
-      const generationMode = body.generationMode === "fast" ? "fast" : "standard";
-      const result = await startFeedbackPlanGeneration({ planId: id, itemIds, assessmentEvidence: assessmentEvidence.data, generationMode });
+      const generationMode = body.generationMode === undefined
+        ? undefined
+        : body.generationMode === "fast" || body.generationMode === "standard"
+          ? body.generationMode
+          : null;
+      if (generationMode === null) throw new ApiError("生成方式参数无效", 400, "invalid_request", false);
+      const expectedPlanRevision = typeof body.expectedPlanRevision === "number" && Number.isInteger(body.expectedPlanRevision) && body.expectedPlanRevision > 0
+        ? body.expectedPlanRevision
+        : undefined;
+      const result = await startFeedbackPlanGeneration({ planId: id, itemIds, assessmentEvidence: assessmentEvidence.data, generationMode, expectedPlanRevision });
       return NextResponse.json(result, { status: 202 });
     }
     if (body.action === "pause_generation") {

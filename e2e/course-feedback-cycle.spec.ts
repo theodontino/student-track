@@ -19,6 +19,7 @@ type PlanItem = {
 
 type PlanView = {
   id: string;
+  displayName: string | null;
   type: string;
   status: string;
   classId: string;
@@ -345,14 +346,14 @@ test.describe("完整课程反馈周期", () => {
       await dialog.getByRole("button", { name: "取消", exact: true }).click();
     });
 
-    await test.step("录入只处理当前班且确认前不写事实或创建任务", async () => {
+    await test.step("录入只处理当前班且确认前不写事实或创建计划", async () => {
       const contextBeforeUpload = await request.get(`/api/report/feedback-context?semesterId=${fixture.semester.id}&sessionCode=${leadSession.code}`);
       await expectOk(contextBeforeUpload);
       const todayBeforeUpload = (await contextBeforeUpload.json()).students.map((student: { id: string; preview: { today: string[] } }) => ({ id: student.id, today: student.preview.today }));
       await clearFeedbackTaskDrafts(page);
       await page.goto(`/feedback?semesterId=${fixture.semester.id}&classId=${leadClass.id}&class=${encodeURIComponent(leadClass.name)}&sessionCode=${leadSession.code}`);
-      await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
-      await expect(page.getByText("当前本班任务", { exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
+      await expect(page.getByText("当前本班计划", { exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "处理同讲次多个班" })).toBeVisible();
       runId = await uploadClassMaterials(page, 0);
       const leadRun = await request.get(`/api/feedback/intake/runs/${runId}`);
@@ -367,23 +368,31 @@ test.describe("完整课程反馈周期", () => {
       expect((await contextBefore.json()).students.map((student: { id: string; preview: { today: string[] } }) => ({ id: student.id, today: student.preview.today }))).toEqual(todayBeforeUpload);
     });
 
-    await test.step("第一次主操作确认当前班材料与事实", async () => {
-      await page.getByRole("button", { name: "确认录入并进入规划" }).click();
-      await expect(page.getByText("本班默认反馈计划")).toBeVisible();
-      await expect(page).not.toHaveURL(/planId=|batchId=/);
-      await expect(page.getByRole("button", { name: "确认范围与计划并开始生成" })).toBeVisible();
+    await test.step("确认当前班材料与事实后立即建立可恢复计划草稿", async () => {
+      await page.getByRole("button", { name: "确认事实并建立计划" }).click();
+      await expect(page).toHaveURL(/planId=/);
+      await expect(page).not.toHaveURL(/batchId=/);
+      await expect(page).toHaveURL(/view=plan/);
+      dailyPlanId = new URL(page.url()).searchParams.get("planId") ?? "";
+      expect(dailyPlanId).not.toBe("");
+      await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
+      await expect(page.getByRole("textbox", { name: "计划名称" })).toHaveValue("初版计划");
 
-      const plansBeforeCreate = await request.get(`/api/report/feedback-plans?semesterId=${fixture.semester.id}`);
-      expect((await plansBeforeCreate.json()).plans).toHaveLength(0);
+      const plansAfterConfirm = await request.get(`/api/report/feedback-plans?semesterId=${fixture.semester.id}`);
+      const planSummaries = (await plansAfterConfirm.json()).plans as Array<{ id: string }>;
+      expect(planSummaries).toHaveLength(1);
+      expect(planSummaries[0]?.id).toBe(dailyPlanId);
+      const draft = await getPlan(request, dailyPlanId);
+      expect(draft.status).toBe("draft");
+      expect(draft.items).toHaveLength(3);
+      expect(draft.input?.lessonMaterial?.lessonTitle).toBe(dailyLesson.topic);
       expect(runId).not.toBe("");
     });
 
-    await test.step("第二次主操作确认范围与计划并验证暂停、恢复和刷新", async () => {
-      await page.getByRole("button", { name: "确认范围与计划并开始生成" }).click();
-      await expect(page).toHaveURL(/planId=/);
-      await expect(page).not.toHaveURL(/batchId=/);
-      dailyPlanId = new URL(page.url()).searchParams.get("planId") ?? "";
-      expect(dailyPlanId).not.toBe("");
+    await test.step("计划另行保存并启动，再验证暂停、恢复、刷新和全过程回看", async () => {
+      await page.getByRole("textbox", { name: "计划名称" }).fill("第六讲日常反馈");
+      await page.getByRole("button", { name: "保存并开始生成" }).click();
+      await expect(page).toHaveURL(/view=studio/);
       await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
 
       const pause = page.getByRole("button", { name: "暂停生成" });
@@ -394,7 +403,25 @@ test.describe("完整课程反馈周期", () => {
       await page.reload();
       await expect(page.getByRole("button", { name: "继续生成" })).toBeVisible();
       await page.getByRole("button", { name: "继续生成" }).click();
-      await waitForPlan(request, dailyPlanId, "in_review");
+      const generated = await waitForPlan(request, dailyPlanId, "in_review");
+      expect(generated.displayName).toBe("第六讲日常反馈");
+
+      await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
+      await expect(page).toHaveURL(/view=intake/);
+      await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+      await expect(page.getByText(dailyLesson.topic, { exact: false }).first()).toBeVisible();
+      await page.reload();
+      await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+
+      await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
+      await expect(page).toHaveURL(/view=plan/);
+      await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "第六讲日常反馈" })).toBeVisible();
+      await expect(page.getByRole("textbox", { name: "总体要求", exact: true })).toBeDisabled();
+
+      await page.getByRole("button", { name: /生成 生成、复核与批准/ }).click();
+      await expect(page).toHaveURL(/view=studio/);
+      await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
     });
 
     await test.step("单班手动保存、批准、Excel 和 no-send 草稿导出", async () => {
@@ -472,13 +499,13 @@ test.describe("完整课程反馈周期", () => {
         ["fact-editor", "当前课次事实"],
         ["materials", "公共材料"],
         ["plan-builder", "反馈计划"],
-        ["active-plans", "当前反馈任务"],
+        ["active-plans", "当前反馈计划"],
       ] as const) {
         await page.goto(`/feedback/tools?tool=${tool}&${contextQuery}`);
         await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
         await expect(page.getByText(expected, { exact: false }).first()).toBeVisible();
       }
-      await expect(page.getByText("3 个未归档任务")).toBeVisible();
+      await expect(page.getByText("3 个未归档计划")).toBeVisible();
       await expect(page.getByText("事件型微反馈")).toBeVisible();
       await expect(page.getByText("阶段趋势反馈")).toBeVisible();
       await expect(page.getByText("结课教学总结")).toBeVisible();

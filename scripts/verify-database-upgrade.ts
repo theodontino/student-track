@@ -33,6 +33,55 @@ const PRESERVED_COLUMNS: Record<string, string[]> = {
   MemoryCompactionRun: ["id", "semesterId", "fromSessionId", "toSessionId", "phase", "status", "sourceFingerprint", "affectedCount", "resultJson", "rollbackPayload", "undoUntil", "failureCode", "createdAt", "completedAt", "updatedAt"],
 };
 
+const FEEDBACK_PLAN_129_COLUMNS = [
+  "id",
+  "type",
+  "outputRequirement",
+  "status",
+  "semesterId",
+  "classId",
+  "sessionId",
+  "rangeStartSessionId",
+  "rangeEndSessionId",
+  "inputFingerprint",
+  "inputSnapshot",
+  "generationMode",
+  "generationStartedAt",
+  "generationCompletedAt",
+  "generationElapsedMs",
+  "generationRunStartedAt",
+  "planRevision",
+  "createdAt",
+  "updatedAt",
+  "approvedAt",
+  "exportedAt",
+  "archivedAt",
+  "batchId",
+  "batchOrder",
+];
+
+const FEEDBACK_PLAN_BATCH_129_COLUMNS = [
+  "id",
+  "requestKey",
+  "semesterId",
+  "type",
+  "outputRequirement",
+  "generationMode",
+  "status",
+  "currentPlanId",
+  "failedPlanId",
+  "sharedLessonRevisionId",
+  "planRevision",
+  "createdAt",
+  "updatedAt",
+  "archivedAt",
+];
+
+const FEEDBACK_129_PRESERVED_COLUMNS: Record<string, string[]> = {
+  FeedbackPlan: FEEDBACK_PLAN_129_COLUMNS,
+  FeedbackPlanBatch: FEEDBACK_PLAN_BATCH_129_COLUMNS,
+};
+
 type Inspection = {
   integrity: string[];
   foreignKeys: string[];
@@ -61,14 +110,17 @@ async function tableRowCount(client: ReturnType<typeof createClient>, table: str
   return Number(result.rows[0]?.count ?? 0);
 }
 
-async function inspect(databasePath: string): Promise<Inspection> {
+async function inspect(
+  databasePath: string,
+  preservedColumns: Record<string, string[]> = PRESERVED_COLUMNS,
+): Promise<Inspection> {
   const client = createClient({ url: `file:${databasePath}` });
   try {
     const tables = await existingTables(client);
     const rowCounts: Record<string, number> = {};
     const contentFingerprints: Record<string, string> = {};
     const columns: Record<string, string[]> = {};
-    for (const [table, requestedColumns] of Object.entries(PRESERVED_COLUMNS)) {
+    for (const [table, requestedColumns] of Object.entries(preservedColumns)) {
       if (!tables.has(table)) continue;
       const info = await client.execute(`PRAGMA table_info(${quoteIdentifier(table)})`);
       const available = new Set(info.rows.map((row) => String(row.name)));
@@ -106,11 +158,23 @@ function assertPreserved(before: Inspection, after: Inspection, label: string) {
   }
 }
 
+function assertColumnsAvailable(
+  inspection: Inspection,
+  expectedColumns: Record<string, string[]>,
+  label: string,
+) {
+  for (const [table, expected] of Object.entries(expectedColumns)) {
+    const available = new Set(inspection.columns[table] ?? []);
+    const missing = expected.filter((column) => !available.has(column));
+    if (missing.length) throw new Error(`${label} ${table} 缺少待比较旧列：${missing.join(", ")}`);
+  }
+}
+
 async function assertNewSchema(databasePath: string) {
   const client = createClient({ url: `file:${databasePath}` });
   try {
     const tables = await existingTables(client);
-    for (const table of ["StudentClassEnrollment", "Class", "Student"]) {
+    for (const table of ["StudentClassEnrollment", "Class", "Student", "FeedbackPlan", "FeedbackPlanBatch"]) {
       if (!tables.has(table)) throw new Error(`缺少新表 ${table}`);
     }
     const studentColumns = new Set((await client.execute("PRAGMA table_info(\"Student\")")).rows.map((row) => String(row.name)));
@@ -119,14 +183,39 @@ async function assertNewSchema(databasePath: string) {
     if (studentColumns.has("classId") || studentColumns.has("rosterStatus") || studentColumns.has("statusEffectiveAt")) throw new Error("Student 仍包含全局班级或花名册字段");
     if (!classColumns.has("semesterId")) throw new Error("Class 缺少 semesterId");
     if (!classGroupColumns.has("leadClassId")) throw new Error("ClassGroup 缺少主班字段");
-    const planColumns = new Set((await client.execute("PRAGMA table_info(\"FeedbackPlan\")")).rows.map((row) => String(row.name)));
+    const planInfo = await client.execute("PRAGMA table_info(\"FeedbackPlan\")");
+    const batchInfo = await client.execute("PRAGMA table_info(\"FeedbackPlanBatch\")");
+    const planColumns = new Set(planInfo.rows.map((row) => String(row.name)));
+    const batchColumns = new Set(batchInfo.rows.map((row) => String(row.name)));
     const planItemColumns = new Set((await client.execute("PRAGMA table_info(\"FeedbackPlanItem\")")).rows.map((row) => String(row.name)));
-    if (!["outputRequirement", "inputSnapshot", "archivedAt", "generationMode", "generationStartedAt", "generationCompletedAt", "generationElapsedMs", "generationRunStartedAt"].every((column) => planColumns.has(column))) {
-      throw new Error("FeedbackPlan 缺少 1.1.1 快照、归档、生成模式或计时字段");
+    if (!["displayName", "basedOnPlanId", "outputRequirement", "inputSnapshot", "archivedAt", "generationMode", "generationStartedAt", "generationCompletedAt", "generationElapsedMs", "generationRunStartedAt"].every((column) => planColumns.has(column))) {
+      throw new Error("FeedbackPlan 缺少命名、来源、快照、归档、生成模式或计时字段");
+    }
+    if (!["displayName", "basedOnBatchId"].every((column) => batchColumns.has(column))) {
+      throw new Error("FeedbackPlanBatch 缺少命名或来源字段");
     }
     if (!["generationError", "generationStartedAt", "generationCompletedAt", "generationDurationMs"].every((column) => planItemColumns.has(column))) {
       throw new Error("FeedbackPlanItem 缺少生成失败或计时字段");
     }
+    const batchStatus = batchInfo.rows.find((row) => String(row.name) === "status");
+    const batchStatusDefault = String(batchStatus?.dflt_value ?? "").replaceAll("'", "").replaceAll('"', "");
+    if (batchStatusDefault !== "draft") throw new Error(`FeedbackPlanBatch status 默认值不是 draft：${String(batchStatus?.dflt_value ?? "NULL")}`);
+    const planForeignKeys = await client.execute("PRAGMA foreign_key_list(\"FeedbackPlan\")");
+    const batchForeignKeys = await client.execute("PRAGMA foreign_key_list(\"FeedbackPlanBatch\")");
+    const hasPlanSelfReference = planForeignKeys.rows.some((row) => (
+      String(row.table) === "FeedbackPlan"
+      && String(row.from) === "basedOnPlanId"
+      && String(row.to) === "id"
+      && String(row.on_delete).toUpperCase() === "SET NULL"
+    ));
+    const hasBatchSelfReference = batchForeignKeys.rows.some((row) => (
+      String(row.table) === "FeedbackPlanBatch"
+      && String(row.from) === "basedOnBatchId"
+      && String(row.to) === "id"
+      && String(row.on_delete).toUpperCase() === "SET NULL"
+    ));
+    if (!hasPlanSelfReference) throw new Error("FeedbackPlan 缺少 basedOnPlanId 自关联外键");
+    if (!hasBatchSelfReference) throw new Error("FeedbackPlanBatch 缺少 basedOnBatchId 自关联外键");
     for (const retiredTable of ["WorkHistory", "FeedbackGenerationSelection"]) {
       if (tables.has(retiredTable)) throw new Error(`旧表 ${retiredTable} 未删除`);
     }
@@ -220,6 +309,122 @@ async function seedSyntheticLegacyDatabase(databasePath: string) {
   }
 }
 
+async function seedSynthetic129FeedbackDatabase(databasePath: string) {
+  const client = createClient({ url: `file:${databasePath}` });
+  try {
+    await client.executeMultiple(`
+      INSERT INTO "Semester" ("id", "name", "startDate", "endDate", "createdAt") VALUES
+        ('semester-129', '固定 1.2.9 学期', '2026-07-01', '2026-12-31', '2026-07-01T00:00:00.000Z');
+      INSERT INTO "Class" ("id", "semesterId", "code", "name") VALUES
+        ('class-129', 'semester-129', 'FIXED-129', '固定 1.2.9 班级');
+      INSERT INTO "ClassSession" ("id", "code", "semesterId", "semesterNumber", "date", "classId", "commonMaterialSnapshot", "commonMaterialConfirmedAt", "createdAt") VALUES
+        ('session-129', '2026083109', 'semester-129', 9, '2026-08-31', 'class-129', '{"summary":"固定公共材料"}', '2026-08-31T08:00:00.000Z', '2026-08-31T08:00:00.000Z');
+      INSERT INTO "FeedbackPlanBatch" (
+        "id", "requestKey", "semesterId", "type", "outputRequirement", "generationMode",
+        "currentPlanId", "failedPlanId", "sharedLessonRevisionId", "planRevision",
+        "createdAt", "updatedAt", "archivedAt"
+      ) VALUES (
+        'batch-129', 'fixed-129-request', 'semester-129', 'event_micro', '固定批次要求', 'fast',
+        'plan-129', NULL, NULL, 7,
+        '2026-08-31T08:10:00.000Z', '2026-08-31T08:20:00.000Z', NULL
+      );
+      INSERT INTO "FeedbackPlan" (
+        "id", "type", "outputRequirement", "status", "semesterId", "classId", "sessionId",
+        "rangeStartSessionId", "rangeEndSessionId", "inputFingerprint", "inputSnapshot",
+        "generationMode", "generationStartedAt", "generationCompletedAt", "generationElapsedMs",
+        "generationRunStartedAt", "planRevision", "createdAt", "updatedAt", "approvedAt",
+        "exportedAt", "archivedAt", "batchId", "batchOrder"
+      ) VALUES (
+        'plan-129', 'event_micro', '固定计划要求', 'approved', 'semester-129', 'class-129', 'session-129',
+        'session-129', 'session-129', 'fixed-129-fingerprint',
+        '{"version":1,"semesterId":"semester-129","classId":"class-129","sessionId":"session-129","sessionCode":"2026083109","sourceFingerprint":"fixed-129-source","lessonMaterial":{"version":1,"groupFeedbackRaw":"固定 V1 班级素材","assessmentBriefRaw":"","lessonTitle":"固定 V1 课程","classroomContent":["固定内容"],"classroomFocus":[],"classroomExplanation":[],"homework":[],"assessmentFocus":[],"correctionAdvice":[],"otherNotes":[]},"generationPreferences":{"closureType":"positive_recognition","moduleKeys":["observed_moment"]}}',
+        'fast', '2026-08-31T08:21:00.000Z', '2026-08-31T08:22:00.000Z', 61000,
+        '2026-08-31T08:21:01.000Z', 11, '2026-08-31T08:10:00.000Z', '2026-08-31T08:30:00.000Z',
+        '2026-08-31T08:25:00.000Z', '2026-08-31T08:30:00.000Z', NULL, 'batch-129', 1
+      );
+    `);
+  } finally {
+    client.close();
+  }
+}
+
+async function assertNamedFeedbackPlanUpgradeSemantics(databasePath: string) {
+  const client = createClient({ url: `file:${databasePath}` });
+  try {
+    const plans = await client.execute(`
+      SELECT displayName, basedOnPlanId, status, inputSnapshot
+      FROM FeedbackPlan
+      WHERE id = 'plan-129'
+    `);
+    const plan = plans.rows[0];
+    if (!plan) throw new Error("1.2.9 合成计划在升级后丢失");
+    if (plan.displayName !== null || plan.basedOnPlanId !== null) throw new Error("旧计划的名称或来源字段默认值不为 NULL");
+    if (String(plan.status) !== "approved") throw new Error(`旧计划状态被改写为 ${String(plan.status)}`);
+    const snapshot = JSON.parse(String(plan.inputSnapshot)) as { version?: unknown };
+    if (snapshot.version !== 1) throw new Error("旧计划的 V1 inputSnapshot 未保留");
+
+    const batches = await client.execute(`
+      SELECT displayName, basedOnBatchId, status
+      FROM FeedbackPlanBatch
+      WHERE id = 'batch-129'
+    `);
+    const batch = batches.rows[0];
+    if (!batch) throw new Error("1.2.9 合成批次在升级后丢失");
+    if (batch.displayName !== null || batch.basedOnBatchId !== null) throw new Error("旧批次的名称或来源字段默认值不为 NULL");
+    if (String(batch.status) !== "ready") throw new Error(`旧批次状态被改写为 ${String(batch.status)}`);
+
+    await client.execute({
+      sql: `
+        INSERT INTO FeedbackPlanBatch (
+          id, displayName, basedOnBatchId, requestKey, semesterId, type, outputRequirement, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
+        "batch-129-derived",
+        "修正批次",
+        "batch-129",
+        "fixed-129-derived-request",
+        "semester-129",
+        "event_micro",
+        "修正批次要求",
+        "2026-08-31T09:00:00.000Z",
+      ],
+    });
+    const derivedBatch = await client.execute(`SELECT status, basedOnBatchId FROM FeedbackPlanBatch WHERE id = 'batch-129-derived'`);
+    if (String(derivedBatch.rows[0]?.status) !== "draft") throw new Error("新建 FeedbackPlanBatch 未使用 draft 默认状态");
+    if (String(derivedBatch.rows[0]?.basedOnBatchId) !== "batch-129") throw new Error("FeedbackPlanBatch 来源关系未写入");
+
+    await client.execute({
+      sql: `
+        INSERT INTO FeedbackPlan (
+          id, displayName, basedOnPlanId, type, outputRequirement, semesterId, classId,
+          sessionId, inputFingerprint, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
+        "plan-129-derived",
+        "修正计划",
+        "plan-129",
+        "event_micro",
+        "修正计划要求",
+        "semester-129",
+        "class-129",
+        "session-129",
+        "fixed-129-derived-fingerprint",
+        "2026-08-31T09:00:00.000Z",
+      ],
+    });
+    const derivedPlan = await client.execute(`SELECT displayName, basedOnPlanId FROM FeedbackPlan WHERE id = 'plan-129-derived'`);
+    if (String(derivedPlan.rows[0]?.displayName) !== "修正计划" || String(derivedPlan.rows[0]?.basedOnPlanId) !== "plan-129") {
+      throw new Error("FeedbackPlan 名称或来源关系未写入");
+    }
+    const foreignKeys = await client.execute("PRAGMA foreign_key_check");
+    if (foreignKeys.rows.length) throw new Error("命名计划与来源关系写入后 foreign_key_check 失败");
+  } finally {
+    client.close();
+  }
+}
+
 async function assertSyntheticSemantics(databasePath: string) {
   const client = createClient({ url: `file:${databasePath}` });
   try {
@@ -275,6 +480,23 @@ async function verifySyntheticUpgrade(projectRoot: string, temporaryDirectory: s
   await assertSyntheticSemantics(databasePath);
 }
 
+async function verifySynthetic129FeedbackUpgrade(projectRoot: string, temporaryDirectory: string) {
+  const databasePath = path.join(temporaryDirectory, "synthetic-1.2.9-feedback.db");
+  const names = await migrationNames(projectRoot);
+  const migrationName = "20260902150000_add_named_feedback_plan_drafts";
+  if (!names.includes(migrationName)) throw new Error("找不到 1.2.10 命名计划迁移");
+  await applyMigrationFiles(projectRoot, databasePath, names.filter((name) => name < migrationName));
+  await seedSynthetic129FeedbackDatabase(databasePath);
+  const before = await inspect(databasePath, FEEDBACK_129_PRESERVED_COLUMNS);
+  assertColumnsAvailable(before, FEEDBACK_129_PRESERVED_COLUMNS, "固定 1.2.9 反馈库");
+  await applyMigrationFiles(projectRoot, databasePath, names.filter((name) => name >= migrationName));
+  const after = await inspect(databasePath, FEEDBACK_129_PRESERVED_COLUMNS);
+  assertColumnsAvailable(after, FEEDBACK_129_PRESERVED_COLUMNS, "升级后固定 1.2.9 反馈库");
+  assertPreserved(before, after, "固定 1.2.9 反馈库");
+  await assertNewSchema(databasePath);
+  await assertNamedFeedbackPlanUpgradeSemantics(databasePath);
+}
+
 async function main() {
   const projectRoot = process.cwd();
   const liveDatabase = resolveDatabasePath(process.env.DATABASE_URL ?? "file:./dev.db");
@@ -303,9 +525,10 @@ async function main() {
       await assertNewSchema(copiedDatabase);
     }
     await verifySyntheticUpgrade(projectRoot, temporaryDirectory);
+    await verifySynthetic129FeedbackUpgrade(projectRoot, temporaryDirectory);
     console.log(verifiedLiveCopy
-      ? "数据库升级验证通过：全新迁移链、固定合成旧库和真实库副本均通过完整性检查；评价、考勤、事件、沟通、反馈文本和历史账本内容未丢失。"
-      : "数据库升级验证通过：全新迁移链和固定合成旧库通过完整性检查；未发现真实数据库，已跳过副本验证。");
+      ? "数据库升级验证通过：全新迁移链、固定合成旧库、固定 1.2.9 反馈库和真实库副本均通过完整性检查；旧反馈计划、批次、V1 快照、状态及其他业务证据未丢失。"
+      : "数据库升级验证通过：全新迁移链、固定合成旧库和固定 1.2.9 反馈库通过完整性检查；未发现真实数据库，已跳过副本验证。");
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

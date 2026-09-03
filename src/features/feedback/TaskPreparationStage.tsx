@@ -120,8 +120,10 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
       onUseExistingFacts={props.onUseExistingFacts}
       useExistingFactsLabel={props.draft.mode === "group" ? "没有新材料，核对各班当前记录" : "没有新材料，核对当前记录"}
       onConfirm={props.onContinue}
-      confirmLabel={props.draft.mode === "group" ? "确认可处理班级" : "确认录入并进入规划"}
-      confirmHint={props.draft.mode === "group" ? "每个班分别确认；某一班需核对时，已完成班级不会回滚。" : "这里只确认课堂事实；反馈计划在下一步建立。"}
+      confirmLabel={props.draft.revisionSource ? "确认事实并按当前事实新建计划" : "确认事实并建立计划"}
+      confirmHint={props.draft.revisionSource
+        ? "将沿用原计划的范围与生成设置，读取刚确认的当前事实建立另一份计划；原计划和原正文不会修改。"
+        : props.draft.mode === "group" ? "每个班分别确认；已完成班级会立即进入一份可恢复的计划草稿，未完成班级不会回滚。" : "确认课堂事实后立即建立可恢复的计划草稿；生成仍需在下一步单独启动。"}
       onIgnoreUnassigned={props.onIgnoreUnassigned}
       onDecision={props.onDecision}
     />

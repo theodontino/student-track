@@ -9,8 +9,25 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   generateFeedbackPlanComposition: generationMocks.generate,
 }));
 import { buildFeedbackPlanBatchExportWorkbook } from "@/services/feedback-export-service";
-import { continueFeedbackPlanBatch, createFeedbackPlanBatch, getFeedbackPlanBatch, pauseFeedbackPlanBatch, retryFeedbackPlanBatch, startFeedbackPlanBatch } from "@/services/feedback-plan-batch-service";
-import { createFeedbackPlan } from "@/services/feedback-plan-service";
+import {
+  cloneFeedbackPlanBatchDraft,
+  archiveFeedbackPlanBatch,
+  continueFeedbackPlanBatch,
+  createFeedbackPlanBatch,
+  getFeedbackPlanBatch,
+  pauseFeedbackPlanBatch,
+  renameFeedbackPlanBatch,
+  retryFeedbackPlanBatch,
+  startFeedbackPlanBatch,
+  unarchiveFeedbackPlanBatch,
+  updateFeedbackPlanBatchDraft,
+} from "@/services/feedback-plan-batch-service";
+import {
+  continueFeedbackPlanGeneration,
+  createFeedbackPlan,
+  pauseFeedbackPlanGeneration,
+  retryFeedbackPlanGeneration,
+} from "@/services/feedback-plan-service";
 import { confirmGroupLesson, createClassGroup, createGroupLesson, setSessionGroupProgress } from "@/services/group-lesson-service";
 
 const marker = "VITEST-FEEDBACK-BATCH";
@@ -18,6 +35,7 @@ let semesterId = "";
 let classIds: string[] = [];
 let sessionIds: string[] = [];
 let studentIds: string[] = [];
+let scopeStudentIds: string[] = [];
 let revisionId = "";
 let lessonId = "";
 
@@ -33,6 +51,11 @@ beforeAll(async () => {
   })));
   studentIds = students.map((item) => item.id);
   await Promise.all(students.map((student, index) => prisma.event.create({ data: { studentId: student.id, sessionId: sessions[index]!.id, type: "课堂表现", description: `合成学生${index + 1}完成了课堂订正`, rawText: "固定合成测试" } })));
+  const scopeStudents = await Promise.all(classes.map((item, index) => prisma.student.create({
+    data: { name: `范围学生${index + 1}`, studentId: `${marker}-SCOPE-${index + 1}`, gender: index ? "女" : "男", enrollments: { create: { semesterId, classId: item.id } } },
+  })));
+  scopeStudentIds = scopeStudents.map((item) => item.id);
+  await Promise.all(scopeStudents.map((student, index) => prisma.event.create({ data: { studentId: student.id, sessionId: sessions[index]!.id, type: "课堂表现", description: `范围学生${index + 1}完成了课堂订正`, rawText: "固定范围测试" } })));
   const group = await createClassGroup(semesterId, { name: `${marker}-GROUP`, classIds, leadClassId: classIds[0] });
   const lesson = await createGroupLesson(group.id, { title: "合成共同课", sequence: 1, material: parseLessonFeedbackMaterial("课程标题：合成共同课\n课堂内容：守恒关系", "出门测：守恒关系") });
   lessonId = lesson.id;
@@ -45,7 +68,7 @@ afterAll(async () => {
   await prisma.feedbackPlanBatch.deleteMany({ where: { semesterId } });
   await prisma.classGroup.deleteMany({ where: { semesterId } });
   await prisma.classSession.deleteMany({ where: { semesterId } });
-  await prisma.student.deleteMany({ where: { id: { in: studentIds } } });
+  await prisma.student.deleteMany({ where: { id: { in: [...studentIds, ...scopeStudentIds] } } });
   await prisma.class.deleteMany({ where: { id: { in: classIds } } });
   await prisma.semester.deleteMany({ where: { id: semesterId } });
 });
@@ -83,12 +106,61 @@ describe("feedback plan batch service", () => {
     expect(snapshots.map((plan) => JSON.parse(plan.inputSnapshot).lessonMaterial.sessionCode)).toEqual(["2098010101", "2098010201"]);
   });
 
+  it("allocates a readable default name and suffixes duplicate names in the same batch scope", async () => {
+    const first = await createFeedbackPlanBatch({
+      requestKey: `${marker}-NAME-1`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "命名测试一",
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], studentIds: [studentIds[index]!] })),
+    });
+    const second = await createFeedbackPlanBatch({
+      requestKey: `${marker}-NAME-2`,
+      displayName: first.displayName ?? "初版计划",
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "命名测试二",
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], studentIds: [studentIds[index]!] })),
+    });
+    expect(first.displayName).toMatch(/^初版计划(?: \d+)?$/u);
+    expect(second.displayName).not.toBe(first.displayName);
+    expect(second.displayName).toMatch(new RegExp(`^${first.displayName} \\d+$`, "u"));
+    expect(first.plans.every((plan) => plan.displayName === null)).toBe(true);
+    expect(second.plans.every((plan) => plan.displayName === null)).toBe(true);
+    expect(first.status).toBe("draft");
+  });
+
+  it("allows an archived legacy batch to receive a display name without changing its history", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-ARCHIVED-RENAME`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "归档命名测试",
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], studentIds: [studentIds[index]!] })),
+    });
+    await archiveFeedbackPlanBatch(batch.id);
+    const archived = await prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } });
+    const renamed = await renameFeedbackPlanBatch(batch.id, {
+      action: "rename",
+      displayName: "补记的历史计划名",
+      expectedPlanRevision: archived.planRevision,
+    });
+    expect(renamed).toMatchObject({ displayName: "补记的历史计划名", status: "archived" });
+    expect(renamed.archivedAt).not.toBeNull();
+    await expect(prisma.feedbackPlan.count({ where: { batchId: batch.id, archivedAt: { not: null } } })).resolves.toBe(classIds.length);
+
+    const restored = await unarchiveFeedbackPlanBatch(batch.id);
+    expect(restored).toMatchObject({ displayName: "补记的历史计划名", status: "draft", archivedAt: null });
+    await expect(prisma.feedbackPlan.count({ where: { batchId: batch.id, archivedAt: null } })).resolves.toBe(classIds.length);
+  });
+
   it("inherits a group strategy while preserving class and student exceptions", async () => {
     const batch = await createFeedbackPlanBatch({
       requestKey: `${marker}-STRATEGY-INHERITANCE`,
       semesterId,
       type: "event_micro",
       outputRequirement: "共同要求",
+      generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
       plans: [{
         classId: classIds[0]!,
         sessionId: sessionIds[0]!,
@@ -127,11 +199,330 @@ describe("feedback plan batch service", () => {
       closureType: "teacher_resolved",
       moduleKeys: ["teacher_intervention"],
     });
+    expect(plans.map((plan) => JSON.parse(plan.inputSnapshot).batchGenerationPreferences)).toEqual([
+      { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+      { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+    ]);
     expect(JSON.parse(plans[0]!.items[0]!.generationConfigSnapshot)).toMatchObject({
       outputRequirement: "学生单独要求",
       generationPreferences: { closureType: "home_cooperation", moduleKeys: ["parent_action"] },
     });
     expect(plans[1]!.items[0]!.generationConfigSnapshot).toBe("{}");
+  });
+
+  it("saves a complete multi-class plan draft atomically and clears omitted exceptions", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-DRAFT-UPDATE`,
+      displayName: "第一次多班计划",
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "原共同要求",
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!, scopeStudentIds[index]!],
+        outputRequirement: index === 0 ? "原一班例外" : undefined,
+      })),
+    });
+    await prisma.feedbackPlanBatch.update({ where: { id: batch.id }, data: { status: "ready" } });
+
+    const updated = await updateFeedbackPlanBatchDraft(batch.id, {
+      action: "plan_draft",
+      expectedPlanRevision: batch.planRevision,
+      displayName: "守恒关系课后反馈",
+      outputRequirement: "更新后的共同要求",
+      generationMode: "fast",
+      generationPreferences: {
+        closureType: "positive_recognition",
+        moduleKeys: ["observed_moment"],
+      },
+      studentSelections: [
+        { classId: classIds[0]!, studentIds: [scopeStudentIds[0]!] },
+        { classId: classIds[1]!, studentIds: [studentIds[1]!] },
+      ],
+      classOverrides: [{
+        classId: classIds[1]!,
+        outputRequirement: "二班独立要求",
+        generationPreferences: {
+          closureType: "home_cooperation",
+          moduleKeys: ["parent_action"],
+        },
+      }],
+      studentOverrides: [{
+        studentId: scopeStudentIds[0]!,
+        generationConfig: {
+          version: 1,
+          type: "event_micro",
+          outputRequirement: "一号学生独立要求",
+          generationPreferences: {
+            closureType: "teacher_resolved",
+            moduleKeys: ["teacher_intervention"],
+          },
+        },
+      }],
+    });
+
+    expect(updated).toMatchObject({
+      displayName: "守恒关系课后反馈",
+      outputRequirement: "更新后的共同要求",
+      generationMode: "fast",
+      status: "draft",
+      planRevision: batch.planRevision + 1,
+    });
+    const plans = await prisma.feedbackPlan.findMany({
+      where: { batchId: batch.id },
+      orderBy: { batchOrder: "asc" },
+      include: { items: true },
+    });
+    expect(plans.map((plan) => plan.outputRequirement)).toEqual(["更新后的共同要求", "二班独立要求"]);
+    expect(plans.map((plan) => plan.generationMode)).toEqual(["fast", "fast"]);
+    expect(plans.map((plan) => JSON.parse(plan.inputSnapshot).generationPreferences)).toEqual([
+      { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+      { closureType: "home_cooperation", moduleKeys: ["parent_action"] },
+    ]);
+    expect(plans.map((plan) => plan.items.map((item) => item.studentId))).toEqual([[scopeStudentIds[0]], [studentIds[1]]]);
+    expect(JSON.parse(plans[0]!.items[0]!.generationConfigSnapshot)).toMatchObject({ outputRequirement: "一号学生独立要求" });
+    expect(plans[1]!.items[0]!.generationConfigSnapshot).toBe("{}");
+
+    await expect(updateFeedbackPlanBatchDraft(batch.id, {
+      action: "plan_draft",
+      expectedPlanRevision: updated.planRevision,
+      outputRequirement: "不应部分保存",
+      generationMode: "standard",
+      generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+      studentSelections: [
+        { classId: classIds[0]!, studentIds: [scopeStudentIds[0]!] },
+        { classId: classIds[1]!, studentIds: [studentIds[1]!] },
+      ],
+      classOverrides: [],
+      studentOverrides: [{
+        studentId: "missing-student",
+        generationConfig: {
+          version: 1,
+          type: "event_micro",
+          outputRequirement: "无效学生",
+          generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+        },
+      }],
+    })).rejects.toMatchObject({ status: 400 });
+    await expect(updateFeedbackPlanBatchDraft(batch.id, {
+      action: "plan_draft",
+      expectedPlanRevision: updated.planRevision,
+      outputRequirement: "不应越过冻结事实",
+      generationMode: "standard",
+      generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+      studentSelections: [
+        { classId: classIds[0]!, studentIds: ["missing-student"] },
+        { classId: classIds[1]!, studentIds: [studentIds[1]!] },
+      ],
+      classOverrides: [],
+      studentOverrides: [],
+    })).rejects.toMatchObject({ status: 409 });
+    await expect(prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } })).resolves.toMatchObject({
+      outputRequirement: "更新后的共同要求",
+      planRevision: updated.planRevision,
+    });
+  });
+
+  it("blocks plan edits after generation starts while keeping rename available", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-DRAFT-LOCK`,
+      displayName: "生成前名称",
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "生成锁定测试",
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], studentIds: [studentIds[index]!] })),
+    });
+    await prisma.feedbackPlan.update({ where: { id: batch.plans[0]!.id }, data: { generationStartedAt: new Date() } });
+
+    await expect(updateFeedbackPlanBatchDraft(batch.id, {
+      action: "plan_draft",
+      expectedPlanRevision: batch.planRevision,
+      outputRequirement: "不能覆盖",
+      generationMode: "standard",
+      generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+      studentSelections: classIds.map((classId, index) => ({ classId, studentIds: [studentIds[index]!] })),
+      classOverrides: [],
+      studentOverrides: [],
+    })).rejects.toMatchObject({ status: 409 });
+
+    const renamed = await renameFeedbackPlanBatch(batch.id, {
+      action: "rename",
+      displayName: "生成后仍可改名",
+      expectedPlanRevision: batch.planRevision,
+    });
+    expect(renamed.displayName).toBe("生成后仍可改名");
+    expect(renamed.planRevision).toBe(batch.planRevision + 1);
+  });
+
+  it("refuses to start a historically inconsistent batch when a child already has generated output", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-HISTORICAL-TRACE-LOCK`,
+      displayName: "历史生成痕迹保护",
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "不能覆盖历史正文",
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!],
+      })),
+    });
+    const firstChild = await prisma.feedbackPlan.findUniqueOrThrow({
+      where: { id: batch.plans[0]!.id },
+      include: { items: true },
+    });
+    const finalText = "历史子计划已经生成的正文";
+    await prisma.feedbackPlanItem.update({
+      where: { id: firstChild.items[0]!.id },
+      data: { status: "needs_review", finalText, finalTextHash: "historical-trace" },
+    });
+
+    await expect(startFeedbackPlanBatch(batch.id, prisma, batch.planRevision)).rejects.toMatchObject({ status: 409 });
+    await expect(prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } })).resolves.toMatchObject({
+      status: batch.status,
+      planRevision: batch.planRevision,
+    });
+    await expect(prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: firstChild.items[0]!.id } })).resolves.toMatchObject({
+      status: "needs_review",
+      finalText,
+    });
+  });
+
+  it("clones a generated batch into a clean draft without copying outputs", async () => {
+    const source = await createFeedbackPlanBatch({
+      requestKey: `${marker}-CLONE-SOURCE`,
+      displayName: "氧化还原反馈工程",
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "克隆来源要求",
+      generationMode: "fast",
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!],
+        studentOverrides: index === 0 ? [{
+          studentId: studentIds[index]!,
+          generationConfig: {
+            version: 1,
+            type: "event_micro",
+            outputRequirement: "保留的独立计划",
+            generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
+          },
+        }] : undefined,
+      })),
+    });
+    const sourceItems = await prisma.feedbackPlanItem.findMany({ where: { planId: { in: source.plans.map((plan) => plan.id) } } });
+    const sourceEvidenceByPlanId = new Map(sourceItems.map((item) => [item.planId, item.evidenceSnapshot]));
+    await Promise.all(studentIds.map((studentId, index) => prisma.event.create({
+      data: { studentId, sessionId: sessionIds[index]!, type: "课堂表现", description: `后录入事实 ${index + 1}`, rawText: "合成测试" },
+    })));
+    await prisma.feedbackPlanItem.update({
+      where: { id: sourceItems[0]!.id },
+      data: {
+        status: "approved",
+        finalText: "来源批次已经生成的正文",
+        finalTextHash: "source-text",
+        compositionSnapshot: JSON.stringify({ source: true }),
+        auditSnapshot: JSON.stringify({ source: true }),
+        approvedAt: new Date(),
+      },
+    });
+    await prisma.feedbackPlan.update({ where: { id: sourceItems[0]!.planId }, data: { status: "approved", approvedAt: new Date(), generationStartedAt: new Date() } });
+    await prisma.feedbackPlanBatch.update({ where: { id: source.id }, data: { status: "completed" } });
+
+    const clone = await cloneFeedbackPlanBatchDraft({ batchId: source.id, displayName: "氧化还原反馈工程 · 修订 2" });
+    expect(clone).toMatchObject({
+      displayName: "氧化还原反馈工程 · 修订 2",
+      basedOnBatchId: source.id,
+      status: "draft",
+      outputRequirement: source.outputRequirement,
+      generationMode: source.generationMode,
+    });
+    expect(clone.plans.map((plan) => plan.id)).not.toEqual(source.plans.map((plan) => plan.id));
+    const clonedPlans = await prisma.feedbackPlan.findMany({
+      where: { batchId: clone.id },
+      orderBy: { batchOrder: "asc" },
+      include: { items: true, exportRuns: true },
+    });
+    expect(clonedPlans.map((plan) => plan.basedOnPlanId)).toEqual(source.plans.map((plan) => plan.id));
+    expect(clonedPlans.every((plan) => plan.status === "draft" && !plan.approvedAt && !plan.exportedAt && plan.exportRuns.length === 0)).toBe(true);
+    expect(clonedPlans.flatMap((plan) => plan.items)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "evidence_ready", finalText: null, selectedGenerationId: null, approvedAt: null, exportedAt: null }),
+    ]));
+    expect(clonedPlans.flatMap((plan) => plan.items).every((item) => item.finalText === null
+      && item.compositionSnapshot === "{}"
+      && item.auditSnapshot === "{}"
+      && item.selectedGenerationId === null)).toBe(true);
+    expect(clonedPlans.every((plan) => plan.items[0]?.evidenceSnapshot === sourceEvidenceByPlanId.get(plan.basedOnPlanId!))).toBe(true);
+    expect(clonedPlans.flatMap((plan) => plan.items).every((item) => !item.evidenceSnapshot.includes("后录入事实"))).toBe(true);
+    expect(JSON.parse(clonedPlans[0]!.items[0]!.generationConfigSnapshot)).toMatchObject({ outputRequirement: "保留的独立计划" });
+
+    const unnamedClone = await cloneFeedbackPlanBatchDraft({ batchId: source.id });
+    expect(unnamedClone.displayName).toBeNull();
+    await expect(startFeedbackPlanBatch(unnamedClone.id)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("creates a selected-class revision from current facts and links it to the source batch", async () => {
+    const source = await createFeedbackPlanBatch({
+      requestKey: `${marker}-CURRENT-FACTS-SOURCE`,
+      displayName: "当前事实来源批次",
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "来源批次要求",
+      generationMode: "fast",
+      generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!],
+        generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
+      })),
+    });
+    const sourceItem = await prisma.feedbackPlanItem.findFirstOrThrow({ where: { planId: source.plans[0]!.id } });
+    const sourceEvidence = sourceItem.evidenceSnapshot;
+    await prisma.event.create({
+      data: { studentId: studentIds[0]!, sessionId: sessionIds[0]!, type: "课堂表现", description: "批次录入后新增的当前事实", rawText: "合成测试" },
+    });
+
+    const unnamedRevision = await createFeedbackPlanBatch({
+      requestKey: `${marker}-CURRENT-FACTS-UNNAMED-REVISION`,
+      basedOnBatchId: source.id,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "来源批次要求",
+      generationMode: "fast",
+      plans: [{
+        classId: classIds[0]!,
+        sessionId: sessionIds[0]!,
+        studentIds: [studentIds[0]!],
+      }],
+    });
+    expect(unnamedRevision).toMatchObject({ displayName: null, basedOnBatchId: source.id, status: "draft" });
+    await expect(startFeedbackPlanBatch(unnamedRevision.id)).rejects.toMatchObject({ status: 409 });
+
+    const revision = await createFeedbackPlanBatch({
+      requestKey: `${marker}-CURRENT-FACTS-REVISION`,
+      displayName: "当前事实批次修正版",
+      basedOnBatchId: source.id,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "来源批次要求",
+      generationMode: "fast",
+      generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
+      plans: [{
+        classId: classIds[0]!,
+        sessionId: sessionIds[0]!,
+        studentIds: [studentIds[0]!],
+        generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
+      }],
+    });
+    expect(revision).toMatchObject({ displayName: "当前事实批次修正版", basedOnBatchId: source.id, status: "draft" });
+    expect(revision.plans).toHaveLength(1);
+    expect(revision.plans[0]).toMatchObject({ basedOnPlanId: source.plans[0]!.id });
+    const revisionItem = await prisma.feedbackPlanItem.findFirstOrThrow({ where: { planId: revision.plans[0]!.id } });
+    expect(revisionItem.evidenceSnapshot).toContain("批次录入后新增的当前事实");
+    await expect(prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: sourceItem.id } })).resolves.toMatchObject({ evidenceSnapshot: sourceEvidence });
   });
 
   it("rolls back the whole batch when one class is invalid", async () => {
@@ -223,17 +614,8 @@ describe("feedback plan batch service", () => {
     }
   });
 
-  it("adopts an unbatched plan already created from the same intake run", async () => {
-    const outputRequirement = "班级组接管已有计划";
-    const studentOverride = {
-      studentId: studentIds[0]!,
-      generationConfig: {
-        version: 1 as const,
-        type: "event_micro" as const,
-        outputRequirement: "合成学生独立要求",
-        generationPreferences: { closureType: "positive_recognition" as const, moduleKeys: ["observed_moment"] },
-      },
-    };
+  it("allows one confirmed intake run to seed another plan without stealing its legacy pointer", async () => {
+    const outputRequirement = "班级组复用确认材料";
     const existingPlan = await createFeedbackPlan({
       semesterId,
       classId: classIds[0]!,
@@ -241,7 +623,6 @@ describe("feedback plan batch service", () => {
       type: "event_micro",
       outputRequirement,
       studentIds: [studentIds[0]!],
-      studentOverrides: [studentOverride],
     });
     const runs = await Promise.all(sessionIds.map((sessionId, index) => prisma.feedbackIntakeRun.create({
       data: {
@@ -254,11 +635,11 @@ describe("feedback plan batch service", () => {
       },
     })));
 
-    const baseInput = {
-      requestKey: `${marker}-ADOPT-BATCH`,
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-REUSE-RUN-BATCH`,
       semesterId,
       type: "event_micro" as const,
-      outputRequirement,
+      outputRequirement: "新的班级组计划",
       generationMode: "standard" as const,
       groupLessonId: lessonId,
       sharedLessonRevisionId: revisionId,
@@ -268,24 +649,22 @@ describe("feedback plan batch service", () => {
         sessionId: sessionIds[index],
         intakeRunId: runs[index]!.id,
         studentIds: [studentIds[index]!],
-        ...(index === 0 ? { studentOverrides: [studentOverride] } : {}),
       })),
-    };
-
-    await expect(createFeedbackPlanBatch({
-      ...baseInput,
-      requestKey: `${marker}-ADOPT-BATCH-MISMATCH`,
-      plans: baseInput.plans.map((plan) => ({ ...plan, studentOverrides: undefined })),
-    })).rejects.toMatchObject({ status: 409 });
-
-    const batch = await createFeedbackPlanBatch(baseInput);
+    });
 
     expect(batch.plans).toHaveLength(2);
-    expect(batch.plans[0]?.id).toBe(existingPlan.id);
-    expect((await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: existingPlan.id } })).batchId).toBe(batch.id);
+    expect(batch.plans[0]?.id).not.toBe(existingPlan.id);
+    expect((await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: existingPlan.id } })).batchId).toBeNull();
+    expect((await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: runs[0]!.id } })).planId).toBe(existingPlan.id);
+    const inputSnapshot = JSON.parse(batch.plans[0]!.inputSnapshot) as {
+      version?: number;
+      intakeSources?: Array<{ intakeRunId: string }>;
+    };
+    expect(inputSnapshot.version).toBe(2);
+    expect(inputSnapshot.intakeSources?.map((source) => source.intakeRunId) ?? []).toContain(runs[0]!.id);
   });
 
-  it("replaces a stale archived plan linked from an intake run", async () => {
+  it("creates from a run whose legacy pointer still references an archived plan", async () => {
     const outputRequirement = "班级组替换已归档计划";
     const archivedPlan = await createFeedbackPlan({
       semesterId,
@@ -331,7 +710,7 @@ describe("feedback plan batch service", () => {
     });
 
     expect(batch.plans[0]?.id).not.toBe(archivedPlan.id);
-    expect((await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } })).planId).toBe(batch.plans[0]?.id);
+    expect((await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } })).planId).toBe(archivedPlan.id);
     expect((await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: archivedPlan.id } })).archivedAt).not.toBeNull();
   });
 
@@ -369,6 +748,50 @@ describe("feedback plan batch service", () => {
     await retryFeedbackPlanBatch(batch.id);
     await vi.waitFor(async () => expect((await getFeedbackPlanBatch(batch.id))?.status).toBe("completed"), { timeout: 5000, interval: 50 });
     expect(callOrder).toEqual([studentIds[0], studentIds[0], studentIds[1]]);
+  });
+
+  it("keeps pause, continue, and retry under the batch coordinator", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-CHILD-CONTROL`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "合成子计划控制边界",
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!],
+      })),
+    });
+    const child = batch.plans[0]!;
+    const item = child.items[0]!;
+
+    await prisma.feedbackPlan.update({ where: { id: child.id }, data: { status: "queued" } });
+    await expect(pauseFeedbackPlanGeneration(child.id)).rejects.toThrow("班级组子计划由批次统一控制");
+
+    await prisma.feedbackPlan.update({ where: { id: child.id }, data: { status: "paused", generationStartedAt: new Date() } });
+    await prisma.feedbackPlanItem.update({ where: { id: item.id }, data: { status: "queued" } });
+    await expect(continueFeedbackPlanGeneration(child.id)).rejects.toThrow("班级组子计划由批次统一控制");
+
+    await prisma.feedbackPlan.update({ where: { id: child.id }, data: { status: "generation_failed" } });
+    await prisma.feedbackPlanItem.update({ where: { id: item.id }, data: { status: "generation_failed" } });
+    await expect(retryFeedbackPlanGeneration({ planId: child.id })).rejects.toThrow("班级组子计划由批次统一控制");
+    await expect(prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } })).resolves.toMatchObject({ status: "draft" });
+  });
+
+  it("refuses to archive a batch while a child plan is still active", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-ACTIVE-ARCHIVE`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "合成归档停机边界",
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], studentIds: [studentIds[index]!] })),
+    });
+    await prisma.feedbackPlanBatch.update({ where: { id: batch.id }, data: { status: "paused" } });
+    await prisma.feedbackPlan.update({ where: { id: batch.plans[0]!.id }, data: { status: "generating" } });
+    await prisma.feedbackPlanItem.update({ where: { id: batch.plans[0]!.items[0]!.id }, data: { status: "generating" } });
+
+    await expect(archiveFeedbackPlanBatch(batch.id)).rejects.toThrow("仍有班级正在生成");
+    await expect(prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } })).resolves.toMatchObject({ archivedAt: null });
   });
 
   it("lets the running item finish before pausing and continues with the next class", async () => {

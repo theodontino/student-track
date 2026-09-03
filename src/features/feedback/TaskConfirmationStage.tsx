@@ -20,13 +20,16 @@ type Props = {
   onStudentOverrideChange: (studentId: string, generationConfig: FeedbackPlanItemGenerationConfig | null) => void | Promise<void>;
   onBack: () => void;
   onStart: () => void;
+  onSave?: () => void;
+  saveState?: "idle" | "dirty" | "saving" | "saved" | "error";
+  saveMessage?: string;
 };
 
 function inheritedConfig(draft: FeedbackTaskDraftV2, entry: FeedbackTaskClassDraft): FeedbackPlanItemGenerationConfig {
   const classOverride = draft.classOverrides.find((override) => override.sessionCode === entry.sessionCode);
   return {
     version: 1,
-    type: "event_micro",
+    type: draft.revisionSource?.type ?? "event_micro",
     outputRequirement: classOverride?.outputRequirement ?? draft.outputRequirement,
     generationPreferences: {
       ...draft.preferences,
@@ -47,6 +50,7 @@ export function includeIndependentFeedbackStudent(entry: FeedbackTaskClassDraft,
 
 export function TaskConfirmationStage(props: Props) {
   const [studentTarget, setStudentTarget] = useState<{ student: FeedbackContextStudent; entry: FeedbackTaskClassDraft } | null>(null);
+  const classUpdate = props.draft.revisionSource?.type === "class_update";
   const plannedSessionCodes = new Set(props.plannedSessionCodes ?? props.draft.plannedSessionCodes);
   const selectedEntries = props.draft.entries.filter((entry) => entry.selected && !plannedSessionCodes.has(entry.sessionCode));
   const selectedCount = selectedEntries.reduce((total, entry) => total + entry.studentIds.length, 0);
@@ -68,6 +72,10 @@ export function TaskConfirmationStage(props: Props) {
   }
 
   return <div className={styles.planStage}>
+    <section className={styles.planDocumentHeader} aria-label="反馈计划文档">
+      <label><span>计划名称</span><input aria-label="计划名称" maxLength={120} value={props.draft.displayName} disabled={props.busy} onChange={(event) => props.onDraft({ displayName: event.target.value })} placeholder="例如：九月第一次课后反馈" /></label>
+      <div><span role="status">{props.saveState === "saving" ? "保存中…" : props.saveState === "dirty" ? "有未保存修改" : props.saveState === "error" ? props.saveMessage || "保存失败，可重试" : props.saveState === "saved" ? "已自动保存" : "建立后会自动保存"}</span>{props.onSave && <><Button uiSize="sm" variant="secondary" onClick={props.onSave} disabled={props.busy || props.saveState === "saving" || props.saveState === "saved"}>{props.saveState === "saving" ? "保存中…" : props.saveState === "saved" ? "已保存" : "保存"}</Button><kbd>⌘S</kbd></>}</div>
+    </section>
     <section className={styles.readonlyScopeSummary}>
       <div><span>本轮范围</span><strong>{props.scopeSummary}</strong><small>录入与课堂事实已经确认；如需修改班级或课次，请返回录入步骤。</small></div>
       <Button variant="ghost" onClick={props.onBack} disabled={props.busy}>返回录入</Button>
@@ -89,23 +97,26 @@ export function TaskConfirmationStage(props: Props) {
         const selected = new Set(entry.studentIds);
         const classOverride = props.draft.classOverrides.find((override) => override.sessionCode === entry.sessionCode);
         return <details key={entry.sessionCode} className={styles.studentClassGroup} open={props.draft.mode === "single" || entryIndex === 0}>
-          <summary><div><strong>{entry.className}</strong><span>{entry.studentIds.length}/{students.length} 名学生 · {entry.studentSelectionInitialized ? "教师已调整范围" : "系统默认范围（优先课堂关注/测评）"} · {classOverride ? "已调整班级默认" : "跟随班级组默认"}</span></div><span>{props.draft.mode === "group" ? "展开学生" : "学生范围"}</span></summary>
+          <summary><div><strong>{entry.className}</strong><span>{classUpdate ? "1 条班级公共反馈" : `${entry.studentIds.length}/${students.length} 名学生 · ${entry.studentSelectionInitialized ? "教师已调整范围" : "系统默认范围（优先课堂关注/测评）"}`} · {classOverride ? "已调整班级默认" : "跟随班级组默认"}</span></div><span>{classUpdate ? "班级范围" : props.draft.mode === "group" ? "展开学生" : "学生范围"}</span></summary>
           <div className={styles.studentClassBody}>
-            <div className={styles.studentClassActions}><div><Button uiSize="sm" variant="ghost" onClick={() => props.onEntry(entry.sessionCode, { studentIds: students.map((student) => student.id), studentSelectionInitialized: true })} disabled={props.busy}>全选</Button><Button uiSize="sm" variant="ghost" onClick={() => props.onEntry(entry.sessionCode, { studentIds: [], studentSelectionInitialized: true })} disabled={props.busy}>清空</Button></div><details className={styles.classDefaultEditor}><summary>调整班级默认</summary><div className={styles.classOverrideFields}><label>班级默认总体要求<Textarea rows={2} value={classOverride?.outputRequirement ?? props.draft.outputRequirement} disabled={props.busy} onChange={(event) => updateClassOverride(entry, { outputRequirement: event.target.value })} /></label><label>班级默认详略<select value={classOverride?.preferences?.length ?? props.draft.preferences.length} disabled={props.busy} onChange={(event) => updateClassOverride(entry, { preferences: { length: event.target.value as FeedbackTaskDraftV2["preferences"]["length"] } })}><option value="inherit">随家庭偏好</option><option value="short">简洁</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>班级默认语气<select value={classOverride?.preferences?.tone ?? props.draft.preferences.tone} disabled={props.busy} onChange={(event) => updateClassOverride(entry, { preferences: { tone: event.target.value as FeedbackTaskDraftV2["preferences"]["tone"] } })}><option value="inherit">随现有偏好</option><option value="gentle">温和</option><option value="professional">专业</option></select></label>{classOverride && <Button variant="ghost" onClick={() => props.onClassOverrideChange(entry.sessionCode, null)} disabled={props.busy}>恢复班级组默认</Button>}</div></details></div>
-            <div className={styles.studentRows}>{students.map((student) => {
+            <div className={styles.studentClassActions}><div>{!classUpdate && <><Button uiSize="sm" variant="ghost" onClick={() => props.onEntry(entry.sessionCode, { studentIds: students.map((student) => student.id), studentSelectionInitialized: true })} disabled={props.busy}>全选</Button><Button uiSize="sm" variant="ghost" onClick={() => props.onEntry(entry.sessionCode, { studentIds: [], studentSelectionInitialized: true })} disabled={props.busy}>清空</Button></>}</div><details className={styles.classDefaultEditor}><summary>调整班级默认</summary><div className={styles.classOverrideFields}><label>班级默认总体要求<Textarea rows={2} value={classOverride?.outputRequirement ?? props.draft.outputRequirement} disabled={props.busy} onChange={(event) => updateClassOverride(entry, { outputRequirement: event.target.value })} /></label><label>班级默认详略<select value={classOverride?.preferences?.length ?? props.draft.preferences.length} disabled={props.busy} onChange={(event) => updateClassOverride(entry, { preferences: { length: event.target.value as FeedbackTaskDraftV2["preferences"]["length"] } })}><option value="inherit">随家庭偏好</option><option value="short">简洁</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>班级默认语气<select value={classOverride?.preferences?.tone ?? props.draft.preferences.tone} disabled={props.busy} onChange={(event) => updateClassOverride(entry, { preferences: { tone: event.target.value as FeedbackTaskDraftV2["preferences"]["tone"] } })}><option value="inherit">随现有偏好</option><option value="gentle">温和</option><option value="professional">专业</option></select></label>{classOverride && <Button variant="ghost" onClick={() => props.onClassOverrideChange(entry.sessionCode, null)} disabled={props.busy}>恢复班级组默认</Button>}</div></details></div>
+            {classUpdate ? <p>班级整体反馈会读取这个班的已确认事实，并生成一条公共内容，不按学生拆分计划。</p> : <div className={styles.studentRows}>{students.map((student) => {
               const studentOverride = props.draft.studentOverrides.find((override) => override.studentId === student.id);
               return <article key={student.id} className={selected.has(student.id) ? styles.studentRowSelected : ""}>
                 <label><input type="checkbox" checked={selected.has(student.id)} disabled={props.busy} onChange={() => toggleStudent(entry, student.id)} /><span><strong>{student.name}</strong><small>{student.studentId}{student.feedbackRecommendationReasons?.length ? ` · 推荐：${student.feedbackRecommendationReasons.join("；")}` : ""}</small></span></label>
                 <span className={studentOverride ? styles.overrideState : ""}>{studentOverride ? "已单独设置" : "跟随默认"}</span>
-                <div><Button uiSize="sm" variant="ghost" onClick={() => setStudentTarget({ student, entry })} disabled={props.busy}>{studentOverride ? "调整设置" : "单独设置"}</Button>{studentOverride && <Button uiSize="sm" variant="ghost" onClick={() => void props.onStudentOverrideChange(student.id, null)} disabled={props.busy}>恢复默认</Button>}</div>
+                <div><>
+                  <Button uiSize="sm" variant="ghost" onClick={() => setStudentTarget({ student, entry })} disabled={props.busy}>{studentOverride ? "调整设置" : "单独设置"}</Button>
+                  {studentOverride && <Button uiSize="sm" variant="ghost" onClick={() => void props.onStudentOverrideChange(student.id, null)} disabled={props.busy}>恢复默认</Button>}
+                </></div>
               </article>;
-            })}</div>
+            })}</div>}
           </div>
         </details>;
       })}
     </section>
 
-    <div className={styles.stickyPlanActions}><div><strong>{selectedEntries.length} 个班、{selectedCount} 名学生</strong><span>确认时先保存有变化的班级范围，全部成功后再创建并启动任务。</span></div><Button onClick={props.onStart} disabled={props.busy || selectedEntries.some((entry) => entry.studentIds.length === 0)}>{props.busy ? "正在确认并启动…" : "确认范围与计划并开始生成"}</Button></div>
+    <div className={styles.stickyPlanActions}><div><strong>{classUpdate ? `${selectedEntries.length} 个班级公共反馈` : `${selectedEntries.length} 个班、${selectedCount} 名学生`}</strong><span>先建立可恢复草稿；进入计划文档后会自动保存，确认无误再单独开始生成。</span></div><Button onClick={props.onStart} disabled={props.busy || !props.draft.displayName.trim() || (!classUpdate && selectedEntries.some((entry) => entry.studentIds.length === 0))}>{props.busy ? "正在建立计划…" : "建立可保存计划"}</Button></div>
 
     {studentTarget && <FeedbackPlanGenerationConfigDialog
       open

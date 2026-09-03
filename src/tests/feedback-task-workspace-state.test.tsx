@@ -4,6 +4,7 @@ import { includeIndependentFeedbackStudent, TaskConfirmationStage } from "@/feat
 import { TaskPreparationStage } from "@/features/feedback/TaskPreparationStage";
 import { syncFeedbackItemDrafts } from "@/features/feedback/FeedbackPlanPanel";
 import {
+  feedbackStudioInitialPlanTarget,
   feedbackStudioPlanTarget,
   shouldRefreshFeedbackTaskBatch,
 } from "@/features/feedback/FeedbackTaskStudioStage";
@@ -31,6 +32,8 @@ import {
 import {
   createFeedbackTaskDraft,
   feedbackTaskReducer,
+  feedbackTaskStageForView,
+  feedbackTaskViewForStage,
   resolveFeedbackTaskMaterialChoice,
   type FeedbackTaskClassDraft,
   type FeedbackTaskState,
@@ -71,6 +74,19 @@ function groupDraft() {
 }
 
 describe("feedback task group workspace state", () => {
+  it("maps persistent intake, plan and studio views without treating studio as available before a plan exists", () => {
+    expect(feedbackTaskViewForStage("prepare")).toBe("intake");
+    expect(feedbackTaskViewForStage("confirm")).toBe("plan");
+    expect(feedbackTaskViewForStage("studio")).toBe("studio");
+
+    expect(feedbackTaskStageForView("intake", true)).toBe("prepare");
+    expect(feedbackTaskStageForView("plan", true)).toBe("confirm");
+    expect(feedbackTaskStageForView("studio", true)).toBe("studio");
+    expect(feedbackTaskStageForView("studio", false)).toBe("prepare");
+    expect(feedbackTaskStageForView(null, true)).toBe("studio");
+    expect(feedbackTaskStageForView("unknown", false)).toBe("prepare");
+  });
+
   it("persists group drafts and initializes newly added override collections", () => {
     const legacyDraft = Object.fromEntries(
       Object.entries(groupDraft()).filter(([key]) => !["requestKey", "plannedSessionCodes", "classOverrides", "studentOverrides", "materialSelectionInitialized", "pendingMaterialLessonNumber", "unassignedSourceCount"].includes(key)),
@@ -83,6 +99,7 @@ describe("feedback task group workspace state", () => {
     expect(restored?.plannedSessionCodes).toEqual([]);
     expect(restored?.materialSelectionInitialized).toBe(true);
     expect(restored?.pendingMaterialLessonNumber).toBeNull();
+    expect(restored?.displayName).toBe("初版计划");
   });
 
   it("keeps an explicit no-material choice after draft restoration", () => {
@@ -365,7 +382,7 @@ describe("feedback task group workspace state", () => {
     expect(markup).toContain("已单独设置");
     expect(markup).toContain("没有推荐时默认全班");
     expect(markup).toContain("教师已调整范围");
-    expect(markup).toContain("确认范围与计划并开始生成");
+    expect(markup).toContain("建立可保存计划");
   });
 
   it("excludes already planned classes from the confirmation page", () => {
@@ -473,6 +490,29 @@ describe("feedback task group workspace state", () => {
       className: "同名班",
       sessionCode: "session-b",
     });
+  });
+
+  it("resolves the first class plan when a batch Studio deep link omits planId", () => {
+    const batch = {
+      id: "batch-a",
+      status: "completed",
+      currentPlanId: null,
+      plans: [{
+        id: "plan-a",
+        status: "completed",
+        class: { id: "class-a", code: "A", name: "一班" },
+        session: { code: "session-a" },
+        progress: { total: 1, generated: 1, approved: 0, exported: 0, failed: 0 },
+        items: [],
+      }],
+    };
+    expect(feedbackStudioInitialPlanTarget(batch, "")).toEqual({
+      id: "plan-a",
+      classId: "class-a",
+      className: "一班",
+      sessionCode: "session-a",
+    });
+    expect(feedbackStudioInitialPlanTarget(batch, "existing-plan")).toBeNull();
   });
 
   it("preserves the selected session when a legacy class name is promoted to its stable id", () => {

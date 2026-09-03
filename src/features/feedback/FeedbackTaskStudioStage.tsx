@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, StatusBanner } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
 import { createEmptyLessonFeedbackMaterial } from "@/lib/feedback-materials";
@@ -32,25 +32,54 @@ export function feedbackStudioPlanTarget(plan: FeedbackBatchClient["plans"][numb
     id: plan.id,
     classId: plan.class.id,
     className: plan.class.name ?? plan.class.code,
-    sessionCode: plan.session?.code ?? "",
+    sessionCode: plan.session?.code ?? plan.rangeEndSession?.code ?? "",
   };
 }
 
+export function feedbackStudioInitialPlanTarget(batch: FeedbackBatchClient | null, planId: string) {
+  if (planId) return null;
+  const first = batch?.plans[0];
+  return first ? feedbackStudioPlanTarget(first) : null;
+}
+
 export function FeedbackTaskStudioStage(props: Props) {
+  const { batchId, onPlanChange, planId } = props;
   const [batch, setBatch] = useState<FeedbackBatchClient | null>(null);
   const [batchFilter, setBatchFilter] = useState<"action" | "review" | "done" | "all">("action");
   const [focusItemId, setFocusItemId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const loadSequence = useRef(0);
+  const resolvedInitialPlan = useRef("");
 
   const loadBatch = useCallback(async () => {
-    if (!props.batchId) { setBatch(null); return null; }
-    const result = await requestJson<{ batch: FeedbackBatchClient }>(`/api/report/feedback-plan-batches/${encodeURIComponent(props.batchId)}`);
-    setBatch(result.batch); return result.batch;
-  }, [props.batchId]);
+    const sequence = ++loadSequence.current;
+    const requestedBatchId = batchId;
+    if (!requestedBatchId) { setBatch(null); return null; }
+    const result = await requestJson<{ batch: FeedbackBatchClient }>(`/api/report/feedback-plan-batches/${encodeURIComponent(requestedBatchId)}`);
+    if (sequence !== loadSequence.current) return null;
+    setBatch(result.batch);
+    setError("");
+    return result.batch;
+  }, [batchId]);
 
-  useEffect(() => { void loadBatch().catch((reason) => setError(reason instanceof Error ? reason.message : "读取班级组任务失败")); }, [loadBatch]);
+  useEffect(() => {
+    void loadBatch().catch((reason) => setError(reason instanceof Error ? reason.message : "读取班级组计划失败"));
+    return () => { loadSequence.current += 1; };
+  }, [loadBatch]);
+  useEffect(() => {
+    if (planId) {
+      resolvedInitialPlan.current = "";
+      return;
+    }
+    const target = feedbackStudioInitialPlanTarget(batch, planId);
+    if (!target || !batchId) return;
+    const resolutionKey = `${batchId}:${target.id}`;
+    if (resolvedInitialPlan.current === resolutionKey) return;
+    resolvedInitialPlan.current = resolutionKey;
+    onPlanChange(target);
+  }, [batch, batchId, onPlanChange, planId]);
   useEffect(() => {
     if (!batch || !shouldRefreshFeedbackTaskBatch(batch.status)) return;
     const timer = window.setInterval(() => void loadBatch().catch(() => undefined), 1000);
@@ -91,12 +120,14 @@ export function FeedbackTaskStudioStage(props: Props) {
     finally { setBusy(false); }
   }
 
-  if (!props.planId) return <StatusBanner tone="danger">任务已建立但缺少可打开的计划。请从“当前反馈任务”重新打开。</StatusBanner>;
+  if (!props.planId) return props.batchId && (!batch || batch.plans.length)
+    ? <StatusBanner tone="info">正在打开班级组的首个班级计划…</StatusBanner>
+    : <StatusBanner tone="danger">计划已建立但缺少可打开的班级单元。请从“当前反馈计划”重新打开。</StatusBanner>;
   return <div className={styles.studioStage}>
-    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成失败也会留在这里重试，不会退回确认页面。</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}<Button variant="ghost" onClick={props.onNewTask}>结束本轮并新建任务</Button></div></header>
+    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成失败也会留在这里重试，不会退回确认页面。</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}<Button variant="ghost" onClick={props.onNewTask}>结束本轮并新建计划</Button></div></header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}{notice && <StatusBanner tone="success">{notice}</StatusBanner>}
     {batch && <><section className={styles.batchClasses}>
-      <header><div><strong>班级组任务</strong><span>{batch.plans.length} 个真实班级 · 统一生成状态 {batch.status}</span></div><div className={styles.batchControls}>{["queued", "running", "pause_requested"].includes(batch.status) && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch.status === "pause_requested"}>暂停整个班级组</Button>}{batch.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续班级组生成</Button>}{batch.status === "failed" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}</div></header>
+      <header><div><strong>班级组计划</strong><span>{batch.plans.length} 个真实班级 · 统一生成状态 {batch.status}</span></div><div className={styles.batchControls}>{["queued", "running", "pause_requested"].includes(batch.status) && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch.status === "pause_requested"}>暂停整个班级组</Button>}{batch.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续班级组生成</Button>}{batch.status === "failed" && <Button uiSize="sm" variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}</div></header>
       <div>{batch.plans.map((plan) => <button type="button" key={plan.id} className={plan.id === props.planId ? styles.batchClassActive : ""} onClick={() => props.onPlanChange(feedbackStudioPlanTarget(plan))}><strong>{plan.class.name ?? plan.class.code}</strong><small>生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></button>)}</div>
     </section>
     <section className={styles.batchClasses} aria-label="班级组学生复核导航">

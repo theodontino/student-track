@@ -14,10 +14,14 @@ import {
   FeedbackCompositionPlanSchema,
   FeedbackEvidenceBundleSchema,
   FeedbackHistorySnapshotSchema,
+  FeedbackPlanCloneDraftSchema,
   FeedbackPlanInputSnapshotSchema,
+  FeedbackPlanInputSnapshotV2Schema,
+  FeedbackPlanDraftPatchSchema,
   FeedbackPlanItemGenerationConfigSchema,
   FeedbackPlanCreateSchema,
   FeedbackPlanItemPatchSchema,
+  FeedbackPlanRenameSchema,
   isHardFeedbackAuditIssue,
   normalizeFeedbackGenerationPreferences,
   sanitizeFeedbackComposition,
@@ -27,12 +31,16 @@ import {
   type FeedbackGenerationMode,
   type FeedbackGenerationPreferences,
   type FeedbackHistorySnapshot,
+  type FeedbackPlanCloneDraftInput,
+  type FeedbackPlanDraftPatch,
   type FeedbackPlanInputSnapshot,
+  type FeedbackPlanIntakeSourceSummary,
   type FeedbackPlanAssessmentEvidenceInput,
   type FeedbackPlanCreateInput,
   type FeedbackPlanItemGenerationConfig,
   type FeedbackPlanStudentOverride,
   type FeedbackPlanItemPatch,
+  type FeedbackPlanRenameInput,
 } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import type { LessonFeedbackMaterial, StudentAssessmentEvidence } from "@/lib/feedback-materials";
@@ -302,6 +310,47 @@ function messageForGenerationError(error: unknown) {
 
 function activeTaskIds(tasks: Array<{ id: string; status: string }>) {
   return new Set(tasks.filter((task) => task.status !== "cancelled").map((task) => task.id));
+}
+
+function auditTaskIdsForBundle(
+  bundle: FeedbackEvidenceBundle,
+  tasks: Array<{ id: string; status: string }>,
+) {
+  return new Set([
+    ...bundle.executionConstraints.existingTaskIds,
+    ...activeTaskIds(tasks),
+  ]);
+}
+
+function auditIdentityForPlanItem(
+  plan: {
+    inputSnapshot: string;
+    items: Array<{
+      id: string;
+      studentId: string | null;
+      student?: { name: string } | null;
+    }>;
+  },
+  item: { id: string; studentId: string | null; student?: { name: string } | null },
+) {
+  const snapshot = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));
+  if (snapshot.success && snapshot.data.version === 2) {
+    const target = snapshot.data.factSnapshot.items.find((entry) => entry.studentId === item.studentId);
+    return {
+      studentName: item.studentId
+        ? target?.studentName ?? target?.studentNumber ?? item.student?.name
+        : undefined,
+      otherStudentNames: snapshot.data.factSnapshot.items.flatMap((entry) => (
+        entry.studentId && entry.studentId !== item.studentId && entry.studentName ? [entry.studentName] : []
+      )),
+    };
+  }
+  return {
+    studentName: item.student?.name,
+    otherStudentNames: plan.items.flatMap((entry) => (
+      entry.id !== item.id && entry.student?.name ? [entry.student.name] : []
+    )),
+  };
 }
 
 function parseCompositionSnapshot(value: string | null | undefined, planType: string, draftFeedback = "") {
@@ -676,8 +725,8 @@ async function findContextForPlan(db: FeedbackPlanDb, input: FeedbackPlanCreateI
 }
 
 function candidateStudentIds(input: FeedbackPlanCreateInput, context: Awaited<ReturnType<typeof buildFeedbackContext>> | null) {
-  if (input.studentIds) return [...new Set(input.studentIds)];
   if (input.type === "class_update") return [null];
+  if (input.studentIds) return [...new Set(input.studentIds)];
   return context?.students
     .filter((student) => input.type === "event_micro"
       ? student.feedbackRecommendationReasons.length > 0
@@ -685,8 +734,111 @@ function candidateStudentIds(input: FeedbackPlanCreateInput, context: Awaited<Re
     .map((student) => student.id) ?? [];
 }
 
-export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: FeedbackPlanDb = prisma) {
+type FeedbackPlanNameScope = {
+  semesterId: string;
+  classId: string;
+  sessionId?: string | null;
+  rangeStartSessionId?: string | null;
+  rangeEndSessionId?: string | null;
+};
+
+async function allocateFeedbackPlanDisplayName(
+  db: FeedbackPlanDb,
+  scope: FeedbackPlanNameScope,
+  requestedName: string,
+  excludePlanId?: string,
+) {
+  const baseName = requestedName.trim();
+  const plans = await db.feedbackPlan.findMany({
+    where: {
+      semesterId: scope.semesterId,
+      classId: scope.classId,
+      sessionId: scope.sessionId ?? null,
+      rangeStartSessionId: scope.rangeStartSessionId ?? null,
+      rangeEndSessionId: scope.rangeEndSessionId ?? null,
+      ...(excludePlanId ? { id: { not: excludePlanId } } : {}),
+      displayName: { not: null },
+    },
+    select: { displayName: true },
+  });
+  const names = new Set(plans.flatMap((plan) => plan.displayName ? [plan.displayName] : []));
+  if (!names.has(baseName)) return baseName;
+  let suffix = 2;
+  while (names.has(`${baseName} ${suffix}`)) suffix += 1;
+  return `${baseName} ${suffix}`;
+}
+
+function numberFromSnapshot(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+async function feedbackPlanIntakeSources(
+  db: FeedbackPlanDb,
+  intakeRunIds: string[] | undefined,
+  expectedSessionCode: string | undefined,
+): Promise<FeedbackPlanIntakeSourceSummary[]> {
+  const ids = [...new Set(intakeRunIds ?? [])];
+  if (!ids.length) return [];
+  const runs = await db.feedbackIntakeRun.findMany({ where: { id: { in: ids } } });
+  if (runs.length !== ids.length) throw new ApiError("反馈计划引用的材料运行不存在", 404, "not_found", false);
+  const byId = new Map(runs.map((run) => [run.id, run]));
+  return ids.map((id) => {
+    const run = byId.get(id)!;
+    if (run.status !== "applied") throw new ApiError("反馈计划只能使用已经确认的材料运行", 409, "conflict", false);
+    if (expectedSessionCode && run.sessionCode !== expectedSessionCode) {
+      throw new ApiError("反馈计划材料运行与目标课次不一致", 409, "conflict", false);
+    }
+    const applied = parseJson<Record<string, unknown>>(run.appliedSummary, {});
+    const scopeConfirmation = applied.scopeConfirmation && typeof applied.scopeConfirmation === "object"
+      ? applied.scopeConfirmation as Record<string, unknown>
+      : null;
+    const manifest = parseJson<Array<Record<string, unknown>>>(run.sourceManifest, []);
+    const issues = parseJson<unknown[]>(run.issues, []);
+    const decisions = Array.isArray(applied.decisions)
+      ? applied.decisions.flatMap((value) => {
+        if (!value || typeof value !== "object") return [];
+        const decision = value as Record<string, unknown>;
+        if (typeof decision.action !== "string" || !decision.action.trim()) return [];
+        return [{
+          action: decision.action.slice(0, 80),
+          ...(typeof decision.sourceName === "string" && decision.sourceName.trim()
+            ? { sourceName: decision.sourceName.slice(0, 500) }
+            : {}),
+          ...(typeof decision.text === "string" && decision.text.trim()
+            ? { detail: decision.text.slice(0, 500) }
+            : {}),
+        }];
+      })
+      : [];
+    return {
+      intakeRunId: run.id,
+      sessionCode: run.sessionCode,
+      status: run.status,
+      confirmedAt: typeof scopeConfirmation?.confirmedAt === "string" ? scopeConfirmation.confirmedAt : null,
+      sourceCount: numberFromSnapshot(applied.sourceCount) || manifest.length,
+      recognizedCount: numberFromSnapshot(applied.recognizedCount),
+      ignoredCount: numberFromSnapshot(applied.ignoredCount),
+      issueCount: numberFromSnapshot(applied.issueCount) || issues.length,
+      resolvedDecisionCount: decisions.length,
+      resolutions: decisions,
+      sources: manifest.map((source) => ({
+        name: typeof source.name === "string" ? source.name : "未命名材料",
+        kind: typeof source.kind === "string" ? source.kind : "unknown",
+        source: typeof source.source === "string" ? source.source : "upload",
+      })),
+    };
+  });
+}
+
+export async function createFeedbackPlan(
+  rawInput: FeedbackPlanCreateInput,
+  db: FeedbackPlanDb = prisma,
+  options: { withinTransaction?: boolean } = {},
+): Promise<NonNullable<Awaited<ReturnType<typeof getFeedbackPlan>>>> {
   const parsedInput = FeedbackPlanCreateSchema.parse(rawInput);
+  if (parsedInput.requestKey && !options.withinTransaction && "$transaction" in db) {
+    return (db as PrismaClient).$transaction((tx) => createFeedbackPlan(parsedInput, tx, { withinTransaction: true }));
+  }
   let generationPreferences: FeedbackGenerationPreferences;
   try {
     generationPreferences = normalizeFeedbackGenerationPreferences(parsedInput.type, parsedInput.generationPreferences);
@@ -698,11 +850,23 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
   const input = {
     ...parsedInput,
     generationPreferences,
+    generationMode: normalizedGenerationMode(parsedInput.generationMode),
     lessonMaterial,
     sessionId: (await resolveSession(db, parsedInput.sessionId))?.id ?? parsedInput.sessionId,
     rangeStartSessionId: (await resolveSession(db, parsedInput.rangeStartSessionId))?.id ?? parsedInput.rangeStartSessionId,
     rangeEndSessionId: (await resolveSession(db, parsedInput.rangeEndSessionId))?.id ?? parsedInput.rangeEndSessionId,
   } satisfies FeedbackPlanCreateInput;
+  if (input.basedOnPlanId) {
+    const source = await db.feedbackPlan.findUnique({
+      where: { id: input.basedOnPlanId },
+      select: { id: true, batchId: true, semesterId: true, classId: true, type: true },
+    });
+    if (!source) throw new ApiError("来源反馈计划不存在", 404, "not_found", false);
+    if (source.batchId) throw new ApiError("班级组计划必须从班级组整体建立当前事实修订", 409, "conflict", false);
+    if (source.semesterId !== input.semesterId || source.classId !== input.classId || source.type !== input.type) {
+      throw new ApiError("来源反馈计划与当前学期、班级或反馈类型不一致", 409, "conflict", false);
+    }
+  }
   let context = await findContextForPlan(db, input);
   let rangeStartSessionId = input.rangeStartSessionId;
   const rangeEndSessionId = input.rangeEndSessionId ?? ((input.type === "stage_trend" || input.type === "course_end") ? input.sessionId : undefined);
@@ -752,32 +916,66 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     }))?.id;
   }
 
+  if (input.requestKey) {
+    const candidates = await db.feedbackPlan.findMany({
+      where: { semesterId: input.semesterId, archivedAt: null },
+      select: {
+        id: true,
+        classId: true,
+        sessionId: true,
+        rangeStartSessionId: true,
+        rangeEndSessionId: true,
+        basedOnPlanId: true,
+        inputSnapshot: true,
+      },
+    });
+    const existing = candidates.find((candidate) => {
+      const snapshot = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(candidate.inputSnapshot, null));
+      return snapshot.success && snapshot.data.version === 2 && snapshot.data.draftRequestKey === input.requestKey;
+    });
+    if (existing) {
+      const sameScope = existing.classId === input.classId
+        && existing.sessionId === (input.sessionId ?? null)
+        && existing.rangeStartSessionId === (rangeStartSessionId ?? null)
+        && existing.rangeEndSessionId === (rangeEndSessionId ?? null)
+        && existing.basedOnPlanId === (input.basedOnPlanId ?? null);
+      if (!sameScope) throw new ApiError("反馈计划请求标识已用于另一个班级或课次", 409, "conflict", false);
+      const detail = await getFeedbackPlan(existing.id, db);
+      if (!detail) throw new Error("反馈计划幂等恢复后无法读取");
+      return detail;
+    }
+  }
+
   // 先确定真实范围，再组装证据；否则阶段/结课计划会错误地复用当前课次的五次近期上下文。
   context = await findContextForPlan(db, {
     ...input,
     rangeStartSessionId,
     rangeEndSessionId,
+    studentIds: undefined,
   });
   const selectedIds = candidateStudentIds(input, context);
   if (!selectedIds.length) throw new ApiError("没有可加入反馈计划的学生", 400, "invalid_request", false);
+  const contextStudentIds = context?.students.map((student) => student.id) ?? [];
+  const missingSelectedStudent = selectedIds.find((studentId) => studentId !== null && !contextStudentIds.includes(studentId));
+  if (missingSelectedStudent) throw new ApiError("反馈计划包含不属于当前课次上下文的学生", 400, "invalid_request", false);
   const assessmentByStudent = normalizePlanAssessmentEvidence({
     assessmentEvidence: input.assessmentEvidence,
     sessionCode: context?.session.code ?? "",
-    allowedStudentIds: selectedIds.filter((studentId): studentId is string => Boolean(studentId)),
+    allowedStudentIds: contextStudentIds,
   });
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);
   const studentOverridesById = normalizedStudentOverrides({
     overrides: input.studentOverrides,
     selectedIds,
-    contextStudentIds: new Set(context?.students.map((student) => student.id) ?? []),
+    contextStudentIds: new Set(contextStudentIds),
   });
   const existingTasks = await db.teacherTask.findMany({
     where: {
       classId: input.classId,
       status: "pending",
-      ...(selectedIds.some((id) => id === null)
+      ...(input.type === "class_update"
         ? {}
-        : { studentId: { in: selectedIds.filter((id): id is string => Boolean(id)) } }),
+        : { studentId: { in: contextStudentIds } }),
     },
     select: { id: true, studentId: true },
   });
@@ -788,7 +986,18 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
   }
 
   const sourceFingerprint = sha256(JSON.stringify({
-    input,
+    input: {
+      type: input.type,
+      outputRequirement: input.outputRequirement,
+      generationMode: input.generationMode,
+      semesterId: input.semesterId,
+      classId: input.classId,
+      sessionId: input.sessionId,
+      rangeStartSessionId,
+      rangeEndSessionId,
+      studentIds: selectedIds,
+      generationPreferences,
+    },
     rangeStartSessionId,
     rangeEndSessionId,
     context: context?.students.map((student) => ({
@@ -805,8 +1014,41 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     studentOverrides: Object.fromEntries(studentOverridesById),
   }));
 
+  const factStudentIds: Array<string | null> = input.type === "class_update" ? [null] : contextStudentIds;
+  const frozenFacts = factStudentIds.map((studentId) => {
+    const student = studentId ? contextByStudent.get(studentId) ?? null : null;
+    const evidence = input.type === "class_update"
+      ? evidenceFromClassContext({
+        planType: input.type,
+        students: context?.students ?? [],
+        sessionId: input.sessionId ?? rangeEndSessionId,
+        sourceFingerprint,
+        existingTaskIds: taskIdsByStudent.get(null),
+        lessonMaterial,
+      })
+      : evidenceFromStudent({
+        planType: input.type,
+        student,
+        sourceFingerprint,
+        existingTaskIds: taskIdsByStudent.get(studentId),
+        assessmentEvidence: studentId ? assessmentByStudent[studentId] : undefined,
+        lessonMaterial,
+      });
+    return {
+      studentId,
+      ...(student ? {
+        studentName: student.name,
+        studentNumber: student.studentId,
+        communicationPreference: student.communicationPreference ?? null,
+      } : {}),
+      ...(context?.session.date ? { referenceDate: context.session.date } : {}),
+      evidence,
+    };
+  });
+  const intakeSources = await feedbackPlanIntakeSources(db, input.intakeRunIds, context?.session.code);
   const inputSnapshot: FeedbackPlanInputSnapshot = {
-    version: 1,
+    version: 2,
+    ...(input.requestKey ? { draftRequestKey: input.requestKey } : {}),
     semesterId: input.semesterId,
     classId: input.classId,
     sessionId: input.sessionId,
@@ -816,11 +1058,32 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     sourceFingerprint,
     lessonMaterial,
     generationPreferences,
+    selectedStudentIds: selectedIds.filter((studentId): studentId is string => Boolean(studentId)),
+    studentOverrides: [...studentOverridesById.entries()].map(([studentId, generationConfig]) => ({ studentId, generationConfig })),
+    factSnapshot: {
+      capturedAt: new Date().toISOString(),
+      items: frozenFacts,
+    },
+    intakeSources,
   };
 
+  const frozenFactsByStudent = new Map(frozenFacts.map((fact) => [fact.studentId, fact.evidence]));
+
   const createInDb = async (tx: FeedbackPlanDb) => {
+    const displayName = parsedInput.displayName === null
+      || (input.basedOnPlanId !== undefined && parsedInput.displayName === undefined)
+      ? null
+      : await allocateFeedbackPlanDisplayName(tx, {
+        semesterId: input.semesterId,
+        classId: input.classId,
+        sessionId: input.sessionId,
+        rangeStartSessionId,
+        rangeEndSessionId,
+      }, parsedInput.displayName ?? "初版计划");
     const plan = await tx.feedbackPlan.create({
       data: {
+        displayName,
+        basedOnPlanId: input.basedOnPlanId,
         type: input.type,
         outputRequirement: input.outputRequirement,
         semesterId: input.semesterId,
@@ -830,19 +1093,11 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
         rangeEndSessionId,
         inputFingerprint: sourceFingerprint,
         inputSnapshot: json(inputSnapshot),
+        generationMode: input.generationMode,
         items: {
           create: selectedIds.map((studentId) => {
-            const student = studentId ? contextByStudent.get(studentId) ?? null : null;
-            const bundle = input.type === "class_update"
-              ? evidenceFromClassContext({ planType: input.type, students: context?.students ?? [], sessionId: input.sessionId ?? rangeEndSessionId, sourceFingerprint, existingTaskIds: taskIdsByStudent.get(null), lessonMaterial })
-              : evidenceFromStudent({
-                planType: input.type,
-                student,
-                sourceFingerprint,
-                existingTaskIds: taskIdsByStudent.get(studentId),
-                assessmentEvidence: studentId ? assessmentByStudent[studentId] : undefined,
-                lessonMaterial,
-              });
+            const bundle = frozenFactsByStudent.get(studentId);
+            if (!bundle) throw new ApiError("反馈计划冻结事实缺少所选学生", 409, "conflict", false);
             return {
               studentId,
               evidenceSnapshot: json(bundle),
@@ -857,10 +1112,12 @@ export async function createFeedbackPlan(rawInput: FeedbackPlanCreateInput, db: 
     });
     return plan;
   };
-  // A batch owns the outer transaction. Prisma TransactionClient deliberately
-  // omits $transaction, so this small runtime check avoids a nested transaction.
-  const created = "$transaction" in db
-    ? await (db as PrismaClient).$transaction((tx) => createInDb(tx))
+  // Batch/intake callers explicitly mark their existing transaction. Standalone
+  // creation owns this final write transaction itself.
+  const created = options.withinTransaction
+    ? await createInDb(db)
+    : "$transaction" in db
+      ? await (db as PrismaClient).$transaction((tx) => createInDb(tx))
     : await createInDb(db);
   const detail = await getFeedbackPlan(created.id, db);
   if (!detail) throw new Error("反馈计划创建后无法读取");
@@ -939,9 +1196,422 @@ export async function listFeedbackPlans(input: {
   }));
 }
 
+type StoredFeedbackPlanDraft = {
+  id: string;
+  displayName: string | null;
+  basedOnPlanId: string | null;
+  type: string;
+  outputRequirement: string;
+  status: string;
+  semesterId: string;
+  classId: string;
+  sessionId: string | null;
+  rangeStartSessionId: string | null;
+  rangeEndSessionId: string | null;
+  inputFingerprint: string;
+  inputSnapshot: string;
+  generationMode: string;
+  generationStartedAt: Date | null;
+  generationCompletedAt: Date | null;
+  planRevision: number;
+  archivedAt: Date | null;
+  createdAt: Date;
+  batchId: string | null;
+  batch?: { status: string; archivedAt: Date | null } | null;
+  items: Array<{
+    id: string;
+    studentId: string | null;
+    status: string;
+    evidenceSnapshot: string;
+    generationConfigSnapshot: string;
+    finalText: string | null;
+    selectedGenerationId: string | null;
+    approvedAt: Date | null;
+    exportedAt: Date | null;
+    student?: {
+      name: string;
+      studentId: string;
+      communicationPreference: { preferenceSnapshot: string } | null;
+    } | null;
+  }>;
+  session?: { code: string; date: string } | null;
+  rangeEndSession?: { date: string } | null;
+};
+
+function feedbackPlanSnapshotV2(plan: StoredFeedbackPlanDraft) {
+  const parsed = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));
+  if (parsed.success && parsed.data.version === 2) return parsed.data;
+  const legacy = parsed.success ? parsed.data : null;
+  const factItems = plan.items.flatMap((item) => {
+    const evidence = FeedbackEvidenceBundleSchema.safeParse(parseJson(item.evidenceSnapshot, null));
+    if (!evidence.success) return [];
+    const communicationPreference = item.student?.communicationPreference
+      ? CommunicationPreferenceSchema.safeParse(parseJson(item.student.communicationPreference.preferenceSnapshot, null))
+      : null;
+    return [{
+      studentId: item.studentId,
+      ...(item.student ? { studentName: item.student.name, studentNumber: item.student.studentId } : {}),
+      ...(communicationPreference?.success ? { communicationPreference: communicationPreference.data } : {}),
+      ...(plan.rangeEndSession?.date || plan.session?.date
+        ? { referenceDate: plan.rangeEndSession?.date ?? plan.session?.date }
+        : {}),
+      evidence: evidence.data,
+    }];
+  });
+  const studentOverrides = plan.items.flatMap((item) => {
+    if (!item.studentId) return [];
+    const generationConfig = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
+    return generationConfig ? [{ studentId: item.studentId, generationConfig }] : [];
+  });
+  return FeedbackPlanInputSnapshotV2Schema.parse({
+    version: 2,
+    semesterId: legacy?.semesterId ?? plan.semesterId,
+    classId: legacy?.classId ?? plan.classId,
+    sessionId: legacy?.sessionId ?? plan.sessionId ?? undefined,
+    rangeStartSessionId: legacy?.rangeStartSessionId ?? plan.rangeStartSessionId ?? undefined,
+    rangeEndSessionId: legacy?.rangeEndSessionId ?? plan.rangeEndSessionId ?? undefined,
+    sessionCode: legacy?.sessionCode ?? plan.session?.code,
+    sourceFingerprint: legacy?.sourceFingerprint ?? plan.inputFingerprint,
+    lessonMaterial: legacy?.lessonMaterial ?? defaultLessonMaterial(),
+    generationPreferences: legacy?.generationPreferences,
+    selectedStudentIds: plan.items.flatMap((item) => item.studentId ? [item.studentId] : []),
+    studentOverrides,
+    factSnapshot: { capturedAt: plan.createdAt.toISOString(), items: factItems },
+    intakeSources: [],
+  });
+}
+
+async function storedFeedbackPlanDraft(id: string, db: FeedbackPlanDb) {
+  return db.feedbackPlan.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      displayName: true,
+      basedOnPlanId: true,
+      type: true,
+      outputRequirement: true,
+      status: true,
+      semesterId: true,
+      classId: true,
+      sessionId: true,
+      rangeStartSessionId: true,
+      rangeEndSessionId: true,
+      inputFingerprint: true,
+      inputSnapshot: true,
+      generationMode: true,
+      generationStartedAt: true,
+      generationCompletedAt: true,
+      planRevision: true,
+      archivedAt: true,
+      createdAt: true,
+      batchId: true,
+      batch: { select: { status: true, archivedAt: true } },
+      session: { select: { code: true, date: true } },
+      rangeEndSession: { select: { date: true } },
+      items: {
+        select: {
+          id: true,
+          studentId: true,
+          status: true,
+          evidenceSnapshot: true,
+          generationConfigSnapshot: true,
+          finalText: true,
+          selectedGenerationId: true,
+          approvedAt: true,
+          exportedAt: true,
+          student: {
+            select: {
+              name: true,
+              studentId: true,
+              communicationPreference: { select: { preferenceSnapshot: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+const FEEDBACK_PLAN_GENERATED_STATUSES = new Set([
+  "queued",
+  "generating",
+  "pause_requested",
+  "paused",
+  "generation_failed",
+  "in_review",
+  "partially_approved",
+  "approved",
+  "partially_exported",
+  "exported",
+]);
+
+function feedbackPlanItemHasGeneratedResult(item: {
+  status: string;
+  finalText: string | null;
+  selectedGenerationId: string | null;
+  approvedAt: Date | null;
+  exportedAt: Date | null;
+}) {
+  return Boolean(item.finalText || item.selectedGenerationId || item.approvedAt || item.exportedAt)
+    || ["needs_review", "approved", "exported"].includes(item.status);
+}
+
+export function feedbackPlanHasGenerationTrace(plan: {
+  status: string;
+  generationStartedAt: Date | null;
+  generationCompletedAt: Date | null;
+  items: Array<{
+    status: string;
+    finalText: string | null;
+    selectedGenerationId: string | null;
+    approvedAt: Date | null;
+    exportedAt: Date | null;
+  }>;
+}) {
+  return Boolean(plan.generationStartedAt || plan.generationCompletedAt)
+    || FEEDBACK_PLAN_GENERATED_STATUSES.has(plan.status)
+    || plan.items.some((item) => (
+      feedbackPlanItemHasGeneratedResult(item)
+      || ["queued", "generating", "pause_requested", "paused", "generation_failed"].includes(item.status)
+    ));
+}
+
+function assertMutableFeedbackPlanDraft(
+  plan: StoredFeedbackPlanDraft,
+  expectedPlanRevision: number,
+  allowBatchDraftUpdate: boolean,
+) {
+  if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
+  if (plan.batchId && !allowBatchDraftUpdate) {
+    throw new ApiError("班级组子计划不能单独修改，请从班级组规划统一保存", 409, "conflict", false);
+  }
+  if (plan.batch && (plan.batch.archivedAt || !["draft", "ready"].includes(plan.batch.status))) {
+    throw new ApiError("班级组已经启动生成，计划内容已冻结；请建立修正计划", 409, "conflict", false);
+  }
+  if (feedbackPlanHasGenerationTrace(plan)) {
+    throw new ApiError("已经启动生成的计划内容已冻结，请建立修正计划", 409, "conflict", false);
+  }
+  if (expectedPlanRevision !== plan.planRevision) {
+    throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+  }
+}
+
+export async function updateFeedbackPlanDraft(
+  id: string,
+  rawPatch: FeedbackPlanDraftPatch,
+  db: FeedbackPlanDb = prisma,
+  options: { allowBatchDraftUpdate?: boolean } = {},
+) {
+  const patch = FeedbackPlanDraftPatchSchema.parse(rawPatch);
+  const execute = async (tx: FeedbackPlanDb) => {
+    const plan = await storedFeedbackPlanDraft(id, tx);
+    if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+    assertMutableFeedbackPlanDraft(plan, patch.expectedPlanRevision, options.allowBatchDraftUpdate === true);
+    const snapshot = feedbackPlanSnapshotV2(plan);
+    const nextType = patch.type ?? plan.type as FeedbackPlanCreateInput["type"];
+    const sourceWasClassPlan = snapshot.factSnapshot.items.some((item) => item.studentId === null);
+    const targetIsClassPlan = nextType === "class_update";
+    if (sourceWasClassPlan !== targetIsClassPlan) {
+      throw new ApiError("班级公共反馈与学生反馈不能在同一草稿内互相转换，请新建计划", 409, "conflict", false);
+    }
+    let generationPreferences: FeedbackGenerationPreferences;
+    try {
+      generationPreferences = normalizeFeedbackGenerationPreferences(nextType, patch.generationPreferences ?? snapshot.generationPreferences);
+    } catch (error) {
+      throw new ApiError(error instanceof Error ? error.message : "生成结构设置无效", 400, "invalid_request", false);
+    }
+    const factByStudent = new Map(snapshot.factSnapshot.items.map((item) => [item.studentId, item.evidence]));
+    const currentStudentIds = plan.items.flatMap((item) => item.studentId ? [item.studentId] : []);
+    const selectedIds: Array<string | null> = targetIsClassPlan
+      ? [null]
+      : [...new Set(patch.studentIds ?? currentStudentIds)];
+    const unknownStudent = selectedIds.find((studentId) => !factByStudent.has(studentId));
+    if (unknownStudent !== undefined) {
+      throw new ApiError("所选学生不在该计划冻结的事实范围内，请按当前事实新建计划", 409, "conflict", false);
+    }
+    if (!selectedIds.length) throw new ApiError("至少选择一名反馈对象", 400, "invalid_request", false);
+    const currentOverrides = plan.items.flatMap((item) => {
+      if (!item.studentId) return [];
+      const generationConfig = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
+      return generationConfig ? [{ studentId: item.studentId, generationConfig }] : [];
+    });
+    const selectedStudentIdSet = new Set(selectedIds.flatMap((studentId) => studentId ? [studentId] : []));
+    const studentOverridesById = normalizedStudentOverrides({
+      overrides: patch.studentOverrides ?? currentOverrides.filter((override) => selectedStudentIdSet.has(override.studentId)),
+      selectedIds,
+      contextStudentIds: new Set(snapshot.factSnapshot.items.flatMap((item) => item.studentId ? [item.studentId] : [])),
+    });
+    const nextDisplayName = patch.displayName
+      ? await allocateFeedbackPlanDisplayName(tx, plan, patch.displayName, plan.id)
+      : plan.displayName;
+    const nextOutputRequirement = patch.outputRequirement ?? plan.outputRequirement;
+    const nextGenerationMode = normalizedGenerationMode(patch.generationMode ?? plan.generationMode);
+    const nextFingerprint = sha256(JSON.stringify({
+      factSourceFingerprint: snapshot.sourceFingerprint ?? plan.inputFingerprint,
+      type: nextType,
+      outputRequirement: nextOutputRequirement,
+      generationMode: nextGenerationMode,
+      generationPreferences,
+      selectedStudentIds: selectedIds,
+      studentOverrides: Object.fromEntries(studentOverridesById),
+    }));
+    const nextSnapshot = FeedbackPlanInputSnapshotV2Schema.parse({
+      ...snapshot,
+      sourceFingerprint: nextFingerprint,
+      generationPreferences,
+      selectedStudentIds: selectedIds.flatMap((studentId) => studentId ? [studentId] : []),
+      studentOverrides: [...studentOverridesById.entries()].map(([studentId, generationConfig]) => ({ studentId, generationConfig })),
+    });
+    const planData = {
+      displayName: nextDisplayName,
+      type: nextType,
+      outputRequirement: nextOutputRequirement,
+      generationMode: nextGenerationMode,
+      inputFingerprint: nextFingerprint,
+      inputSnapshot: json(nextSnapshot),
+      status: "draft",
+      planRevision: { increment: 1 },
+    };
+    const saved = await tx.feedbackPlan.updateMany({
+      where: {
+        id: plan.id,
+        planRevision: patch.expectedPlanRevision,
+        generationStartedAt: null,
+        archivedAt: null,
+      },
+      data: planData,
+    });
+    if (!saved.count) throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+    const selectedKeys = new Set(selectedIds.map((studentId) => studentId ?? "__class__"));
+    const existingByKey = new Map(plan.items.map((item) => [item.studentId ?? "__class__", item]));
+    await tx.feedbackPlanItem.deleteMany({
+      where: {
+        planId: plan.id,
+        id: { in: plan.items.filter((item) => !selectedKeys.has(item.studentId ?? "__class__")).map((item) => item.id) },
+      },
+    });
+    for (const studentId of selectedIds) {
+      const generationConfigSnapshot = studentId && studentOverridesById.has(studentId)
+        ? json(studentOverridesById.get(studentId))
+        : "{}";
+      const existing = existingByKey.get(studentId ?? "__class__");
+      if (existing) {
+        if (existing.generationConfigSnapshot !== generationConfigSnapshot) {
+          await tx.feedbackPlanItem.update({
+            where: { id: existing.id },
+            data: { generationConfigSnapshot, itemRevision: { increment: 1 } },
+          });
+        }
+      } else {
+        await tx.feedbackPlanItem.create({
+          data: {
+            planId: plan.id,
+            studentId,
+            evidenceSnapshot: json(factByStudent.get(studentId)),
+            generationConfigSnapshot,
+          },
+        });
+      }
+    }
+    return plan.id;
+  };
+  const planId = "$transaction" in db
+    ? await (db as PrismaClient).$transaction((tx) => execute(tx))
+    : await execute(db);
+  const updated = await getFeedbackPlan(planId, db);
+  if (!updated) throw new Error("反馈计划草稿保存后无法读取");
+  return updated;
+}
+
+export async function renameFeedbackPlan(
+  id: string,
+  rawInput: FeedbackPlanRenameInput,
+  db: FeedbackPlanDb = prisma,
+) {
+  const input = FeedbackPlanRenameSchema.parse(rawInput);
+  const plan = await storedFeedbackPlanDraft(id, db);
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.batchId) throw new ApiError("班级组计划只保留批次名称，请从班级组计划重命名", 409, "conflict", false);
+  if (input.expectedPlanRevision && input.expectedPlanRevision !== plan.planRevision) {
+    throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+  }
+  const displayName = await allocateFeedbackPlanDisplayName(db, plan, input.displayName, plan.id);
+  if (input.expectedPlanRevision) {
+    const renamed = await db.feedbackPlan.updateMany({
+      where: { id, planRevision: input.expectedPlanRevision },
+      data: { displayName, planRevision: { increment: 1 } },
+    });
+    if (!renamed.count) throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+  } else {
+    await db.feedbackPlan.update({ where: { id }, data: { displayName, planRevision: { increment: 1 } } });
+  }
+  const updated = await getFeedbackPlan(id, db);
+  if (!updated) throw new Error("反馈计划重命名后无法读取");
+  return updated;
+}
+
+export async function cloneFeedbackPlanDraft(
+  rawInput: FeedbackPlanCloneDraftInput & { planId: string },
+  db: FeedbackPlanDb = prisma,
+  options: { allowBatchClone?: boolean } = {},
+) {
+  const input = { planId: rawInput.planId, ...FeedbackPlanCloneDraftSchema.parse(rawInput) };
+  const execute = async (tx: FeedbackPlanDb) => {
+    const source = await storedFeedbackPlanDraft(input.planId, tx);
+    if (!source) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+    if (source.batchId && !options.allowBatchClone) {
+      throw new ApiError("班级组子计划不能单独修正，请从班级组计划建立修正计划", 409, "conflict", false);
+    }
+    const snapshot = feedbackPlanSnapshotV2(source);
+    const displayName = input.displayName
+      ? await allocateFeedbackPlanDisplayName(tx, source, input.displayName)
+      : null;
+    const clone = await tx.feedbackPlan.create({
+      data: {
+        displayName,
+        basedOnPlanId: source.id,
+        type: source.type,
+        outputRequirement: source.outputRequirement,
+        status: "draft",
+        semesterId: source.semesterId,
+        classId: source.classId,
+        sessionId: source.sessionId,
+        rangeStartSessionId: source.rangeStartSessionId,
+        rangeEndSessionId: source.rangeEndSessionId,
+        inputFingerprint: source.inputFingerprint,
+        inputSnapshot: json({
+          ...snapshot,
+          draftRequestKey: undefined,
+          selectedStudentIds: source.items.flatMap((item) => item.studentId ? [item.studentId] : []),
+          studentOverrides: source.items.flatMap((item) => {
+            if (!item.studentId) return [];
+            const generationConfig = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
+            return generationConfig ? [{ studentId: item.studentId, generationConfig }] : [];
+          }),
+        }),
+        generationMode: normalizedGenerationMode(source.generationMode),
+        items: {
+          create: source.items.map((item) => ({
+            studentId: item.studentId,
+            evidenceSnapshot: item.evidenceSnapshot,
+            generationConfigSnapshot: item.generationConfigSnapshot,
+          })),
+        },
+      },
+    });
+    return clone.id;
+  };
+  const cloneId = "$transaction" in db
+    ? await (db as PrismaClient).$transaction((tx) => execute(tx))
+    : await execute(db);
+  const clone = await getFeedbackPlan(cloneId, db);
+  if (!clone) throw new Error("修正计划创建后无法读取");
+  return clone;
+}
+
 export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanItemPatch, db: PrismaClient = prisma) {
   const patch = FeedbackPlanItemPatchSchema.parse(rawPatch);
-  const item = await db.feedbackPlanItem.findUnique({ include: { plan: { include: { items: { include: { student: true } } } }, student: true, tasks: true } , where: { id } });
+  const item = await db.feedbackPlanItem.findUnique({ include: { plan: { include: { batch: { select: { status: true, archivedAt: true } }, items: { include: { student: true } } } }, student: true, tasks: true } , where: { id } });
   if (!item) throw new ApiError("反馈计划条目不存在", 404, "not_found", false);
   if (item.plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (["approved", "exported"].includes(item.status)) throw new ApiError("已批准或已导出的反馈不可原位修改，请新建反馈计划", 409, "conflict", false);
@@ -953,8 +1623,9 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
     if (patch.composition || patch.finalText !== undefined || patch.reviewMode) {
       throw new ApiError("独立计划配置不能和正文修改合并提交", 400, "invalid_request", false);
     }
-    if (item.reviewMode === "teacher_edited") {
-      throw new ApiError("教师已修改的反馈不能直接更换生成配置，请新建反馈计划保留当前版本", 409, "conflict", false);
+    if (item.plan.batchId) throw new ApiError("班级组子计划不能单独修改，请从班级组规划统一保存", 409, "conflict", false);
+    if (feedbackPlanHasGenerationTrace(item.plan) || item.status !== "evidence_ready") {
+      throw new ApiError("生成启动后不能原位更换计划配置，请建立修正计划", 409, "conflict", false);
     }
     const nextGenerationConfig = patch.generationConfig === null
       ? null
@@ -964,25 +1635,49 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
     }
     const currentGenerationConfig = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
     if (JSON.stringify(currentGenerationConfig ?? {}) === JSON.stringify(nextGenerationConfig ?? {})) return item;
-    return db.feedbackPlanItem.update({
-      where: { id, itemRevision: item.itemRevision },
-      data: {
-        generationConfigSnapshot: json(nextGenerationConfig ?? {}),
-        compositionSnapshot: "{}",
-        auditSnapshot: "{}",
-        finalText: null,
-        finalTextHash: null,
-        selectedGeneration: { disconnect: true },
-        generationError: null,
-        reviewMode: "model" as const,
-        status: "evidence_ready" as const,
-        approvedAt: null,
-        exportedAt: null,
-        itemRevision: { increment: 1 },
-        plan: { update: { planRevision: { increment: 1 }, status: "draft" as const, approvedAt: null, exportedAt: null } },
-      },
-      include: { tasks: true },
+    return db.$transaction(async (tx) => {
+      const lockedPlan = await tx.feedbackPlan.updateMany({
+        where: {
+          id: item.planId,
+          archivedAt: null,
+          generationStartedAt: null,
+          planRevision: item.plan.planRevision,
+        },
+        data: {
+          planRevision: { increment: 1 },
+          status: "draft",
+          approvedAt: null,
+          exportedAt: null,
+        },
+      });
+      if (lockedPlan.count !== 1) {
+        throw new ApiError("反馈计划已经启动或被其他操作更新，请刷新后重试", 409, "conflict", false);
+      }
+      const updated = await tx.feedbackPlanItem.updateMany({
+        where: { id, itemRevision: item.itemRevision, status: "evidence_ready" },
+        data: {
+          generationConfigSnapshot: json(nextGenerationConfig ?? {}),
+          compositionSnapshot: "{}",
+          auditSnapshot: "{}",
+          finalText: null,
+          finalTextHash: null,
+          selectedGenerationId: null,
+          generationError: null,
+          reviewMode: "model",
+          status: "evidence_ready",
+          approvedAt: null,
+          exportedAt: null,
+          itemRevision: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) {
+        throw new ApiError("反馈计划条目已被其他操作更新", 409, "conflict", false);
+      }
+      return tx.feedbackPlanItem.findUniqueOrThrow({ where: { id }, include: { tasks: true } });
     });
+  }
+  if (item.plan.batchId && item.status === "evidence_ready") {
+    throw new ApiError("班级组尚未生成的条目不能单独写入正文，请先启动班级组生成", 409, "conflict", false);
   }
   const effectiveConfig = effectiveFeedbackPlanConfig(item.plan, item);
   const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
@@ -993,13 +1688,13 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
     ? composition.evidenceCoverage
     : composition.evidenceCoverage.filter((coverage) => normalizedFinalText.includes(normalizedCoverageText(coverage.statement)));
   const nextComposition = FeedbackCompositionPlanSchema.parse({ ...composition, evidenceCoverage, draftFeedback: finalText });
-  const taskIds = activeTaskIds(item.tasks);
-  const otherStudentNames = item.plan.items.flatMap((entry) => entry.id !== item.id && entry.student?.name ? [entry.student.name] : []);
+  const taskIds = auditTaskIdsForBundle(bundle, item.tasks);
+  const identity = auditIdentityForPlanItem(item.plan, item);
   const audit = createAuditSnapshot(
     nextComposition,
     bundle,
     taskIds,
-    { studentName: item.student?.name ?? undefined, otherStudentNames },
+    identity,
     { generationPreferences: effectiveConfig.generationPreferences },
   );
   const reviewMode = patch.reviewMode ?? (patch.finalText !== undefined ? "teacher_edited" : item.reviewMode);
@@ -1129,14 +1824,13 @@ export async function createTeacherTask(input: {
     const effectiveConfig = effectiveFeedbackPlanConfig(item.plan, item);
     const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
     const composition = parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, item.finalText ?? "");
+    const taskIds = auditTaskIdsForBundle(bundle, item.tasks);
+    taskIds.add(task.id);
     const audit = createAuditSnapshot(
       composition,
       bundle,
-      new Set([...activeTaskIds(item.tasks), task.id]),
-      {
-        studentName: item.student?.name ?? undefined,
-        otherStudentNames: item.plan.items.flatMap((entry) => entry.studentId && entry.studentId !== item.studentId && entry.student?.name ? [entry.student.name] : []),
-      },
+      taskIds,
+      auditIdentityForPlanItem(item.plan, item),
       { generationPreferences: effectiveConfig.generationPreferences },
     );
     await tx.feedbackPlanItem.update({
@@ -1174,8 +1868,8 @@ export async function approveFeedbackPlanItems(input: { planId: string; itemIds?
       const recalculatedAudit = createAuditSnapshot(
         composition,
         bundle,
-        activeTaskIds(item.tasks),
-        { studentName: item.student?.name ?? undefined, otherStudentNames: plan.items.flatMap((entry) => entry.studentId && entry.studentId !== item.studentId && entry.student?.name ? [entry.student.name] : []) },
+        auditTaskIdsForBundle(bundle, item.tasks),
+        auditIdentityForPlanItem(plan, item),
         { generationPreferences: effectiveConfig.generationPreferences },
       );
       const hardBlocked = recalculatedAudit.items.filter((issue) => isHardFeedbackAuditIssue(issue.code));
@@ -1226,11 +1920,8 @@ export async function updateTeacherTaskStatus(id: string, status: "pending" | "c
       const audit = createAuditSnapshot(
         composition,
         bundle,
-        activeTaskIds(currentTasks),
-        {
-          studentName: item.student?.name ?? undefined,
-          otherStudentNames: item.plan.items.flatMap((entry) => entry.studentId && entry.studentId !== item.studentId && entry.student?.name ? [entry.student.name] : []),
-        },
+        auditTaskIdsForBundle(bundle, currentTasks),
+        auditIdentityForPlanItem(item.plan, item),
         { generationPreferences: effectiveConfig.generationPreferences },
       );
       await tx.feedbackPlanItem.update({
@@ -1263,19 +1954,34 @@ export async function invalidateFeedbackPlans(input: {
   const plans = await db.feedbackPlan.findMany({
     where: {
       archivedAt: null,
+      generationStartedAt: null,
       ...(classId ? { classId } : {}),
       ...(semesterId ? { semesterId } : {}),
       items: { some: { status: { in: ["evidence_ready", "generating", "needs_review"] } } },
     },
     select: {
       id: true,
+      status: true,
+      inputSnapshot: true,
       sessionId: true,
       rangeStartSessionId: true,
       rangeEndSessionId: true,
+      generationStartedAt: true,
+      generationCompletedAt: true,
       session: { select: { date: true, semesterNumber: true } },
       rangeStartSession: { select: { date: true, semesterNumber: true } },
       rangeEndSession: { select: { date: true, semesterNumber: true } },
-      items: { select: { id: true, studentId: true, status: true } },
+      items: {
+        select: {
+          id: true,
+          studentId: true,
+          status: true,
+          finalText: true,
+          selectedGenerationId: true,
+          approvedAt: true,
+          exportedAt: true,
+        },
+      },
     },
   });
   const position = (session: { date: string; semesterNumber: number } | null | undefined) => session
@@ -1283,6 +1989,11 @@ export async function invalidateFeedbackPlans(input: {
     : null;
   const targetPosition = targetSession ? position(targetSession) : null;
   const matchingPlanIds = new Set(plans.filter((plan) => {
+    if (feedbackPlanHasGenerationTrace(plan)) return false;
+    const snapshot = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));
+    // V2 plans own a durable fact snapshot from the moment they are created.
+    // New facts must create another named plan instead of silently rebasing it.
+    if (snapshot.success && snapshot.data.version === 2) return false;
     if (!input.sessionId) return true;
     if (plan.sessionId === input.sessionId) return true;
     if (!targetPosition) return false;
@@ -1450,8 +2161,9 @@ export async function removeFeedbackAttachment(input: { planId: string; attachme
 }
 
 export async function deleteFeedbackPlan(id: string, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, status: true, approvedAt: true, exportedAt: true, exportRuns: { select: { id: true }, take: 1 }, attachments: { select: { relativeLocator: true } }, items: { select: { status: true, finalText: true, selectedGenerationId: true, approvedAt: true, exportedAt: true, generations: { select: { id: true }, take: 1 }, attachments: { select: { id: true } } } } } });
+  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, batchId: true, status: true, approvedAt: true, exportedAt: true, exportRuns: { select: { id: true }, take: 1 }, attachments: { select: { relativeLocator: true } }, items: { select: { status: true, finalText: true, selectedGenerationId: true, approvedAt: true, exportedAt: true, generations: { select: { id: true }, take: 1 }, attachments: { select: { id: true } } } } } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.batchId) throw new ApiError("班级组子计划不能单独删除，请从班级组计划操作", 409, "conflict", false);
   const hasGenerationOrApproval = plan.approvedAt || plan.exportedAt || plan.exportRuns.length > 0 || plan.items.some((item) => (
     Boolean(item.selectedGenerationId)
     || Boolean(item.approvedAt)
@@ -1492,8 +2204,9 @@ export async function deleteFeedbackPlan(id: string, db: PrismaClient = prisma) 
 }
 
 export async function archiveFeedbackPlan(id: string, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, status: true } });
+  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, batchId: true, status: true } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.batchId) throw new ApiError("班级组子计划不能单独归档，请从班级组计划操作", 409, "conflict", false);
   if (["generating", "queued", "pause_requested"].includes(plan.status)) {
     throw new ApiError("生成中的反馈计划不能直接归档，请先暂停并等待进行中任务完成", 409, "conflict", false);
   }
@@ -1501,8 +2214,9 @@ export async function archiveFeedbackPlan(id: string, db: PrismaClient = prisma)
 }
 
 export async function unarchiveFeedbackPlan(id: string, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true } });
+  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, batchId: true } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.batchId) throw new ApiError("班级组子计划不能单独取消归档，请从班级组计划操作", 409, "conflict", false);
   return db.feedbackPlan.update({ where: { id }, data: { archivedAt: null } });
 }
 
@@ -1522,11 +2236,18 @@ export async function generateFeedbackPlanItems(input: {
     : plan.items;
   if (!selected.length) throw new ApiError("没有要生成的反馈条目", 400, "invalid_request", false);
   const planInputSnapshot = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));
+  const hasFrozenV2Input = planInputSnapshot.success && planInputSnapshot.data.version === 2;
+  const hasReplacementEvidence = Object.keys(input.assessmentEvidence ?? {}).length > 0;
+  if (feedbackPlanHasGenerationTrace(plan) && (hasReplacementEvidence || selected.some((item) => item.status === "stale"))) {
+    throw new ApiError("已经启动的计划不能原位换用新事实；请保留旧正文或建立另一份计划", 409, "conflict", false);
+  }
+  if (hasFrozenV2Input && hasReplacementEvidence) {
+    throw new ApiError("本计划的事实快照已经冻结；请按当前事实建立另一份计划", 409, "conflict", false);
+  }
   const lessonMaterial = planInputSnapshot.success ? planInputSnapshot.data.lessonMaterial : undefined;
   const generationPreferences = generationPreferencesFromSnapshot(plan.type, plan.inputSnapshot);
   const immutable = selected.filter((item) => (
-    item.status === "approved"
-    || item.status === "exported"
+    feedbackPlanItemHasGeneratedResult(item)
     || (item.reviewMode === "teacher_edited" && item.status !== "stale")
   ));
   if (immutable.length) {
@@ -1545,18 +2266,22 @@ export async function generateFeedbackPlanItems(input: {
     lessonMaterial,
     generationPreferences,
   };
-  const context = await findContextForPlan(db, planInput);
+  const context = hasFrozenV2Input ? null : await findContextForPlan(db, planInput);
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);
+  const frozenFactItems = planInputSnapshot.success && planInputSnapshot.data.version === 2
+    ? planInputSnapshot.data.factSnapshot.items
+    : [];
+  const frozenFactByStudent = new Map(frozenFactItems.map((fact) => [fact.studentId, fact]));
   const normalizedAssessmentEvidence = normalizePlanAssessmentEvidence({
     assessmentEvidence: input.assessmentEvidence,
-    sessionCode: context?.session.code ?? "",
+    sessionCode: context?.session.code ?? (planInputSnapshot.success ? planInputSnapshot.data.sessionCode ?? "" : ""),
     allowedStudentIds: selected.flatMap((item) => item.studentId ? [item.studentId] : []),
   });
 
   // A stale item must never reuse its old evidence snapshot. Rebase the
   // deterministic bundle first; this creates a new mutable item revision while
   // approved/exported history remains immutable.
-  const staleItems = selected.filter((item) => item.status === "stale");
+  const staleItems = hasFrozenV2Input ? [] : selected.filter((item) => item.status === "stale");
   if (staleItems.length) {
     const planBeforeRebase = plan;
     const pendingTasks = await db.teacherTask.findMany({
@@ -1663,7 +2388,11 @@ export async function generateFeedbackPlanItems(input: {
     }));
   }
 
-  const allowedStatuses = input.preclaimed ? ["generating"] : ["evidence_ready", "needs_review", "queued"];
+  const allowedStatuses = input.preclaimed
+    ? ["generating"]
+    : hasFrozenV2Input
+      ? ["evidence_ready", "queued"]
+      : ["evidence_ready", "needs_review", "queued"];
   const unsupported = selected.filter((item) => !allowedStatuses.includes(item.status));
   if (unsupported.length) throw new ApiError("反馈条目当前状态不能生成，请刷新计划后重试", 409, "conflict", false);
   const originalStates = new Map(selected.map((item) => [item.id, {
@@ -1699,14 +2428,23 @@ export async function generateFeedbackPlanItems(input: {
     for (const item of selected) {
       if (input.signal?.aborted) throw new DOMException("反馈生成已取消", "AbortError");
       const student = item.studentId ? contextByStudent.get(item.studentId) ?? null : null;
-      const itemName = student?.name ?? "班级公共反馈";
+      const frozenFact = frozenFactByStudent.get(item.studentId);
+      const identity = auditIdentityForPlanItem(plan, item);
+      const studentName = item.studentId
+        ? identity.studentName ?? frozenFact?.studentName ?? frozenFact?.studentNumber ?? student?.name ?? "该学生"
+        : "班级家长";
+      const itemName = item.studentId ? studentName : "班级公共反馈";
       try {
         const effectiveConfig = effectiveFeedbackPlanConfig(plan, item);
         const bundle = bundleForPlanConfig(sanitizeFeedbackEvidenceBundle(assessmentBundleOverrides.get(item.id)
           ?? FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}))), effectiveConfig);
-        const preference = student?.communicationPreference;
+        const preference = hasFrozenV2Input
+          ? frozenFact?.communicationPreference ?? undefined
+          : student?.communicationPreference;
+        const referenceDate = hasFrozenV2Input ? frozenFact?.referenceDate : context?.session.date;
+        const generationTaskIds = auditTaskIdsForBundle(bundle, item.tasks);
         const generated = await generateFeedbackPlanComposition({
-          studentName: student?.name ?? "班级家长",
+          studentName,
           planType: effectiveConfig.type,
           outputRequirement: effectiveConfig.outputRequirement,
           evidenceBundle: bundle,
@@ -1726,16 +2464,15 @@ export async function generateFeedbackPlanItems(input: {
           reviewModel,
           generationMode,
           generationPreferences: effectiveConfig.generationPreferences,
-          referenceDate: context?.session.date,
-          existingTaskIds: activeTaskIds(item.tasks),
+          referenceDate,
+          existingTaskIds: generationTaskIds,
           signal: input.signal,
         });
-        const otherStudentNames = plan.items.flatMap((entry) => entry.student?.name && entry.student.id !== item.studentId ? [entry.student.name] : []);
         const audit = createAuditSnapshot(
           generated.composition,
           bundle,
-          activeTaskIds(item.tasks),
-          { studentName: student?.name ?? undefined, otherStudentNames },
+          generationTaskIds,
+          identity,
           { enforceParentAudience: true, generationPreferences: effectiveConfig.generationPreferences },
         );
         const generation = await recordSuccessfulGeneration({
@@ -1750,7 +2487,13 @@ export async function generateFeedbackPlanItems(input: {
           promptVersion: generationMode === "fast" ? "feedback-plan-v2-fast" : "feedback-plan-v2",
           modelRole: generationMode === "fast" ? "feedbackDraft" : "feedbackReview",
           inputRevision: String(plan.planRevision),
-          inputSnapshot: { evidenceBundle: bundle, draftComposition: generated.draftComposition, generationMode, generationConfig: effectiveConfig },
+          inputSnapshot: {
+            evidenceBundle: bundle,
+            draftComposition: generated.draftComposition,
+            generationMode,
+            generationConfig: effectiveConfig,
+            generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
+          },
           outputSnapshot: { composition: generated.composition, audit, generationMode },
           finalText: generated.composition.draftFeedback,
         }, db);
@@ -1929,9 +2672,20 @@ async function prepareQueuedGenerationEvidence(input: {
     && ["evidence_ready", "needs_review", "generation_failed", "stale"].includes(item.status)
   ));
   const hasReplacementEvidence = Object.keys(input.assessmentEvidence ?? {}).length > 0;
-  if (!hasReplacementEvidence && !selected.some((item) => item.status === "stale")) return;
+  if (feedbackPlanHasGenerationTrace(plan) && (hasReplacementEvidence || selected.some((item) => item.status === "stale"))) {
+    throw new ApiError("已经启动的计划不能原位换用新事实；请保留旧正文或建立另一份计划", 409, "conflict", false);
+  }
+  if (!hasReplacementEvidence && !selected.some((item) => item.status === "stale")) return plan.planRevision;
 
   const parsedSnapshot = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));
+  if (parsedSnapshot.success && parsedSnapshot.data.version === 2) {
+    if (hasReplacementEvidence) {
+      throw new ApiError("本计划的事实快照已经冻结；请按当前事实建立另一份计划", 409, "conflict", false);
+    }
+    // V2 plans never rebuild or regenerate stale rows in place. Historical
+    // accidental stale marks can be kept explicitly through the retain action.
+    return plan.planRevision;
+  }
   const lessonMaterial = parsedSnapshot.success ? parsedSnapshot.data.lessonMaterial : undefined;
   const planInput: FeedbackPlanCreateInput = {
     type: plan.type as FeedbackPlanCreateInput["type"],
@@ -1964,7 +2718,25 @@ async function prepareQueuedGenerationEvidence(input: {
     lessonMaterial,
   }));
 
-  await db.$transaction(async (tx) => {
+  return db.$transaction(async (tx) => {
+    const lockedPlan = await tx.feedbackPlan.updateMany({
+      where: {
+        id: plan.id,
+        planRevision: plan.planRevision,
+        generationStartedAt: null,
+        archivedAt: null,
+      },
+      data: {
+        inputFingerprint: sourceFingerprint,
+        inputSnapshot: json({ ...(parsedSnapshot.success ? parsedSnapshot.data : {}), sourceFingerprint }),
+        planRevision: { increment: 1 },
+        approvedAt: null,
+        exportedAt: null,
+      },
+    });
+    if (lockedPlan.count !== 1) {
+      throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+    }
     for (const item of selected) {
       const replacementAssessment = item.studentId && Object.hasOwn(normalizedAssessmentEvidence, item.studentId)
         ? normalizedAssessmentEvidence[item.studentId]
@@ -2014,16 +2786,7 @@ async function prepareQueuedGenerationEvidence(input: {
         },
       });
     }
-    await tx.feedbackPlan.update({
-      where: { id: plan.id },
-      data: {
-        inputFingerprint: sourceFingerprint,
-        inputSnapshot: json({ ...(parsedSnapshot.success ? parsedSnapshot.data : {}), sourceFingerprint }),
-        planRevision: { increment: 1 },
-        approvedAt: null,
-        exportedAt: null,
-      },
-    });
+    return plan.planRevision + 1;
   });
 }
 
@@ -2032,47 +2795,132 @@ export async function startFeedbackPlanGeneration(input: {
   itemIds?: string[];
   assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
   generationMode?: FeedbackGenerationMode;
-}, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true, status: true } });
-  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
-  if (plan.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
-  if (feedbackGenerationJobs.has(input.planId) && plan.status === "generating") return { accepted: true, status: plan.status };
-  await prepareQueuedGenerationEvidence(input, db);
-  if (!feedbackGenerationJobs.has(input.planId)) {
-    await db.feedbackPlanItem.updateMany({ where: { planId: input.planId, status: "generating" }, data: { status: "queued", generationError: null } });
-  }
-  const itemWhere = input.itemIds?.length
-    ? { id: { in: [...new Set(input.itemIds)] }, planId: input.planId, status: { in: ["evidence_ready", "needs_review", "generation_failed", "stale"] } }
-    : { planId: input.planId, status: { in: ["evidence_ready", "needs_review", "generation_failed", "stale"] } };
-  const queued = await db.feedbackPlanItem.updateMany({
-    where: itemWhere,
-    data: { status: "queued", generationError: null, generationStartedAt: null, generationCompletedAt: null, generationDurationMs: null },
-  });
-  if (queued.count === 0) {
-    const remaining = await db.feedbackPlanItem.count({ where: { planId: input.planId, status: { in: ["queued", "generating"] } } });
-    if (remaining === 0) throw new ApiError("没有可生成的反馈条目", 409, "conflict", false);
-  }
-  const generationStartedAt = new Date();
-  await db.feedbackPlan.update({
+  expectedPlanRevision?: number;
+}, db: PrismaClient = prisma, options: { allowBatchStart?: boolean } = {}) {
+  const plan = await db.feedbackPlan.findUnique({
     where: { id: input.planId },
-    data: {
-      status: "queued",
-      archivedAt: null,
-      generationMode: normalizedGenerationMode(input.generationMode),
-      generationStartedAt,
-      generationCompletedAt: null,
-      generationElapsedMs: 0,
-      generationRunStartedAt: generationStartedAt,
+    select: {
+      id: true,
+      archivedAt: true,
+      status: true,
+      displayName: true,
+      basedOnPlanId: true,
+      batchId: true,
+      planRevision: true,
+      generationStartedAt: true,
     },
   });
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
+  if (plan.batchId && !options.allowBatchStart) {
+    throw new ApiError("班级组子计划不能单独启动，请从班级组计划开始生成", 409, "conflict", false);
+  }
+  if (plan.basedOnPlanId && !plan.batchId && !plan.displayName?.trim()) {
+    throw new ApiError("请先为修正计划命名，再开始生成", 409, "conflict", false);
+  }
+  if (input.expectedPlanRevision && input.expectedPlanRevision !== plan.planRevision) {
+    throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+  }
+  if (feedbackGenerationJobs.has(input.planId) && ["queued", "generating", "pause_requested"].includes(plan.status)) {
+    return { accepted: true, status: plan.status };
+  }
+  const preparedPlanRevision = await prepareQueuedGenerationEvidence(input, db);
+  const queued = await db.$transaction(async (tx) => {
+    const current = await tx.feedbackPlan.findUnique({
+      where: { id: input.planId },
+      select: {
+        id: true,
+        archivedAt: true,
+        planRevision: true,
+        generationMode: true,
+        generationStartedAt: true,
+        items: {
+          select: {
+            id: true,
+            status: true,
+            finalText: true,
+            selectedGenerationId: true,
+            approvedAt: true,
+            exportedAt: true,
+          },
+        },
+      },
+    });
+    if (!current) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+    if (current.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
+    if (current.planRevision !== preparedPlanRevision) {
+      throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+    }
+    const allowedStatuses = ["evidence_ready"];
+    const requestedIds = input.itemIds?.length ? new Set(input.itemIds) : null;
+    const selected = current.items.filter((item) => (
+      (!requestedIds || requestedIds.has(item.id))
+      && allowedStatuses.includes(item.status)
+      && !feedbackPlanItemHasGeneratedResult(item)
+    ));
+    if (requestedIds && selected.length !== requestedIds.size) {
+      throw new ApiError("已生成的反馈不能原位重新生成；请建立修正计划，失败项请使用重试", 409, "conflict", false);
+    }
+    if (!selected.length) {
+      throw new ApiError("没有尚未生成的反馈条目；修正内容请建立另一份计划", 409, "conflict", false);
+    }
+    const generationRunStartedAt = new Date();
+    const firstStart = !current.generationStartedAt;
+    const frozen = await tx.feedbackPlan.updateMany({
+      where: {
+        id: current.id,
+        archivedAt: null,
+        planRevision: current.planRevision,
+        ...(firstStart ? { generationStartedAt: null } : {}),
+      },
+      data: {
+        status: "queued",
+        generationMode: firstStart
+          ? normalizedGenerationMode(input.generationMode ?? current.generationMode)
+          : current.generationMode,
+        generationStartedAt: current.generationStartedAt ?? generationRunStartedAt,
+        generationCompletedAt: null,
+        ...(firstStart ? { generationElapsedMs: 0 } : {}),
+        generationRunStartedAt,
+        planRevision: { increment: 1 },
+      },
+    });
+    if (frozen.count !== 1) throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+    const updated = await tx.feedbackPlanItem.updateMany({
+      where: { id: { in: selected.map((item) => item.id) }, planId: current.id, status: { in: allowedStatuses } },
+      data: {
+        status: "queued",
+        generationError: null,
+        generationStartedAt: null,
+        generationCompletedAt: null,
+        generationDurationMs: null,
+        itemRevision: { increment: 1 },
+      },
+    });
+    if (updated.count !== selected.length) throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+    return updated.count;
+  });
   void startFeedbackGenerationJob(input.planId, db).catch(() => undefined);
-  return { accepted: true, status: "queued" };
+  return { accepted: true, status: "queued", queued };
 }
 
-export async function pauseFeedbackPlanGeneration(planId: string, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id: planId }, select: { id: true, status: true, archivedAt: true } });
+export async function pauseFeedbackPlanGeneration(
+  planId: string,
+  db: PrismaClient = prisma,
+  options: { allowBatchControl?: boolean } = {},
+) {
+  const plan = await db.feedbackPlan.findUnique({
+    where: { id: planId },
+    select: { id: true, status: true, archivedAt: true, batchId: true },
+  });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
+  if (plan.batchId && !options.allowBatchControl) {
+    throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中暂停", 409, "conflict", false);
+  }
+  if (!["queued", "generating", "pause_requested"].includes(plan.status)) {
+    throw new ApiError("当前反馈计划不能暂停", 409, "conflict", false);
+  }
   if (!feedbackGenerationJobs.has(planId)) {
     await db.feedbackPlan.update({ where: { id: planId }, data: { status: "paused" } });
     await closeGenerationClock(planId, false, db);
@@ -2082,10 +2930,20 @@ export async function pauseFeedbackPlanGeneration(planId: string, db: PrismaClie
   return { accepted: true, status: "pause_requested" };
 }
 
-export async function continueFeedbackPlanGeneration(planId: string, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id: planId }, select: { id: true, archivedAt: true, generationStartedAt: true } });
+export async function continueFeedbackPlanGeneration(
+  planId: string,
+  db: PrismaClient = prisma,
+  options: { allowBatchControl?: boolean } = {},
+) {
+  const plan = await db.feedbackPlan.findUnique({
+    where: { id: planId },
+    select: { id: true, archivedAt: true, generationStartedAt: true, batchId: true },
+  });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
+  if (plan.batchId && !options.allowBatchControl) {
+    throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中继续", 409, "conflict", false);
+  }
   if (!feedbackGenerationJobs.has(planId)) {
     await db.feedbackPlanItem.updateMany({ where: { planId, status: "generating" }, data: { status: "queued", generationError: null } });
   }
@@ -2115,32 +2973,79 @@ export async function continueFeedbackPlanGeneration(planId: string, db: PrismaC
   return { accepted: true, status: "queued", queued };
 }
 
-export async function retryFeedbackPlanGeneration(input: { planId: string; itemIds?: string[] }, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true, generationMode: true } });
+export async function retryFeedbackPlanGeneration(
+  input: { planId: string; itemIds?: string[] },
+  db: PrismaClient = prisma,
+  options: { allowBatchControl?: boolean } = {},
+) {
+  const plan = await db.feedbackPlan.findUnique({
+    where: { id: input.planId },
+    select: { id: true, archivedAt: true, generationMode: true, batchId: true },
+  });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
+  if (plan.batchId && !options.allowBatchControl) {
+    throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中重试", 409, "conflict", false);
+  }
   const where = input.itemIds?.length
     ? { planId: input.planId, id: { in: [...new Set(input.itemIds)] }, status: "generation_failed" }
     : { planId: input.planId, status: "generation_failed" };
-  const retried = await db.feedbackPlanItem.updateMany({
+  const candidates = await db.feedbackPlanItem.findMany({
     where,
-    data: { status: "queued", generationError: null, generationStartedAt: null, generationCompletedAt: null, generationDurationMs: null },
-  });
-  if (!retried.count) throw new ApiError("没有可重试的失败反馈", 409, "conflict", false);
-  const generationStartedAt = new Date();
-  await db.feedbackPlan.update({
-    where: { id: input.planId },
-    data: {
-      status: "queued",
-      generationMode: normalizedGenerationMode(plan.generationMode),
-      generationStartedAt,
-      generationCompletedAt: null,
-      generationElapsedMs: 0,
-      generationRunStartedAt: generationStartedAt,
+    select: {
+      id: true,
+      status: true,
+      finalText: true,
+      selectedGenerationId: true,
+      approvedAt: true,
+      exportedAt: true,
     },
   });
-  void startFeedbackGenerationJob(input.planId, db).catch(() => undefined);
-  return { accepted: true, status: "queued", retried: retried.count };
+  if (!candidates.length) throw new ApiError("没有可重试的失败反馈", 409, "conflict", false);
+  const restoredIds = candidates.filter(feedbackPlanItemHasGeneratedResult).map((item) => item.id);
+  const retryableIds = candidates.filter((item) => !feedbackPlanItemHasGeneratedResult(item)).map((item) => item.id);
+  const result = await db.$transaction(async (tx) => {
+    const restored = restoredIds.length
+      ? await tx.feedbackPlanItem.updateMany({
+          where: { id: { in: restoredIds }, planId: input.planId, status: "generation_failed" },
+          data: { status: "needs_review", generationError: null, itemRevision: { increment: 1 } },
+        })
+      : { count: 0 };
+    const retried = retryableIds.length
+      ? await tx.feedbackPlanItem.updateMany({
+          where: { id: { in: retryableIds }, planId: input.planId, status: "generation_failed" },
+          data: { status: "queued", generationError: null, generationStartedAt: null, generationCompletedAt: null, generationDurationMs: null, itemRevision: { increment: 1 } },
+        })
+      : { count: 0 };
+    if (!restored.count && !retried.count) {
+      throw new ApiError("失败反馈已被其他操作更新，请刷新后重试", 409, "conflict", false);
+    }
+    if (retried.count) {
+      const generationStartedAt = new Date();
+      await tx.feedbackPlan.update({
+        where: { id: input.planId },
+        data: {
+          status: "queued",
+          generationMode: normalizedGenerationMode(plan.generationMode),
+          generationStartedAt,
+          generationCompletedAt: null,
+          generationElapsedMs: 0,
+          generationRunStartedAt: generationStartedAt,
+          planRevision: { increment: 1 },
+        },
+      });
+      return { status: "queued", retried: retried.count, restored: restored.count };
+    }
+    const currentItems = await tx.feedbackPlanItem.findMany({ where: { planId: input.planId }, select: { status: true } });
+    const status = derivePlanStatus(currentItems);
+    await tx.feedbackPlan.update({
+      where: { id: input.planId },
+      data: { status, planRevision: { increment: 1 } },
+    });
+    return { status, retried: 0, restored: restored.count };
+  });
+  if (result.retried) void startFeedbackGenerationJob(input.planId, db).catch(() => undefined);
+  return { accepted: true, ...result };
 }
 
 export async function createPreferenceCandidate(input: {

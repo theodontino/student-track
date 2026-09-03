@@ -90,6 +90,7 @@ export type FeedbackBatchClient = {
     status: string;
     class: { id: string; code: string; name: string | null };
     session?: { code: string } | null;
+    rangeEndSession?: { code: string } | null;
     progress: { total: number; generated: number; approved: number; exported: number; failed: number };
     items: Array<{
       id: string;

@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.2.10",
+    title: "反馈计划可命名、回看与安全修订",
+    changes: [
+      "录入、规划和生成保持在同一工作台，三个视图可随时切换并通过链接恢复；已建立计划的录入页只读展示采用的事实与材料来源。",
+      "单班计划与多班批次拥有可读名称；规划草稿自动保存，也支持保存按钮和 Command-S，刷新后可继续。",
+      "生成开始后冻结计划配置；修正会建立有来源关系的新计划，旧正文、批准和导出状态不会被覆盖。",
+      "新计划可以沿用原计划的冻结事实，也可以明确按事实库当前状态创建，历史 V1 快照和未命名计划继续兼容。",
+    ],
+  },
+  {
     version: "1.2.9",
     title: "课程公共材料只需选择一次",
     changes: [

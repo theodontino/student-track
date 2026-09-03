@@ -1110,20 +1110,23 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
   if (input.action === "clear_scope") return clearFeedbackIntakeScope(id, db);
   if (input.action === "apply" || input.action === "confirm" || input.action === "resolve") return applyFeedbackIntakeRun(id, db, input.decisions ?? []);
   if (run.status !== "applied") throw new Error("请先完成事实确认，再创建 FeedbackPlan");
-  if (run.planId) {
-    const existingPlan = await getFeedbackPlan(run.planId, db);
-    if (existingPlan && !existingPlan.archivedAt) return { ...view(run), plan: existingPlan };
-  }
   const session = await db.classSession.findUnique({ where: { code: run.sessionCode }, select: { id: true, semesterId: true, classId: true } });
   if (!session?.classId) throw new Error("反馈材料目标课次不存在或未关联班级");
   const snapshot = parseJson<IntakeSnapshot>(run.appliedSummary, {});
   const confirmedLessonMaterial = await confirmedMaterialForSession(session.id, db, input.plan?.commonMaterial, input.plan?.commonLessonRevisionId);
   const planInput = {
+    ...(input.plan?.requestKey ? { requestKey: input.plan.requestKey } : {}),
+    ...(input.plan?.displayName !== undefined ? { displayName: input.plan.displayName } : {}),
+    ...(input.plan?.basedOnPlanId ? { basedOnPlanId: input.plan.basedOnPlanId } : {}),
     type: input.plan?.type ?? "event_micro",
     outputRequirement: input.plan?.outputRequirement ?? "为每名入选学生生成一条可复核的家长反馈",
+    ...(input.plan?.generationMode ? { generationMode: input.plan.generationMode } : {}),
     semesterId: session.semesterId,
     classId: session.classId,
     sessionId: session.id,
+    ...(input.plan?.rangeStartSessionId ? { rangeStartSessionId: input.plan.rangeStartSessionId } : {}),
+    ...(input.plan?.rangeEndSessionId ? { rangeEndSessionId: input.plan.rangeEndSessionId } : {}),
+    intakeRunIds: [id],
     ...(input.plan?.studentIds ? { studentIds: input.plan.studentIds } : {}),
     ...(input.plan?.studentOverrides ? { studentOverrides: input.plan.studentOverrides } : {}),
     ...(input.plan?.generationPreferences ? { generationPreferences: input.plan.generationPreferences } : {}),
@@ -1132,13 +1135,19 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
   } as FeedbackPlanCreateInput;
   const createPlanInTransaction = async (tx: FeedbackIntakeDb) => {
     const current = await tx.feedbackIntakeRun.findUniqueOrThrow({ where: { id } });
-    if (current.planId) {
-      const currentPlan = await tx.feedbackPlan.findUnique({ where: { id: current.planId }, select: { id: true, archivedAt: true } });
-      if (currentPlan && !currentPlan.archivedAt) return { planId: current.planId };
-      await tx.feedbackIntakeRun.update({ where: { id }, data: { planId: null } });
-    }
-    const plan = await createFeedbackPlan(planInput, tx);
-    await tx.feedbackIntakeRun.update({ where: { id }, data: { planId: plan.id, status: "applied" } });
+    const currentPlan = current.planId
+      ? await tx.feedbackPlan.findUnique({ where: { id: current.planId }, select: { archivedAt: true } })
+      : null;
+    const plan = await createFeedbackPlan(planInput, tx, { withinTransaction: true });
+    // planId remains a legacy convenience pointer. Every new plan records this
+    // run in its own V2 snapshot, so an existing pointer never owns the facts.
+    await tx.feedbackIntakeRun.update({
+      where: { id },
+      data: {
+        status: "applied",
+        ...(!current.planId || currentPlan?.archivedAt ? { planId: plan.id } : {}),
+      },
+    });
     return { planId: plan.id };
   };
   const result = isPrismaClientDb(db)

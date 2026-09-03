@@ -115,4 +115,25 @@ describe("feedback task service", () => {
     createdPlanIds.push(rebuilt.planId!);
     await expect(prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } })).resolves.toMatchObject({ planId: rebuilt.planId });
   });
+
+  it("uses an explicit request key for single-plan compatibility without letting the legacy pointer own the intake", async () => {
+    const run = await createConfirmedRun();
+    const base = {
+      mode: "single" as const,
+      runIds: [run.id],
+      type: "event_micro" as const,
+      generationMode: "fast" as const,
+      outputRequirement: "显式幂等的合成任务",
+      materialSelection: { mode: "none" as const },
+    };
+    const first = await createFeedbackTask({ ...base, requestKey: `${marker}-single-request-1` }, prisma);
+    createdPlanIds.push(first.planId!);
+    const repeated = await createFeedbackTask({ ...base, requestKey: `${marker}-single-request-1` }, prisma);
+    expect(repeated).toMatchObject({ taskType: "plan", planId: first.planId, generationStatus: "existing" });
+
+    const second = await createFeedbackTask({ ...base, requestKey: `${marker}-single-request-2`, displayName: "另一份计划" }, prisma);
+    createdPlanIds.push(second.planId!);
+    expect(second.planId).not.toBe(first.planId);
+    await expect(prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } })).resolves.toMatchObject({ planId: first.planId });
+  });
 });

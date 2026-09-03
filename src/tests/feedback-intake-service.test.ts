@@ -413,7 +413,7 @@ describe("feedback intake file preparation", () => {
     await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
   }, 20_000);
 
-  it("returns the same plan when create_plan is retried", async () => {
+  it("creates independent plans from the same confirmed intake facts", async () => {
     const student = await prisma.student.findFirst({ where: { studentId: "E2E-001" }, select: { id: true } });
     expect(student).not.toBeNull();
     const sessionCode = "2096010101";
@@ -454,10 +454,40 @@ describe("feedback intake file preparation", () => {
     try {
       const first = await resolveFeedbackIntakeRun(run.id, { action: "create_plan", plan: planInput }, prisma);
       const second = await resolveFeedbackIntakeRun(run.id, { action: "create_plan", plan: planInput }, prisma);
-      expect("plan" in first && "plan" in second ? first.plan?.id : null).toBe("plan" in second ? second.plan?.id : null);
+      expect("plan" in first && "plan" in second ? first.plan?.id : null).not.toBe("plan" in second ? second.plan?.id : null);
+      const keyedInput = { ...planInput, requestKey: `intake-draft-${crypto.randomUUID()}` };
+      const keyed = await resolveFeedbackIntakeRun(run.id, { action: "create_plan", plan: keyedInput }, prisma);
+      const repeatedKeyed = await resolveFeedbackIntakeRun(run.id, { action: "create_plan", plan: keyedInput }, prisma);
+      expect("plan" in repeatedKeyed ? repeatedKeyed.plan?.id : null).toBe("plan" in keyed ? keyed.plan?.id : null);
+      const anotherKey = await resolveFeedbackIntakeRun(run.id, {
+        action: "create_plan",
+        plan: { ...planInput, requestKey: `intake-draft-${crypto.randomUUID()}` },
+      }, prisma);
+      expect("plan" in anotherKey ? anotherKey.plan?.id : null).not.toBe("plan" in keyed ? keyed.plan?.id : null);
+      const currentFactsRevision = await resolveFeedbackIntakeRun(run.id, {
+        action: "create_plan",
+        plan: {
+          ...planInput,
+          requestKey: `intake-current-facts-${crypto.randomUUID()}`,
+          displayName: "当前事实修正版",
+          basedOnPlanId: "plan" in first ? first.plan?.id : undefined,
+        },
+      }, prisma);
+      expect("plan" in currentFactsRevision ? currentFactsRevision.plan : null).toMatchObject({
+        displayName: "当前事实修正版",
+        basedOnPlanId: "plan" in first ? first.plan?.id : null,
+      });
       const stored = "plan" in first && first.plan ? JSON.parse(first.plan.inputSnapshot) : null;
       expect(stored?.generationPreferences).toMatchObject({ length: "detailed", tone: "gentle" });
-      if ("plan" in first && first.plan) await prisma.feedbackPlan.delete({ where: { id: first.plan.id } });
+      const planIds = [
+        "plan" in first ? first.plan?.id : null,
+        "plan" in second ? second.plan?.id : null,
+        "plan" in keyed ? keyed.plan?.id : null,
+        "plan" in anotherKey ? anotherKey.plan?.id : null,
+        "plan" in currentFactsRevision ? currentFactsRevision.plan?.id : null,
+      ]
+        .filter((planId): planId is string => Boolean(planId));
+      await prisma.feedbackPlan.deleteMany({ where: { id: { in: planIds } } });
     } finally {
       await prisma.feedbackIntakeRun.deleteMany({ where: { id: run.id } });
       await prisma.classSession.deleteMany({ where: { id: session.id } });

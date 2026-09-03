@@ -93,61 +93,34 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.getByPlaceholder("例如：今天张三测验氧化还原全对，但上课走神。李四作业没交，情绪低落。给王五的妈妈打了电话讨论近况。")).toHaveValue("E2E 未提交课堂回顾");
   });
 
-  test("workspace drafts debounce continuous text input", async ({ page }) => {
-    const storedDraft = {
-      version: 2,
-      setupStage: "confirm",
-      requestKey: "e2e-draft-debounce-request",
-      mode: "single",
-      groupLessonId: "",
-      activeSessionCode: TEST_FIXTURE.sessions[0].code,
-      plannedSessionCodes: [],
-      entries: [{
-        classId: TEST_FIXTURE.class.id,
-        classCode: TEST_FIXTURE.class.code,
-        className: TEST_FIXTURE.class.name,
-        sessionCode: TEST_FIXTURE.sessions[0].code,
-        runId: "e2e-draft-only-run",
-        studentIds: TEST_FIXTURE.students.map((student) => student.id),
-        studentSelectionInitialized: true,
-        selected: true,
-      }],
-      materialSelection: { mode: "none" },
-      materialSelectionInitialized: true,
-      pendingMaterialLessonNumber: null,
+  test("workspace drafts debounce continuous text input", async ({ page, request }) => {
+    const created = await request.post("/api/report/feedback-plans", { data: {
+      displayName: "E2E 连续输入防抖计划",
+      type: "event_micro",
+      outputRequirement: "E2E 初始要求",
       generationMode: "standard",
-      outputRequirement: "",
-      preferences: { length: "inherit", tone: "inherit", closureType: "positive_recognition", moduleKeys: ["observed_moment", "teacher_interpretation"] },
-      classOverrides: [],
-      studentOverrides: [],
-      unassignedSourceCount: 0,
-      unassignedSources: [],
-      groupSnapshot: null,
-    };
-    const storageKey = `student-track:feedback-task-draft:v2:single:${encodeURIComponent(TEST_FIXTURE.semester.id)}:${encodeURIComponent(TEST_FIXTURE.class.id)}:${encodeURIComponent(TEST_FIXTURE.sessions[0].code)}`;
-    await page.addInitScript(({ draft, storageKey }) => {
-      const originalSetItem = Storage.prototype.setItem;
-      (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0;
-      Storage.prototype.setItem = function (key, value) {
-        if (key === storageKey) {
-          const target = window as Window & { workspaceWriteCount?: number };
-          target.workspaceWriteCount = (target.workspaceWriteCount ?? 0) + 1;
-        }
-        return originalSetItem.call(this, key, value);
-      };
-      sessionStorage.setItem(storageKey, JSON.stringify(draft));
-    }, { draft: storedDraft, storageKey });
-    await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}`);
+      semesterId: TEST_FIXTURE.semester.id,
+      classId: TEST_FIXTURE.class.id,
+      sessionId: TEST_FIXTURE.sessions[0].id,
+      studentIds: TEST_FIXTURE.students.map((student) => student.id),
+    } });
+    expect(created.ok()).toBeTruthy();
+    const plan = (await created.json()).plan as { id: string };
+    const detailPath = `/api/report/feedback-plans/${plan.id}`;
+    let saveCount = 0;
+    page.on("request", (outgoing) => {
+      if (new URL(outgoing.url()).pathname === detailPath && outgoing.method() === "PATCH") saveCount += 1;
+    });
+    await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[0].code}&planId=${plan.id}&view=plan`);
     const requirement = page.getByLabel("总体要求").first();
     await expect(requirement).toBeVisible();
-    await page.waitForTimeout(500);
-    await page.evaluate(() => { (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount = 0; });
 
     await requirement.click();
     await requirement.type("连续输入保持流畅", { delay: 40 });
     await expect(requirement).toBeFocused();
-    await page.waitForTimeout(450);
-    expect(await page.evaluate(() => (window as Window & { workspaceWriteCount?: number }).workspaceWriteCount)).toBe(1);
+    await expect.poll(() => saveCount, { timeout: 3_000 }).toBe(1);
+    await page.waitForTimeout(900);
+    expect(saveCount).toBe(1);
   });
 
   test("an unsaved quick-score edit survives page switches", async ({ page }) => {
@@ -204,7 +177,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     for (const width of [800, 390]) {
       await page.setViewportSize({ width, height: 900 });
       await page.goto("/feedback");
-      await expect(page.getByRole("heading", { name: "课后任务" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "课后工作台" })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${width}px should not overflow`).toBe(true);
     }
   });

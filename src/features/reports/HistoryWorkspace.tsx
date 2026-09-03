@@ -8,6 +8,8 @@ import { useClasses, useSemesters, useSessions } from "@/features/teaching-conte
 
 interface FeedbackPlanSummary {
   id: string;
+  displayName?: string | null;
+  batchId?: string | null;
   type: string;
   status: string;
   archivedAt?: string | null;
@@ -21,6 +23,51 @@ interface FeedbackPlanSummary {
   studentSummaries: Array<{ id: string; name: string; studentId: string }>;
   itemStatusCounts: { total: number; queued: number; running: number; completed: number; failed: number; stale: number };
 }
+
+interface FeedbackPlanBatchPlanSummary {
+  id: string;
+  type: string;
+  status: string;
+  outputRequirement: string;
+  createdAt: string;
+  updatedAt: string;
+  session?: { id: string; code: string; date: string } | null;
+  rangeEndSession?: { id: string; code: string; date: string } | null;
+  class: { id: string; code: string; name?: string | null };
+  items: Array<{
+    id: string;
+    status: string;
+    studentId?: string | null;
+    student?: { id: string; name: string; studentId: string } | null;
+  }>;
+  progress: { total: number; generated: number; approved: number; exported: number; failed: number };
+}
+
+interface FeedbackPlanBatchSummary {
+  id: string;
+  displayName?: string | null;
+  type: string;
+  status: string;
+  archivedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  outputRequirement: string;
+  semester?: { id: string; name: string } | null;
+  plans: FeedbackPlanBatchPlanSummary[];
+  progress: {
+    total: number;
+    generated: number;
+    approved: number;
+    exported: number;
+    failed: number;
+    completedClasses: number;
+    totalClasses: number;
+  };
+}
+
+type HistoryEntry =
+  | { kind: "plan"; id: string; updatedAt: string; plan: FeedbackPlanSummary }
+  | { kind: "batch"; id: string; updatedAt: string; batch: FeedbackPlanBatchSummary };
 
 interface HistoryStudentOption {
   id: string;
@@ -39,28 +86,59 @@ const typeLabels: Record<string, string> = {
 
 const statusLabels: Record<string, string> = {
   draft: "草稿",
+  ready: "准备就绪",
   evidence_ready: "证据就绪",
   queued: "排队中",
   generating: "生成中",
+  running: "生成中",
   pause_requested: "暂停中",
   paused: "已暂停",
   generation_failed: "有失败",
+  failed: "有失败",
   in_review: "待复核",
   approved: "已批准",
   partially_approved: "部分批准",
   exported: "已导出",
   partially_exported: "部分导出",
   stale: "证据已变化",
+  completed: "生成完成",
+  archived: "已归档",
 };
 
-function restoreHref(plan: FeedbackPlanSummary) {
+function effectiveSession(plan: Pick<FeedbackPlanSummary, "type" | "session" | "rangeEndSession"> | FeedbackPlanBatchPlanSummary) {
+  return plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session;
+}
+
+function restorePlanHref(plan: FeedbackPlanSummary) {
   const sessionCode = (plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session)?.code ?? "";
-  const params = new URLSearchParams({ planId: plan.id });
+  const params = new URLSearchParams({
+    planId: plan.id,
+    view: ["draft", "ready", "evidence_ready"].includes(plan.status) ? "plan" : "studio",
+  });
   if (plan.semester?.id) params.set("semesterId", plan.semester.id);
   if (plan.class?.id) params.set("classId", plan.class.id);
   if (plan.class?.name || plan.class?.code) params.set("class", plan.class.name ?? plan.class.code);
   if (sessionCode) params.set("sessionCode", sessionCode);
   return `/feedback?${params.toString()}`;
+}
+
+function restoreBatchHref(batch: FeedbackPlanBatchSummary) {
+  const first = batch.plans[0];
+  const session = first ? effectiveSession(first) : null;
+  const params = new URLSearchParams({
+    batchId: batch.id,
+    planId: first?.id ?? "",
+    view: batch.status === "draft" || batch.status === "ready" ? "plan" : "studio",
+  });
+  if (batch.semester?.id) params.set("semesterId", batch.semester.id);
+  if (first?.class.id) params.set("classId", first.class.id);
+  if (first?.class.name || first?.class.code) params.set("class", first.class.name ?? first.class.code);
+  if (session?.code) params.set("sessionCode", session.code);
+  return `/feedback?${params.toString()}`;
+}
+
+function dateKey(value: string) {
+  return value.slice(0, 10);
 }
 
 export default function HistoryWorkspace() {
@@ -73,6 +151,7 @@ export default function HistoryWorkspace() {
   const [status, setStatus] = useState("");
   const [archived, setArchived] = useState("false");
   const [plans, setPlans] = useState<FeedbackPlanSummary[]>([]);
+  const [batches, setBatches] = useState<FeedbackPlanBatchSummary[]>([]);
   const [studentOptions, setStudentOptions] = useState<HistoryStudentOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -99,31 +178,63 @@ export default function HistoryWorkspace() {
       .then(setStudentOptions)
       .catch(() => setStudentOptions([]));
   }, [semesterId]);
-  const query = useMemo(() => {
+  const planQuery = useMemo(() => {
     const params = new URLSearchParams({ archived });
     for (const [key, value] of Object.entries({ semesterId, classId, sessionId, studentId, date, status })) if (value) params.set(key, value);
     return params.toString();
   }, [archived, classId, date, semesterId, sessionId, status, studentId]);
+  const batchQuery = useMemo(() => {
+    const params = new URLSearchParams({ archived });
+    if (semesterId) params.set("semesterId", semesterId);
+    return params.toString();
+  }, [archived, semesterId]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const payload = await requestJson<{ plans: FeedbackPlanSummary[] }>(`/api/report/feedback-plans?${query}`);
-      setPlans(payload.plans);
+      const [planPayload, batchPayload] = await Promise.all([
+        requestJson<{ plans: FeedbackPlanSummary[] }>(`/api/report/feedback-plans?${planQuery}`),
+        requestJson<{ batches: FeedbackPlanBatchSummary[] }>(`/api/report/feedback-plan-batches?${batchQuery}`),
+      ]);
+      setPlans(planPayload.plans);
+      setBatches(batchPayload.batches);
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : "加载反馈历史失败"); }
     finally { setLoading(false); }
-  }, [query]);
+  }, [batchQuery, planQuery]);
   useEffect(() => { void load(); }, [load]);
 
-  async function setArchive(plan: FeedbackPlanSummary, nextArchived: boolean) {
+  const visibleBatches = useMemo(() => batches.filter((batch) => {
+    return batch.plans.some((plan) => {
+      if (status && batch.status !== status && plan.status !== status) return false;
+      if (classId && plan.class.id !== classId) return false;
+      if (sessionId && effectiveSession(plan)?.id !== sessionId) return false;
+      if (studentId && !plan.items.some((item) => item.studentId === studentId || item.student?.id === studentId)) return false;
+      const sessionDate = effectiveSession(plan)?.date;
+      if (date && (!sessionDate || dateKey(sessionDate) !== date)) return false;
+      return true;
+    });
+  }), [batches, classId, date, sessionId, status, studentId]);
+
+  const entries = useMemo<HistoryEntry[]>(() => {
+    const batchPlanIds = new Set(batches.flatMap((batch) => batch.plans.map((plan) => plan.id)));
+    return [
+      ...visibleBatches.map((batch) => ({ kind: "batch" as const, id: batch.id, updatedAt: batch.updatedAt, batch })),
+      ...plans
+        .filter((plan) => !plan.batchId && !batchPlanIds.has(plan.id))
+        .map((plan) => ({ kind: "plan" as const, id: plan.id, updatedAt: plan.updatedAt, plan })),
+    ].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+  }, [batches, plans, visibleBatches]);
+
+  async function setArchive(entry: HistoryEntry, nextArchived: boolean) {
     try {
-      await requestJson(`/api/report/feedback-plans/${encodeURIComponent(plan.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: nextArchived ? "archive" : "unarchive" }) });
+      const endpoint = entry.kind === "batch" ? "feedback-plan-batches" : "feedback-plans";
+      await requestJson(`/api/report/${endpoint}/${encodeURIComponent(entry.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: nextArchived ? "archive" : "unarchive" }) });
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "更新归档状态失败"); }
   }
 
   return <main className="history-workspace">
-    <PageHeader title="反馈历史" description="FeedbackPlan 是反馈流程和恢复历史的唯一权威来源。按教学上下文查找并继续处理。" />
+    <PageHeader title="反馈历史" description="FeedbackPlan 与多班 FeedbackPlanBatch 是反馈规划、生成和恢复历史的权威来源。按教学上下文查找并继续处理。" />
     <section className="grid gap-3 rounded-2xl border border-gray-200 bg-white p-4 md:grid-cols-3">
       <Select aria-label="学期" value={semesterId} onChange={(event) => { setSemesterId(event.target.value); setClassId(""); setSessionId(""); setStudentId(""); }}>
         <option value="">全部学期</option>
@@ -153,17 +264,42 @@ export default function HistoryWorkspace() {
       <Button variant="secondary" onClick={() => void load()}>刷新</Button>
     </section>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
-    {loading ? <LoadingState label="加载反馈历史中…" /> : plans.length === 0 ? <EmptyState title="暂无反馈计划" description="调整筛选条件，或从课后工作台创建新的反馈计划。" /> : <section className="mt-4 grid gap-3">
-      {plans.map((plan) => {
-        const session = (plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session) ?? undefined;
-        return <article key={plan.id} className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+    {loading ? <LoadingState label="加载反馈历史中…" /> : entries.length === 0 ? <EmptyState title="暂无反馈计划" description="调整筛选条件，或从课后工作台创建新的反馈计划。" /> : <section className="mt-4 grid gap-3">
+      {entries.map((entry) => {
+        if (entry.kind === "batch") {
+          const { batch } = entry;
+          const classNames = batch.plans.map((plan) => plan.class.name ?? plan.class.code);
+          const sessions = Array.from(new Set(batch.plans.flatMap((plan) => {
+            const session = effectiveSession(plan);
+            return session ? [session] : [];
+          }).map((session) => session.code)));
+          const dates = Array.from(new Set(batch.plans.flatMap((plan) => {
+            const sessionDate = effectiveSession(plan)?.date;
+            return sessionDate ? [dateKey(sessionDate)] : [];
+          })));
+          const studentNames = Array.from(new Set(batch.plans.flatMap((plan) => plan.items.flatMap((item) => item.student?.name ? [item.student.name] : []))));
+          const displayName = batch.displayName?.trim() || `班级组反馈 · ${batch.plans.length} 个班级`;
+          return <article key={`batch:${batch.id}`} className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><h2 className="font-semibold text-gray-900">{displayName}</h2><p className="text-sm text-gray-500">{typeLabels[batch.type] ?? batch.type} · {batch.semester?.name ?? batch.semester?.id} · {classNames.join("、") || "班级组"} · {sessions.join("、") || "阶段计划"}</p></div>
+              <span className="rounded-full bg-gray-100 px-2 py-1 text-xs">{statusLabels[batch.status] ?? batch.status}</span>
+            </div>
+            <p className="mt-2 line-clamp-2 text-sm text-gray-700">{batch.outputRequirement}</p>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-500"><span>课程日期：{dates.join("、") || "—"}</span><span>学生：{studentNames.join("、") || "班级公共"}</span><span>{batch.progress.completedClasses}/{batch.progress.totalClasses} 个班生成完成</span><span>条目 {batch.progress.generated}/{batch.progress.total} 完成</span><span>更新：{new Date(batch.updatedAt).toLocaleString("zh-CN")}</span></div>
+            <div className="mt-3 flex flex-wrap gap-2"><Button uiSize="sm" onClick={() => router.push(restoreBatchHref(batch))}>恢复整批</Button><Button uiSize="sm" variant="secondary" onClick={() => void setArchive(entry, !Boolean(batch.archivedAt))}>{batch.archivedAt ? "取消归档" : "归档"}</Button></div>
+          </article>;
+        }
+        const { plan } = entry;
+        const session = effectiveSession(plan) ?? undefined;
+        const displayName = plan.displayName?.trim() || `${typeLabels[plan.type] ?? plan.type} · ${plan.class?.name ?? plan.class?.code ?? "历史计划"}`;
+        return <article key={`plan:${plan.id}`} className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><h2 className="font-semibold text-gray-900">{typeLabels[plan.type] ?? plan.type}</h2><p className="text-sm text-gray-500">{plan.semester?.name ?? plan.semester?.id} · {plan.class?.name ?? plan.class?.code ?? plan.class?.id} · {session?.code ?? "阶段计划"}</p></div>
+            <div><h2 className="font-semibold text-gray-900">{displayName}</h2><p className="text-sm text-gray-500">{typeLabels[plan.type] ?? plan.type} · {plan.semester?.name ?? plan.semester?.id} · {plan.class?.name ?? plan.class?.code ?? plan.class?.id} · {session?.code ?? "阶段计划"}</p></div>
             <span className="rounded-full bg-gray-100 px-2 py-1 text-xs">{statusLabels[plan.status] ?? plan.status}</span>
           </div>
           <p className="mt-2 line-clamp-2 text-sm text-gray-700">{plan.outputRequirement}</p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-500"><span>课程日期：{session?.date ?? "—"}</span><span>学生：{plan.studentSummaries.length ? plan.studentSummaries.map((student) => student.name).join("、") : "班级公共"}</span><span>条目 {plan.itemStatusCounts.completed}/{plan.itemStatusCounts.total} 完成</span><span>更新：{new Date(plan.updatedAt).toLocaleString("zh-CN")}</span></div>
-          <div className="mt-3 flex flex-wrap gap-2"><Button uiSize="sm" onClick={() => router.push(restoreHref(plan))}>恢复</Button><Button uiSize="sm" variant="secondary" onClick={() => void setArchive(plan, !Boolean(plan.archivedAt))}>{plan.archivedAt ? "取消归档" : "归档"}</Button></div>
+          <div className="mt-3 flex flex-wrap gap-2"><Button uiSize="sm" onClick={() => router.push(restorePlanHref(plan))}>恢复</Button><Button uiSize="sm" variant="secondary" onClick={() => void setArchive(entry, !Boolean(plan.archivedAt))}>{plan.archivedAt ? "取消归档" : "归档"}</Button></div>
         </article>;
       })}
     </section>}

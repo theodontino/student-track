@@ -7,7 +7,7 @@ import { requestJson } from "@/lib/api-client";
 import styles from "./feedback-plan-manager.module.css";
 
 type PlanSummary = {
-  id: string; type: string; status: string; archivedAt?: string | null; batchId?: string | null;
+  id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; batchId?: string | null;
   session?: { code: string } | null; rangeEndSession?: { code: string } | null;
   class?: { id: string; code: string; name?: string | null } | null;
   semester?: { id: string; name: string } | null;
@@ -15,8 +15,8 @@ type PlanSummary = {
 };
 
 type BatchSummary = {
-  id: string; status: string; archivedAt?: string | null; semester?: { id: string; name: string } | null;
-  plans: Array<{ id: string; class: { id: string; code: string; name?: string | null }; session?: { code: string } | null }>;
+  id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; semester?: { id: string; name: string } | null;
+  plans: Array<{ id: string; class: { id: string; code: string; name?: string | null }; session?: { code: string } | null; rangeEndSession?: { code: string } | null }>;
   progress: { total: number; generated: number; approved: number; exported: number; failed: number; completedClasses: number; totalClasses: number };
 };
 
@@ -34,6 +34,7 @@ export type FeedbackTaskOpenTarget = {
   classId: string;
   className: string;
   sessionCode: string;
+  view?: "plan" | "studio";
 };
 
 const statusLabels: Record<string, string> = {
@@ -59,6 +60,7 @@ function planOpenTarget(plan: PlanSummary): FeedbackTaskOpenTarget {
     classId: plan.class?.id ?? "",
     className: plan.class?.name ?? plan.class?.code ?? "",
     sessionCode: session?.code ?? "",
+    view: ["draft", "ready", "evidence_ready"].includes(plan.status) ? "plan" : "studio",
   };
 }
 
@@ -70,12 +72,14 @@ function batchOpenTarget(batch: BatchSummary): FeedbackTaskOpenTarget {
     semesterId: batch.semester?.id ?? "",
     classId: first?.class.id ?? "",
     className: first?.class.name ?? first?.class.code ?? "",
-    sessionCode: first?.session?.code ?? "",
+    sessionCode: first?.session?.code ?? first?.rangeEndSession?.code ?? "",
+    view: batch.status === "draft" || batch.status === "ready" ? "plan" : "studio",
   };
 }
 
 function taskHref(target: FeedbackTaskOpenTarget) {
   const params = new URLSearchParams();
+  params.set("view", target.view ?? "studio");
   if (target.planId) params.set("planId", target.planId);
   if (target.batchId) params.set("batchId", target.batchId);
   if (target.semesterId) params.set("semesterId", target.semesterId);
@@ -92,7 +96,7 @@ async function waitUntilStopped(kind: "plan" | "batch", id: string, running: Set
     const current = await requestJson<Record<string, { status: string }>>(`/api/report/${path}/${encodeURIComponent(id)}`);
     if (!running.has(current[kind].status)) return;
   }
-  throw new Error("任务仍在停止中，请稍后再归档");
+  throw new Error("计划仍在停止中，请稍后再归档");
 }
 
 export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: {
@@ -118,7 +122,7 @@ export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: 
       ]);
       setPlans(planResult.plans.filter((plan) => !plan.archivedAt));
       setBatches(batchResult.batches.filter((batch) => !batch.archivedAt));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "读取当前反馈任务失败"); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "读取当前反馈计划失败"); }
     finally { setLoading(false); }
   }, [semesterId]);
 
@@ -133,8 +137,8 @@ export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: 
   }, [batches, plans]);
 
   async function archiveTask(task: TaskRow) {
-    const label = task.kind === "batch" ? `班级组反馈（${task.batch.plans.length} 个班级）` : `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "当前班级"}`;
-    if (!window.confirm(`归档“${label}”吗？\n已生成正文、课堂事实和导出历史都会保留；归档后同一材料可建立新任务。`)) return;
+    const label = task.kind === "batch" ? task.batch.displayName ?? `班级组反馈（${task.batch.plans.length} 个班级）` : task.plan.displayName ?? `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "当前班级"}`;
+    if (!window.confirm(`归档“${label}”吗？\n已生成正文、课堂事实和导出历史都会保留；归档后同一材料可建立新计划。`)) return;
     setBusyId(task.id); setError(""); setNotice("");
     try {
       if (task.kind === "batch") {
@@ -155,30 +159,37 @@ export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: 
         id: task.id,
         planIds: task.kind === "batch" ? task.batch.plans.map((plan) => plan.id) : [task.plan.id],
         sessionCodes: task.kind === "batch"
-          ? task.batch.plans.flatMap((plan) => plan.session?.code ? [plan.session.code] : [])
-          : task.plan.session?.code ? [task.plan.session.code] : [],
+          ? task.batch.plans.flatMap((plan) => {
+              const sessionCode = plan.session?.code ?? plan.rangeEndSession?.code;
+              return sessionCode ? [sessionCode] : [];
+            })
+          : task.plan.session?.code || task.plan.rangeEndSession?.code
+            ? [task.plan.session?.code ?? task.plan.rangeEndSession!.code]
+            : [],
       });
-      setNotice("反馈任务已归档；现在可以使用相同材料重新建立任务。");
+      setNotice("反馈计划已归档；现在可以使用相同材料建立另一份计划。");
       await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "归档反馈任务失败"); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "归档反馈计划失败"); }
     finally { setBusyId(""); }
   }
 
-  return <section className={styles.panel} aria-label="当前反馈任务">
+  return <section className={styles.panel} aria-label="当前反馈计划">
     <header className={styles.header}>
-      <div><strong>当前反馈任务</strong><span>{loading ? "正在读取…" : `${tasks.length} 个未归档任务`}</span></div>
+      <div><strong>当前反馈计划</strong><span>{loading ? "正在读取…" : `${tasks.length} 个未归档计划`}</span></div>
       <Button uiSize="sm" variant="ghost" onClick={() => void load()} disabled={loading || Boolean(busyId)}>刷新</Button>
     </header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {notice && <StatusBanner tone="success">{notice}</StatusBanner>}
-    {!loading && tasks.length === 0 ? <p className={styles.empty}>当前没有未归档反馈任务。历史任务可在<Link href="/history?archived=true">反馈历史</Link>中查看。</p> : <div className={styles.list}>
+    {!loading && tasks.length === 0 ? <p className={styles.empty}>当前没有未归档反馈计划。历史计划可在<Link href="/history?archived=true">反馈历史</Link>中查看。</p> : <div className={styles.list}>
       {tasks.map((task) => {
         const isBatch = task.kind === "batch";
         const status = isBatch ? task.batch.status : task.plan.status;
         const openTarget = isBatch ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
         const href = taskHref(openTarget);
-        const title = isBatch ? `班级组反馈 · ${task.batch.plans.length} 个班级` : typeLabel(task.plan.type);
-        const description = isBatch ? `${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准` : `${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
+        const title = isBatch ? task.batch.displayName ?? `班级组反馈 · ${task.batch.plans.length} 个班级` : task.plan.displayName ?? typeLabel(task.plan.type);
+        const description = isBatch
+          ? `${typeLabel(task.batch.type)} · ${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准`
+          : `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
         return <article key={`${task.kind}:${task.id}`} className={styles.row}>
           <div className={styles.meta}><div className={styles.title}><strong>{title}</strong><Badge tone={(isBatch ? runningBatchStatuses : runningPlanStatuses).has(status) ? "warning" : "info"}>{statusLabels[status] ?? status}</Badge></div><span>{description}</span></div>
           <div className={styles.actions}>{onOpen ? <Button uiSize="sm" variant="ghost" onClick={() => onOpen(openTarget)} disabled={Boolean(busyId)}>打开</Button> : <Link className="ui-button ui-button--ghost ui-button--sm" href={href}>打开</Link>}<Button uiSize="sm" variant="secondary" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button></div>

@@ -47,6 +47,8 @@ function parseEntries(value: unknown): FeedbackTaskClassDraft[] {
       classCode: candidate.classCode,
       className: candidate.className,
       sessionCode: candidate.sessionCode,
+      ...(typeof candidate.rangeStartSessionId === "string" ? { rangeStartSessionId: candidate.rangeStartSessionId } : {}),
+      ...(typeof candidate.rangeEndSessionId === "string" ? { rangeEndSessionId: candidate.rangeEndSessionId } : {}),
       runId: candidate.runId,
       studentIds: candidate.studentIds,
       studentSelectionInitialized: typeof candidate.studentSelectionInitialized === "boolean"
@@ -55,6 +57,20 @@ function parseEntries(value: unknown): FeedbackTaskClassDraft[] {
       selected: typeof candidate.selected === "boolean" ? candidate.selected : true,
     }];
   });
+}
+
+function parseRevisionSource(value: unknown): FeedbackTaskDraftV2["revisionSource"] {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  const validTypes = new Set(["class_update", "event_micro", "stage_trend", "course_end"]);
+  if (typeof candidate.type !== "string" || !validTypes.has(candidate.type)) return null;
+  if (candidate.kind === "plan" && typeof candidate.planId === "string" && candidate.planId) {
+    return { kind: "plan", planId: candidate.planId, type: candidate.type as "class_update" | "event_micro" | "stage_trend" | "course_end" };
+  }
+  if (candidate.kind === "batch" && typeof candidate.batchId === "string" && candidate.batchId && (candidate.type === "event_micro" || candidate.type === "stage_trend")) {
+    return { kind: "batch", batchId: candidate.batchId, type: candidate.type };
+  }
+  return null;
 }
 
 function parseUnassignedSources(value: unknown): FeedbackGroupIntakeUnassigned[] {
@@ -103,12 +119,17 @@ export function parseFeedbackTaskDraft(value: unknown): FeedbackTaskDraftV2 | nu
   const studentOverrides = Array.isArray(candidate.studentOverrides)
     ? candidate.studentOverrides.filter((override) => override && typeof override.studentId === "string" && override.generationConfig)
     : [];
+  const revisionSource = parseRevisionSource(candidate.revisionSource);
   const shared = {
     ...candidate,
+    displayName: typeof candidate.displayName === "string" && (candidate.displayName.trim() || revisionSource)
+      ? candidate.displayName.slice(0, 120)
+      : "初版计划",
     setupStage: candidate.setupStage === "confirm" ? "confirm" as const : "prepare" as const,
     requestKey: typeof candidate.requestKey === "string" && candidate.requestKey.length >= 8
       ? candidate.requestKey
       : crypto.randomUUID(),
+    revisionSource,
     plannedSessionCodes: Array.isArray(candidate.plannedSessionCodes)
       ? [...new Set(candidate.plannedSessionCodes.filter((sessionCode): sessionCode is string => typeof sessionCode === "string"))]
       : [],

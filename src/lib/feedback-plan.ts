@@ -194,7 +194,7 @@ export const FeedbackEvidenceBundleSchema = z.union([
 ]);
 export type FeedbackEvidenceBundle = z.infer<typeof FeedbackEvidenceBundleSchema>;
 
-export const FeedbackPlanInputSnapshotSchema = z.object({
+const feedbackPlanInputSnapshotFields = {
   version: z.literal(1),
   semesterId: z.string().max(200).optional(),
   classId: z.string().max(200).optional(),
@@ -205,7 +205,72 @@ export const FeedbackPlanInputSnapshotSchema = z.object({
   sourceFingerprint: z.string().max(128).optional(),
   lessonMaterial: LessonFeedbackMaterialSchema,
   generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
+};
+
+export const FeedbackPlanInputSnapshotV1Schema = z.object(feedbackPlanInputSnapshotFields);
+
+export const FeedbackPlanIntakeSourceSummarySchema = z.object({
+  intakeRunId: z.string().min(1).max(200),
+  sessionCode: z.string().max(128),
+  status: z.string().max(40),
+  confirmedAt: z.string().max(64).nullable(),
+  sourceCount: z.number().int().nonnegative(),
+  recognizedCount: z.number().int().nonnegative(),
+  ignoredCount: z.number().int().nonnegative(),
+  issueCount: z.number().int().nonnegative(),
+  resolvedDecisionCount: z.number().int().nonnegative().optional(),
+  resolutions: z.array(z.object({
+    action: z.string().min(1).max(80),
+    sourceName: z.string().max(500).optional(),
+    detail: z.string().max(500).optional(),
+  })).max(200).optional(),
+  sources: z.array(z.object({
+    name: z.string().max(500),
+    kind: z.string().max(80),
+    source: z.string().max(40),
+  })).max(200),
 });
+export type FeedbackPlanIntakeSourceSummary = z.infer<typeof FeedbackPlanIntakeSourceSummarySchema>;
+
+export const CommunicationPreferenceSchema = z.object({
+  version: z.literal(1),
+  length: z.enum(["unknown", "short", "standard", "detailed", "flexible"]),
+  deliveryChannel: z.enum(["unknown", "text", "voice", "either"]).default("unknown"),
+  phoneContact: z.enum(["unknown", "accepted", "not_accepted"]).default("unknown"),
+  evidence: z.enum(["unknown", "teacher_conclusion", "classroom_example", "data_trend"]),
+  terminology: z.enum(["unknown", "plain", "basic", "professional"]),
+  familyParticipation: z.enum(["unknown", "inform_only", "remind_confirm", "observe_report", "simple_check"]),
+  frequency: z.enum(["unknown", "every_session", "stage_only", "exception_only"]),
+});
+export type CommunicationPreference = z.infer<typeof CommunicationPreferenceSchema>;
+
+export const FeedbackPlanFrozenFactItemSchema = z.object({
+  studentId: z.string().max(200).nullable(),
+  studentName: z.string().max(200).optional(),
+  studentNumber: z.string().max(200).optional(),
+  communicationPreference: CommunicationPreferenceSchema.nullable().optional(),
+  referenceDate: z.string().max(64).optional(),
+  evidence: FeedbackEvidenceBundleSchema,
+});
+
+export const FeedbackPlanInputSnapshotV2Schema = z.object({
+  ...feedbackPlanInputSnapshotFields,
+  version: z.literal(2),
+  draftRequestKey: z.string().min(8).max(200).optional(),
+  batchGenerationPreferences: FeedbackGenerationPreferencesSchema.optional(),
+  selectedStudentIds: z.array(z.string().max(200)).max(200),
+  studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200),
+  factSnapshot: z.object({
+    capturedAt: z.string().max(64),
+    items: z.array(FeedbackPlanFrozenFactItemSchema).max(201),
+  }),
+  intakeSources: z.array(FeedbackPlanIntakeSourceSummarySchema).max(20),
+});
+
+export const FeedbackPlanInputSnapshotSchema = z.union([
+  FeedbackPlanInputSnapshotV2Schema,
+  FeedbackPlanInputSnapshotV1Schema,
+]);
 export type FeedbackPlanInputSnapshot = z.infer<typeof FeedbackPlanInputSnapshotSchema>;
 
 export function sanitizeFeedbackEvidenceBundle(bundle: FeedbackEvidenceBundle): FeedbackEvidenceBundle {
@@ -302,18 +367,6 @@ export const FeedbackAuditSnapshotSchema = z.object({
 });
 export type FeedbackAuditSnapshot = z.infer<typeof FeedbackAuditSnapshotSchema>;
 
-export const CommunicationPreferenceSchema = z.object({
-  version: z.literal(1),
-  length: z.enum(["unknown", "short", "standard", "detailed", "flexible"]),
-  deliveryChannel: z.enum(["unknown", "text", "voice", "either"]).default("unknown"),
-  phoneContact: z.enum(["unknown", "accepted", "not_accepted"]).default("unknown"),
-  evidence: z.enum(["unknown", "teacher_conclusion", "classroom_example", "data_trend"]),
-  terminology: z.enum(["unknown", "plain", "basic", "professional"]),
-  familyParticipation: z.enum(["unknown", "inform_only", "remind_confirm", "observe_report", "simple_check"]),
-  frequency: z.enum(["unknown", "every_session", "stage_only", "exception_only"]),
-});
-export type CommunicationPreference = z.infer<typeof CommunicationPreferenceSchema>;
-
 const feedbackPlanAssessmentEvidenceValueSchema = z.union([
   StudentAssessmentEvidenceSchema,
   z.array(StudentAssessmentEvidenceSchema).min(1).max(20),
@@ -328,14 +381,19 @@ export const FeedbackPlanAssessmentEvidenceSchema = z.record(
 export type FeedbackPlanAssessmentEvidenceInput = z.infer<typeof FeedbackPlanAssessmentEvidenceSchema>;
 
 export const FeedbackPlanCreateSchema = z.object({
+  requestKey: z.string().trim().min(8).max(200).optional(),
+  displayName: z.string().trim().min(1).max(120).nullable().optional(),
+  basedOnPlanId: z.string().trim().min(1).max(200).optional(),
   type: z.enum(FEEDBACK_PLAN_TYPES),
   outputRequirement: z.string().trim().min(1).max(2000),
+  generationMode: z.enum(FEEDBACK_GENERATION_MODES).optional(),
   semesterId: z.string().trim().min(1).max(200),
   classId: z.string().trim().min(1).max(200),
   sessionId: z.string().trim().max(200).optional(),
   rangeStartSessionId: z.string().trim().max(200).optional(),
   rangeEndSessionId: z.string().trim().max(200).optional(),
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  intakeRunIds: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
   assessmentEvidence: FeedbackPlanAssessmentEvidenceSchema.optional(),
   lessonMaterial: LessonFeedbackMaterialSchema.optional(),
   generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
@@ -350,6 +408,39 @@ export const FeedbackPlanCreateSchema = z.object({
   }).optional(),
 });
 export type FeedbackPlanCreateInput = z.infer<typeof FeedbackPlanCreateSchema>;
+
+export const FeedbackPlanDraftPatchSchema = z.object({
+  displayName: z.string().trim().min(1).max(120).optional(),
+  type: z.enum(FEEDBACK_PLAN_TYPES).optional(),
+  outputRequirement: z.string().trim().min(1).max(2000).optional(),
+  generationMode: z.enum(FEEDBACK_GENERATION_MODES).optional(),
+  studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
+  studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200).superRefine((overrides, ctx) => {
+    const ids = new Set<string>();
+    overrides.forEach((override, index) => {
+      if (ids.has(override.studentId)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "studentId"], message: "同一学生不能重复设置独立计划" });
+      }
+      ids.add(override.studentId);
+    });
+  }).optional(),
+  expectedPlanRevision: z.number().int().positive(),
+}).refine((patch) => Object.keys(patch).some((key) => key !== "expectedPlanRevision"), {
+  message: "反馈计划草稿没有可保存的修改",
+});
+export type FeedbackPlanDraftPatch = z.infer<typeof FeedbackPlanDraftPatchSchema>;
+
+export const FeedbackPlanRenameSchema = z.object({
+  displayName: z.string().trim().min(1).max(120),
+  expectedPlanRevision: z.number().int().positive().optional(),
+});
+export type FeedbackPlanRenameInput = z.infer<typeof FeedbackPlanRenameSchema>;
+
+export const FeedbackPlanCloneDraftSchema = z.object({
+  displayName: z.string().trim().min(1).max(120).optional(),
+});
+export type FeedbackPlanCloneDraftInput = z.infer<typeof FeedbackPlanCloneDraftSchema>;
 
 export const FeedbackPlanItemPatchSchema = z.object({
   composition: FeedbackCompositionPlanSchema.optional(),

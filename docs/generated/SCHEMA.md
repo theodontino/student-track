@@ -152,6 +152,8 @@ erDiagram
   }
   FeedbackPlan {
     TEXT id PK
+    TEXT displayName
+    TEXT basedOnPlanId FK
     TEXT type
     TEXT outputRequirement
     TEXT status
@@ -178,6 +180,8 @@ erDiagram
   }
   FeedbackPlanBatch {
     TEXT id PK
+    TEXT displayName
+    TEXT basedOnBatchId FK
     TEXT requestKey UK
     TEXT semesterId FK
     TEXT type
@@ -565,11 +569,13 @@ erDiagram
   CommunicationPreferenceCandidate o|--o| CommunicationPreference : "sourceCandidateId"
   DraftRecord o|--o{ CommunicationRevision : "draftId"
   DraftRecord o|--o{ DraftRecord : "supersedesDraftId"
+  FeedbackPlan o|--o{ FeedbackPlan : "basedOnPlanId"
   FeedbackPlan ||--o{ FeedbackAttachment : "planId"
   FeedbackPlan ||--o{ FeedbackExportRun : "planId"
   FeedbackPlan ||--o{ FeedbackPlanItem : "planId"
   FeedbackPlan ||--o{ TeacherTask : "planId"
   FeedbackPlanBatch o|--o{ FeedbackPlan : "batchId"
+  FeedbackPlanBatch o|--o{ FeedbackPlanBatch : "basedOnBatchId"
   FeedbackPlanBatch ||--o{ FeedbackPlanBatchExportRun : "batchId"
   FeedbackPlanBatchExportRun o|--o{ FeedbackExportRun : "batchExportRunId"
   FeedbackPlanItem o|--o{ FeedbackAttachment : "planItemId"
@@ -821,6 +827,8 @@ erDiagram
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
+| `displayName` | `TEXT` | 否 |  |
+| `basedOnPlanId` | `TEXT` | 否 | FK |
 | `type` | `TEXT` | 是 |  |
 | `outputRequirement` | `TEXT` | 是 |  |
 | `status` | `TEXT` | 是 | default: 'draft' |
@@ -852,12 +860,14 @@ erDiagram
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
 |---|---|---|---|
 | `id` | `TEXT` | 是 | PK |
+| `displayName` | `TEXT` | 否 |  |
+| `basedOnBatchId` | `TEXT` | 否 | FK |
 | `requestKey` | `TEXT` | 是 | unique |
 | `semesterId` | `TEXT` | 是 | FK |
 | `type` | `TEXT` | 是 |  |
 | `outputRequirement` | `TEXT` | 是 |  |
 | `generationMode` | `TEXT` | 是 | default: 'standard' |
-| `status` | `TEXT` | 是 | default: 'ready' |
+| `status` | `TEXT` | 是 | default: 'draft' |
 | `currentPlanId` | `TEXT` | 否 |  |
 | `failedPlanId` | `TEXT` | 否 |  |
 | `sharedLessonRevisionId` | `TEXT` | 否 | FK |
