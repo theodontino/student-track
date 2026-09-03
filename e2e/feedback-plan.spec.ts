@@ -26,7 +26,12 @@ async function openTask(page: Page, className: string = TEST_FIXTURE.class.name,
 }
 
 async function uploadCurrent(page: Page, fileName: string, contents: string) {
+  const uploadFinished = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/feedback/intake/upload"
+  ));
   await page.locator('input[type="file"]').first().setInputFiles({ name: fileName, mimeType: "text/plain", buffer: Buffer.from(contents) });
+  expect((await uploadFinished).ok()).toBeTruthy();
   await expect(page.getByText(/材料已整理|等待教师确认/).first()).toBeVisible();
 }
 

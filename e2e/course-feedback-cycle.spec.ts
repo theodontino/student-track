@@ -163,10 +163,15 @@ async function startPlan(request: APIRequestContext, planId: string) {
 
 async function uploadClassMaterials(page: Page, classIndex: 0 | 1) {
   const className = fixture.classes[classIndex].name;
+  const uploadFinished = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && ["/api/feedback/intake/upload", "/api/feedback/intake/group-upload"].includes(new URL(response.url()).pathname)
+  ));
   await page.locator('input[type="file"]').first().setInputFiles([
     { name: `${className}-助教表.xlsx`, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: assistantRoster(classIndex) },
     { name: `${className}.step-classroom.txt`, mimeType: "text/plain", buffer: Buffer.from(stepText(classIndex)) },
   ]);
+  expect((await uploadFinished).ok()).toBeTruthy();
   await expect(page.getByText(/材料已整理|等待教师确认/).first()).toBeVisible();
   await expect(page.getByText("2 个文件", { exact: true }).first()).toBeVisible();
   const runId = new URL(page.url()).searchParams.get("intakeRunId");
