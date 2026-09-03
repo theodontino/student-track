@@ -8,6 +8,7 @@ const isCoreEdition = (
   process.env.STUDENT_TRACK_EDITION
   ?? process.env.NEXT_PUBLIC_STUDENT_TRACK_EDITION
 ) === "core";
+const isWindows = process.platform === "win32";
 
 const coreTestExcludes = [
   "src/tests/api/wecomcatch-integration.test.ts",
@@ -38,6 +39,8 @@ export default defineConfig({
   test: {
     globals: true,
     fileParallelism: false,
+    testTimeout: isWindows ? 20_000 : 5_000,
+    hookTimeout: isWindows ? 30_000 : 10_000,
     exclude: [
       ...configDefaults.exclude,
       "e2e/**",

@@ -69,7 +69,7 @@ export function resolveDatabasePath(databaseUrl = process.env.DATABASE_URL) {
   }
   if (databaseUrl.startsWith("file://")) return fileURLToPath(new URL(databaseUrl));
   const value = databaseUrl.slice("file:".length);
-  return isAbsolute(value) ? value : resolve(/* turbopackIgnore: true */ process.cwd(), value);
+  return resolve(/* turbopackIgnore: true */ process.cwd(), value);
 }
 
 /**
@@ -205,7 +205,14 @@ export async function restoreDatabaseBackup(options: {
 
   try {
     await copyFile(/* turbopackIgnore: true */ backupPath, temporaryPath);
-    await rename(/* turbopackIgnore: true */ temporaryPath, databasePath);
+    if (process.platform === "win32") {
+      // The native SQLite client can retain a delete lock briefly after close
+      // on Windows, while replacing the file contents remains available.
+      await copyFile(/* turbopackIgnore: true */ temporaryPath, databasePath);
+      await rm(/* turbopackIgnore: true */ temporaryPath, { force: true });
+    } else {
+      await rename(/* turbopackIgnore: true */ temporaryPath, databasePath);
+    }
     await rm(/* turbopackIgnore: true */ `${databasePath}-wal`, { force: true });
     await rm(/* turbopackIgnore: true */ `${databasePath}-shm`, { force: true });
     const verification = await verifyDatabaseFile(databasePath);
@@ -213,6 +220,8 @@ export async function restoreDatabaseBackup(options: {
   } catch (error) {
     await rm(/* turbopackIgnore: true */ temporaryPath, { force: true });
     await copyFile(/* turbopackIgnore: true */ preRestore.backupPath, databasePath);
+    await rm(/* turbopackIgnore: true */ `${databasePath}-wal`, { force: true });
+    await rm(/* turbopackIgnore: true */ `${databasePath}-shm`, { force: true });
     await verifyDatabaseFile(databasePath);
     throw error;
   }

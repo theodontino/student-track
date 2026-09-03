@@ -22,9 +22,12 @@ afterEach(() => {
 });
 
 describe("Student Track data paths", () => {
-  it("preserves the existing project data directory by default", () => {
+  it("uses the platform data directory by default", () => {
+    const expectedRoot = process.platform === "win32"
+      ? path.join(defaultStudentTrackRuntimeRoot(), "data")
+      : path.join(process.cwd(), "data");
     expect(resolveStudentTrackDataPath("llm-cache", "LLM_CACHE_ROOT"))
-      .toBe(path.join(process.cwd(), "data", "llm-cache"));
+      .toBe(path.join(expectedRoot, "llm-cache"));
   });
 
   it("uses the shared data root when configured", () => {
