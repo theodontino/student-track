@@ -8,6 +8,7 @@ import {
 } from "@/lib/llm";
 import { resolveLLMProfileId, type LLMProfileRole } from "@/lib/llm-settings";
 import {
+  FEEDBACK_MODULES,
   FEEDBACK_PLAN_TYPES,
   FeedbackEvidenceBundleSchema,
   FeedbackPlanInputSnapshotSchema,
@@ -24,7 +25,6 @@ import type { FeedbackLength, FeedbackStyle } from "@/lib/feedback-sections";
 import {
   containsRecipientPlaceholder,
   containsStudentDirectedAddress,
-  sanitizeFeedbackPromptText,
   stripFeedbackInternalBoundary,
 } from "@/lib/feedback-text-safety";
 import { ApiError } from "@/lib/api-errors";
@@ -338,6 +338,9 @@ export function buildPlannerInput(input: FrozenExperimentInput) {
     deterministicBoundaries: {
       closureType: input.generationPreferences?.closureType ?? null,
       moduleKeys: input.generationPreferences?.moduleKeys ?? [],
+      allowedModuleKeys: input.generationPreferences?.moduleKeys?.length
+        ? input.generationPreferences.moduleKeys
+        : [...FEEDBACK_MODULES[input.planType]],
       existingTaskIds: input.evidenceBundle.executionConstraints.existingTaskIds,
     },
   };
@@ -347,11 +350,9 @@ export interface RestrictedWriterInput {
   studentName: string;
   plan: {
     type: FeedbackPlanType;
-    outputRequirement: string;
     style: FeedbackStyle;
     length: FeedbackLength;
     closureType: string | null;
-    moduleKeys: string[];
   };
   contentBrief: {
     mainFocus: string;
@@ -359,7 +360,6 @@ export interface RestrictedWriterInput {
     background: ContentBrief["background"];
     interpretations: ContentBrief["interpretations"];
     communicationIntent: string;
-    unresolved: string[];
   };
   stableRules: string[];
 }
@@ -369,11 +369,9 @@ export function buildRestrictedWriterInput(input: FrozenExperimentInput, brief: 
     studentName: input.studentName,
     plan: {
       type: input.planType,
-      outputRequirement: sanitizeFeedbackPromptText(input.outputRequirement).trim(),
       style: input.style,
       length: input.length,
       closureType: input.generationPreferences?.closureType ?? null,
-      moduleKeys: input.generationPreferences?.moduleKeys ?? [],
     },
     contentBrief: {
       mainFocus: brief.mainFocus,
@@ -381,7 +379,6 @@ export function buildRestrictedWriterInput(input: FrozenExperimentInput, brief: 
       background: brief.background,
       interpretations: brief.interpretations,
       communicationIntent: brief.communicationIntent,
-      unresolved: brief.unresolved,
     },
     stableRules: [
       "默认收件人是家长，谈到学生时使用姓名、孩子或第三人称，不直接对学生说你。",
@@ -478,14 +475,17 @@ function parseContentBrief(value: string, evidence: FeedbackEvidenceBundle): Con
     ...evidence.assessmentEvidence,
     ...evidence.communicationContext,
   ].map((item) => item.id));
-  const filterRefs = (refs: string[]) => refs.filter((ref) => allowedRefs.has(ref));
-  return {
-    ...result.data,
-    present: result.data.present.map((item) => ({ ...item, evidenceRefs: filterRefs(item.evidenceRefs) })),
-    background: result.data.background.map((item) => ({ ...item, evidenceRefs: filterRefs(item.evidenceRefs) })),
-    interpretations: result.data.interpretations.map((item) => ({ ...item, evidenceRefs: filterRefs(item.evidenceRefs) })),
-    omit: result.data.omit.map((item) => ({ ...item, evidenceRefs: filterRefs(item.evidenceRefs) })),
-  };
+  const referencedItems = [
+    ...result.data.present,
+    ...result.data.background,
+    ...result.data.interpretations,
+    ...result.data.omit,
+  ];
+  const unknownRefs = [...new Set(referencedItems.flatMap((item) => item.evidenceRefs).filter((ref) => !allowedRefs.has(ref)))];
+  if (unknownRefs.length) {
+    throw new ApiError(`Planner ContentBrief 包含未知 evidenceRef：${unknownRefs.slice(0, 6).join("、")}`, 502, "llm_schema_invalid", true);
+  }
+  return result.data;
 }
 
 function parseWriterFeedback(value: string) {
@@ -532,6 +532,17 @@ function modelIdentity(
 ): ModelIdentity {
   const profileId = profileGetter(role);
   return { role, profileId, model: modelGetter(role, profileId ?? undefined) };
+}
+
+function wrapUsageClient(client: ExperimentLLMClient, usageSink: TokenUsage[]) {
+  type CompletionCreate = ExperimentLLMClient["chat"]["completions"]["create"];
+  const create = client.chat.completions.create.bind(client.chat.completions) as (...args: Parameters<CompletionCreate>) => ReturnType<CompletionCreate>;
+  const wrappedCreate = async (...args: Parameters<CompletionCreate>) => {
+    const response = await create(...args);
+    usageSink.push(normalizeTokenUsage("usage" in response ? response.usage : undefined));
+    return response;
+  };
+  return { chat: { completions: { create: wrappedCreate } } } as unknown as ExperimentLLMClient;
 }
 
 export interface FeedbackAbTestDependencies {
@@ -617,9 +628,14 @@ export async function runFeedbackAbTest(
     : modelIdentity("feedbackReview", modelGetter, profileGetter);
   const plannerIdentity = draftIdentity;
   const writerIdentity = modelIdentity("feedbackReview", modelGetter, profileGetter);
-  const draftClient = createClient("feedbackDraft");
-  const productionReviewClient = frozen.generationMode === "fast" ? draftClient : createClient("feedbackReview");
-  const writerClient = createClient("feedbackReview");
+  const currentUsage: TokenUsage[] = [];
+  const rawDraftClient = createClient("feedbackDraft");
+  const rawWriterClient = createClient("feedbackReview");
+  const draftClient = wrapUsageClient(rawDraftClient, currentUsage);
+  const productionReviewClient = frozen.generationMode === "fast"
+    ? draftClient
+    : wrapUsageClient(rawWriterClient, currentUsage);
+  const writerClient = rawWriterClient;
   const currentInput = buildCurrentGenerationInput(frozen, {
     draftClient,
     draftModel: draftIdentity.model,
@@ -638,13 +654,11 @@ export async function runFeedbackAbTest(
   const currentMs = Math.round(nowMs() - currentStart);
 
   const plannerStart = nowMs();
-  const plannerResponse = await createExperimentJsonCompletion(
-    draftClient,
-    "feedbackDraft",
-    plannerIdentity.model,
-    `你是 Student Track 的反馈 Planner。你只负责从冻结事实中规划本次反馈要说什么，不写家长正文，不追求漂亮表达，也不要为了覆盖率强行纳入所有证据。
+  const plannerPrompt = `你是 Student Track 的反馈 Planner。你只负责从冻结事实中规划本次反馈要说什么，不写家长正文，不追求漂亮表达，也不要为了覆盖率强行纳入所有证据。
 
 读取下面的冻结输入。present 是本次值得直接进入反馈的信息，background 是压缩后的背景，interpretations 是有证据支持的教学判断；contextOnly 只供 Planner 理解，Writer 不会看到它的原始内容；omit 表示本次完全不传给 Writer。evidenceRefs 只能使用证据包中的真实证据 ID。
+
+generationPreferences.moduleKeys 是本计划的披露权限边界，不只是写作偏好：非空时只有其中列出的模块可以向 Writer 披露；为空时按当前反馈类型的完整允许模块目录处理。未授权模块只能停留在 contextOnly 或 omit 中用于 Planner 理解与排除，不得出现在 present、background、interpretations 或任何下发给 Writer 的字段中。
 
 冻结输入：
 ${JSON.stringify(buildPlannerInput(frozen))}
@@ -652,9 +666,26 @@ ${JSON.stringify(buildPlannerInput(frozen))}
 只返回合法 JSON，字段必须是：
 {"mainFocus":"...","present":[{"content":"...","evidenceRefs":["..."]}],"background":[{"content":"...","evidenceRefs":["..."]}],"interpretations":[{"content":"...","evidenceRefs":["..."],"confidence":"high|medium|low"}],"contextOnly":[{"content":"...","reason":"..."}],"omit":[{"evidenceRefs":["..."],"reason":"..."}],"communicationIntent":"...","unresolved":[]}
 
-不要输出家长称呼、成稿段落或固定模板。`,
-  );
-  const plannerBrief = parseContentBrief(plannerResponse.content, frozen.evidenceBundle);
+不要输出家长称呼、成稿段落或固定模板。`;
+  const plannerResponses: Array<{ content: string; usage: TokenUsage }> = [];
+  let plannerBrief: ContentBrief | null = null;
+  let plannerFailure: unknown = new ApiError("Planner ContentBrief 无效", 502, "llm_schema_invalid", true);
+  for (let attempt = 0; attempt < 2 && !plannerBrief; attempt += 1) {
+    const prompt = attempt === 0
+      ? plannerPrompt
+      : `${plannerPrompt}
+
+上一轮 ContentBrief 无效：${plannerFailure instanceof Error ? plannerFailure.message : "字段或 evidenceRef 不符合协议"}。请从同一份冻结输入重新规划，严格使用真实 evidenceRef；不要静默删除含未知引用的内容，直接返回修正后的完整 JSON。`;
+    const response = await createExperimentJsonCompletion(rawDraftClient, "feedbackDraft", plannerIdentity.model, prompt);
+    plannerResponses.push(response);
+    try {
+      plannerBrief = parseContentBrief(response.content, frozen.evidenceBundle);
+    } catch (error) {
+      plannerFailure = error;
+    }
+  }
+  if (!plannerBrief) throw plannerFailure;
+  const plannerUsage = plannerResponses.map((response) => response.usage).reduce(sumTokenUsage);
   const plannerMs = Math.round(nowMs() - plannerStart);
 
   const writerInput = buildRestrictedWriterInput(frozen, plannerBrief);
@@ -694,10 +725,10 @@ ${JSON.stringify(writerInput)}
       plannerWriter: { totalMs: plannerMs + writerMs, stages: { plannerMs, writerMs } },
     },
     tokenUsage: {
-      current: null,
-      planner: plannerResponse.usage,
+      current: currentUsage.length ? currentUsage.reduce(sumTokenUsage) : null,
+      planner: plannerUsage,
       writer: writerResponse.usage,
-      plannerWriter: sumTokenUsage(plannerResponse.usage, writerResponse.usage),
+      plannerWriter: sumTokenUsage(plannerUsage, writerResponse.usage),
     },
     models: {
       current: { draft: draftIdentity, review: productionReviewIdentity },

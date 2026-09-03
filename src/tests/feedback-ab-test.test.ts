@@ -105,12 +105,39 @@ describe("feedback A/B experiment boundary", () => {
 
   it("excludes contextOnly and omit raw content from Writer input", () => {
     const frozen = makeFrozenInput();
-    const brief = { mainFocus: "本次重点", present: [], background: [], interpretations: [], contextOnly: [{ content: "context-only 原始秘密", reason: "仅供 Planner 理解" }], omit: [{ evidenceRefs: ["context-1"], reason: "本次不传" }], communicationIntent: "自然", unresolved: [] };
+    const brief = { mainFocus: "本次重点", present: [], background: [], interpretations: [], contextOnly: [{ content: "context-only 原始秘密", reason: "仅供 Planner 理解" }], omit: [{ evidenceRefs: ["context-1"], reason: "本次不传" }], communicationIntent: "自然", unresolved: ["Planner 内部冲突"] };
     const writer = buildRestrictedWriterInput(frozen, brief);
     const serialized = JSON.stringify(writer);
+    expect(serialized).not.toContain(frozen.outputRequirement);
     expect(serialized).not.toContain("context-only 原始秘密");
     expect(serialized).not.toContain("omit");
     expect(serialized).not.toContain("contextOnly");
+    expect(serialized).not.toContain("unresolved");
+  });
+
+  it("retries an invalid brief once instead of deleting unknown evidence refs", async () => {
+    const plan = makePlan();
+    const findUnique = vi.fn().mockResolvedValue(plan);
+    const db = { feedbackPlan: { findUnique } } as unknown as FeedbackAbTestDb;
+    const invalidBrief = JSON.stringify({ mainFocus: "本次重点", present: [{ content: "不应静默保留", evidenceRefs: ["unknown-ref"] }], background: [], interpretations: [], contextOnly: [], omit: [], communicationIntent: "自然", unresolved: [] });
+    const validBrief = JSON.stringify({ mainFocus: "本次重点", present: [{ content: "允许披露", evidenceRefs: ["present-1"] }], background: [], interpretations: [], contextOnly: [], omit: [], communicationIntent: "自然", unresolved: [] });
+    const plannerCreate = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: invalidBrief } }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } })
+      .mockResolvedValueOnce({ choices: [{ message: { content: validBrief } }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } });
+    const writerCreate = vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ feedback: "Planner Writer 反馈" }) } }], usage: undefined });
+    const createClient = vi.fn((role?: "feedbackDraft" | "feedbackReview" | "wecomExtraction") => ({ chat: { completions: { create: role === "feedbackDraft" ? plannerCreate : writerCreate } } }) as unknown as ReturnType<typeof createLLMClient>);
+    const currentGenerator = vi.fn().mockResolvedValue({ composition: { draftFeedback: "Current 反馈" } } as Awaited<ReturnType<typeof generateFeedbackPlanComposition>>);
+    const result = await runFeedbackAbTest({ planId: plan.id, planItemId: plan.items[0]!.id }, {
+      db,
+      currentGenerator,
+      createClient,
+      getModel: (role) => `${role}-model`,
+      resolveProfileId: (role) => `${role}-profile`,
+      randomAssignment: () => ({ left: "current", right: "planner_writer" }),
+    });
+    expect(plannerCreate).toHaveBeenCalledTimes(2);
+    expect(result.plannerBrief.present[0]?.evidenceRefs).toEqual(["present-1"]);
+    expect(result.tokenUsage.planner.totalTokens).toBe(6);
   });
 
   it("runs with a database surface that only exposes reads", async () => {
@@ -118,12 +145,13 @@ describe("feedback A/B experiment boundary", () => {
     const findUnique = vi.fn().mockResolvedValue(plan);
     const db = { feedbackPlan: { findUnique } } as unknown as FeedbackAbTestDb;
     const currentGenerator = vi.fn(async (input: Parameters<typeof generateFeedbackPlanComposition>[0]) => {
-      expect(input.evidenceBundle).toBeDefined();
+      await input.draftClient.chat.completions.create({ model: "current-model", messages: [{ role: "user", content: "current call 1" }] });
+      await input.draftClient.chat.completions.create({ model: "current-model", messages: [{ role: "user", content: "current call 2" }] });
       return { composition: { draftFeedback: "Current 反馈" } } as Awaited<ReturnType<typeof generateFeedbackPlanComposition>>;
     });
     const plannerResponse = JSON.stringify({ mainFocus: "本次重点", present: [{ content: "允许披露", evidenceRefs: ["present-1"] }], background: [], interpretations: [], contextOnly: [{ content: "不应进入 Writer", reason: "理解冲突" }], omit: [{ evidenceRefs: ["context-1"], reason: "不传" }], communicationIntent: "自然", unresolved: [] });
     const writerResponse = JSON.stringify({ feedback: "Planner Writer 反馈" });
-    const createClient = vi.fn((role?: "feedbackDraft" | "feedbackReview" | "wecomExtraction") => ({ chat: { completions: { create: vi.fn().mockResolvedValue({ choices: [{ message: { content: role === "feedbackDraft" ? plannerResponse : writerResponse } }], usage: undefined }) } } }) as unknown as ReturnType<typeof createLLMClient>);
+    const createClient = vi.fn((role?: "feedbackDraft" | "feedbackReview" | "wecomExtraction") => ({ chat: { completions: { create: vi.fn().mockResolvedValue({ choices: [{ message: { content: role === "feedbackDraft" ? plannerResponse : writerResponse } }], usage: { prompt_tokens: 3, completion_tokens: 2, reasoning_tokens: 1, total_tokens: 5 } }) } } }) as unknown as ReturnType<typeof createLLMClient>);
     const result = await runFeedbackAbTest({ planId: plan.id, planItemId: plan.items[0]!.id }, {
       db,
       currentGenerator,
@@ -134,6 +162,7 @@ describe("feedback A/B experiment boundary", () => {
     });
     expect(result.outputs.current).toBe("Current 反馈");
     expect(result.outputs.plannerWriter).toBe("Planner Writer 反馈");
+    expect(result.tokenUsage.current?.totalTokens).toBe(10);
     expect(Object.keys((db as unknown as { feedbackPlan: Record<string, unknown> }).feedbackPlan)).toEqual(["findUnique"]);
   });
 
