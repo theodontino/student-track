@@ -34,18 +34,28 @@ export type FeedbackTaskOpenTarget = {
   classId: string;
   className: string;
   sessionCode: string;
-  view?: "plan" | "studio";
+  view?: "intake" | "plan" | "studio";
 };
 
-const statusLabels: Record<string, string> = {
-  draft: "草稿", evidence_ready: "证据就绪", queued: "排队中", generating: "生成中", running: "生成中",
-  pause_requested: "暂停中", paused: "已暂停", generation_failed: "生成失败", failed: "生成失败",
-  ready: "准备就绪", in_review: "待复核", needs_review: "待教师批准", partially_approved: "部分批准",
-  approved: "已批准", partially_exported: "部分已导出", exported: "已导出", stale: "证据已变化",
-  completed: "生成完成", archived: "已归档",
-};
 const runningPlanStatuses = new Set(["queued", "generating", "pause_requested"]);
 const runningBatchStatuses = new Set(["queued", "running", "pause_requested"]);
+
+type DisplayState = "saved" | "active" | "completed";
+const displayStateLabels: Record<DisplayState, string> = { saved: "已保存", active: "活动中", completed: "已完成" };
+
+function planDisplayState(plan: PlanSummary): DisplayState {
+  const progress = plan.itemStatusCounts;
+  if (progress.total > 0 && progress.completed === progress.total && progress.queued === 0 && progress.running === 0 && progress.failed === 0) return "completed";
+  const started = !["draft", "ready", "evidence_ready"].includes(plan.status)
+    || progress.queued + progress.running + progress.completed + progress.failed > 0;
+  return started ? "active" : "saved";
+}
+
+function batchDisplayState(batch: BatchSummary): DisplayState {
+  const progress = batch.progress;
+  if (progress.total > 0 && progress.generated === progress.total && progress.failed === 0 && !runningBatchStatuses.has(batch.status)) return "completed";
+  return ["draft", "ready"].includes(batch.status) && progress.generated === 0 ? "saved" : "active";
+}
 
 function typeLabel(type: string) {
   return ({ class_update: "班级公共反馈", event_micro: "事件型微反馈", stage_trend: "阶段趋势反馈", course_end: "结课教学总结" } as Record<string, string>)[type] ?? type;
@@ -99,8 +109,10 @@ async function waitUntilStopped(kind: "plan" | "batch", id: string, running: Set
   throw new Error("计划仍在停止中，请稍后再归档");
 }
 
-export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: {
+export default function FeedbackPlanManager({ currentPlanId, currentBatchId, onOpen, onArchived }: {
   semesterId?: string;
+  currentPlanId?: string;
+  currentBatchId?: string;
   onOpen?: (target: FeedbackTaskOpenTarget) => void;
   onArchived?: (reference: ArchivedFeedbackTaskReference) => void;
 }) {
@@ -115,7 +127,6 @@ export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: 
     setLoading(true); setError("");
     try {
       const query = new URLSearchParams({ archived: "false" });
-      if (semesterId) query.set("semesterId", semesterId);
       const [planResult, batchResult] = await Promise.all([
         requestJson<{ plans: PlanSummary[] }>(`/api/report/feedback-plans?${query}`),
         requestJson<{ batches: BatchSummary[] }>(`/api/report/feedback-plan-batches?${query}`),
@@ -124,7 +135,7 @@ export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: 
       setBatches(batchResult.batches.filter((batch) => !batch.archivedAt));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "读取当前反馈计划失败"); }
     finally { setLoading(false); }
-  }, [semesterId]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -135,6 +146,19 @@ export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: 
       ...plans.filter((plan) => !plan.batchId && !childIds.has(plan.id)).map((plan) => ({ kind: "plan" as const, id: plan.id, plan })),
     ];
   }, [batches, plans]);
+  const groups = useMemo(() => {
+    const bySemester = new Map<string, { name: string; tasks: TaskRow[] }>();
+    for (const task of tasks) {
+      const semester = task.kind === "batch" ? task.batch.semester : task.plan.semester;
+      const key = semester?.id ?? "unknown";
+      const group = bySemester.get(key) ?? { name: semester?.name ?? "未命名学期", tasks: [] };
+      group.tasks.push(task);
+      bySemester.set(key, group);
+    }
+    return [...bySemester.values()];
+  }, [tasks]);
+  const currentTask = tasks.find((task) => task.kind === "batch" ? task.id === currentBatchId : !currentBatchId && task.id === currentPlanId);
+  const currentState = currentTask ? (currentTask.kind === "batch" ? batchDisplayState(currentTask.batch) : planDisplayState(currentTask.plan)) : null;
 
   async function archiveTask(task: TaskRow) {
     const label = task.kind === "batch" ? task.batch.displayName ?? `班级组反馈（${task.batch.plans.length} 个班级）` : task.plan.displayName ?? `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "当前班级"}`;
@@ -173,28 +197,29 @@ export default function FeedbackPlanManager({ semesterId, onOpen, onArchived }: 
     finally { setBusyId(""); }
   }
 
-  return <section className={styles.panel} aria-label="当前反馈计划">
+  return <section className={styles.panel} aria-label="反馈计划选择器">
     <header className={styles.header}>
-      <div><strong>当前反馈计划</strong><span>{loading ? "正在读取…" : `${tasks.length} 个未归档计划`}</span></div>
+      <div><strong>反馈计划</strong><span>{loading ? "正在读取…" : currentState ? `${currentState === "completed" ? "已完成反馈生成" : "未完成反馈生成"} · ${tasks.length} 个未归档计划` : `尚未建立反馈计划 · ${tasks.length} 个未归档计划`}</span></div>
       <Button uiSize="sm" variant="ghost" onClick={() => void load()} disabled={loading || Boolean(busyId)}>刷新</Button>
     </header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {notice && <StatusBanner tone="success">{notice}</StatusBanner>}
-    {!loading && tasks.length === 0 ? <p className={styles.empty}>当前没有未归档反馈计划。历史计划可在<Link href="/history?archived=true">反馈历史</Link>中查看。</p> : <div className={styles.list}>
-      {tasks.map((task) => {
+    {!loading && tasks.length === 0 ? <p className={styles.empty}>尚未建立反馈计划。历史计划可在<Link href="/history?archived=true">反馈历史</Link>中查看。</p> : <div className={styles.list}>
+      {groups.map((group) => <section className={styles.group} key={group.name}><h3>{group.name}</h3>{group.tasks.map((task) => {
         const isBatch = task.kind === "batch";
-        const status = isBatch ? task.batch.status : task.plan.status;
+        const displayState = isBatch ? batchDisplayState(task.batch) : planDisplayState(task.plan);
+        const isCurrent = isBatch ? task.id === currentBatchId : !currentBatchId && task.id === currentPlanId;
         const openTarget = isBatch ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
         const href = taskHref(openTarget);
         const title = isBatch ? task.batch.displayName ?? `班级组反馈 · ${task.batch.plans.length} 个班级` : task.plan.displayName ?? typeLabel(task.plan.type);
         const description = isBatch
           ? `${typeLabel(task.batch.type)} · ${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准`
           : `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
-        return <article key={`${task.kind}:${task.id}`} className={styles.row}>
-          <div className={styles.meta}><div className={styles.title}><strong>{title}</strong><Badge tone={(isBatch ? runningBatchStatuses : runningPlanStatuses).has(status) ? "warning" : "info"}>{statusLabels[status] ?? status}</Badge></div><span>{description}</span></div>
+        return <article key={`${task.kind}:${task.id}`} className={`${styles.row} ${isCurrent ? styles.current : ""}`}>
+          <div className={styles.meta}><div className={styles.title}><strong>{title}</strong><Badge tone={displayState === "completed" ? "success" : displayState === "active" ? "warning" : "info"}>{displayStateLabels[displayState]}</Badge>{isCurrent && <Badge tone="info">当前打开</Badge>}</div><span>{description} · 批准、导出进度分别保留</span></div>
           <div className={styles.actions}>{onOpen ? <Button uiSize="sm" variant="ghost" onClick={() => onOpen(openTarget)} disabled={Boolean(busyId)}>打开</Button> : <Link className="ui-button ui-button--ghost ui-button--sm" href={href}>打开</Link>}<Button uiSize="sm" variant="secondary" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button></div>
         </article>;
-      })}
+      })}</section>)}
     </div>}
   </section>;
 }

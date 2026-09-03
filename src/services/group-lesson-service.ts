@@ -12,6 +12,7 @@ import {
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import { createEmptyLessonFeedbackMaterial, lessonMaterialHasContent } from "@/lib/feedback-materials";
 import { prisma } from "@/lib/prisma";
+import { assertSemesterAvailable, assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 import { ServiceError } from "@/services/service-error";
 
 type GroupLessonDb = PrismaClient | Prisma.TransactionClient;
@@ -38,7 +39,7 @@ function parseMaterial(value: string) {
 
 async function assertClassesAvailable(db: GroupLessonDb, semesterId: string, classIds: string[], groupId?: string) {
   const classes = await db.class.findMany({
-    where: { id: { in: classIds } },
+    where: { id: { in: classIds }, deletedAt: null, semester: { deletedAt: null } },
     select: { id: true, semesterId: true, classGroupMembership: { select: { groupId: true } } },
   });
   if (classes.length !== classIds.length) throw new ServiceError("有班级不存在", 404);
@@ -77,8 +78,7 @@ function groupView<T extends { lessons: Array<{ materialSnapshot: string; revisi
 }
 
 export async function listSemesterClassGroups(semesterId: string, db: GroupLessonDb = prisma) {
-  const semester = await db.semester.findUnique({ where: { id: semesterId }, select: { id: true } });
-  if (!semester) throw new ServiceError("学期不存在", 404);
+  await assertSemesterAvailable(semesterId, db);
   const groups = await db.classGroup.findMany({ where: { semesterId }, orderBy: { name: "asc" }, include: groupInclude });
   return groups.map(groupView);
 }
@@ -86,8 +86,7 @@ export async function listSemesterClassGroups(semesterId: string, db: GroupLesso
 export async function createClassGroup(semesterId: string, raw: ClassGroupWriteInput, db: PrismaClient = prisma) {
   const input = ClassGroupWriteSchema.parse(raw);
   return db.$transaction(async (tx) => {
-    const semester = await tx.semester.findUnique({ where: { id: semesterId }, select: { id: true } });
-    if (!semester) throw new ServiceError("学期不存在", 404);
+    await assertSemesterAvailable(semesterId, tx);
     await assertClassesAvailable(tx, semesterId, input.classIds);
     const group = await tx.classGroup.create({
       data: { semesterId, name: input.name, leadClassId: input.leadClassId, memberships: { create: input.classIds.map((classId) => ({ classId })) } },
@@ -262,6 +261,7 @@ export async function unlinkGroupLessonSession(lessonId: string, sessionId: stri
 }
 
 export async function getSessionGroupProgress(sessionId: string, db: GroupLessonDb = prisma) {
+  await assertSessionAvailable(sessionId, db);
   const session = await db.classSession.findUnique({
     where: { id: sessionId },
     select: {
@@ -376,6 +376,7 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
 }
 
 export async function setSessionGroupProgress(input: { sessionId: string; groupLessonId: string | null }, db: PrismaClient = prisma) {
+  await assertSessionAvailable(input.sessionId, db);
   return db.$transaction(async (tx) => {
     const session = await tx.classSession.findUnique({
       where: { id: input.sessionId },

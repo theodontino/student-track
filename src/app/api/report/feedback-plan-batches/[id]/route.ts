@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
-import { FeedbackPlanBatchActionSchema, FeedbackPlanBatchPatchSchema } from "@/lib/feedback-plan-batch";
+import { FeedbackPlanBatchActionSchema, FeedbackPlanBatchDraftPatchSchema, FeedbackPlanBatchPatchSchema } from "@/lib/feedback-plan-batch";
 import { prisma } from "@/lib/prisma";
 import { buildFeedbackPlanBatchExportWorkbook } from "@/services/feedback-export-service";
+import { assertFeedbackBatchAvailable } from "@/services/academic-scope-recycle-service";
 import {
   archiveFeedbackPlanBatch,
   cloneFeedbackPlanBatchDraft,
@@ -11,6 +12,7 @@ import {
   pauseFeedbackPlanBatch,
   renameFeedbackPlanBatch,
   retryFeedbackPlanBatch,
+  saveFeedbackPlanBatchAs,
   startFeedbackPlanBatch,
   unarchiveFeedbackPlanBatch,
   updateFeedbackPlanBatchDraft,
@@ -26,6 +28,7 @@ function errorResponse(error: unknown, fallback: string) {
 export async function GET(_request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    await assertFeedbackBatchAvailable(id);
     const batch = await getFeedbackPlanBatch(id);
     if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
     return NextResponse.json({ batch });
@@ -37,6 +40,7 @@ export async function GET(_request: NextRequest, context: Context) {
 export async function PATCH(request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    await assertFeedbackBatchAvailable(id);
     const parsed = FeedbackPlanBatchPatchSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) throw new ApiError("反馈批次更新参数无效", 400, "invalid_request", false);
     const input = parsed.data;
@@ -52,6 +56,7 @@ export async function PATCH(request: NextRequest, context: Context) {
 export async function POST(request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    await assertFeedbackBatchAvailable(id);
     const parsed = FeedbackPlanBatchActionSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) throw new ApiError("反馈批次操作无效", 400, "invalid_request", false);
     const input = parsed.data;
@@ -63,6 +68,12 @@ export async function POST(request: NextRequest, context: Context) {
     if (input.action === "unarchive") return NextResponse.json({ batch: await unarchiveFeedbackPlanBatch(id) });
     if (input.action === "clone_draft") {
       const batch = await cloneFeedbackPlanBatchDraft({ batchId: id, displayName: input.displayName });
+      return NextResponse.json({ batch }, { status: 201 });
+    }
+    if (input.action === "save_as") {
+      const patch = FeedbackPlanBatchDraftPatchSchema.safeParse(input.patch);
+      if (!patch.success) throw new ApiError("另存班级组计划参数无效", 400, "invalid_request", false);
+      const batch = await saveFeedbackPlanBatchAs({ batchId: id, displayName: input.displayName, patch: patch.data });
       return NextResponse.json({ batch }, { status: 201 });
     }
     const buffer = await buildFeedbackPlanBatchExportWorkbook(prisma, id, input.mode, { allowRepeat: input.allowRepeat === true });

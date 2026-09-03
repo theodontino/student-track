@@ -69,23 +69,23 @@ test("golden A: single class uses two teacher confirmations before review", asyn
   await page.getByRole("button", { name: "保存并开始生成" }).click();
   await expect(page).toHaveURL(/view=studio/);
   await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
-  await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.students[0].name);
+  await expect(page.getByLabel("反馈队列")).toContainText(TEST_FIXTURE.students[0].name);
 
   await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
   await expect(page).toHaveURL(/view=intake/);
-  await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
   await expect(page.getByText(/文件不是必填项，教师确认事实才是进入规划的必要门槛/)).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(/view=intake/);
-  await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
   await expect(page).toHaveURL(/view=plan/);
-  await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("总体要求")).toBeDisabled();
+  await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("总体要求")).toBeEnabled();
   await page.reload();
   await expect(page).toHaveURL(/view=plan/);
-  await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
+  await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /生成 生成、复核与批准/ }).click();
   await expect(page).toHaveURL(/view=studio/);
@@ -105,8 +105,8 @@ test("golden B: a grouped class inherits shared material but creates only one cl
   await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "保存并开始生成" }).click();
   await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
-  await expect(page.getByLabel("计划学生导航")).toContainText(TEST_FIXTURE.groupStudents[0].name);
-  await expect(page.getByLabel("计划学生导航")).not.toContainText(TEST_FIXTURE.students[0].name);
+  await expect(page.getByLabel("反馈队列")).toContainText(TEST_FIXTURE.groupStudents[0].name);
+  await expect(page.getByLabel("反馈队列")).not.toContainText(TEST_FIXTURE.students[0].name);
 });
 
 test("group draft restores runs, exclusions, student choices and overrides on startup", async ({ page }) => {
@@ -392,14 +392,15 @@ test("group task advances a ready class and later scans only the unfinished clas
   const partialBatch = () => ({
     id: "batch-partial-a",
     displayName: "初版计划",
+    type: "event_micro",
     status: batchStatus,
     outputRequirement: "只推进已经准备好的班级",
     generationMode: "fast",
     planRevision: 1,
     archivedAt: null,
     semester: { id: TEST_FIXTURE.semester.id, name: TEST_FIXTURE.semester.name },
-    progress: { total: 1, generated: 0, approved: 0, exported: 0, failed: 0, completedClasses: 0, totalClasses: 1 },
-    plans: [batchPlan],
+    progress: { total: 1, generated: batchStatus === "completed" ? 1 : 0, approved: 0, exported: 0, failed: 0, completedClasses: batchStatus === "completed" ? 1 : 0, totalClasses: 1 },
+    plans: [{ ...batchPlan, progress: { ...batchPlan.progress, generated: batchStatus === "completed" ? 1 : 0 } }],
   });
   await page.route("**/api/report/feedback-plan-batches", async (route) => {
     const body = route.request().postDataJSON() as { plans: Array<{ classId: string; intakeRunId: string }> };
@@ -517,11 +518,10 @@ test("group task advances a ready class and later scans only the unfinished clas
   await expect(page.getByRole("button", { name: "继续处理 1 个未完成班" })).toBeVisible();
   expect(batchRequests).toHaveLength(1);
   expect(batchRequests[0]?.plans).toEqual([expect.objectContaining({ classId: TEST_FIXTURE.class.id, intakeRunId: runA.id })]);
-  const currentTasks = page.locator("details").filter({ has: page.locator("summary", { hasText: "当前反馈计划" }) });
-  await currentTasks.locator("summary").click();
+  const currentTasks = page.getByLabel("反馈计划选择器");
   await currentTasks.getByRole("button", { name: "刷新" }).click();
   const currentBatchRow = currentTasks.locator("article").filter({ hasText: "初版计划" });
-  await expect(currentBatchRow).toContainText("生成完成");
+  await expect(currentBatchRow).toContainText("已完成");
   await currentBatchRow.getByRole("button", { name: "打开" }).click();
   await expect(page.getByRole("button", { name: "继续处理 1 个未完成班" })).toBeVisible();
   await page.getByRole("button", { name: "继续处理 1 个未完成班" }).click();
@@ -592,8 +592,7 @@ test("current batch draft opens its named plan view from an empty same-page work
 
   await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}`);
   await expect(page.getByText("请先选择真实课次。")).toBeVisible();
-  const taskList = page.locator("details").filter({ has: page.locator("summary", { hasText: "当前反馈计划" }) });
-  await taskList.locator("summary").click();
+  const taskList = page.getByLabel("反馈计划选择器");
   const taskRow = taskList.locator("article").filter({ hasText: batch.displayName }).first();
   const openButton = taskRow.getByRole("button", { name: "打开" });
 
@@ -647,8 +646,10 @@ test("new lead-class session confirms shared course material with the material a
   await expect(page).toHaveURL(/view=plan/);
   await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
-  await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "继续录入事实" }).click();
+  await expect(page.getByRole("dialog", { name: "继续录入事实" })).toContainText("事实已冻结，如需修改，请谨慎录入新事实并新建计划。");
+  await page.getByRole("dialog", { name: "继续录入事实" }).getByRole("button", { name: "确认并继续录入" }).click();
   await expect(page).not.toHaveURL(/planId=/);
   await expect(page).toHaveURL(/view=intake/);
   await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
@@ -809,11 +810,11 @@ test("named multi-class draft saves and a batch-only legacy link restores the wo
 
   await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
   await expect(page).toHaveURL(/view=plan/);
-  await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
+  await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "E2E 多班快捷键草稿" })).toBeVisible();
   await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
   await expect(page).toHaveURL(/view=intake/);
-  await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
 });
 
 test("an approved plan creates a separately named revision without changing the original", async ({ page, request }) => {
@@ -877,29 +878,24 @@ test("an approved plan creates a separately named revision without changing the 
   expect(before.items[0]).toMatchObject({ status: "approved", finalText: originalText });
 
   await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[1].code}&planId=${original.id}&view=plan`);
-  await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
-  const cloneResponsePromise = page.waitForResponse((response) => (
+  await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: "总体要求", exact: true }).fill("E2E 页面修正要求");
+  const saveAsResponsePromise = page.waitForResponse((response) => (
     new URL(response.url()).pathname === `/api/report/feedback-plans/${original.id}`
     && response.request().method() === "POST"
   ));
-  await page.getByRole("button", { name: "修正计划", exact: true }).click();
-  const cloneResponse = await cloneResponsePromise;
-  expect(cloneResponse.ok()).toBeTruthy();
-  expect(cloneResponse.request().postDataJSON()).toEqual({ action: "clone_draft" });
-  const clone = (await cloneResponse.json()).plan as { id: string };
+  await page.getByRole("button", { name: "另存为…", exact: true }).first().click();
+  const saveAsDialog = page.getByRole("dialog", { name: "另存为新计划" });
+  await saveAsDialog.getByLabel("新计划名称").fill("E2E 独立修正版");
+  await saveAsDialog.getByRole("button", { name: "另存为新计划", exact: true }).click();
+  const saveAsResponse = await saveAsResponsePromise;
+  expect(saveAsResponse.ok()).toBeTruthy();
+  expect(saveAsResponse.request().postDataJSON()).toMatchObject({ action: "save_as", displayName: "E2E 独立修正版", patch: { outputRequirement: "E2E 页面修正要求" } });
+  const clone = (await saveAsResponse.json()).plan as { id: string };
   expect(clone.id).not.toBe(original.id);
   await expect(page).toHaveURL(new RegExp(`planId=${clone.id}`));
   await expect(page).toHaveURL(/view=plan/);
-  await expect(page.getByRole("textbox", { name: "计划名称" })).toHaveValue("");
-  await expect(page.getByText("修正计划需要新名称", { exact: true })).toBeVisible();
-
-  await page.getByRole("textbox", { name: "计划名称" }).fill("E2E 独立修正版");
-  const savedRevision = page.waitForResponse((response) => (
-    new URL(response.url()).pathname === `/api/report/feedback-plans/${clone.id}`
-    && response.request().method() === "PATCH"
-  ));
-  await page.getByRole("button", { name: "保存计划", exact: true }).click();
-  expect((await savedRevision).ok()).toBeTruthy();
+  await expect(page.getByRole("textbox", { name: "计划名称" })).toHaveValue("E2E 独立修正版");
 
   const cloneDetailResponse = await request.get(`/api/report/feedback-plans/${clone.id}`);
   expect(cloneDetailResponse.ok()).toBeTruthy();
@@ -923,13 +919,12 @@ test("an approved plan creates a separately named revision without changing the 
   const after = (await afterResponse.json()).plan as typeof before;
   expect(immutableProjection(after)).toEqual(immutableProjection(before));
 
-  const taskList = page.locator("details").filter({ has: page.locator("summary", { hasText: "当前反馈计划" }) });
-  await taskList.locator("summary").click();
+  const taskList = page.getByLabel("反馈计划选择器");
   const originalRow = taskList.locator("article").filter({ hasText: originalName });
   await expect(originalRow).toBeVisible();
   await originalRow.getByRole("button", { name: "打开" }).click();
   await expect(page).toHaveURL(new RegExp(`planId=${original.id}`));
   await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
   await expect(page.getByRole("heading", { name: originalName })).toBeVisible();
-  await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
+  await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
 });

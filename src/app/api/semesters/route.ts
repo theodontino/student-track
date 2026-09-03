@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 export async function GET() {
   try {
     const semesters = await prisma.semester.findMany({
+      where: { deletedAt: null },
       include: { sessions: { orderBy: { date: "desc" } } },
       orderBy: { createdAt: "desc" },
     });

@@ -25,6 +25,11 @@ function prepareE2EServerWorkspace(projectRoot: string, rootDir: string) {
   for (const directory of ["src", "public"]) {
     fs.cpSync(path.join(projectRoot, directory), path.join(serverRoot, directory), { recursive: true });
   }
+  fs.mkdirSync(path.join(serverRoot, "scripts"));
+  fs.copyFileSync(
+    path.join(projectRoot, "scripts", "purge-expired-recycle-bin.ts"),
+    path.join(serverRoot, "scripts", "purge-expired-recycle-bin.ts"),
+  );
   for (const file of [
     "LICENSE",
     "package.json",

@@ -20,6 +20,11 @@ import {
 } from "@/lib/feedback-plan";
 import { prisma } from "@/lib/prisma";
 import {
+  assertClassAvailable,
+  assertFeedbackBatchAvailable,
+  assertSemesterAvailable,
+} from "@/services/academic-scope-recycle-service";
+import {
   continueFeedbackPlanGeneration,
   cloneFeedbackPlanDraft,
   createFeedbackPlan,
@@ -180,6 +185,7 @@ export function toFeedbackPlanBatchView<T extends {
 }
 
 export async function getFeedbackPlanBatch(id: string, db: BatchDb = prisma) {
+  await assertFeedbackBatchAvailable(id, db);
   const batch = await db.feedbackPlanBatch.findUnique({ where: { id }, include: batchInclude });
   return batch ? toFeedbackPlanBatchView(batch) : null;
 }
@@ -187,6 +193,8 @@ export async function getFeedbackPlanBatch(id: string, db: BatchDb = prisma) {
 export async function listFeedbackPlanBatches(input: { semesterId?: string; archived?: boolean }, db: BatchDb = prisma) {
   const batches = await db.feedbackPlanBatch.findMany({
     where: {
+      semester: { deletedAt: null },
+      plans: { none: { class: { deletedAt: { not: null } } } },
       ...(input.semesterId ? { semesterId: input.semesterId } : {}),
       ...(input.archived === true ? { archivedAt: { not: null } } : input.archived === false ? { archivedAt: null } : {}),
     },
@@ -198,6 +206,8 @@ export async function listFeedbackPlanBatches(input: { semesterId?: string; arch
 
 export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput, db: PrismaClient = prisma) {
   const input = FeedbackPlanBatchCreateSchema.parse(raw);
+  await assertSemesterAvailable(input.semesterId, db);
+  for (const plan of input.plans) await assertClassAvailable(plan.classId, db);
   const batchGenerationPreferences = normalizeFeedbackGenerationPreferences(input.type, input.generationPreferences);
   const existing = await db.feedbackPlanBatch.findUnique({ where: { requestKey: input.requestKey }, include: batchInclude });
   if (existing && !existing.archivedAt) {
@@ -383,10 +393,11 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
 export async function updateFeedbackPlanBatchDraft(
   batchId: string,
   rawPatch: FeedbackPlanBatchDraftPatch,
-  db: PrismaClient = prisma,
+  db: BatchDb = prisma,
 ) {
+  await assertFeedbackBatchAvailable(batchId, db);
   const patch = FeedbackPlanBatchDraftPatchSchema.parse(rawPatch);
-  return db.$transaction(async (tx) => {
+  const execute = async (tx: BatchDb) => {
     const batch = await tx.feedbackPlanBatch.findUnique({
       where: { id: batchId },
       include: {
@@ -499,7 +510,10 @@ export async function updateFeedbackPlanBatchDraft(
     const result = await tx.feedbackPlanBatch.findUnique({ where: { id: batchId }, include: batchInclude });
     if (!result) throw new ApiError("反馈批次不存在", 404, "not_found", false);
     return toFeedbackPlanBatchView(result);
-  });
+  };
+  return "$transaction" in db
+    ? (db as PrismaClient).$transaction((tx) => execute(tx))
+    : execute(db);
 }
 
 export async function renameFeedbackPlanBatch(
@@ -507,6 +521,7 @@ export async function renameFeedbackPlanBatch(
   rawInput: FeedbackPlanBatchRename,
   db: PrismaClient = prisma,
 ) {
+  await assertFeedbackBatchAvailable(batchId, db);
   const input = FeedbackPlanBatchRenameSchema.parse(rawInput);
   const current = await db.feedbackPlanBatch.findUnique({ where: { id: batchId }, select: { id: true, planRevision: true } });
   if (!current) throw new ApiError("反馈批次不存在", 404, "not_found", false);
@@ -531,9 +546,10 @@ export async function renameFeedbackPlanBatch(
 
 export async function cloneFeedbackPlanBatchDraft(
   input: { batchId: string; displayName?: string },
-  db: PrismaClient = prisma,
+  db: BatchDb = prisma,
 ) {
-  return db.$transaction(async (tx) => {
+  await assertFeedbackBatchAvailable(input.batchId, db);
+  const execute = async (tx: BatchDb) => {
     const source = await tx.feedbackPlanBatch.findUnique({
       where: { id: input.batchId },
       include: { plans: { orderBy: { batchOrder: "asc" } } },
@@ -569,6 +585,26 @@ export async function cloneFeedbackPlanBatchDraft(
     const result = await tx.feedbackPlanBatch.findUnique({ where: { id: createdBatch.id }, include: batchInclude });
     if (!result) throw new ApiError("反馈批次修订创建后无法读取", 500, "internal_error", true);
     return toFeedbackPlanBatchView(result);
+  };
+  return "$transaction" in db
+    ? (db as PrismaClient).$transaction((tx) => execute(tx))
+    : execute(db);
+}
+
+/** Creates a named batch draft from the current page fields without mutating the source batch. */
+export async function saveFeedbackPlanBatchAs(
+  input: { batchId: string; displayName: string; patch: FeedbackPlanBatchDraftPatch },
+  db: PrismaClient = prisma,
+) {
+  await assertFeedbackBatchAvailable(input.batchId, db);
+  return db.$transaction(async (tx) => {
+    const clone = await cloneFeedbackPlanBatchDraft({ batchId: input.batchId, displayName: input.displayName }, tx);
+    return updateFeedbackPlanBatchDraft(clone.id, {
+      ...input.patch,
+      action: "plan_draft",
+      displayName: input.displayName,
+      expectedPlanRevision: clone.planRevision,
+    }, tx);
   });
 }
 

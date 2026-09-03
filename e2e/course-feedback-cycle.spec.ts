@@ -408,14 +408,14 @@ test.describe("完整课程反馈周期", () => {
 
       await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
       await expect(page).toHaveURL(/view=intake/);
-      await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+      await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
       await expect(page.getByText(dailyLesson.topic, { exact: false }).first()).toBeVisible();
       await page.reload();
-      await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+      await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
 
       await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
       await expect(page).toHaveURL(/view=plan/);
-      await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
+      await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
       await expect(page.getByRole("heading", { name: "第六讲日常反馈" })).toBeVisible();
       await expect(page.getByRole("textbox", { name: "总体要求", exact: true })).toBeDisabled();
 
@@ -499,7 +499,7 @@ test.describe("完整课程反馈周期", () => {
         ["fact-editor", "当前课次事实"],
         ["materials", "公共材料"],
         ["plan-builder", "反馈计划"],
-        ["active-plans", "当前反馈计划"],
+        ["active-plans", "反馈计划"],
       ] as const) {
         await page.goto(`/feedback/tools?tool=${tool}&${contextQuery}`);
         await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();

@@ -82,6 +82,11 @@ const FEEDBACK_129_PRESERVED_COLUMNS: Record<string, string[]> = {
   FeedbackPlanBatch: FEEDBACK_PLAN_BATCH_129_COLUMNS,
 };
 
+const FEEDBACK_1210_PRESERVED_COLUMNS: Record<string, string[]> = {
+  FeedbackPlan: [...FEEDBACK_PLAN_129_COLUMNS, "displayName", "basedOnPlanId"],
+  FeedbackPlanBatch: [...FEEDBACK_PLAN_BATCH_129_COLUMNS, "displayName", "basedOnBatchId"],
+};
+
 type Inspection = {
   integrity: string[];
   foreignKeys: string[];
@@ -178,10 +183,14 @@ async function assertNewSchema(databasePath: string) {
       if (!tables.has(table)) throw new Error(`缺少新表 ${table}`);
     }
     const studentColumns = new Set((await client.execute("PRAGMA table_info(\"Student\")")).rows.map((row) => String(row.name)));
+    const semesterColumns = new Set((await client.execute("PRAGMA table_info(\"Semester\")")).rows.map((row) => String(row.name)));
     const classColumns = new Set((await client.execute("PRAGMA table_info(\"Class\")")).rows.map((row) => String(row.name)));
+    const draftColumns = new Set((await client.execute("PRAGMA table_info(\"DraftRecord\")")).rows.map((row) => String(row.name)));
     const classGroupColumns = new Set((await client.execute("PRAGMA table_info(\"ClassGroup\")")).rows.map((row) => String(row.name)));
     if (studentColumns.has("classId") || studentColumns.has("rosterStatus") || studentColumns.has("statusEffectiveAt")) throw new Error("Student 仍包含全局班级或花名册字段");
-    if (!classColumns.has("semesterId")) throw new Error("Class 缺少 semesterId");
+    if (!classColumns.has("semesterId") || !classColumns.has("deletedAt")) throw new Error("Class 缺少 semesterId 或回收站字段");
+    if (!semesterColumns.has("deletedAt")) throw new Error("Semester 缺少回收站字段");
+    if (!draftColumns.has("intakeRunId")) throw new Error("DraftRecord 缺少录入运行关联字段");
     if (!classGroupColumns.has("leadClassId")) throw new Error("ClassGroup 缺少主班字段");
     const planInfo = await client.execute("PRAGMA table_info(\"FeedbackPlan\")");
     const batchInfo = await client.execute("PRAGMA table_info(\"FeedbackPlanBatch\")");
@@ -497,6 +506,29 @@ async function verifySynthetic129FeedbackUpgrade(projectRoot: string, temporaryD
   await assertNamedFeedbackPlanUpgradeSemantics(databasePath);
 }
 
+async function verifySynthetic1210FeedbackUpgrade(projectRoot: string, temporaryDirectory: string) {
+  const databasePath = path.join(temporaryDirectory, "synthetic-1.2.10-feedback.db");
+  const names = await migrationNames(projectRoot);
+  const currentMigration = "20260903120000_add_academic_scope_recycle_bin";
+  if (!names.includes(currentMigration)) throw new Error("找不到 1.3.0-beta.1 回收站迁移");
+  await applyMigrationFiles(projectRoot, databasePath, names.filter((name) => name < currentMigration));
+  await seedSynthetic129FeedbackDatabase(databasePath);
+  const client = createClient({ url: `file:${databasePath}` });
+  try {
+    await client.execute(`UPDATE FeedbackPlan SET displayName = '固定 1.2.10 计划' WHERE id = 'plan-129'`);
+    await client.execute(`UPDATE FeedbackPlanBatch SET displayName = '固定 1.2.10 批次' WHERE id = 'batch-129'`);
+  } finally {
+    client.close();
+  }
+  const before = await inspect(databasePath, FEEDBACK_1210_PRESERVED_COLUMNS);
+  assertColumnsAvailable(before, FEEDBACK_1210_PRESERVED_COLUMNS, "固定 1.2.10 反馈库");
+  await applyMigrationFiles(projectRoot, databasePath, names.filter((name) => name >= currentMigration));
+  const after = await inspect(databasePath, FEEDBACK_1210_PRESERVED_COLUMNS);
+  assertColumnsAvailable(after, FEEDBACK_1210_PRESERVED_COLUMNS, "升级后固定 1.2.10 反馈库");
+  assertPreserved(before, after, "固定 1.2.10 反馈库");
+  await assertNewSchema(databasePath);
+}
+
 async function main() {
   const projectRoot = process.cwd();
   const liveDatabase = resolveDatabasePath(process.env.DATABASE_URL ?? "file:./dev.db");
@@ -526,9 +558,10 @@ async function main() {
     }
     await verifySyntheticUpgrade(projectRoot, temporaryDirectory);
     await verifySynthetic129FeedbackUpgrade(projectRoot, temporaryDirectory);
+    await verifySynthetic1210FeedbackUpgrade(projectRoot, temporaryDirectory);
     console.log(verifiedLiveCopy
-      ? "数据库升级验证通过：全新迁移链、固定合成旧库、固定 1.2.9 反馈库和真实库副本均通过完整性检查；旧反馈计划、批次、V1 快照、状态及其他业务证据未丢失。"
-      : "数据库升级验证通过：全新迁移链、固定合成旧库和固定 1.2.9 反馈库通过完整性检查；未发现真实数据库，已跳过副本验证。");
+      ? "数据库升级验证通过：全新迁移链、固定合成旧库、固定 1.2.9/1.2.10 反馈库和真实库副本均通过完整性检查；旧反馈计划、批次、V1 快照、状态及其他业务证据未丢失。"
+      : "数据库升级验证通过：全新迁移链、固定合成旧库和固定 1.2.9/1.2.10 反馈库通过完整性检查；未发现真实数据库，已跳过副本验证。");
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

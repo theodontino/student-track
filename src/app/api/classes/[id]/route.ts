@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { assertClassAvailable, moveScopeToRecycleBin } from "@/services/academic-scope-recycle-service";
 
 const STEP_ROSTER_FORMAT = "student-track.step-roster.v1";
 
@@ -9,6 +11,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
+    await assertClassAvailable(id);
     const klass = await prisma.class.findUnique({
       where: { id },
       select: {
@@ -53,6 +56,7 @@ export async function GET(
       },
     });
   } catch (error) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     console.error("GET /api/classes/[id] step-roster", error);
     return NextResponse.json({ error: "导出 STEP 花名册失败" }, { status: 500 });
   }
@@ -64,6 +68,7 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
+    await assertClassAvailable(id);
     const body = await request.json();
     const data: { code?: string; name?: string | null } = {};
     if (body.code !== undefined) {
@@ -76,6 +81,7 @@ export async function PUT(
     const klass = await prisma.class.update({ where: { id }, data });
     return NextResponse.json(klass);
   } catch (error: any) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     if (error?.code === "P2025") return NextResponse.json({ error: "班级不存在" }, { status: 404 });
     if (error?.code === "P2002") return NextResponse.json({ error: "该学期内班级编号已存在" }, { status: 409 });
     console.error("PUT /api/classes/[id]", error);
@@ -89,23 +95,10 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const [klass, sessions, enrollments, plans, tasks, compactions, memories, generations] = await Promise.all([
-      prisma.class.findUnique({ where: { id }, select: { id: true } }),
-      prisma.classSession.count({ where: { classId: id } }),
-      prisma.studentClassEnrollment.count({ where: { classId: id } }),
-      prisma.feedbackPlan.count({ where: { classId: id } }),
-      prisma.teacherTask.count({ where: { classId: id } }),
-      prisma.memoryCompactionRun.count({ where: { classId: id } }),
-      prisma.teachingMemory.count({ where: { scopeType: "class", scopeId: id } }),
-      prisma.generationRecord.count({ where: { classId: id } }),
-    ]);
-    if (!klass) return NextResponse.json({ error: "班级不存在" }, { status: 404 });
-    if (sessions || enrollments || plans || tasks || compactions || memories || generations) {
-      return NextResponse.json({ error: "班级已有业务记录，不能直接删除" }, { status: 409 });
-    }
-    await prisma.class.delete({ where: { id } });
-    return NextResponse.json({ success: true });
+    const result = await moveScopeToRecycleBin("class", id);
+    return NextResponse.json({ success: true, ...result });
   } catch (error) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     console.error("DELETE /api/classes/[id]", error);
     return NextResponse.json({ error: "删除班级失败" }, { status: 500 });
   }

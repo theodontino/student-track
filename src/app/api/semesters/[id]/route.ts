@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { listSemesterClasses } from "@/services/student-enrollment-service";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { assertSemesterAvailable, moveScopeToRecycleBin } from "@/services/academic-scope-recycle-service";
 
 // GET /api/semesters/[id] - semester detail with session breakdown
 export async function GET(
@@ -9,6 +11,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
+    await assertSemesterAvailable(id);
     const semester = await prisma.semester.findUnique({
       where: { id },
       include: {
@@ -44,6 +47,7 @@ export async function GET(
       classes,
     });
   } catch (error) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     console.error("[/api/semesters/[id]] error:", error);
     return NextResponse.json({ error: "获取学期详情失败" }, { status: 500 });
   }
@@ -56,6 +60,7 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
+    await assertSemesterAvailable(id);
     const { name, startDate, endDate } = await request.json();
     const semester = await prisma.semester.update({
       where: { id },
@@ -66,7 +71,8 @@ export async function PUT(
       },
     });
     return NextResponse.json(semester);
-  } catch {
+  } catch (error) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     return NextResponse.json({ error: "更新失败" }, { status: 500 });
   }
 }
@@ -78,22 +84,10 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const [classes, enrollments, sessions, plans, memories, tasks, compactions, generations] = await Promise.all([
-      prisma.class.count({ where: { semesterId: id } }),
-      prisma.studentClassEnrollment.count({ where: { semesterId: id } }),
-      prisma.classSession.count({ where: { semesterId: id } }),
-      prisma.feedbackPlan.count({ where: { semesterId: id } }),
-      prisma.teachingMemory.count({ where: { semesterId: id } }),
-      prisma.teacherTask.count({ where: { plan: { semesterId: id } } }),
-      prisma.memoryCompactionRun.count({ where: { semesterId: id } }),
-      prisma.generationRecord.count({ where: { semesterId: id } }),
-    ]);
-    if (classes || enrollments || sessions || plans || memories || tasks || compactions || generations) {
-      return NextResponse.json({ error: "学期已有班级或业务记录，不能直接删除" }, { status: 409 });
-    }
-    await prisma.semester.delete({ where: { id } });
-    return NextResponse.json({ success: true });
-  } catch {
+    const result = await moveScopeToRecycleBin("semester", id);
+    return NextResponse.json({ success: true, ...result });
+  } catch (error) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     return NextResponse.json({ error: "删除失败" }, { status: 500 });
   }
 }

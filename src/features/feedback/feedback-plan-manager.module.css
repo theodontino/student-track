@@ -4,7 +4,10 @@
 .header strong { color: var(--color-ink-soft); font-size: .82rem; }
 .header span, .empty, .more { color: var(--color-muted); font-size: .7rem; }
 .list { display: grid; gap: .45rem; }
+.group { display: grid; gap: .4rem; }
+.group h3 { margin: .2rem 0 0; color: var(--color-muted); font-size: .66rem; font-weight: 750; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .6rem .7rem; border: 1px solid var(--color-border); border-radius: .65rem; background: var(--color-surface-subtle); }
+.current { border-color: var(--color-brand-300); box-shadow: inset 3px 0 0 var(--color-brand-500); }
 .meta { min-width: 0; display: grid; gap: .2rem; }
 .meta > span { overflow: hidden; color: var(--color-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
 .title { display: flex; align-items: center; gap: .45rem; }

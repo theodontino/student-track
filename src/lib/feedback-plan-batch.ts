@@ -147,6 +147,7 @@ export const FeedbackPlanBatchActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("archive") }),
   z.object({ action: z.literal("unarchive") }),
   z.object({ action: z.literal("clone_draft"), displayName: FeedbackProjectNameSchema.optional() }),
+  z.object({ action: z.literal("save_as"), displayName: FeedbackProjectNameSchema, patch: z.unknown() }),
   z.object({ action: z.literal("export"), mode: z.enum(["approved_only", "complete"]).default("approved_only"), allowRepeat: z.boolean().optional() }),
 ]);
 

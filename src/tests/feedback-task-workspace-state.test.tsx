@@ -4,6 +4,7 @@ import { includeIndependentFeedbackStudent, TaskConfirmationStage } from "@/feat
 import { TaskPreparationStage } from "@/features/feedback/TaskPreparationStage";
 import { syncFeedbackItemDrafts } from "@/features/feedback/FeedbackPlanPanel";
 import {
+  feedbackQueueCategory,
   feedbackStudioInitialPlanTarget,
   feedbackStudioPlanTarget,
   shouldRefreshFeedbackTaskBatch,
@@ -74,6 +75,15 @@ function groupDraft() {
 }
 
 describe("feedback task group workspace state", () => {
+  it("keeps feedback queue categories mutually exclusive", () => {
+    expect(feedbackQueueCategory("needs_review")).toBe("review");
+    expect(feedbackQueueCategory("approved")).toBe("done");
+    expect(feedbackQueueCategory("exported")).toBe("done");
+    for (const status of ["evidence_ready", "queued", "generating", "pause_requested", "paused", "generation_failed", "stale"]) {
+      expect(feedbackQueueCategory(status)).toBe("action");
+    }
+  });
+
   it("maps persistent intake, plan and studio views without treating studio as available before a plan exists", () => {
     expect(feedbackTaskViewForStage("prepare")).toBe("intake");
     expect(feedbackTaskViewForStage("confirm")).toBe("plan");

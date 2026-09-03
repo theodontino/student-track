@@ -1,6 +1,6 @@
 {
   "name": "student-track",
-  "version": "1.2.10",
+  "version": "1.3.0-beta.1",
   "license": "AGPL-3.0-only",
   "private": true,
   "engines": {
@@ -8,8 +8,10 @@
     "npm": ">=11 <12"
   },
   "scripts": {
+    "predev": "node --import tsx scripts/purge-expired-recycle-bin.ts",
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
+    "prestart": "node --import tsx scripts/purge-expired-recycle-bin.ts",
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",

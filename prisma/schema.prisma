@@ -31,6 +31,7 @@ model Class {
   semesterId String
   code       String   // 班级编号，如 "G3-01"；同一学期内唯一
   name       String?  // 班级名称，如 "高三(1)班"，可空
+  deletedAt  DateTime?
 
   semester      Semester                @relation(fields: [semesterId], references: [id], onDelete: Restrict)
   enrollments   StudentClassEnrollment[]
@@ -42,6 +43,7 @@ model Class {
 
   @@unique([semesterId, code])
   @@index([semesterId, name])
+  @@index([deletedAt])
 }
 
 // 0b. 标签表（v0.13: 从 JSON 迁移为关联表）
@@ -141,7 +143,7 @@ model SessionMetricHistory {
   operator    Operator // v0.12: Prisma enum
   sessionId   String?
   archivedAt  DateTime @default(now())
-  changeType  String   // "update" | "delete"
+  changeType  String   // "update" | "delete" | "clear"
 
   @@index([studentId])
   @@index([metricId])
@@ -301,6 +303,7 @@ model DraftRecord {
   supersedesDraftId String?
   communicationId String?
   handoffPackageId String?
+  intakeRunId  String?  // 课后录入运行；历史数据继续通过 rawText 中的 feedback-intake:<runId> 兼容识别
   createdAt    DateTime @default(now())
 
   supersedesDraft DraftRecord? @relation("DraftSupersession", fields: [supersedesDraftId], references: [id], onDelete: SetNull)
@@ -312,6 +315,7 @@ model DraftRecord {
   @@index([supersedesDraftId])
   @@index([communicationId])
   @@index([handoffPackageId])
+  @@index([intakeRunId])
 }
 
 // 5b. 统一课后材料入口运行账本；只保存来源元数据、确定性摘要和异常，不保存原始文件。
@@ -340,6 +344,7 @@ model Semester {
   startDate String   // YYYY-MM-DD
   endDate   String   // YYYY-MM-DD
   createdAt DateTime @default(now())
+  deletedAt DateTime?
   feedbackScriptLibraryName      String?
   feedbackScriptLibraryJson      String?
   feedbackScriptLibraryUpdatedAt DateTime?
@@ -350,6 +355,8 @@ model Semester {
   feedbackPlans FeedbackPlan[]
   feedbackPlanBatches FeedbackPlanBatch[]
   classGroups ClassGroup[]
+
+  @@index([deletedAt])
 }
 
 // 7. 课次记录（v0.2 重构：编码体系 + 班级 + 学期序号）

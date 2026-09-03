@@ -5,6 +5,7 @@ import { logAction } from "@/lib/logger";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 export interface QuickScoreEntry {
   studentId: string;
@@ -52,6 +53,7 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
         })
       : null;
     if (input.sessionCode && !session) throw new ServiceError("课次不存在", 404);
+    if (session) await assertSessionAvailable(session.id, tx);
 
     const submittedStudentIds = Array.from(new Set([
       ...input.scores.map((score) => score.studentId),

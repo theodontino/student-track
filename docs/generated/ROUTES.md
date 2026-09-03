@@ -8,6 +8,7 @@
 | `/api/attendance` | `GET`, `PUT` |
 | `/api/class-groups/[id]/lessons` | `POST` |
 | `/api/class-groups/[id]` | `DELETE`, `PUT` |
+| `/api/classes/[id]/restore` | `POST` |
 | `/api/classes/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/classes/[id]/step-roster` | `GET` |
 | `/api/diarize/tasks/[id]/retry` | `POST` |
@@ -30,6 +31,9 @@
 | `/api/input/parse` | `POST` |
 | `/api/integrations/wecomcatch/v1/directory` | `GET` |
 | `/api/quick-score` | `GET`, `POST` |
+| `/api/recycle-bin/impact` | `GET` |
+| `/api/recycle-bin/purge-expired` | `POST` |
+| `/api/recycle-bin` | `GET` |
 | `/api/report/daily` | `POST` |
 | `/api/report/feedback-context` | `GET` |
 | `/api/report/feedback-plan-batches/[id]` | `GET`, `PATCH`, `POST` |
@@ -42,10 +46,12 @@
 | `/api/review` | `GET`, `POST` |
 | `/api/semesters/[id]/class-groups` | `GET`, `POST` |
 | `/api/semesters/[id]/classes` | `GET`, `POST` |
+| `/api/semesters/[id]/restore` | `POST` |
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/semesters/[id]/session` | `DELETE`, `GET`, `POST` |
 | `/api/semesters` | `GET`, `POST` |
 | `/api/sessions/[id]/common-material` | `PUT` |
+| `/api/sessions/[id]/facts` | `DELETE`, `GET` |
 | `/api/sessions/[id]/group-progress` | `GET`, `PUT` |
 | `/api/sessions` | `GET` |
 | `/api/settings/llm` | `DELETE`, `GET`, `PATCH`, `POST`, `PUT` |

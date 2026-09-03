@@ -15,7 +15,7 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/feedback-generation-service")>(),
   generateFeedbackPlanComposition: generationMocks.generate,
 }));
-import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, cloneFeedbackPlanDraft, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, listFeedbackPlans, listTeacherTasks, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, removeFeedbackAttachment, renameFeedbackPlan, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, retryFeedbackPlanGeneration, startFeedbackPlanGeneration, toFeedbackPlanDetail, unarchiveFeedbackPlan, updateFeedbackPlanDraft } from "@/services/feedback-plan-service";
+import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, cloneFeedbackPlanDraft, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, listFeedbackPlans, listTeacherTasks, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, removeFeedbackAttachment, renameFeedbackPlan, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, retryFeedbackPlanGeneration, saveFeedbackPlanAs, startFeedbackPlanGeneration, toFeedbackPlanDetail, unarchiveFeedbackPlan, updateFeedbackPlanDraft } from "@/services/feedback-plan-service";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 
 const suffix = "PLAN-SERVICE";
@@ -30,6 +30,7 @@ afterEach(async () => {
   generationMocks.generate.mockReset();
   delete process.env.STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT;
   await Promise.all(attachmentRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  await prisma.feedbackPlan.deleteMany({ where: { class: { code: { startsWith: classCode } } } });
   await prisma.feedbackPlan.deleteMany({ where: { outputRequirement: "测试事件反馈" } });
   await prisma.feedbackPlan.deleteMany({ where: { outputRequirement: "突出本课已经确认的进步" } });
   await prisma.feedbackPlan.deleteMany({ where: { outputRequirement: "测试阶段范围" } });
@@ -159,6 +160,21 @@ describe("feedback plan service", () => {
       .toContainEqual(expect.objectContaining({ content: "草稿学生二的冻结事实" }));
     await prisma.feedbackPlan.update({ where: { id: created.id }, data: { generationStartedAt: new Date(), status: "in_review" } });
     await expect(updateFeedbackPlanDraft(created.id, { outputRequirement: "不应覆盖", expectedPlanRevision: expanded.planRevision })).rejects.toThrow("计划内容已冻结");
+    const savedAs = await saveFeedbackPlanAs({
+      planId: created.id,
+      displayName: "周末复盘修订版",
+      patch: {
+        outputRequirement: "新计划采用页面修订要求",
+        generationMode: "standard",
+        studentIds: [students[1]!.id],
+        generationPreferences: { closureType: "positive_recognition", length: "detailed", tone: "professional", moduleKeys: ["observed_moment"] },
+        studentOverrides: [],
+        expectedPlanRevision: expanded.planRevision,
+      },
+    });
+    expect(savedAs).toMatchObject({ displayName: "周末复盘修订版", basedOnPlanId: created.id, status: "draft", outputRequirement: "新计划采用页面修订要求" });
+    expect(savedAs.items).toEqual([expect.objectContaining({ studentId: students[1]!.id, status: "evidence_ready", finalText: null, approvedAt: null, exportedAt: null })]);
+    await expect(getFeedbackPlan(created.id)).resolves.toMatchObject({ outputRequirement: "突出本课已经确认的进步", status: "in_review" });
     await expect(renameFeedbackPlan(created.id, { displayName: "生成后的展示名" })).resolves.toMatchObject({ displayName: "生成后的展示名" });
     await archiveFeedbackPlan(created.id);
     const archived = await getFeedbackPlan(created.id);

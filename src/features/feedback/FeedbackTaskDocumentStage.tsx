@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, StatusBanner, Textarea } from "@/components/ui";
+import { Button, Dialog, Input, StatusBanner, Textarea } from "@/components/ui";
 import {
   FEEDBACK_CLOSURES_BY_TYPE,
   FEEDBACK_MODULES,
@@ -275,6 +275,11 @@ function planHasGenerationTrace(plan: PlanDetail) {
     ));
 }
 
+function documentGenerationComplete(document: LoadedDocument) {
+  const items = document.plans.flatMap((plan) => plan.items);
+  return items.length > 0 && items.every((item) => ["needs_review", "approved", "exported"].includes(item.status));
+}
+
 function documentIsEditable(document: LoadedDocument) {
   if (document.kind === "batch") {
     const status = documentStatus(document);
@@ -294,12 +299,6 @@ function documentKey(document: LoadedDocument) {
 
 function requestedDocumentKey(planId: string, batchId: string) {
   return batchId ? `batch:${batchId}` : planId ? `plan:${planId}` : "";
-}
-
-function isUnnamedRevision(document: LoadedDocument) {
-  return document.kind === "batch"
-    ? Boolean(document.batch?.basedOnBatchId && !document.batch.displayName)
-    : Boolean(document.plan.basedOnPlanId && !document.plan.displayName);
 }
 
 async function loadDocument(planId: string, batchId: string): Promise<LoadedDocument> {
@@ -327,6 +326,9 @@ export function FeedbackTaskDocumentStage(props: Props) {
   const [notice, setNotice] = useState("");
   const [savedValue, setSavedValue] = useState("");
   const [studentTarget, setStudentTarget] = useState<{ plan: PlanDetail; studentId: string; studentName: string } | null>(null);
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
+  const [continueIntakeOpen, setContinueIntakeOpen] = useState(false);
   const savedFingerprint = useRef("");
   const fieldsRef = useRef<PlanningFields | null>(null);
   const documentRef = useRef<LoadedDocument | null>(null);
@@ -390,18 +392,8 @@ export function FeedbackTaskDocumentStage(props: Props) {
   const ensureNamedFields = useCallback((current: PlanningFields, promptForName: boolean) => {
     if (current.displayName.trim()) return current;
     if (!promptForName) return current;
-    const unnamedRevision = Boolean(documentRef.current && isUnnamedRevision(documentRef.current));
-    const displayName = window.prompt(
-      unnamedRevision
-        ? "这会保存为另一份计划，原计划和原正文不会被修改。请输入新计划名称："
-        : "计划名称不能为空。请输入新的显示名称；这只会重命名当前计划：",
-      unnamedRevision ? "修正版计划" : "反馈计划",
-    )?.trim();
-    if (!displayName) return null;
-    const named = { ...current, displayName };
-    fieldsRef.current = named;
-    setFields(named);
-    return named;
+    setActionError("请先填写计划名称，再保存当前草稿。");
+    return null;
   }, []);
 
   const save = useCallback(function persistPlan(options: { requireName?: boolean; automatic?: boolean } = {}): Promise<boolean> {
@@ -415,12 +407,17 @@ export function FeedbackTaskDocumentStage(props: Props) {
       const currentFields = fieldsRef.current;
       if (!currentDocument || !currentFields || documentKey(currentDocument) !== requestedKeyRef.current) return false;
       const canEditPlan = documentIsEditable(currentDocument);
-      const unnamedRevision = isUnnamedRevision(currentDocument);
+      if (!canEditPlan) {
+        if (fingerprint(currentFields) === savedFingerprint.current) return true;
+        setSaveAsName(`${currentFields.displayName || "反馈计划"} 修订版`);
+        setSaveAsOpen(true);
+        return false;
+      }
       const namedFields = ensureNamedFields(currentFields, options.requireName === true);
       if (!namedFields) return false;
       const startedFingerprint = fingerprint(namedFields);
       if (startedFingerprint === savedFingerprint.current) return true;
-      if (!namedFields.displayName.trim() && (!canEditPlan || !unnamedRevision)) {
+      if (!namedFields.displayName.trim()) {
         if (options.automatic) failedSaveFingerprint.current = startedFingerprint;
         return false;
       }
@@ -517,10 +514,10 @@ export function FeedbackTaskDocumentStage(props: Props) {
   }, [ensureNamedFields]);
 
   useEffect(() => {
-    if (!document || !fields || !dirty || failedSaveFingerprint.current === fingerprint(fields)) return;
+    if (!document || !fields || !editable || !dirty || failedSaveFingerprint.current === fingerprint(fields)) return;
     const timer = window.setTimeout(() => void save({ automatic: true }), 800);
     return () => window.clearTimeout(timer);
-  }, [dirty, document, fields, save]);
+  }, [dirty, document, editable, fields, save]);
 
   useEffect(() => {
     onSaveHandlerChange(() => save({ requireName: true }));
@@ -531,7 +528,11 @@ export function FeedbackTaskDocumentStage(props: Props) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
-      void save({ requireName: true });
+      const currentDocument = documentRef.current;
+      if (currentDocument && !documentIsEditable(currentDocument)) {
+        setSaveAsName(`${fieldsRef.current?.displayName || "反馈计划"} 修订版`);
+        setSaveAsOpen(true);
+      } else void save({ requireName: true });
     };
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!fieldsRef.current || fingerprint(fieldsRef.current) === savedFingerprint.current) return;
@@ -572,31 +573,96 @@ export function FeedbackTaskDocumentStage(props: Props) {
   const facts = inputs.flatMap(({ plan, input }) => (input.factSnapshot?.items ?? []).map((fact) => ({ plan, fact, capturedAt: input.factSnapshot?.capturedAt })));
   const materials = inputs.map(({ plan, input }) => ({ plan, ...materialSnapshot(input.lessonMaterial) }));
 
-  async function cloneDraft() {
-    if (actionBusyRef.current) return;
-    actionBusyRef.current = true;
-    setActionBusy(true);
-    setActionError(""); setNotice("");
+  function cloneDraft() {
+    setSaveAsName(`${fieldsRef.current?.displayName || "反馈计划"} 修订版`);
+    setSaveAsOpen(true);
+  }
+
+  function discardWorkingCopy() {
+    const currentDocument = documentRef.current;
+    if (!currentDocument) return;
+    const baseline = planningFields(currentDocument);
+    fieldsRef.current = baseline;
+    setFields(baseline);
+    setSavedValue(fingerprint(baseline));
+    savedFingerprint.current = fingerprint(baseline);
+    setSaveAsOpen(false);
+    setActionError("");
+    setNotice("已放弃页面工作副本；源计划没有变化。");
+  }
+
+  async function saveAsCopy() {
+    const currentDocument = documentRef.current;
+    const currentFields = fieldsRef.current;
+    const displayName = saveAsName.trim();
+    if (!currentDocument || !currentFields || !displayName || actionBusyRef.current) return;
+    actionBusyRef.current = true; setActionBusy(true); setActionError("");
     try {
-      if (fieldsRef.current && fingerprint(fieldsRef.current) !== savedFingerprint.current && !(await save({ requireName: true }))) return;
-      const currentDocument = documentRef.current ?? document!;
+      if (currentDocument.kind === "batch") {
+        const patch = {
+          action: "plan_draft",
+          expectedPlanRevision: documentRevision(currentDocument),
+          displayName,
+          outputRequirement: currentFields.outputRequirement,
+          generationMode: currentFields.generationMode,
+          generationPreferences: currentFields.generationPreferences,
+          studentSelections: currentFields.studentSelections,
+          classOverrides: currentFields.classOverrides,
+          studentOverrides: currentFields.studentOverrides,
+        };
+        const { batch } = await requestJson<{ batch: BatchDetail }>(`/api/report/feedback-plan-batches/${encodeURIComponent(currentDocument.batch!.id)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_as", displayName, patch }),
+        });
+        const first = batch.plans[0];
+        if (!first) throw new Error("新计划没有可打开的班级");
+        setSaveAsOpen(false);
+        props.onTaskChanged({ id: first.id, batchId: batch.id, classId: first.class.id, className: first.class.name ?? first.class.code, sessionCode: first.session?.code ?? first.rangeEndSession?.code ?? "" });
+      } else {
+        const patch = {
+          displayName,
+          outputRequirement: currentFields.outputRequirement,
+          generationMode: currentFields.generationMode,
+          generationPreferences: currentFields.generationPreferences,
+          studentIds: currentFields.studentSelections[0]?.studentIds ?? [],
+          studentOverrides: currentFields.studentOverrides,
+        };
+        const { plan } = await requestJson<{ plan: PlanDetail }>(`/api/report/feedback-plans/${encodeURIComponent(currentDocument.plan.id)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_as", displayName, expectedPlanRevision: documentRevision(currentDocument), patch }),
+        });
+        setSaveAsOpen(false);
+        props.onTaskChanged({ id: plan.id, batchId: "", classId: plan.class?.id ?? "", className: plan.class?.name ?? plan.class?.code ?? "", sessionCode: plan.session?.code ?? plan.rangeEndSession?.code ?? "" });
+      }
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "另存计划失败");
+    } finally {
+      actionBusyRef.current = false; setActionBusy(false);
+    }
+  }
+
+  async function renameCurrent() {
+    const currentDocument = documentRef.current;
+    const currentFields = fieldsRef.current;
+    if (!currentDocument || !currentFields?.displayName.trim() || actionBusyRef.current) return;
+    actionBusyRef.current = true; setActionBusy(true); setActionError("");
+    try {
       const path = currentDocument.kind === "batch"
         ? `/api/report/feedback-plan-batches/${encodeURIComponent(currentDocument.batch!.id)}`
         : `/api/report/feedback-plans/${encodeURIComponent(currentDocument.plan.id)}`;
-      const result = await requestJson<{ plan?: PlanDetail; batch?: BatchDetail }>(path, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "clone_draft" }),
+      await requestJson(path, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "rename", displayName: currentFields.displayName.trim(), expectedPlanRevision: documentRevision(currentDocument) }),
       });
-      if (result.batch) {
-        const first = result.batch.plans[0];
-        if (!first) throw new Error("新计划没有可打开的班级");
-        props.onTaskChanged({ id: first.id, batchId: result.batch.id, classId: first.class.id, className: first.class.name ?? first.class.code, sessionCode: first.session?.code ?? first.rangeEndSession?.code ?? "" });
-      } else if (result.plan) {
-        props.onTaskChanged({ id: result.plan.id, batchId: "", classId: result.plan.class?.id ?? currentDocument.plan.class?.id ?? "", className: result.plan.class?.name ?? result.plan.class?.code ?? currentDocument.plan.class?.name ?? currentDocument.plan.class?.code ?? "", sessionCode: result.plan.session?.code ?? result.plan.rangeEndSession?.code ?? currentDocument.plan.session?.code ?? currentDocument.plan.rangeEndSession?.code ?? "" });
-      } else throw new Error("没有收到新计划");
-    } catch (reason) { setActionError(reason instanceof Error ? reason.message : "建立修正计划失败"); }
-    finally {
-      actionBusyRef.current = false;
-      setActionBusy(false);
+      const fresh = await loadDocument(currentDocument.plan.id, currentDocument.batch?.id ?? "");
+      const baseline = planningFields(fresh);
+      documentRef.current = fresh; setDocument(fresh);
+      savedFingerprint.current = fingerprint(baseline); setSavedValue(savedFingerprint.current);
+      setFields({ ...currentFields, displayName: baseline.displayName });
+      setNotice("计划已重命名；其他页面修改仍需另存为新计划。");
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "重命名失败");
+    } finally {
+      actionBusyRef.current = false; setActionBusy(false);
     }
   }
 
@@ -739,24 +805,26 @@ export function FeedbackTaskDocumentStage(props: Props) {
 
   if (props.view === "intake") return <div className={styles.documentStage}>
     {actionError && <StatusBanner tone="danger">{actionError}</StatusBanner>}
-    <section className={styles.documentHeading}><div><span className={styles.eyebrow}>计划采用的录入快照</span><h2>{fields.displayName}</h2><p>这里回看的是建立本计划时采用的事实和材料，不会随着事实库后来修改而变化。</p></div><Button variant="secondary" onClick={continueWithCurrentFacts}>继续录入事实</Button></section>
+    <section className={styles.documentHeading}><div><span className={styles.eyebrow}>{documentGenerationComplete(document) ? "已完成反馈生成 · 本计划事实已冻结" : "未完成反馈生成 · 本计划事实已冻结"}</span><h2>{fields.displayName}</h2><p>这里回看的是建立本计划时采用的事实和材料，不会随着事实库后来修改而变化。</p></div><Button variant="secondary" onClick={() => setContinueIntakeOpen(true)}>继续录入事实</Button></section>
     <section className={styles.materialGuide}><strong>建立反馈可使用哪些材料？</strong><p>真实班级与课次是归属基础；助教 Excel、STEP 报告、测评 PDF / ZIP 和公共课程材料都可按需提供。文件不是必填项，教师确认事实才是进入规划的必要门槛。</p></section>
     <section className={styles.frozenFacts}><header><div><strong>采用的公共课程材料</strong><span>按计划建立时的快照展示；后来修改材料库不会覆盖这里。</span></div></header>{materials.map(({ plan, used, source, lines }) => <details key={`material:${plan.id}`} open={materials.length === 1 && used}><summary><span><strong>{plan.class?.name ?? plan.class?.code ?? "当前班级"}</strong><small>{used ? `${source}${plan.session?.code || plan.rangeEndSession?.code ? ` · ${plan.session?.code ?? plan.rangeEndSession?.code}` : ""}` : "未使用公共课程材料"}</small></span><span>{used ? `${lines.length} 项` : "未采用"}</span></summary>{used ? <ul>{lines.map((line) => <li key={line.label}><strong>{line.label}：</strong>{line.text}</li>)}</ul> : <p className={styles.materialSnapshotEmpty}>本计划没有采用公共课程材料快照；仍可依据已确认的课堂事实和测评证据生成。</p>}</details>)}</section>
     {intakeSources.length ? <section className={styles.snapshotGrid}>{intakeSources.map(({ plan, source }) => <article key={`${plan.id}:${source.intakeRunId}`}><header><div><strong>{plan.class?.name ?? plan.class?.code ?? "当前班级"}</strong><span>{source.sessionCode} · {source.confirmedAt ? `确认于 ${new Date(source.confirmedAt).toLocaleString("zh-CN")}` : "历史记录未保存确认时间"}</span></div><span>{source.status}</span></header><p>读取 {source.sourceCount} 份 · 识别 {source.recognizedCount} 份 · 忽略 {source.ignoredCount} 份 · 异常 {source.issueCount} 项</p>{source.resolvedDecisionCount !== undefined && <p>已处理 {source.resolvedDecisionCount} 项异常判断</p>}<ul>{source.sources.map((item, index) => <li key={`${item.name}:${index}`}><strong>{item.name}</strong><span>{item.kind}</span></li>)}</ul>{Boolean(source.resolutions?.length) && <details><summary>查看异常处理结果</summary><ul>{source.resolutions!.map((item, index) => <li key={`${item.action}:${item.sourceName ?? ""}:${index}`}><strong>{resolutionActionLabels[item.action] ?? "已处理"}</strong>{item.sourceName ? ` · ${item.sourceName}` : ""}{item.detail ? `：${item.detail}` : ""}</li>)}</ul></details>}</article>)}</section> : <StatusBanner tone="info">这是兼容的历史计划，没有保存可展示的录入来源摘要；计划正文和证据快照仍可继续查看。</StatusBanner>}
     <section className={styles.frozenFacts}><header><div><strong>已冻结事实</strong><span>{facts.length} 个反馈对象的计划证据快照</span></div></header>{facts.length ? facts.map(({ plan, fact, capturedAt }, index) => { const student = plan.items.find((item) => item.studentId === fact.studentId)?.student; const evidence = [...(fact.evidence.teachingEvidence ?? []), ...(fact.evidence.assessmentEvidence ?? [])].filter((item) => item.confirmed !== false); return <details key={`${plan.id}:${fact.studentId ?? index}`}><summary><span><strong>{student?.name ?? fact.studentName ?? "班级公共事实"}</strong><small>{plan.class?.name ?? plan.class?.code ?? "当前班级"}{student?.studentId || fact.studentNumber ? ` · ${student?.studentId ?? fact.studentNumber}` : ""} · {capturedAt ? `快照 ${new Date(capturedAt).toLocaleString("zh-CN")}` : "历史快照"}</small></span><span>{evidence.length} 条已确认事实</span></summary><ul>{evidence.map((item) => <li key={item.id}>{item.content}</li>)}</ul></details>; }) : <p>历史计划未保存 V2 事实总览；可在生成页逐条查看原有证据。</p>}</section>
-    <div className={styles.documentFooterActions}>{editable ? <Button onClick={props.onPlan}>返回编辑计划</Button> : <><Button variant="ghost" onClick={() => void cloneDraft()} disabled={saving || actionBusy}>{actionBusy ? "正在建立修订…" : "沿用冻结事实修正计划"}</Button><Button onClick={props.onStudio} disabled={actionBusy}>返回生成与复核</Button></>}</div>
+    <div className={styles.documentFooterActions}>{editable ? <Button onClick={props.onPlan}>返回编辑计划</Button> : <><Button variant="ghost" onClick={cloneDraft} disabled={saving || actionBusy}>沿用冻结事实修正计划</Button><Button onClick={props.onStudio} disabled={actionBusy}>返回生成与复核</Button></>}</div>
+    <Dialog open={continueIntakeOpen} title="继续录入事实" onClose={() => setContinueIntakeOpen(false)}><div className="dialog-form"><StatusBanner tone="warning">事实已冻结，如需修改，请谨慎录入新事实并新建计划。</StatusBanner><p className="dialog-form__hint">这会开启独立录入，不修改当前计划、正文、批准或导出记录。</p><div className="dialog-form__actions"><Button variant="secondary" onClick={() => setContinueIntakeOpen(false)}>取消</Button><Button onClick={() => { setContinueIntakeOpen(false); continueWithCurrentFacts(); }}>确认并继续录入</Button></div></div></Dialog>
   </div>;
 
-  const readOnly = !editable;
+  const frozen = !editable;
+  const readOnly = false;
   return <div className={styles.documentStage}>
-    <section className={styles.documentHeading}><div><span className={styles.eyebrow}>{readOnly ? "计划总览 · 内容已冻结" : "计划草稿 · 自动保存"}</span><h2>{fields.displayName || "未命名修正计划"}</h2><p>{readOnly ? "生成启动后，范围和生成设置不会原位修改；修正会建立另一份计划。" : "像文档一样随改随存；也可以点击保存或按 ⌘S。"}</p></div><span className={styles.documentStatus}>{status}</span></section>
+    <section className={styles.documentHeading}><div><span className={styles.eyebrow}>{frozen ? "计划总览 · 源计划已冻结" : "计划草稿 · 自动保存"}</span><h2>{fields.displayName || "未命名修正计划"}</h2><p>{frozen ? "可以直接试改范围与设置，但只能另存为新计划；原计划和结果不会被覆盖。" : "像文档一样随改随存；也可以点击保存或按 ⌘S。"}</p></div><span className={styles.documentStatus}>{status}</span></section>
     {saveError && <StatusBanner tone="danger"><span>{saveError}；页面中的修改仍然保留。</span><Button uiSize="sm" variant="secondary" onClick={() => void save({ requireName: true })}>重试保存</Button></StatusBanner>}
     {actionError && <StatusBanner tone="danger">{actionError}</StatusBanner>}
     {notice && !saveError && <StatusBanner tone="success">{notice}</StatusBanner>}
-    <section className={styles.planDocumentHeader} aria-label="反馈计划名称与保存状态"><label><span>计划名称</span><input aria-label="计划名称" value={fields.displayName} maxLength={120} onChange={(event) => setFields({ ...fields, displayName: event.target.value })} placeholder="请输入一眼能认出的计划名称" /></label><div><span role="status">{saving ? "保存中…" : requiresName ? "修正计划需要新名称" : dirty ? "有未保存修改" : "已保存"}</span><Button uiSize="sm" variant="secondary" onClick={() => void save({ requireName: true })} disabled={saving || (!dirty && !requiresName)}>{saving ? "保存中…" : requiresName ? "命名并保存" : dirty ? "保存" : "已保存"}</Button><kbd>⌘S</kbd></div></section>
+    <section className={styles.planDocumentHeader} aria-label="反馈计划名称与保存状态"><label><span>计划名称</span><input aria-label="计划名称" value={fields.displayName} maxLength={120} onChange={(event) => setFields({ ...fields, displayName: event.target.value })} placeholder="请输入一眼能认出的计划名称" /></label><div><span role="status">{frozen ? dirty ? "页面工作副本 · 原计划不可覆盖" : "源计划已冻结" : saving ? "保存中…" : requiresName ? "计划需要名称" : dirty ? "有未保存修改" : "已保存"}</span>{frozen ? <><Button uiSize="sm" variant="ghost" onClick={() => void renameCurrent()} disabled={actionBusy || !fields.displayName.trim()}>重命名</Button><Button uiSize="sm" variant="secondary" onClick={cloneDraft} disabled={actionBusy}>另存为…</Button></> : <Button uiSize="sm" variant="secondary" onClick={() => void save({ requireName: true })} disabled={saving || (!dirty && !requiresName)}>{saving ? "保存中…" : requiresName ? "命名并保存" : dirty ? "保存" : "已保存"}</Button>}<kbd>⌘S</kbd></div></section>
     <section className={styles.readonlyScopeSummary}><div><span>{document.kind === "batch" ? "班级组与课次" : "班级与课次"}</span><strong>{document.plans.map((plan) => `${plan.class?.name ?? plan.class?.code ?? "未绑定班级"} · ${plan.session?.code ?? plan.rangeEndSession?.code ?? "未绑定课次"}`).join("、")}</strong><small>{document.kind === "batch" ? `${document.plans.length} 个真实班级；事实、正文、批准和导出仍按班隔离。` : document.plan.type === "class_update" ? "1 条班级公共反馈；生成启动前可以调整统一要求。" : `${fields.studentSelections[0]?.studentIds.length ?? 0} 名反馈对象；生成启动前可以调整范围。`}</small></div></section>
     <section className={styles.strategy}>
-      <div className={styles.strategyHeading}><div><strong>统一生成设置</strong><span>{readOnly ? "以下是本计划启动生成时冻结的设置。" : "修改会自动保存到当前草稿。"}</span></div></div>
+      <div className={styles.strategyHeading}><div><strong>统一生成设置</strong><span>{frozen ? "当前修改只保留在页面工作副本，另存为后才会成为新草稿。" : "修改会自动保存到当前草稿。"}</span></div></div>
       <div className={styles.strategyRows}>
         <label>生成方式<select value={fields.generationMode} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationMode: event.target.value as "standard" | "fast" })}><option value="standard">标准反馈</option><option value="fast">快速草稿</option></select></label>
         <label>结尾类型<select value={fields.generationPreferences.closureType} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationPreferences: { ...fields.generationPreferences, closureType: event.target.value as FeedbackGenerationPreferences["closureType"] } })}>{FEEDBACK_CLOSURES_BY_TYPE[document.plan.type].map((value) => <option key={value} value={value}>{closureLabels[value] ?? value}</option>)}</select></label>
@@ -768,7 +836,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
     </section>
     {document.kind === "batch" && <section className={styles.documentExceptions}><header><strong>班级例外</strong><span>{fields.classOverrides.length} 个班级使用独立要求或设置</span></header>{document.plans.map((plan) => { const classId = plan.class?.id ?? ""; const override = fields.classOverrides.find((item) => item.classId === classId); const preferences = override?.generationPreferences ?? fields.generationPreferences; return <details key={plan.id} open={Boolean(override)}><summary><span><strong>{plan.class?.name ?? plan.class?.code ?? "当前班级"}</strong><small>{override ? "已调整班级默认" : "跟随班级组默认"}</small></span><span>{readOnly ? "查看" : "调整"}</span></summary><div>{readOnly && override && <div className={styles.documentOverrideSummary}><span>结尾：{closureLabels[preferences.closureType] ?? preferences.closureType}</span><span>模块：{preferences.moduleKeys.map((key) => moduleLabels[key] ?? key).join("、") || "按类型默认"}</span></div>}<label>班级总体要求<Textarea rows={2} disabled={readOnly} value={override?.outputRequirement ?? fields.outputRequirement} onChange={(event) => updateClassOverride(classId, { outputRequirement: event.target.value })} /></label><label>班级详略<select disabled={readOnly} value={preferences.length ?? "inherit"} onChange={(event) => updateClassOverride(classId, { generationPreferences: { ...preferences, length: event.target.value as FeedbackGenerationPreferences["length"] } })}><option value="inherit">随家庭偏好</option><option value="short">简洁</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>班级语气<select disabled={readOnly} value={preferences.tone ?? "inherit"} onChange={(event) => updateClassOverride(classId, { generationPreferences: { ...preferences, tone: event.target.value as FeedbackGenerationPreferences["tone"] } })}><option value="inherit">随现有偏好</option><option value="gentle">温和</option><option value="professional">专业</option></select></label>{override && !readOnly && <Button uiSize="sm" variant="ghost" onClick={() => removeClassOverride(classId)}>恢复班级组默认</Button>}</div></details>; })}</section>}
     {document.plan.type === "class_update" ? <section className={styles.documentStudents}><header><div><strong>班级公共反馈</strong><span>每个班生成一条公共内容</span></div></header><p>该计划读取班级范围内已确认的课堂事实，不拆成学生条目，也不设置学生例外。</p></section> : <section className={styles.documentStudents}><header><div><strong>学生范围与独立设置</strong><span>{fields.studentSelections.reduce((total, selection) => total + selection.studentIds.length, 0)} 名反馈对象 · {fields.studentOverrides.length} 名有独立设置</span></div></header><div>{candidateStudents.map((student) => { const selected = fields.studentSelections.find((selection) => selection.classId === student.classId)?.studentIds.includes(student.studentId) ?? false; const override = fields.studentOverrides.find((item) => item.studentId === student.studentId); return <article key={student.key} className={selected ? styles.documentStudentSelected : ""}><label><input type="checkbox" checked={selected} disabled={readOnly} onChange={() => toggleStudent(student.classId, student.studentId)} /><span><strong>{student.name}</strong><small>{student.className}{student.publicStudentId ? ` · ${student.publicStudentId}` : ""}</small></span></label>{readOnly && override ? <div className={styles.documentStudentOverride}><strong>{typeLabels[override.generationConfig.type]}</strong><span>{override.generationConfig.outputRequirement}</span><small>{closureLabels[override.generationConfig.generationPreferences.closureType] ?? override.generationConfig.generationPreferences.closureType} · {lengthLabels[override.generationConfig.generationPreferences.length ?? "inherit"]} · {toneLabels[override.generationConfig.generationPreferences.tone ?? "inherit"]}</small><small>{override.generationConfig.generationPreferences.moduleKeys.map((key) => moduleLabels[key] ?? key).join("、") || "按类型默认模块"}</small></div> : <span>{student.independent ? "独立设置" : "跟随默认"}</span>}{!readOnly && <Button uiSize="sm" variant="ghost" onClick={() => setStudentTarget({ plan: student.plan, studentId: student.studentId, studentName: student.name })}>{student.independent ? "调整设置" : "单独设置"}</Button>}</article>; })}</div></section>}
-    <div className={styles.documentFooterActions}>{readOnly ? <><Button variant="secondary" onClick={() => void cloneDraft()} disabled={saving || actionBusy}>{actionBusy ? "正在建立修订…" : "修正计划"}</Button><Button onClick={props.onStudio} disabled={actionBusy}>返回生成与复核</Button></> : <><Button variant="secondary" onClick={() => void save({ requireName: true })} disabled={saving || actionBusy || (!dirty && !requiresName)}>{requiresName ? "命名并保存计划" : "保存计划"}</Button><Button onClick={() => void startGeneration()} disabled={saving || actionBusy || !fields.outputRequirement.trim()}>{actionBusy ? "正在启动生成…" : "保存并开始生成"}</Button></>}</div>
+    <div className={styles.documentFooterActions}>{frozen ? <><Button variant="secondary" onClick={cloneDraft} disabled={saving || actionBusy}>另存为新计划…</Button><Button onClick={props.onStudio} disabled={actionBusy}>返回生成与复核</Button></> : <><Button variant="secondary" onClick={() => void save({ requireName: true })} disabled={saving || actionBusy || (!dirty && !requiresName)}>{requiresName ? "命名并保存计划" : "保存计划"}</Button><Button onClick={() => void startGeneration()} disabled={saving || actionBusy || !fields.outputRequirement.trim()}>{actionBusy ? "正在启动生成…" : "保存并开始生成"}</Button></>}</div>
     {studentTarget && <FeedbackPlanGenerationConfigDialog
       open
       studentName={studentTarget.studentName}
@@ -790,5 +858,6 @@ export function FeedbackTaskDocumentStage(props: Props) {
         setStudentTarget(null);
       } : undefined}
     />}
+    <Dialog open={saveAsOpen} title="另存为新计划" onClose={() => { if (!actionBusy) setSaveAsOpen(false); }}><form className="dialog-form" onSubmit={(event) => { event.preventDefault(); void saveAsCopy(); }}><StatusBanner tone="info">新计划会沿用当前冻结事实和页面中的规划设置；原计划、正文、批准与导出记录都不会修改。</StatusBanner><label>新计划名称<Input autoFocus required maxLength={120} value={saveAsName} onChange={(event) => setSaveAsName(event.target.value)} /></label><div className="dialog-form__actions"><Button variant="ghost" onClick={discardWorkingCopy} disabled={actionBusy}>放弃页面修改</Button><Button variant="secondary" onClick={() => setSaveAsOpen(false)} disabled={actionBusy}>取消</Button><Button type="submit" disabled={actionBusy || !saveAsName.trim()}>{actionBusy ? "正在另存…" : "另存为新计划"}</Button></div></form></Dialog>
   </div>;
 }

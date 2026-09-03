@@ -16,6 +16,8 @@ export async function GET(request: NextRequest) {
       ? await requireSemesterId(prisma)
       : semesterId;
     const where: Record<string, unknown> = {};
+    where.semester = { deletedAt: null };
+    where.OR = [{ classId: null }, { class: { deletedAt: null } }];
     if (effectiveSemesterId) where.semesterId = effectiveSemesterId;
     if (date) where.date = date;
     if (classId) {
@@ -24,7 +26,7 @@ export async function GET(request: NextRequest) {
       where.classId = classId;
     } else if (className) {
       const matches = await prisma.class.findMany({
-        where: { ...(effectiveSemesterId ? { semesterId: effectiveSemesterId } : {}), OR: [{ name: className }, { code: className }] },
+        where: { ...(effectiveSemesterId ? { semesterId: effectiveSemesterId } : {}), deletedAt: null, semester: { deletedAt: null }, OR: [{ name: className }, { code: className }] },
         select: { id: true },
       });
       if (matches.length > 1) return NextResponse.json({ error: "班级名称不唯一，请使用 classId" }, { status: 409 });

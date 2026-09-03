@@ -16,6 +16,7 @@ import type { FeedbackPlanCreateInput } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
 import { prisma } from "@/lib/prisma";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 200;
@@ -791,6 +792,10 @@ async function inspectFeedbackIntakeInternal(
 }
 
 export async function inspectFeedbackIntake(input: { sessionCode: string; files: IntakeFile[]; db?: PrismaClient }): Promise<FeedbackIntakeInspection> {
+  const db = input.db ?? prisma;
+  const session = await db.classSession.findUnique({ where: { code: input.sessionCode }, select: { id: true } });
+  if (!session) throw new Error("反馈材料目标课次不存在");
+  await assertSessionAvailable(session.id, db);
   return inspectFeedbackIntakeInternal(input);
 }
 
@@ -867,11 +872,18 @@ async function viewWithLivePlan(
 
 export async function getFeedbackIntakeRun(id: string, db: PrismaClient = prisma) {
   const run = await db.feedbackIntakeRun.findUnique({ where: { id } });
+  if (run) {
+    const session = await db.classSession.findUnique({ where: { code: run.sessionCode }, select: { id: true } });
+    if (session) await assertSessionAvailable(session.id, db);
+  }
   return run ? viewWithLivePlan(run, db) : null;
 }
 
 export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string; files: IntakeFile[]; runId?: string; db?: PrismaClient }) {
   const db = input.db ?? prisma;
+  const targetSession = await db.classSession.findUnique({ where: { code: input.sessionCode }, select: { id: true } });
+  if (!targetSession) throw new Error("反馈材料目标课次不存在");
+  await assertSessionAvailable(targetSession.id, db);
   const storedPreviousRun = input.runId ? await db.feedbackIntakeRun.findUnique({ where: { id: input.runId } }) : null;
   const previousRun = storedPreviousRun
     ? { ...storedPreviousRun, planId: (await viewWithLivePlan(storedPreviousRun, db)).planId }
@@ -1017,7 +1029,7 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
   });
   const existingDraft = await tx.draftRecord.findFirst({
     where: { sessionCode: run.sessionCode, rawText, status: { in: ["pending", "confirmed"] } },
-    select: { id: true, status: true },
+    select: { id: true, status: true, intakeRunId: true },
   });
   if (!existingDraft) {
     const draft = await tx.draftRecord.create({
@@ -1026,12 +1038,16 @@ export async function applyFeedbackIntakeRun(id: string, db: FeedbackIntakeDb = 
         parsedResult: JSON.stringify(effectiveSnapshot.parsedResult),
         status: "pending",
         sessionCode: run.sessionCode,
+        intakeRunId: run.id,
         studentId: effectiveSnapshot.parsedResult.students[0]?.studentId ?? null,
       },
     });
     await processDraftReview({ draftId: draft.id, action: "confirm", edits: effectiveSnapshot.parsedResult }, tx);
-  } else if (existingDraft.status === "pending") {
-    await processDraftReview({ draftId: existingDraft.id, action: "confirm", edits: effectiveSnapshot.parsedResult }, tx);
+  } else {
+    if (!existingDraft.intakeRunId) await tx.draftRecord.update({ where: { id: existingDraft.id }, data: { intakeRunId: run.id } });
+    if (existingDraft.status === "pending") {
+      await processDraftReview({ draftId: existingDraft.id, action: "confirm", edits: effectiveSnapshot.parsedResult }, tx);
+    }
   }
   const updated = await tx.feedbackIntakeRun.update({
     where: { id },

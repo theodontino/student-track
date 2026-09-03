@@ -18,6 +18,7 @@ import {
   pauseFeedbackPlanBatch,
   renameFeedbackPlanBatch,
   retryFeedbackPlanBatch,
+  saveFeedbackPlanBatchAs,
   startFeedbackPlanBatch,
   unarchiveFeedbackPlanBatch,
   updateFeedbackPlanBatchDraft,
@@ -457,6 +458,24 @@ describe("feedback plan batch service", () => {
     expect(clonedPlans.every((plan) => plan.items[0]?.evidenceSnapshot === sourceEvidenceByPlanId.get(plan.basedOnPlanId!))).toBe(true);
     expect(clonedPlans.flatMap((plan) => plan.items).every((item) => !item.evidenceSnapshot.includes("后录入事实"))).toBe(true);
     expect(JSON.parse(clonedPlans[0]!.items[0]!.generationConfigSnapshot)).toMatchObject({ outputRequirement: "保留的独立计划" });
+
+    const savedAs = await saveFeedbackPlanBatchAs({
+      batchId: source.id,
+      displayName: "氧化还原反馈工程 · 页面修订",
+      patch: {
+        action: "plan_draft",
+        outputRequirement: "页面中的新统一要求",
+        generationMode: "standard",
+        generationPreferences: { closureType: "positive_recognition", length: "detailed", tone: "professional", moduleKeys: ["observed_moment"] },
+        studentSelections: classIds.map((classId, index) => ({ classId, studentIds: [studentIds[index]!] })),
+        classOverrides: [],
+        studentOverrides: [],
+        expectedPlanRevision: source.planRevision,
+      },
+    });
+    expect(savedAs).toMatchObject({ displayName: "氧化还原反馈工程 · 页面修订", basedOnBatchId: source.id, status: "draft", outputRequirement: "页面中的新统一要求" });
+    expect(savedAs.plans.every((plan) => plan.status === "draft" && plan.items.every((item) => item.status === "evidence_ready"))).toBe(true);
+    await expect(getFeedbackPlanBatch(source.id)).resolves.toMatchObject({ displayName: "氧化还原反馈工程", status: "completed", outputRequirement: "克隆来源要求" });
 
     const unnamedClone = await cloneFeedbackPlanBatchDraft({ batchId: source.id });
     expect(unnamedClone.displayName).toBeNull();

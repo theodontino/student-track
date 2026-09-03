@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
+import { assertFeedbackPlanAvailable } from "@/services/academic-scope-recycle-service";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
 import {
   FeedbackPlanAssessmentEvidenceSchema,
@@ -21,6 +22,7 @@ import {
   pauseFeedbackPlanGeneration,
   retainStaleFeedbackPlanItems,
   renameFeedbackPlan,
+  saveFeedbackPlanAs,
   retryFeedbackPlanGeneration,
   startFeedbackPlanGeneration,
   toFeedbackPlanDetail,
@@ -40,6 +42,7 @@ type Context = { params: Promise<{ id: string }> };
 export async function GET(_request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    await assertFeedbackPlanAvailable(id);
     const plan = await getFeedbackPlan(id);
     if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
     return NextResponse.json({ plan: toFeedbackPlanDetail(plan) });
@@ -51,6 +54,7 @@ export async function GET(_request: NextRequest, context: Context) {
 export async function PATCH(request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    await assertFeedbackPlanAvailable(id);
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body.action !== "string") throw new ApiError("反馈计划更新参数无效", 400, "invalid_request", false);
     if (body.action === "plan_draft") {
@@ -80,6 +84,7 @@ export async function PATCH(request: NextRequest, context: Context) {
 export async function DELETE(_request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    await assertFeedbackPlanAvailable(id);
     return NextResponse.json(await deleteFeedbackPlan(id));
   } catch (error) {
     return errorResponse(error, "删除反馈计划失败");
@@ -89,12 +94,24 @@ export async function DELETE(_request: NextRequest, context: Context) {
 export async function POST(request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    await assertFeedbackPlanAvailable(id);
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body.action !== "string") throw new ApiError("反馈计划操作无效", 400, "invalid_request", false);
     if (body.action === "clone_draft") {
       const parsed = FeedbackPlanCloneDraftSchema.safeParse(body);
       if (!parsed.success) throw new ApiError("修正计划参数无效", 400, "invalid_request", false);
       const plan = await cloneFeedbackPlanDraft({ planId: id, ...parsed.data });
+      return NextResponse.json({ plan: toFeedbackPlanDetail(plan) }, { status: 201 });
+    }
+    if (body.action === "save_as") {
+      const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
+      const parsed = FeedbackPlanDraftPatchSchema.safeParse({
+        ...(body.patch && typeof body.patch === "object" ? body.patch : {}),
+        displayName,
+        expectedPlanRevision: typeof body.expectedPlanRevision === "number" ? body.expectedPlanRevision : 1,
+      });
+      if (!displayName || !parsed.success) throw new ApiError("另存计划参数无效", 400, "invalid_request", false);
+      const plan = await saveFeedbackPlanAs({ planId: id, displayName, patch: parsed.data });
       return NextResponse.json({ plan: toFeedbackPlanDetail(plan) }, { status: 201 });
     }
     if (body.action === "approve") {

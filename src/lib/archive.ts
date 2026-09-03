@@ -7,7 +7,7 @@ import { prisma } from "./prisma";
  */
 export async function archiveMetricBeforeUpdate(
   metricId: string,
-  changeType: "update" | "delete" = "update",
+  changeType: "update" | "delete" | "clear" = "update",
   db: Prisma.TransactionClient = prisma,
 ) {
   const current = await db.sessionMetric.findUnique({ where: { id: metricId } });

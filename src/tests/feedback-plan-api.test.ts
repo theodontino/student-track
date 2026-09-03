@@ -14,6 +14,9 @@ vi.mock("@/services/feedback-plan-service", async (importOriginal) => ({
   cloneFeedbackPlanDraft: planMocks.clone,
   toFeedbackPlanDetail: (plan: unknown) => plan,
 }));
+vi.mock("@/services/academic-scope-recycle-service", () => ({
+  assertFeedbackPlanAvailable: vi.fn().mockResolvedValue({ id: "plan-1" }),
+}));
 
 import { PATCH, POST } from "@/app/api/report/feedback-plans/[id]/route";
 

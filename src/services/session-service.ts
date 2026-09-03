@@ -1,5 +1,4 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
-import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import type {
   GroupProgressIntent,
   SessionCreationLessonOption,
@@ -10,9 +9,9 @@ import { logAction } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
-import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 import { assertClassInSemester } from "@/services/student-enrollment-service";
 import { resolveSemesterCommonMaterial } from "@/services/common-material-service";
+import { assertSemesterAvailable } from "@/services/academic-scope-recycle-service";
 
 type SessionDb = PrismaClient | Prisma.TransactionClient;
 
@@ -67,6 +66,7 @@ async function getClassSessionCreationOptionsFromDb(
   db: SessionDb,
   input: { semesterId: string; classId?: string; classCode?: string; date: string },
 ): Promise<SessionCreationOptions> {
+  await assertSemesterAvailable(input.semesterId, db);
   const semester = await db.semester.findUnique({
     where: { id: input.semesterId },
     select: { id: true },
@@ -448,7 +448,7 @@ export async function createClassSession(input: {
   };
 }
 
-/** Archives metrics, deletes a session, resequences its class, and recalculates D atomically. */
+/** Deletes only an entirely blank, mistakenly created session. Facts use the dedicated clear operation. */
 export async function deleteClassSession(input: { semesterId: string; code: string }) {
   const deleted = await prisma.$transaction(async (tx) => {
     const session = await tx.classSession.findUnique({ where: { code: input.code } });
@@ -456,28 +456,21 @@ export async function deleteClassSession(input: { semesterId: string; code: stri
       throw new ServiceError("课次不存在或不属于该学期", 404);
     }
 
-    const metrics = await tx.sessionMetric.findMany({
-      where: { sessionId: session.id },
-      select: { id: true },
-    });
-    for (const metric of metrics) {
-      await archiveMetricBeforeUpdate(metric.id, "delete", tx);
+    const [metrics, attendances, events, communications, intakeRuns, groupLinks, planReferences, observationSources] = await Promise.all([
+      tx.sessionMetric.count({ where: { sessionId: session.id } }),
+      tx.attendance.count({ where: { sessionId: session.id } }),
+      tx.event.count({ where: { sessionId: session.id } }),
+      tx.communication.count({ where: { sessionId: session.id } }),
+      tx.feedbackIntakeRun.count({ where: { sessionCode: session.code } }),
+      tx.groupLessonSession.count({ where: { sessionId: session.id } }),
+      tx.feedbackPlan.count({ where: { OR: [{ sessionId: session.id }, { rangeStartSessionId: session.id }, { rangeEndSessionId: session.id }] } }),
+      tx.teacherObservationSource.count({ where: { relatedSessionId: session.id } }),
+    ]);
+    if (metrics || attendances || events || communications || intakeRuns || groupLinks || planReferences || observationSources) {
+      throw new ServiceError("课次已有事实、材料、共同课或计划关联；请使用“清空课次事实”，不要删除课次", 409);
     }
-
-    await invalidateFeedbackPlans({
-      classId: session.classId ?? undefined,
-      semesterId: session.semesterId,
-      sessionId: session.id,
-    }, tx);
-
-    await tx.groupLessonSession.deleteMany({ where: { sessionId: session.id } });
     await tx.classSession.delete({ where: { id: session.id } });
     await reorderSemesterNumbers(tx, input.semesterId, session.classId);
-    await recalculateScoreDForStudents({
-      semesterId: input.semesterId,
-      classId: session.classId,
-      updateLatestInSemester: true,
-    }, tx);
     return session;
   }, { timeout: 15_000 });
 

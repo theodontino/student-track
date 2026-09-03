@@ -58,13 +58,14 @@ export async function assertClassInSemester(
 ) {
   const klass = await db.class.findUnique({
     where: { id: classId },
-    select: { id: true, code: true, name: true, semesterId: true },
+    select: { id: true, code: true, name: true, semesterId: true, deletedAt: true, semester: { select: { deletedAt: true } } },
   });
   if (!klass) throw new ServiceError("班级不存在", 404);
+  if (klass.deletedAt || klass.semester?.deletedAt) throw new ServiceError("班级或所属学期位于回收站", 409);
   if (klass.semesterId !== semesterId) {
     throw new ServiceError("班级不属于所选学期", 409);
   }
-  return klass;
+  return { id: klass.id, code: klass.code, name: klass.name, semesterId: klass.semesterId };
 }
 
 export async function findClassBySemesterCode(
@@ -72,15 +73,15 @@ export async function findClassBySemesterCode(
   semesterId: string,
   code: string,
 ) {
-  return db.class.findUnique({
-    where: { semesterId_code: { semesterId, code } },
+  return db.class.findFirst({
+    where: { semesterId, code, deletedAt: null, semester: { deletedAt: null } },
     select: { id: true, code: true, name: true, semesterId: true },
   });
 }
 
 export async function listSemesterClasses(db: EnrollmentDb, semesterId: string) {
   const classes = await db.class.findMany({
-    where: { semesterId },
+    where: { semesterId, deletedAt: null, semester: { deletedAt: null } },
     orderBy: [{ code: "asc" }, { name: "asc" }],
     include: {
       enrollments: {

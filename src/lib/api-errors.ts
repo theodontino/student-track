@@ -2,6 +2,7 @@ export const API_ERROR_CODES = [
   "invalid_request",
   "not_found",
   "conflict",
+  "scope_in_recycle_bin",
   "repeat_export",
   "llm_service_error",
   "llm_schema_invalid",
@@ -51,6 +52,7 @@ export function apiErrorBody(error: ApiError) {
     error: error.message,
     code: error.code,
     retryable: error.retryable,
+    ...(error.status < 500 && error.details !== undefined ? { details: error.details } : {}),
     ...(error.diagnosticId ? { diagnosticId: error.diagnosticId } : {}),
   };
 }

@@ -125,16 +125,16 @@ test.describe("教师纯页面课后验收", () => {
       await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
       await page.reload();
       await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
-      await expect(page.getByText("3 名反馈对象")).toBeVisible();
+      await expect(page.getByLabel("反馈队列")).toBeVisible();
       await expect(page.getByRole("button", { name: "完整导出" })).toBeDisabled();
 
       await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
       await expect(page).toHaveURL(/view=intake/);
-      await expect(page.getByText("计划采用的录入快照", { exact: true })).toBeVisible();
+      await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
       await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
       await expect(page).toHaveURL(/view=plan/);
-      await expect(page.getByText("计划总览 · 内容已冻结", { exact: true })).toBeVisible();
-      await expect(page.getByLabel("总体要求")).toBeDisabled();
+      await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
+      await expect(page.getByLabel("总体要求")).toBeEnabled();
       await page.getByRole("button", { name: /生成 生成、复核与批准/ }).click();
       await expect(page).toHaveURL(/view=studio/);
       await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();

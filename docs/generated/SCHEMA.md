@@ -18,6 +18,7 @@ erDiagram
     TEXT semesterId FK
     TEXT code
     TEXT name
+    DATETIME deletedAt
   }
   ClassGroup {
     TEXT id PK
@@ -104,6 +105,7 @@ erDiagram
     TEXT supersedesDraftId FK
     TEXT communicationId FK
     TEXT handoffPackageId FK
+    TEXT intakeRunId
     DATETIME createdAt
   }
   Event {
@@ -318,6 +320,7 @@ erDiagram
     TEXT startDate
     TEXT endDate
     DATETIME createdAt
+    DATETIME deletedAt
     TEXT feedbackScriptLibraryName
     TEXT feedbackScriptLibraryJson
     DATETIME feedbackScriptLibraryUpdatedAt
@@ -635,6 +638,7 @@ erDiagram
 | `semesterId` | `TEXT` | 是 | FK |
 | `code` | `TEXT` | 是 |  |
 | `name` | `TEXT` | 否 |  |
+| `deletedAt` | `DATETIME` | 否 |  |
 
 复合唯一约束：`semesterId + code`。
 
@@ -758,6 +762,7 @@ erDiagram
 | `supersedesDraftId` | `TEXT` | 否 | FK |
 | `communicationId` | `TEXT` | 否 | FK |
 | `handoffPackageId` | `TEXT` | 否 | FK |
+| `intakeRunId` | `TEXT` | 否 |  |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
 
 
@@ -1039,6 +1044,7 @@ erDiagram
 | `startDate` | `TEXT` | 是 |  |
 | `endDate` | `TEXT` | 是 |  |
 | `createdAt` | `DATETIME` | 是 | default: CURRENT_TIMESTAMP |
+| `deletedAt` | `DATETIME` | 否 |  |
 | `feedbackScriptLibraryName` | `TEXT` | 否 |  |
 | `feedbackScriptLibraryJson` | `TEXT` | 否 |  |
 | `feedbackScriptLibraryUpdatedAt` | `DATETIME` | 否 |  |

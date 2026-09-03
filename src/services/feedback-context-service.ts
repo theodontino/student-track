@@ -15,6 +15,7 @@ import { CommunicationPreferenceSchema, type CommunicationPreference } from "@/l
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
 import { getSessionGroupProgress } from "@/services/group-lesson-service";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 const RECENT_SESSION_LIMIT = 5;
 const COMMUNICATION_PREVIEW_LIMIT = 3;
@@ -290,6 +291,9 @@ export async function buildFeedbackContext(
   sessionCode: string,
   options?: { sessionIds?: string[]; includeStudentIds?: string[] },
 ): Promise<FeedbackContextResult> {
+  const requestedSession = await prisma.classSession.findUnique({ where: { code: sessionCode }, select: { id: true } });
+  if (!requestedSession) throw new Error("课次不存在");
+  await assertSessionAvailable(requestedSession.id, prisma);
   const session = await prisma.classSession.findUnique({
     where: { code: sessionCode },
     include: { class: { select: { name: true, code: true } } },

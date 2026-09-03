@@ -1689,7 +1689,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     taskUrl({ planId: target.id, batchId: target.batchId, intakeRunId: "", view: "plan" });
     if (target.sessionCode) context.switchSession(target);
     setError("");
-    setNotice("已建立一份独立的修正计划；请先命名，再保存或开始生成。原计划没有修改。");
+    setNotice("已另存为一份独立计划；原计划、正文、批准和导出记录均未修改。");
   }
 
   async function continueIndependentIntake(seed: FeedbackTaskCurrentFactsSeed) {
@@ -1754,7 +1754,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     const changingDocument = target.planId !== state.planId || target.batchId !== state.batchId;
     if (state.stage !== "studio" && (changingDocument || target.view === "studio") && !(await saveOpenDocument())) return;
     if (target.planId !== state.planId || target.batchId !== state.batchId) setPendingGroupDraft(null);
-    const stage = target.view === "plan" ? "confirm" : "studio";
+    const stage = target.view === "intake" ? "prepare" : target.view === "plan" ? "confirm" : "studio";
     dispatch({ type: "task", planId: target.planId, batchId: target.batchId, stage });
     taskUrl({ planId: target.planId, batchId: target.batchId, intakeRunId: "", view: target.view ?? "studio" });
     context.setContext({
@@ -1764,7 +1764,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       sessionCode: target.sessionCode,
     });
     setError("");
-    setNotice(stage === "confirm" ? "已恢复可继续编辑的计划草稿。" : "已打开反馈计划。");
+    setNotice(stage === "prepare" ? "已打开计划采用的录入快照。" : stage === "confirm" ? "已打开反馈计划。" : "已打开反馈计划。");
   }
 
   function releaseArchivedTask(reference: ArchivedFeedbackTaskReference) {
@@ -2035,7 +2035,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
 
   return <main className={styles.page}>
     <PageHeader title="课后工作台" description="录入负责核验材料并沉淀课堂事实；每份反馈计划独立保存规划、生成结果与复核进度，三步可随时回看。" actions={<div className={styles.headerActions}><Badge tone="info">{packageMetadata.version}</Badge><Link className="ui-button ui-button--ghost ui-button--md" href="/feedback/tools">高级工具</Link></div>} />
-    <details><summary>当前反馈计划</summary><FeedbackPlanManager semesterId={context.context.semesterId} onOpen={(target) => void openFeedbackTask(target)} onArchived={releaseArchivedTask} /></details>
+    <FeedbackPlanManager semesterId={context.context.semesterId} currentPlanId={state.planId} currentBatchId={state.batchId} onOpen={(target) => void openFeedbackTask(target)} onArchived={releaseArchivedTask} />
     {(error || context.error) && <StatusBanner tone="danger">{error || context.error}</StatusBanner>}{notice && <StatusBanner tone="info">{notice}</StatusBanner>}
     <section className={styles.taskCard}>
       {state.stage === "prepare" && !hasPlanDocument && <div className="feedback-context-section"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} classId={context.context.classId} className={context.context.className} onClassChange={context.setClass} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} refreshKey={context.refreshKey} disabled={busy || Boolean(state.draft.revisionSource)} /><div className="feedback-new-session"><Button variant="secondary" onClick={() => setSessionDialogOpen(true)} disabled={busy || Boolean(state.draft.revisionSource) || !context.context.semesterId || !context.context.classId}>新建真实课次</Button></div></div>}

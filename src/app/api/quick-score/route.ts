@@ -7,6 +7,8 @@ import {
 } from "@/services/quick-score-service";
 import { ServiceError } from "@/services/service-error";
 import { requireSemesterId } from "@/services/student-enrollment-service";
+import { assertClassAvailable, assertSessionAvailable } from "@/services/academic-scope-recycle-service";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 
 // GET /api/quick-score?class=&date=&sessionCode= — get existing scores for a class/session
 export async function GET(request: NextRequest) {
@@ -34,6 +36,7 @@ export async function GET(request: NextRequest) {
     if (!classId) {
       return NextResponse.json({ error: "班级不存在" }, { status: 404 });
     }
+    await assertClassAvailable(classId);
     if (cls.semesterId !== semesterId) return NextResponse.json({ error: "班级不属于所选学期" }, { status: 409 });
 
     let targetDate = date;
@@ -48,6 +51,7 @@ export async function GET(request: NextRequest) {
       if (!targetSession) {
         return NextResponse.json({ error: "课次不存在" }, { status: 404 });
       }
+      await assertSessionAvailable(targetSession.id);
 
       if (targetSession.semesterId !== semesterId) {
         return NextResponse.json({ error: "课次不属于所选学期" }, { status: 409 });
@@ -145,6 +149,7 @@ export async function GET(request: NextRequest) {
     if (error instanceof ServiceError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     return NextResponse.json({ error: "获取评分数据失败" }, { status: 500 });
   }
 }
@@ -163,6 +168,7 @@ export async function POST(request: NextRequest) {
     if (error instanceof ServiceError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     return NextResponse.json({ error: "提交失败" }, { status: 500 });
   }
 }

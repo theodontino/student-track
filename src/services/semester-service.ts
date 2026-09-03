@@ -27,26 +27,28 @@ export async function resolveSemester(
 ): Promise<ResolvedSemester | null> {
   const select = { id: true, name: true, startDate: true, endDate: true } as const;
   if (options.semesterId) {
-    const semester = await db.semester.findUnique({ where: { id: options.semesterId }, select });
+    const semester = await db.semester.findFirst({ where: { id: options.semesterId, deletedAt: null }, select });
     if (!semester) throw new ServiceError("学期不存在", 404);
     return semester;
   }
 
   const today = localDate(options.now ?? new Date());
   const active = await db.semester.findFirst({
-    where: { startDate: { lte: today }, endDate: { gte: today } },
+    where: { deletedAt: null, startDate: { lte: today }, endDate: { gte: today } },
     orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
     select,
   });
   if (active) return active;
 
   const latestSession = await db.classSession.findFirst({
+    where: { semester: { deletedAt: null }, OR: [{ classId: null }, { class: { deletedAt: null } }] },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     select: { semester: { select } },
   });
   if (latestSession) return latestSession.semester;
 
   return db.semester.findFirst({
+    where: { deletedAt: null },
     orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
     select,
   });

@@ -1,5 +1,10 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  assertClassAvailable,
+  assertFeedbackPlanAvailable,
+  assertSemesterAvailable,
+} from "@/services/academic-scope-recycle-service";
 import { ApiError } from "@/lib/api-errors";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
 import { createHash, randomUUID } from "node:crypto";
@@ -836,6 +841,8 @@ export async function createFeedbackPlan(
   options: { withinTransaction?: boolean } = {},
 ): Promise<NonNullable<Awaited<ReturnType<typeof getFeedbackPlan>>>> {
   const parsedInput = FeedbackPlanCreateSchema.parse(rawInput);
+  await assertSemesterAvailable(parsedInput.semesterId, db);
+  await assertClassAvailable(parsedInput.classId, db);
   if (parsedInput.requestKey && !options.withinTransaction && "$transaction" in db) {
     return (db as PrismaClient).$transaction((tx) => createFeedbackPlan(parsedInput, tx, { withinTransaction: true }));
   }
@@ -1140,6 +1147,7 @@ export async function getFeedbackPlan(id: string, db: FeedbackPlanDb = prisma) {
     },
   });
   if (!plan) return null;
+  await assertFeedbackPlanAvailable(id, db);
   const checked = await validateFeedbackPlanAttachments(id, db);
   if (checked.some((entry) => plan.attachments.some((attachment) => attachment.id === entry.id && attachment.status !== entry.status))) {
     return db.feedbackPlan.findUnique({
@@ -1172,6 +1180,12 @@ export async function listFeedbackPlans(input: {
   ];
   const plans = await db.feedbackPlan.findMany({
     where: {
+      semester: { deletedAt: null },
+      class: { deletedAt: null },
+      OR: [
+        { batchId: null },
+        { batch: { is: { plans: { none: { class: { deletedAt: { not: null } } } } } } },
+      ],
       ...(input.classId ? { classId: input.classId } : {}),
       ...(input.semesterId ? { semesterId: input.semesterId } : {}),
       ...(input.studentId ? { items: { some: { studentId: input.studentId } } } : {}),
@@ -1282,6 +1296,7 @@ function feedbackPlanSnapshotV2(plan: StoredFeedbackPlanDraft) {
 }
 
 async function storedFeedbackPlanDraft(id: string, db: FeedbackPlanDb) {
+  await assertFeedbackPlanAvailable(id, db);
   return db.feedbackPlan.findUnique({
     where: { id },
     select: {
@@ -1607,6 +1622,24 @@ export async function cloneFeedbackPlanDraft(
   const clone = await getFeedbackPlan(cloneId, db);
   if (!clone) throw new Error("修正计划创建后无法读取");
   return clone;
+}
+
+/** Creates a named draft from the current page fields without mutating the source plan. */
+export async function saveFeedbackPlanAs(
+  input: { planId: string; displayName: string; patch: FeedbackPlanDraftPatch },
+  db: PrismaClient = prisma,
+) {
+  await assertFeedbackPlanAvailable(input.planId, db);
+  return db.$transaction(async (tx) => {
+    const clone = await cloneFeedbackPlanDraft({ planId: input.planId, displayName: input.displayName }, tx);
+    const { expectedPlanRevision: _sourceRevision, ...fields } = input.patch;
+    void _sourceRevision;
+    return updateFeedbackPlanDraft(clone.id, {
+      ...fields,
+      displayName: input.displayName,
+      expectedPlanRevision: clone.planRevision,
+    }, tx);
+  });
 }
 
 export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanItemPatch, db: PrismaClient = prisma) {
@@ -2058,6 +2091,19 @@ export async function listTeacherTasks(input: { semesterId?: string; classId?: s
 function feedbackAttachmentRoot() {
   return path.resolve(process.env.STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT?.trim()
     || path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-attachments"));
+}
+
+/** Removes only the controlled per-plan attachment directories after their database rows are purged. */
+export async function purgeFeedbackAttachmentDirectories(planIds: string[]) {
+  const root = feedbackAttachmentRoot();
+  for (const planId of [...new Set(planIds)]) {
+    const directory = path.resolve(root, planId);
+    const relative = path.relative(root, directory);
+    if (relative !== planId || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("反馈计划附件目录无效");
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 }
 
 function safeAttachmentName(name: string) {

@@ -299,7 +299,7 @@ describe("core transactional workflows", () => {
     })).resolves.toMatchObject({ description: expect.stringContaining("题1：独立完成但节奏较慢") });
   });
 
-  it("validates class selection and archives metrics before deleting a session", async () => {
+  it("validates class selection and refuses to delete a session that already has facts", async () => {
     await expect(createClassSession({
       semesterId,
       classCode: "NO-SUCH-CLASS",
@@ -322,11 +322,10 @@ describe("core transactional workflows", () => {
       },
     });
 
-    await expect(deleteClassSession({ semesterId, code: created.code })).resolves.toEqual({ success: true });
-    await expect(prisma.classSession.findUnique({ where: { id: created.id } })).resolves.toBeNull();
-    await expect(prisma.sessionMetricHistory.findFirst({
-      where: { metricId: metric.id },
-    })).resolves.toMatchObject({ changeType: "delete" });
+    await expect(deleteClassSession({ semesterId, code: created.code })).rejects.toMatchObject({ status: 409 });
+    await expect(prisma.classSession.findUnique({ where: { id: created.id } })).resolves.not.toBeNull();
+    await expect(prisma.sessionMetric.findUnique({ where: { id: metric.id } })).resolves.not.toBeNull();
+    await prisma.classSession.delete({ where: { id: created.id } });
   });
 
   it("excludes inactive students from a newly created attendance roster without changing history", async () => {
@@ -350,6 +349,7 @@ describe("core transactional workflows", () => {
     expect(await prisma.attendance.count({
       where: { studentId: studentIds[1], sessionId },
     })).toBe(historicalAttendance);
-    await deleteClassSession({ semesterId, code: created.code });
+    await expect(deleteClassSession({ semesterId, code: created.code })).rejects.toMatchObject({ status: 409 });
+    await prisma.classSession.delete({ where: { id: created.id } });
   });
 });
