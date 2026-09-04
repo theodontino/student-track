@@ -75,7 +75,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(apiErrorBody(error), { status: error.status });
     }
     const message = error instanceof Error ? error.message : "解析出门测 PDF 失败";
-    const status = /缺少 pdftotext/.test(message) ? 503 : 400;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }

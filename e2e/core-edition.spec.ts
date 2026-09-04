@@ -234,8 +234,16 @@ test.describe("Student Track Core edition", () => {
 
       const generatedResponse = await expectOk(await request.get(`/api/report/feedback-plans/${planId}`));
       const generated = (await generatedResponse.json()).plan;
+      expect(generated.generationApproach).toBe("restricted");
       expect(generated.items).toHaveLength(1);
-      expect(generated.items[0]).toMatchObject({ finalText: expect.any(String), finalTextHash: expect.any(String) });
+      expect(generated.items[0]).toMatchObject({
+        finalText: expect.any(String),
+        finalTextHash: expect.any(String),
+        generationExecution: {
+          requestedApproach: "restricted",
+          attempts: [expect.objectContaining({ actualApproach: "restricted", status: "succeeded" })],
+        },
+      });
 
       const approveResponse = await expectOk(await request.post(`/api/report/feedback-plans/${planId}`, { data: {
         action: "approve",

@@ -15,7 +15,50 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/feedback-generation-service")>(),
   generateFeedbackPlanComposition: generationMocks.generate,
 }));
-import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, cloneFeedbackPlanDraft, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, listFeedbackPlans, listTeacherTasks, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, removeFeedbackAttachment, renameFeedbackPlan, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, retryFeedbackPlanGeneration, saveFeedbackPlanAs, startFeedbackPlanGeneration, toFeedbackPlanDetail, unarchiveFeedbackPlan, updateFeedbackPlanDraft } from "@/services/feedback-plan-service";
+vi.mock("@/services/restricted-feedback-generation-service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/services/restricted-feedback-generation-service")>(),
+  generateRestrictedFeedback: async (input: {
+    studentName: string;
+    planType: string;
+    evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+  }) => {
+    const generated = await generationMocks.generate(input);
+    return {
+      strategy: {
+        version: 1,
+        mainFocus: "测试反馈",
+        closureType: generated.composition.closureType,
+        points: [],
+        contextOnly: [],
+        omit: [],
+        communicationIntent: "测试",
+        needParentAction: false,
+        parentAction: null,
+        unresolved: [],
+      },
+      writerInput: {
+        version: 1,
+        studentName: input.studentName,
+        recipient: "parent",
+        plan: {
+          type: input.planType,
+          style: "gentle",
+          length: "standard",
+          closureType: generated.composition.closureType,
+          communicationIntent: "测试",
+        },
+        disclosures: [],
+        parentAction: null,
+        stableRules: ["测试边界"],
+      },
+      writerOutput: { version: 1, modules: [], coverage: [], parentAction: null, draftFeedback: generated.composition.draftFeedback },
+      composition: generated.composition,
+      planner: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 }, reusedCheckpoint: false },
+      writer: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } },
+    };
+  },
+}));
+import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, cloneFeedbackPlanDraft, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, listFeedbackPlans, listTeacherTasks, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, removeFeedbackAttachment, renameFeedbackPlan, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, retryFeedbackPlanGeneration, retryFeedbackPlanGenerationWithFree, saveFeedbackPlanAs, startFeedbackPlanGeneration, toFeedbackPlanDetail, unarchiveFeedbackPlan, updateFeedbackPlanDraft } from "@/services/feedback-plan-service";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 
 const suffix = "PLAN-SERVICE";
@@ -542,6 +585,101 @@ describe("feedback plan service", () => {
     expect(JSON.parse(generation?.inputSnapshot ?? "{}")).toMatchObject({ generationConfig: { type: "stage_trend", outputRequirement: "只写这位学生的阶段变化", generationPreferences: { moduleKeys: [] } } });
   });
 
+  it("keeps the plan restricted while explicitly retrying one failed item with free generation", async () => {
+    const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "显式降级测试班" } });
+    const student = await prisma.student.create({ data: { name: "显式降级学生", studentId: studentNumber, gender: "女", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
+    const session = await prisma.classSession.create({ data: { code: sessionCode, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
+    await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "独立完成了基础题", rawText: "合成测试" } });
+    const plan = await createFeedbackPlan({
+      type: "event_micro",
+      outputRequirement: "测试事件反馈",
+      generationApproach: "restricted",
+      semesterId: semester.id,
+      classId: classRecord.id,
+      sessionId: session.id,
+      studentIds: [student.id],
+    });
+    const item = plan.items[0]!;
+    await prisma.feedbackPlanItem.update({
+      where: { id: item.id },
+      data: {
+        status: "generation_failed",
+        generationError: "受限 Writer 暂时失败",
+        generationExecutionSnapshot: JSON.stringify({
+          version: 1,
+          requestedApproach: "restricted",
+          nextApproach: "restricted",
+          attempts: [{
+            attempt: 1,
+            trigger: "initial",
+            actualApproach: "restricted",
+            status: "failed",
+            startedAt: "2099-01-01T08:00:00.000Z",
+            completedAt: "2099-01-01T08:00:01.000Z",
+            error: { code: "llm_service_error", message: "受限 Writer 暂时失败", retryable: true },
+          }],
+          restrictedCheckpoint: { version: 1, strategy: { private: "checkpoint" }, writerInput: { private: "checkpoint" } },
+        }),
+      },
+    });
+    await prisma.feedbackPlan.update({
+      where: { id: plan.id },
+      data: { status: "generation_failed", generationStartedAt: new Date("2099-01-01T08:00:00.000Z") },
+    });
+
+    await expect(retryFeedbackPlanGenerationWithFree(
+      { planId: plan.id, itemIds: [item.id] },
+      prisma,
+      { startJob: false },
+    )).resolves.toMatchObject({ status: "queued", changed: 1, queued: 1 });
+    const queued = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(JSON.parse(queued.generationExecutionSnapshot)).toMatchObject({
+      requestedApproach: "restricted",
+      nextApproach: "free",
+      explicitFallback: { from: "restricted", to: "free" },
+    });
+    expect(JSON.parse(queued.generationExecutionSnapshot)).not.toHaveProperty("restrictedCheckpoint");
+
+    generationMocks.generate.mockImplementation(async (input: {
+      generationMode?: string;
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      expect(input.generationMode).toBe("fast");
+      const fact = input.evidenceBundle.teachingEvidence[0]!;
+      const composition = {
+        version: 1 as const,
+        closureType: "positive_recognition" as const,
+        needParentAction: false,
+        parentAction: null,
+        modules: [
+          { key: "observed_moment", content: fact.content, evidenceRefs: [fact.id], status: "included" as const, reason: "自由反馈测试" },
+          { key: "teacher_interpretation", content: "方法已逐步稳定", evidenceRefs: [fact.id], status: "included" as const, reason: "自由反馈测试" },
+        ],
+        evidenceCoverage: [{ evidenceId: fact.id, statement: fact.content }],
+        draftFeedback: `${fact.content}，方法已逐步稳定。`,
+      };
+      return { draftComposition: composition, composition };
+    });
+    await generateFeedbackPlanItems({ planId: plan.id, itemIds: [item.id] });
+
+    const completedPlan = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id } });
+    const completedItem = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: item.id } });
+    const execution = JSON.parse(completedItem.generationExecutionSnapshot) as {
+      requestedApproach: string;
+      nextApproach: string;
+      attempts: Array<{ actualApproach: string; status: string; generationRecordId?: string }>;
+    };
+    expect(completedPlan.generationApproach).toBe("restricted");
+    expect(execution).toMatchObject({ requestedApproach: "restricted", nextApproach: "free" });
+    expect(execution.attempts).toEqual([
+      expect.objectContaining({ actualApproach: "restricted", status: "failed" }),
+      expect.objectContaining({ actualApproach: "free", status: "succeeded", generationRecordId: completedItem.selectedGenerationId }),
+    ]);
+    const generation = await prisma.generationRecord.findUniqueOrThrow({ where: { id: completedItem.selectedGenerationId! } });
+    expect(JSON.parse(generation.inputSnapshot ?? "{}")).toMatchObject({ generationApproach: "free" });
+  });
+
   it("can set, clear, and protect a student-specific plan configuration", async () => {
     const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
     const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "独立计划修改测试班" } });
@@ -1053,7 +1191,7 @@ describe("feedback plan service", () => {
     expect(continued?.generationStartedAt).toBeInstanceOf(Date);
     expect(continued?.generationRunStartedAt).toBeNull();
     expect(continued?.items.every((item) => item.generationCompletedAt instanceof Date)).toBe(true);
-    expect(generationMocks.generate).toHaveBeenCalledWith(expect.objectContaining({ generationMode: "fast" }));
+    expect(generationMocks.generate).toHaveBeenCalledWith(expect.objectContaining({ planType: "event_micro" }));
   });
 
   it("refuses to overwrite an existing reviewable result", async () => {

@@ -13,6 +13,7 @@ const offlineInstaller = readFileSync(resolve(scriptRoot, "Install-StudentTrackC
 const offlineClickInstaller = readFileSync(resolve(scriptRoot, "Install-StudentTrackCoreOffline.cmd"), "utf8");
 const offlineBundle = readFileSync(resolve(scriptRoot, "Build-StudentTrackCoreOfflineBundle.ps1"), "utf8");
 const offlineBundleTest = readFileSync(resolve(scriptRoot, "Test-StudentTrackCoreOfflineBundle.ps1"), "utf8");
+const uninstaller = readFileSync(resolve(scriptRoot, "Uninstall-StudentTrackCore.ps1"), "utf8");
 const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
 const windowsCoreJob = (ciWorkflow.split("\n  windows_core:")[1] ?? "").split("\n  product_evidence:")[0];
 const webkitWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "webkit.yml"), "utf8");
@@ -96,7 +97,7 @@ describe("Windows Core PowerShell entrypoints", () => {
   it("offers a clean-machine bootstrap without an administrator install or test-data seed", () => {
     expect(installer.charCodeAt(0)).toBe(0xfeff);
     expect(installer).toContain("#requires -Version 5.1");
-    expect(installer).toContain('"v1.3.0-beta.2"');
+    expect(installer).toContain('"v1.3.0-beta.3"');
     expect(installer).toContain("https://nodejs.org/dist/index.json");
     expect(installer).toContain('"win-x64-zip"');
     expect(installer).toContain('^v24\\.');
@@ -109,13 +110,14 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(installer).toMatch(/Join-Path \$RuntimeRoot "app"/);
     expect(installer).toContain('set "PATH=%~dp0node;%PATH%"');
     expect(installer).toContain("Prepare-StudentTrackCore.ps1");
+    expect(installer).toContain("Uninstall-StudentTrackCore.ps1");
     expect(installer).not.toMatch(/db:seed|funasr|diarize|tingwu|aliyun|wecom|wcg/i);
   });
 
   it("offers a double-click launcher that fetches the published bootstrap and preserves errors", () => {
     expect(clickInstaller).toMatch(/^@echo off/m);
     expect(clickInstaller).toContain("setlocal EnableExtensions DisableDelayedExpansion");
-    expect(clickInstaller).toContain("releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1");
+    expect(clickInstaller).toContain("releases/download/v1.3.0-beta.3/Install-StudentTrackCore.ps1");
     expect(clickInstaller).toContain("Invoke-WebRequest -UseBasicParsing");
     expect(clickInstaller).toContain("$ErrorActionPreference='Stop'");
     expect(clickInstaller).toContain("SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
@@ -148,14 +150,16 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineInstaller).toContain('$packageNode = Join-Path $packageRoot "node"');
     expect(offlineInstaller).toContain('$runtimeRoot = Join-Path $env:LOCALAPPDATA "Student Track"');
     expect(offlineInstaller).toContain('$runtimeDataRoots = @(');
-    expect(offlineInstaller).toContain('Get-ChildItem -LiteralPath $runtimeRoot -Force');
-    expect(offlineInstaller).toContain("升级或恢复方案");
+    expect(offlineInstaller).toContain("$preexistingRuntimeDataRoots");
+    expect(offlineInstaller).toContain("数据库和运行数据会保留");
     expect(offlineInstaller).toContain('Copy-Item -LiteralPath $packageApp -Destination $runtimeRoot');
     expect(offlineInstaller).toContain('Copy-Item -LiteralPath $packageNode -Destination $runtimeRoot');
     expect(offlineInstaller).toContain("Prepare-StudentTrackCoreOffline.ps1");
     expect(offlineInstaller).toContain("StudentTrack-Core.Common.ps1");
     expect(offlineInstaller).toContain("New-StudentTrackOfflineLauncher");
     expect(offlineInstaller).toContain('Join-Path $RuntimeRoot "Start Student Track Core.cmd"');
+    expect(offlineInstaller).toContain('Join-Path $RuntimeRoot "Uninstall Student Track Core.cmd"');
+    expect(offlineInstaller).toContain("Uninstall-StudentTrackCore.ps1");
     expect(offlineInstaller).toContain("WScript.Shell");
     expect(offlineInstaller).toContain("Remove-Item -LiteralPath $newProgramRoot -Recurse -Force");
     expect(offlineInstaller).toContain('set "NPM_CONFIG_OFFLINE=true"');
@@ -187,12 +191,27 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundleTest).toContain('$env:HTTP_PROXY = "http://127.0.0.1:9"');
     expect(offlineBundleTest).toContain("Expand-Archive");
     expect(offlineBundleTest).toContain("Install-StudentTrackCoreOffline.cmd");
+    expect(offlineBundleTest).toContain("pdfjs-dist\\legacy\\build\\pdf.mjs");
+    expect(offlineBundleTest).toContain("pdfjs-dist\\legacy\\build\\pdf.worker.mjs");
+    expect(offlineBundleTest).toContain("pdfjs-dist\\cmaps\\Adobe-GB1-UCS2.bcmap");
+    expect(offlineBundleTest).toContain("pdfjs-dist\\standard_fonts\\LiberationSans-Regular.ttf");
+    expect(offlineBundleTest).toContain("pdfjs-dist\\iccs\\CGATS001Compat-v2-micro.icc");
+    expect(offlineBundleTest).toContain("pdfjs-dist\\wasm\\openjpeg.wasm");
     expect(offlineBundleTest).toContain("& $installerCommand");
     expect(offlineBundleTest).toContain('Start-Process -FilePath "cmd.exe"');
     expect(offlineBundleTest).toContain('Join-Path $installedRoot "Start Student Track Core.cmd"');
     expect(offlineBundleTest).toContain("Get-NetTCPConnection -State Listen -LocalPort 3000");
     expect(offlineBundleTest).toContain('LocalAddress -ne "127.0.0.1"');
     expect(offlineBundleTest).toContain("Offline Core CI Semester");
+    expect(offlineBundleTest).toContain("Test-BundledPdfParser");
+    expect(offlineBundleTest).toContain("System.Net.Http.MultipartFormDataContent");
+    expect(offlineBundleTest).toContain("/api/feedback/assessment-pdf");
+    expect(offlineBundleTest).toContain("题集报告中未找到总题数或正确率");
+    expect(offlineBundleTest).toContain("offline-core-pdf-session-1");
+    expect(offlineBundleTest).toContain("Uninstall-StudentTrackCore.ps1");
+    expect(offlineBundleTest).toContain("uninstall-preservation-marker.txt");
+    expect(offlineBundleTest).toContain("卸载器删除了应保留的数据库");
+    expect(offlineBundleTest).toContain("卸载并重新安装后未读到原学期");
     expect(ciWorkflow).toContain("Build and verify the offline Windows Core package");
     expect(ciWorkflow).toContain("Upload verified offline Windows Core package");
     expect(ciWorkflow).toContain("student-track-core-windows-x64-${{ github.sha }}");
@@ -207,6 +226,19 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundleWorkflow).toContain("$env:GITHUB_ENV");
     expect(offlineBundleWorkflow).not.toContain("runner.temp");
     expect(offlineBundleWorkflow).toContain("OFFLINE_SOURCE_COMMIT");
+  });
+
+  it("uninstalls only program files and keeps every teaching-data directory", () => {
+    expect(uninstaller.charCodeAt(0)).toBe(0xfeff);
+    expect(uninstaller).toContain('$appRoot = Join-Path $runtimeRoot "app"');
+    expect(uninstaller).toContain('$nodeRoot = Join-Path $runtimeRoot "node"');
+    expect(uninstaller).toContain("Stop-Process");
+    expect(uninstaller).toContain("Remove-Item -LiteralPath $programPath");
+    for (const directory of ["database", "data", "feedback-attachments", "feedback-inbox", "archives"]) {
+      expect(uninstaller).toContain(`Join-Path $runtimeRoot "${directory}"`);
+    }
+    expect(uninstaller).not.toContain("Remove-Item -LiteralPath $runtimeRoot");
+    expect(uninstaller).toContain("再次运行安装器可以继续使用原数据库");
   });
 
   it("runs npm steps through Node instead of spawning the Windows cmd shim", () => {

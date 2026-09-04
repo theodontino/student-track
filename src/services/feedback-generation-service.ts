@@ -222,12 +222,13 @@ async function createReviewCompletion(
   model: string,
   prompt: string,
   signal?: AbortSignal,
-  options: { disableReasoning?: boolean; profileId?: string } = {},
+  options: { disableReasoning?: boolean; profileId?: string; role?: "feedbackDraft" | "feedbackReview" } = {},
 ) {
   throwIfAborted(signal);
+  const role = options.role ?? "feedbackReview";
   // Review 阶段需要更大 token 预算：推理模型（如 deepseek-v4-pro）的 reasoning_content
   // 会占用 max_tokens 配额，2048 不够写出完整 JSON，导致 finish_reason=length 被截断。
-  const configured = getLLMCompletionOptions("feedbackReview", FEEDBACK_REVIEW_MAX_TOKENS, true, options.profileId);
+  const configured = getLLMCompletionOptions(role, FEEDBACK_REVIEW_MAX_TOKENS, role === "feedbackReview", options.profileId);
   // “不传 reasoning_effort”并不等于关闭推理：部分 OpenAI 兼容模型
   // （例如 Qwen）会回到原生 thinking 默认值。重试时必须显式传 none。
   const reasoningEffort = options.disableReasoning ? "none" as const : configured.reasoning_effort;
@@ -759,7 +760,7 @@ function normalizeCompositionDependencies(composition: FeedbackCompositionPlan) 
   };
 }
 
-function modelEvidenceBundle(bundle: FeedbackEvidenceBundle, referenceDate?: string): FeedbackEvidenceBundle {
+export function modelEvidenceBundle(bundle: FeedbackEvidenceBundle, referenceDate?: string): FeedbackEvidenceBundle {
   if (!referenceDate) return bundle;
   const mapEvidence = (item: FeedbackEvidenceBundle["teachingEvidence"][number]) => ({
     ...item,
@@ -790,7 +791,7 @@ function modelEvidenceBundle(bundle: FeedbackEvidenceBundle, referenceDate?: str
   return result;
 }
 
-function normalizeCompositionDates(composition: FeedbackCompositionPlan, referenceDate?: string) {
+export function normalizeCompositionDates(composition: FeedbackCompositionPlan, referenceDate?: string) {
   if (!referenceDate) return composition;
   const text = (value: string) => replaceFeedbackDatesWithRelativeLabels(value, referenceDate);
   return sanitizeFeedbackComposition({
@@ -929,7 +930,11 @@ ${draftRaw.slice(0, 12000)}
 请返回完整 JSON，必须包含 version=1、closureType、needParentAction、parentAction、modules、evidenceCoverage、draftFeedback。parentAction 不需要时必须为 null；每个 module 必须包含 key、content、evidenceRefs、status、reason；evidenceCoverage 只保留能够在 draftFeedback 中逐字找到的条目。`;
     const repairClient = input.generationMode === "fast" ? input.draftClient : input.reviewClient;
     const repairModel = input.generationMode === "fast" ? input.draftModel : input.reviewModel;
-    const repairedResponse = await createReviewCompletion(repairClient, repairModel, repairPrompt, input.signal, { disableReasoning: true, profileId: input.profileId });
+    const repairedResponse = await createReviewCompletion(repairClient, repairModel, repairPrompt, input.signal, {
+      disableReasoning: true,
+      profileId: input.profileId,
+      role: input.generationMode === "fast" ? "feedbackDraft" : "feedbackReview",
+    });
     const repairedContent = repairedResponse.choices[0]?.message?.content?.trim();
     if (!repairedContent) throw error;
     draftComposition = parseModelComposition(repairedContent, "draft", input.referenceDate);

@@ -167,6 +167,7 @@ erDiagram
     TEXT inputFingerprint
     TEXT inputSnapshot
     TEXT generationMode
+    TEXT generationApproach
     DATETIME generationStartedAt
     DATETIME generationCompletedAt
     INTEGER generationElapsedMs
@@ -189,6 +190,7 @@ erDiagram
     TEXT type
     TEXT outputRequirement
     TEXT generationMode
+    TEXT generationApproach
     TEXT status
     TEXT currentPlanId
     TEXT failedPlanId
@@ -215,6 +217,7 @@ erDiagram
     TEXT status
     TEXT generationError
     TEXT generationConfigSnapshot
+    TEXT generationExecutionSnapshot
     TEXT evidenceSnapshot
     TEXT compositionSnapshot
     TEXT auditSnapshot
@@ -845,6 +848,7 @@ erDiagram
 | `inputFingerprint` | `TEXT` | 是 |  |
 | `inputSnapshot` | `TEXT` | 是 | default: '{}' |
 | `generationMode` | `TEXT` | 是 | default: 'standard' |
+| `generationApproach` | `TEXT` | 是 | default: 'legacy' |
 | `generationStartedAt` | `DATETIME` | 否 |  |
 | `generationCompletedAt` | `DATETIME` | 否 |  |
 | `generationElapsedMs` | `INTEGER` | 是 | default: 0 |
@@ -872,6 +876,7 @@ erDiagram
 | `type` | `TEXT` | 是 |  |
 | `outputRequirement` | `TEXT` | 是 |  |
 | `generationMode` | `TEXT` | 是 | default: 'standard' |
+| `generationApproach` | `TEXT` | 是 | default: 'legacy' |
 | `status` | `TEXT` | 是 | default: 'draft' |
 | `currentPlanId` | `TEXT` | 否 |  |
 | `failedPlanId` | `TEXT` | 否 |  |
@@ -906,6 +911,7 @@ erDiagram
 | `status` | `TEXT` | 是 | default: 'evidence_ready' |
 | `generationError` | `TEXT` | 否 |  |
 | `generationConfigSnapshot` | `TEXT` | 是 | default: '{}' |
+| `generationExecutionSnapshot` | `TEXT` | 是 | default: '{}' |
 | `evidenceSnapshot` | `TEXT` | 是 | default: '{}' |
 | `compositionSnapshot` | `TEXT` | 是 | default: '{}' |
 | `auditSnapshot` | `TEXT` | 是 | default: '{}' |

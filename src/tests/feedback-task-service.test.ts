@@ -8,13 +8,19 @@ vi.mock("@/services/feedback-plan-service", async (importOriginal) => ({
 
 import { createFeedbackTask } from "@/services/feedback-task-service";
 import { archiveFeedbackPlan } from "@/services/feedback-plan-service";
-import { getFeedbackIntakeRun } from "@/services/feedback-intake-service";
+import {
+  getFeedbackIntakeRun,
+  prepareFeedbackIntakeFromExistingFacts,
+  resolveFeedbackIntakeRun,
+} from "@/services/feedback-intake-service";
+import { submitQuickScores } from "@/services/quick-score-service";
 
 const createdRunIds: string[] = [];
 const createdPlanIds: string[] = [];
 const marker = `feedback-task-${Date.now()}`;
 let semesterId = "";
 let classId = "";
+let sessionId = "";
 let sessionCode = "";
 let studentId = "";
 
@@ -39,6 +45,7 @@ beforeAll(async () => {
   const session = await prisma.classSession.create({
     data: { semesterId, classId, code: "2097010101", date: "2097-01-01", semesterNumber: 1 },
   });
+  sessionId = session.id;
   sessionCode = session.code;
 });
 
@@ -87,6 +94,53 @@ async function createConfirmedRun() {
 }
 
 describe("feedback task service", () => {
+  it("creates a no-file plan from existing manual scores with no common material", async () => {
+    await submitQuickScores({
+      sessionCode,
+      scores: [{ studentId, scoreA: 4, scoreB: 3, scoreC: 5, note: "已手工评分" }],
+      attendances: [{ studentId, present: true }],
+    });
+    try {
+      const prepared = await prepareFeedbackIntakeFromExistingFacts({ sessionCode, db: prisma });
+      createdRunIds.push(prepared.run.id);
+      expect(prepared.run).toMatchObject({ status: "ready", sourceManifest: [] });
+
+      const confirmed = await resolveFeedbackIntakeRun(prepared.run.id, { action: "confirm", decisions: [] }, prisma);
+      expect(confirmed).toMatchObject({ status: "applied", appliedSummary: { applied: true } });
+      await resolveFeedbackIntakeRun(prepared.run.id, {
+        action: "confirm_scope",
+        scope: { classId, sessionCode, studentIds: [studentId] },
+      }, prisma);
+
+      const result = await createFeedbackTask({
+        mode: "single",
+        runIds: [prepared.run.id],
+        requestKey: `${marker}-existing-manual-facts`,
+        type: "event_micro",
+        generationMode: "fast",
+        outputRequirement: "根据已录入手工评分建立计划",
+        materialSelection: { mode: "none" },
+      }, prisma);
+      expect(result).toMatchObject({ taskType: "plan", planId: expect.any(String) });
+      createdPlanIds.push(result.planId!);
+
+      const plan = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: result.planId! } });
+      const snapshot = JSON.parse(plan.inputSnapshot) as {
+        lessonMaterial: { groupFeedbackRaw: string; assessmentBriefRaw: string };
+        factSnapshot: { items: Array<{ evidence: { teachingEvidence: Array<{ content: string }> } }> };
+        intakeSources: Array<{ sourceCount: number; sources: unknown[] }>;
+      };
+      expect(snapshot.lessonMaterial).toMatchObject({ groupFeedbackRaw: "", assessmentBriefRaw: "" });
+      expect(snapshot.intakeSources).toEqual([expect.objectContaining({ sourceCount: 0, sources: [] })]);
+      expect(snapshot.factSnapshot.items[0]?.evidence.teachingEvidence).toContainEqual(
+        expect.objectContaining({ content: "本次学习测验 4 分" }),
+      );
+    } finally {
+      await prisma.sessionMetric.deleteMany({ where: { sessionId, studentId } });
+      await prisma.attendance.deleteMany({ where: { sessionId, studentId } });
+    }
+  });
+
   it("returns the same active task for repeated clicks and allows rebuild after archive", async () => {
     const run = await createConfirmedRun();
     const input = {

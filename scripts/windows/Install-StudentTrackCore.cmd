@@ -2,8 +2,8 @@
 setlocal EnableExtensions DisableDelayedExpansion
 title Student Track Core Installer
 
-set "ST_BOOTSTRAP_URL=https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1"
-set "ST_BOOTSTRAP_FILE=%TEMP%\Install-StudentTrackCore-v1.3.0-beta.2.ps1"
+set "ST_BOOTSTRAP_URL=https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.3/Install-StudentTrackCore.ps1"
+set "ST_BOOTSTRAP_FILE=%TEMP%\Install-StudentTrackCore-v1.3.0-beta.3.ps1"
 
 echo Downloading Student Track Core installer...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Remove-Item -LiteralPath $env:ST_BOOTSTRAP_FILE -Force -ErrorAction SilentlyContinue; Invoke-WebRequest -UseBasicParsing -Uri $env:ST_BOOTSTRAP_URL -OutFile $env:ST_BOOTSTRAP_FILE } catch { Write-Error $_; exit 1 }"

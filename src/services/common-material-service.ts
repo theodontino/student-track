@@ -22,6 +22,18 @@ function materialForSession(material: LessonFeedbackMaterial, sessionCode: strin
   return sessionCode ? { ...material, sessionCode } : material;
 }
 
+function customMaterialForSession(material: LessonFeedbackMaterial, sessionCode: string) {
+  const custom = materialForSession({ ...material }, sessionCode);
+  delete custom.scriptLessonNumber;
+  delete custom.semesterScriptSource;
+  delete custom.perfectPrivateTemplate;
+  delete custom.errorPrivateTemplate;
+  delete custom.lessonSummary;
+  delete custom.lessonSummarySourceHash;
+  delete custom.lessonSummaryStatus;
+  return custom;
+}
+
 /** Resolve a semester script without writing it or confirming it. */
 export async function resolveSemesterCommonMaterial(
   db: CommonMaterialDb,
@@ -58,10 +70,10 @@ export async function setGroupLessonCommonMaterial(
   return { ...updated, material: next, hasUnconfirmedChanges: true };
 }
 
-/** Save or clear a public material snapshot for an independent ClassSession. */
+/** Save or clear a course-material snapshot for an independent ClassSession. */
 export async function setSessionCommonMaterial(
   sessionId: string,
-  lessonNumber: number | null,
+  selection: number | null | LessonFeedbackMaterial,
   db: CommonMaterialDb,
 ) {
   const session = await db.classSession.findUnique({
@@ -76,10 +88,12 @@ export async function setSessionCommonMaterial(
   if (!session) throw new ServiceError("课次不存在", 404);
   await assertSessionAvailable(session.id, db);
   if (session.groupLessonSession) throw new ServiceError("当前课次已关联共同课，请在共同课材料中调整", 409);
-  const material = lessonNumber === null
-    ? null
-    : await resolveSemesterCommonMaterial(db, session.semesterId, lessonNumber, session.code);
-  if (lessonNumber !== null && !material) throw new ServiceError(`学期公共材料库没有第 ${lessonNumber} 课`, 404);
+  const material = typeof selection === "object" && selection !== null
+    ? customMaterialForSession(selection, session.code)
+    : selection === null
+      ? null
+      : await resolveSemesterCommonMaterial(db, session.semesterId, selection, session.code);
+  if (typeof selection === "number" && !material) throw new ServiceError(`学期公共材料库没有第 ${selection} 课`, 404);
   const updated = await db.classSession.update({
     where: { id: session.id },
     data: {

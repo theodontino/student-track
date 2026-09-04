@@ -41,6 +41,8 @@ export interface RecordSuccessfulGenerationInput {
   finalText?: string | null;
 }
 
+type GenerationRecordDb = Pick<PrismaClient, "generationRecord">;
+
 interface StoredWarmItem {
   generationId: string;
   sessionId: string | null;
@@ -127,7 +129,7 @@ function isoDay(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
-export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerationInput, db: PrismaClient = prisma) {
+export async function recordSuccessfulGeneration(input: RecordSuccessfulGenerationInput, db: GenerationRecordDb = prisma) {
   const resolvedProfileId = resolveLLMProfileId(
     input.modelRole ?? undefined,
     input.modelProfileId ?? undefined,

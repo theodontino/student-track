@@ -12,6 +12,7 @@ import {
   pauseFeedbackPlanBatch,
   renameFeedbackPlanBatch,
   retryFeedbackPlanBatch,
+  retryFeedbackPlanBatchWithFree,
   saveFeedbackPlanBatchAs,
   startFeedbackPlanBatch,
   unarchiveFeedbackPlanBatch,
@@ -60,14 +61,19 @@ export async function POST(request: NextRequest, context: Context) {
     const parsed = FeedbackPlanBatchActionSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) throw new ApiError("反馈批次操作无效", 400, "invalid_request", false);
     const input = parsed.data;
-    if (input.action === "start") return NextResponse.json(await startFeedbackPlanBatch(id, undefined, input.expectedPlanRevision), { status: 202 });
+    if (input.action === "start") return NextResponse.json(await startFeedbackPlanBatch(id, undefined, input.expectedPlanRevision, input.generationApproach), { status: 202 });
     if (input.action === "pause") return NextResponse.json(await pauseFeedbackPlanBatch(id), { status: 202 });
     if (input.action === "continue") return NextResponse.json(await continueFeedbackPlanBatch(id), { status: 202 });
     if (input.action === "retry") return NextResponse.json(await retryFeedbackPlanBatch(id), { status: 202 });
+    if (input.action === "retry_with_free") return NextResponse.json(await retryFeedbackPlanBatchWithFree(id), { status: 202 });
     if (input.action === "archive") return NextResponse.json(await archiveFeedbackPlanBatch(id));
     if (input.action === "unarchive") return NextResponse.json({ batch: await unarchiveFeedbackPlanBatch(id) });
     if (input.action === "clone_draft") {
-      const batch = await cloneFeedbackPlanBatchDraft({ batchId: id, displayName: input.displayName });
+      const batch = await cloneFeedbackPlanBatchDraft({
+        batchId: id,
+        displayName: input.displayName,
+        generationApproach: input.generationApproach,
+      });
       return NextResponse.json({ batch }, { status: 201 });
     }
     if (input.action === "save_as") {

@@ -692,6 +692,114 @@ test("independent class uses one material selector and saves the choice before c
   expect(body.sessionCommonMaterial.material.semesterScriptSource.lessonNumber).toBe(1);
 });
 
+test("independent class can save its own background and create a plan from manual scores without files", async ({ page, request }) => {
+  const scoreResponse = await request.post("/api/quick-score", { data: {
+    sessionCode: TEST_FIXTURE.independentSession.code,
+    scores: [{
+      studentId: TEST_FIXTURE.independentStudent.id,
+      scoreA: 4,
+      scoreB: 3,
+      scoreC: 4,
+      note: "手工评分已完成",
+    }],
+    attendances: [{ studentId: TEST_FIXTURE.independentStudent.id, present: true }],
+  } });
+  expect(scoreResponse.ok()).toBeTruthy();
+
+  await openTask(page, TEST_FIXTURE.independentClass.name, TEST_FIXTURE.independentSession.code);
+  await page.getByRole("button", { name: /(自定义|编辑)本课背景/ }).click();
+  const dialog = page.getByRole("dialog", { name: "自定义本课课程背景" });
+  await dialog.getByLabel("班级公共反馈或课程材料").fill("这是只属于当前独立课次的课程背景。");
+  await dialog.getByLabel("统一测评说明").fill("本课采用手工评分。");
+  const materialSaved = page.waitForResponse((response) => (
+    response.request().method() === "PUT"
+    && new URL(response.url()).pathname === `/api/sessions/${TEST_FIXTURE.independentSession.id}/common-material`
+  ));
+  await dialog.getByRole("button", { name: "保存并用于本次计划" }).click();
+  expect((await materialSaved).ok()).toBeTruthy();
+  await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
+
+  await page.getByLabel("本次课程材料").selectOption("none");
+  const existingFactsRequest = page.waitForRequest((request) => (
+    request.method() === "POST"
+    && new URL(request.url()).pathname === "/api/feedback/intake/scan"
+    && request.postDataJSON()?.useExistingFacts === true
+  ));
+  await page.getByRole("button", { name: "确认事实并建立计划" }).click();
+  expect((await existingFactsRequest).postDataJSON()).toMatchObject({
+    sessionCode: TEST_FIXTURE.independentSession.code,
+    useExistingFacts: true,
+  });
+  await expect(page).toHaveURL(/planId=/);
+  await expect(page).toHaveURL(/view=plan/);
+  await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
+
+  const planId = new URL(page.url()).searchParams.get("planId") ?? "";
+  expect(planId).not.toBe("");
+  const planResponse = await request.get(`/api/report/feedback-plans/${planId}`);
+  expect(planResponse.ok()).toBeTruthy();
+  const plan = (await planResponse.json()).plan as {
+    input: {
+      lessonMaterial: {
+        groupFeedbackRaw: string;
+        assessmentBriefRaw: string;
+        lessonTitle: string;
+        classroomContent: string[];
+        classroomFocus: string[];
+        classroomExplanation: string[];
+        homework: string[];
+        assessmentFocus: string[];
+        correctionAdvice: string[];
+        otherNotes: string[];
+        semesterScriptSource?: unknown;
+        perfectPrivateTemplate?: string;
+        errorPrivateTemplate?: string;
+      };
+      factSnapshot: {
+        items: Array<{
+          studentId: string | null;
+          evidence: {
+            teachingEvidence: Array<{ content: string }>;
+            historySnapshot?: { current?: { scoreA: number | null; scoreB: number | null; scoreC: number | null } | null } | null;
+          };
+        }>;
+      };
+    };
+  };
+  expect(plan.input.lessonMaterial).toMatchObject({
+    groupFeedbackRaw: "",
+    assessmentBriefRaw: "",
+    lessonTitle: "",
+    classroomContent: [],
+    classroomFocus: [],
+    classroomExplanation: [],
+    homework: [],
+    assessmentFocus: [],
+    correctionAdvice: [],
+    otherNotes: [],
+  });
+  expect(plan.input.lessonMaterial.semesterScriptSource).toBeUndefined();
+  expect(plan.input.lessonMaterial.perfectPrivateTemplate).toBeUndefined();
+  expect(plan.input.lessonMaterial.errorPrivateTemplate).toBeUndefined();
+  const frozenStudent = plan.input.factSnapshot.items.find((item) => item.studentId === TEST_FIXTURE.independentStudent.id);
+  expect(frozenStudent?.evidence.historySnapshot?.current).toMatchObject({ scoreA: 4, scoreB: 3, scoreC: 4 });
+  expect(frozenStudent?.evidence.teachingEvidence.map((item) => item.content)).toEqual(expect.arrayContaining([
+    "本次学习测验 4 分",
+    "本次课堂状态 3 分",
+  ]));
+
+  const contextResponse = await request.get(`/api/report/feedback-context?semesterId=${TEST_FIXTURE.semester.id}&sessionCode=${TEST_FIXTURE.independentSession.code}`);
+  expect(contextResponse.ok()).toBeTruthy();
+  await expect(contextResponse.json()).resolves.toMatchObject({
+    sessionCommonMaterial: {
+      material: {
+        groupFeedbackRaw: "这是只属于当前独立课次的课程背景。",
+        assessmentBriefRaw: "本课采用手工评分。",
+      },
+    },
+  });
+});
+
 test("named plan draft supports Command-S, autosave and reload recovery", async ({ page, request }) => {
   const created = await request.post("/api/report/feedback-plans", { data: {
     displayName: "E2E 文档草稿",

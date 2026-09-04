@@ -122,6 +122,9 @@ export function parseFeedbackTaskDraft(value: unknown): FeedbackTaskDraftV2 | nu
   const revisionSource = parseRevisionSource(candidate.revisionSource);
   const shared = {
     ...candidate,
+    generationApproach: candidate.generationApproach === "free" || candidate.generationApproach === "restricted"
+      ? candidate.generationApproach
+      : candidate.generationMode === "fast" ? "free" as const : "restricted" as const,
     displayName: typeof candidate.displayName === "string" && (candidate.displayName.trim() || revisionSource)
       ? candidate.displayName.slice(0, 120)
       : "初版计划",

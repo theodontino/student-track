@@ -99,6 +99,30 @@ describe("CI change classification", () => {
     });
   });
 
+  it("keeps macOS-only runtime changes away from Windows and browser jobs", () => {
+    const result = classifyCiChanges([{ path: "scripts/macos/Install-StudentTrackFullOffline.sh" }]);
+    const plan = planCiChecks(result);
+
+    expect(result).toMatchObject({ level: "L2", scopes: ["macos"] });
+    expect(plan).toMatchObject({
+      windowsCore: false,
+      macosFull: true,
+      chromiumFull: false,
+      webkitFull: false,
+      lint: false,
+    });
+  });
+
+  it("routes platform bundle workflows to their matching platform", () => {
+    const windows = classifyCiChanges([{ path: ".github/workflows/windows-offline-package.yml" }]);
+    const macos = classifyCiChanges([{ path: ".github/workflows/macos-offline-package.yml" }]);
+
+    expect(windows).toMatchObject({ level: "L2", scopes: ["windows", "ci"] });
+    expect(macos).toMatchObject({ level: "L2", scopes: ["macos", "ci"] });
+    expect(planCiChecks(windows)).toMatchObject({ windowsCore: true, macosFull: false });
+    expect(planCiChecks(macos)).toMatchObject({ windowsCore: false, macosFull: true });
+  });
+
   it("validates every platform controlled by the main CI workflow", () => {
     const result = classifyCiChanges([{ path: ".github/workflows/ci.yml" }]);
     const plan = planCiChecks(result);

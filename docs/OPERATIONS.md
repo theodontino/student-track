@@ -34,9 +34,9 @@ ZIP artifact；它同样保留 14 天，且不是既有 prerelease 的正式附�
 不需要管理员权限，也不会修改系统 Node.js。
 
 离线包包含 Windows x64 的 Core 生产构建、依赖、Prisma 生成物、许可证和对应源码；不包含数据库、`data`、附件、
-收件箱、备份、日志、`.env` 或任何教学数据。首次安装如果在 `%LOCALAPPDATA%\Student Track\` 发现程序目录、数据库、
-运行数据、附件、收件箱或备份中的任一已有内容，会停止而不覆盖或迁移它们。如果全新安装中断，只会移除本次创建的
-程序和运行目录；当前离线包只支持首次安装，尚未提供离线升级流程；不能把新 ZIP 覆盖到旧目录，应联系发布者获取升级或恢复方案。
+收件箱、备份、日志、`.env` 或任何教学数据。检测到已有 `app`、便携 Node 或启动入口时，安装器会停止，不能用新 ZIP
+直接覆盖运行中的程序。使用随安装生成的卸载入口移除旧程序后，可以保留原数据重新安装；安装器会在既有数据库迁移前
+创建并校验备份。如果全新安装中断，只移除本次创建的程序和运行目录，不删除安装前已经存在的教学数据。
 
 #### 联网源码安装（仅开发或网络已确认可用时）
 
@@ -47,13 +47,13 @@ ZIP artifact；它同样保留 14 天，且不是既有 prerelease 的正式附�
 
 ```powershell
 $installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1" -OutFile $installer
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.3/Install-StudentTrackCore.ps1" -OutFile $installer
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 ```
 
-联网安装器同样只面向第一次安装：若检测到 `%LOCALAPPDATA%\Student Track\app`，会停止而不覆盖程序或数据。
-它会在 `%LOCALAPPDATA%\Student Track\` 下安装程序和便携 Node，并创建桌面上的 **Student Track Core**
-启动入口。以后双击该入口即可；服务仍只监听 `http://127.0.0.1:3000`。
+联网安装器若检测到 `%LOCALAPPDATA%\Student Track\app`，会停止而不覆盖正在使用的程序。它会在
+`%LOCALAPPDATA%\Student Track\` 下安装程序和便携 Node，并创建桌面上的 **Student Track Core** 启动入口以及
+运行目录内的卸载入口。卸载旧程序后可以保留原数据重新安装；服务仍只监听 `http://127.0.0.1:3000`。
 
 #### 已有源码和 Node.js 的安装方式
 
@@ -71,6 +71,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Start-
 优先级。启动脚本不重复安装或构建，只启动已准备好的生产服务并绑定
 `http://127.0.0.1:3000`；PowerShell 窗口需要在使用期间保持运行。
 
+#### Windows Core 卸载并保留数据
+
+先关闭 Student Track Core 启动窗口，再双击 `%LOCALAPPDATA%\Student Track\Uninstall Student Track Core.cmd`。
+卸载器只停止该安装目录内的便携 Node 进程，并删除 `app\`、`node\`、启动入口和桌面快捷方式。
+`database\`、`data\`、`feedback-attachments\`、`feedback-inbox\` 与 `archives\` 始终保留。
+
+因此卸载不是删除教学数据。重新运行联网或离线安装器会读取原数据库，在 migration 前创建并校验备份。
+
 Windows Core 的私有数据统一位于 `%LOCALAPPDATA%\Student Track\`：
 
 - `database\student-track.db`：SQLite 数据库；
@@ -83,7 +91,36 @@ Core 版不包含录音转写（包括本地 FunASR、通义听悟和阿里云 A
 保留为不可点击的 Full 功能；高级工具和系统配置不提供绕行入口，直达受限页面只显示不可用说明，
 受限 API 返回 `404 feature_unavailable`。Windows 脚本不会探测、启动或调用仅供 Full 使用的
 FunASR 等转写工具，也不会探测、启动或调用仅供 macOS Full 使用的 WCG。普通学生档案、课堂事实、反馈计划和已确认家校沟通仍可使用。
-`pdftotext` 不是安装前置条件；未安装时只会提示暂时不能解析文字型 PDF，不阻断其他工作流。
+文字型出门测 PDF 由程序内置的本地解析器读取，Windows 和 macOS 都不需要另外安装 Poppler 或 `pdftotext`。
+
+### macOS Full 离线安装与卸载
+
+macOS Full 离线 ZIP 必须在与目标机器相同架构的受控 Mac 上生成。发布者先确认目标完整提交已经通过 macOS Full CI，
+再以该提交 SHA 运行 GitHub Actions 的 **Build macOS Full offline bundle**。产物名称为
+`StudentTrackFull-macOS-<arm64|x64>-<版本>.zip`，包内 `BUILD-INFO.json` 记录源码提交、Node 版本和架构。
+Apple Silicon 与 Intel 的 Node、原生依赖和生产构建不能混用。
+
+教师解压后双击 `Install-StudentTrackFullOffline.command`。安装器把程序和便携 Node 复制到
+`~/Library/Application Support/Student Track/`，离线执行 Prisma migration，并在运行目录和桌面创建启动、卸载入口。
+安装过程不访问 GitHub、Node.js、npm、SheetJS 或 Prisma 下载站，也不修改系统 Node。该 ZIP 不是 `.app`，尚未签名或
+公证；首次打开被 Gatekeeper 拦截时，在 Finder 中右键安装脚本并选择“打开”。
+
+卸载前关闭 Student Track Full 的 Terminal 窗口，再双击“Uninstall Student Track Full.command”。卸载器只删除
+`app/`、`node/` 和启动入口，保留 `database/`、`data/`、`feedback-attachments/`、`feedback-inbox/` 与 `archives/`。
+重新安装会在既有数据库 migration 前创建并校验备份，不运行 `db:seed`。
+
+离线包构建脚本只接受干净、已提交、以 Node 24/npm 11 完成的 Full 生产构建：
+
+```bash
+STUDENT_TRACK_EDITION=full npm ci
+STUDENT_TRACK_EDITION=full npx prisma generate
+STUDENT_TRACK_EDITION=full npm run build
+STUDENT_TRACK_EDITION=full ./scripts/macos/Build-StudentTrackFullOfflineBundle.sh --output /path/to/empty-output
+```
+
+正式交付优先使用手动 workflow 生成和验证，不从开发中的脏工作区拼装 ZIP。当前离线验收会在隔离 HOME 中执行安装、
+数据库迁移、回环启动、写入、重启读取、卸载保留数据、重新安装和再次读取。仓库建立 Developer ID 签名与 Apple 公证前，
+该步骤只称为离线 bundle，不称为 `.app` packaging。
 
 ### 运行目录
 
@@ -102,29 +139,29 @@ STUDENT_TRACK_RUNTIME_ROOT="$HOME/Library/Application Support/Student Track" npm
 `file:` URL 形式的 `DATABASE_URL` 定位；Windows 脚本会自动生成该 URL。设置变量不会自动复制或
 迁移旧文件，切换前应先停止 Student Track、备份并核对目标目录。WCG 交换目录继续使用自身配置。
 
-## 课后反馈的分析与成稿模型
+## 课后反馈的生成方式与模型
 
 先在“系统中心 → LLM 配置”保存可用的模型档案，再分别选择“分析模型”和“成稿与审核模型”。
 生成页复用这两个全局角色的选择器，企微提取模型仍只在系统中心显示；模型实际使用记录写入
 `GenerationRecord`，不增加计划级模型覆盖配置。
 
-生成前可选择“标准生成”或“快速生成”。标准生成依次使用分析模型和成稿与审核模型；快速生成只使用
-分析模型，并跳过 LLM 审核润色。两种方式都执行最终程序核验，教师仍需在导出页检查、修改和批准。
+新计划默认选择“受限反馈”，也可选择“自由反馈”。受限反馈先使用分析模型形成可披露策略，再由程序把允许的内容整理给成稿与审核模型；后者不会收到完整证据包、原始沟通或未披露内容。自由反馈只使用分析模型，直接根据当前对象的冻结、已确认材料成稿。两种方式都执行最终程序核验，教师仍需检查、修改和批准。
+
+生成方式会随计划草稿保存，首次生成后冻结；整份计划要改方式必须“另存为”新计划。受限反馈失败后的普通重试仍使用受限方式；只有教师明确确认“改用自由反馈”后，失败条目以及同批尚未开始的条目才改用自由方式；已成功结果不会重写。历史计划显示“旧生成方式”，并继续按原模式读取和运行。
 
 反馈计划开始生成后，目标条目先进入 `queued`，后台最多并发处理 2 条。教师可以暂停、继续或
 单独重试失败条目；暂停只阻止领取新条目，已在运行的最多 2 条完成后计划进入 `paused`。
 页面只轮询 `FeedbackPlan` 详情，不依赖浏览器请求或 SSE 生命周期。刷新、断线后已完成结果仍在
 计划中；总耗时、成功条目的平均耗时、生成速度和逐条耗时随计划保存，完成后或从历史恢复仍可查看。
-暂停时间不计入总运行耗时。进程重启后，继续/开始操作会把没有活动执行器的 `generating` 条目重新入队。
+暂停时间不计入总运行耗时。进程重启后，继续/开始操作会把没有活动执行器的 `generating` 条目重新入队。条目的实际方式、历次尝试和受限策略检查点随数据库快照恢复，不由浏览器猜测。
 
-默认课后工作台可创建单班反馈计划，也可在当前课次已关联共同课时创建班级组任务。共同课模式只投料、核对和设置一次，系统仍为每个真实班级课次保存独立材料运行与反馈计划，再由批次统一启动、暂停、恢复和导航。历史批次继续从当前任务或深链接打开、恢复、导出和归档。
+默认课后工作台可创建单班反馈计划，也可在当前课次已关联共同课时创建班级组任务。外部文件和课程背景都是可选项：没有上传文件时可直接使用已录入的评价、考勤和事件；独立课次可自定义本课背景，也可明确选择不使用任何课程材料。共同课模式只投料、核对和设置一次，系统仍为每个真实班级课次保存独立材料运行与反馈计划，再由批次统一启动、暂停、恢复和导航。历史批次继续从当前任务或深链接打开、恢复、导出和归档。
 
 “导出新增已批准”按学生条目补导，单班已经导出的条目仍可首次进入批次工作簿；“完整批次重导”要求所有条目批准，相同清单必须再次确认。批次导出只生成 Excel，不生成 WCG 草稿包且不发送。
 
-生成失败只保存脱敏错误摘要，并将条目标为 `generation_failed`。已批准或已导出的正文不能原位
-覆盖；教师修改后的最终文本是批准和 Excel/WCG 草稿导出的唯一权威。
+生成失败只保存脱敏错误摘要，并将条目标为 `generation_failed`；完整失败尝试与显式降级记在条目执行快照，成功的 Strategy、受限 Writer 输入、模型身份和程序审计才进入 `GenerationRecord`。已批准或已导出的正文不能原位覆盖；教师修改后的最终文本是批准和 Excel/WCG 草稿导出的唯一权威。
 
-成稿与审核模型只能检查反馈是否忠实于当前上下文，不能发现原始评分、考勤或沟通记录本身错误。如果生成背景不对，应先修正源记录，再重新生成。内部分析与最终输出会保存在当天的 `data/llm-cache/<上海日期>/feedback/` 操作目录中；内部分析不会进入导出的家长反馈。
+模型只能在已给定的反馈材料内分析和成稿，不能发现原始评分、考勤或沟通记录本身错误。如果生成背景不对，应先修正源记录，再新建计划生成。内部分析与最终输出会保存在当天的 `data/llm-cache/<上海日期>/feedback/` 操作目录中；内部分析不会进入导出的家长反馈。
 
 ## 测试隔离
 
@@ -280,7 +317,7 @@ Student Track 的录音转写页面调用项目根目录 `diarize.sh`。该入�
 
 `auto` 模式保持现有“通义听悟 → 本地 FunASR → 阿里云 ASR”的尝试顺序，因此音频可能上传到云端。需要确保纯本地时，显式选择 `local` 引擎。设置页的“本地工具状态”只执行路径与可执行文件检查，不会自动安装或启动任务。
 
-反馈工作台批量读取文字型出门测 PDF 时可选依赖 Poppler 的 `pdftotext`。默认从系统 `PATH` 查找；如工具位于非标准目录，可用 `STUDENT_TRACK_PDFTOTEXT_PATH` 指定可执行文件。缺少该工具时页面只提示 PDF 暂不可解析，不影响其他功能。工作台支持浏览器文件夹选择；浏览器只把本次选中的文件交给 localhost 页面，不会授予长期目录访问权，刷新后如需重新解析应再次选择文件夹。原始 PDF 只通过进程内管道解析，不写入项目目录、数据库或当前标签页恢复存储；扫描件/OCR 暂不支持。
+反馈工作台使用随程序安装的 PDF.js 在本机批量读取文字型出门测 PDF，不调用外部命令，也不访问网络。工作台支持浏览器文件夹选择；浏览器只把本次选中的文件交给 localhost 页面，不会授予长期目录访问权，刷新后如需重新解析应再次选择文件夹。原始 PDF 只在当前服务进程内解析，不写入项目目录、数据库或当前标签页恢复存储；密码保护文件会明确提示不支持，扫描件/OCR 暂不支持。
 
 Student Track 调用本地转写时默认使用纯转写模式，不输出说话人标签和时间轴。每个任务会在自己的输出目录生成任务级热词文件，内容包括基础化学热词和当前数据库中的学生姓名；学生名单变化后，下一次转写会自动使用新名单。
 
@@ -398,6 +435,8 @@ Student Track 不管理或删除 LM Studio 自身日志。LM Studio 的开发日
 升级到 1.3.0-beta.1 后运行 `npx prisma migrate deploy`。迁移只增加 `Semester.deletedAt`、`Class.deletedAt` 和 `DraftRecord.intakeRunId`；旧数据默认仍可用，历史录入草案继续通过 `feedback-intake:<runId>` 识别，新草案直接记录 `intakeRunId`。
 
 1.3.0-beta.2 不新增 Schema 或 migration，Core 与 Full 共用上述数据库。升级仍执行 `npx prisma migrate deploy` 以确认数据库已追平；Windows 准备脚本会在既有数据库迁移前自动创建并校验备份。
+
+升级到 1.3.0-beta.3 后运行 `npx prisma migrate deploy`。本次迁移为 `FeedbackPlan` 和 `FeedbackPlanBatch` 增加 `generationApproach`，为 `FeedbackPlanItem` 增加 `generationExecutionSnapshot`。历史计划的方式默认为内部 `legacy`，新计划显式写入 `restricted` 或 `free`；Core 与 Full 使用同一 Schema 和 migration。
 
 ## 发布与封档
 

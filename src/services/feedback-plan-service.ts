@@ -6,6 +6,20 @@ import {
   assertSemesterAvailable,
 } from "@/services/academic-scope-recycle-service";
 import { ApiError } from "@/lib/api-errors";
+import {
+  createFeedbackGenerationExecutionSnapshot,
+  feedbackGenerationApproachForDerivedPlan,
+  feedbackGenerationApproachForNewPlan,
+  feedbackGenerationApproachLabel,
+  feedbackGenerationExecutionPublicView,
+  normalizeStoredFeedbackGenerationApproach,
+  parseFeedbackGenerationExecutionSnapshot,
+  serializeFeedbackGenerationExecutionSnapshot,
+  withExplicitFreeFeedbackFallback,
+  type FeedbackGenerationApproach,
+  type FeedbackGenerationExecutionSnapshotV1,
+  type StoredFeedbackGenerationApproach,
+} from "@/lib/feedback-generation-approach";
 import { createLLMClient, getLLMModel } from "@/lib/llm";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -32,6 +46,7 @@ import {
   sanitizeFeedbackComposition,
   sanitizeFeedbackEvidenceBundle,
   type CommunicationPreference,
+  type FeedbackCompositionPlan,
   type FeedbackEvidenceBundle,
   type FeedbackGenerationMode,
   type FeedbackGenerationPreferences,
@@ -54,6 +69,11 @@ import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
 import { createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
 import { generateFeedbackPlanComposition } from "@/services/feedback-generation-service";
+import {
+  generateRestrictedFeedback,
+  RestrictedFeedbackCheckpointV1Schema,
+  type RestrictedFeedbackGenerationResult,
+} from "@/services/restricted-feedback-generation-service";
 import { recordSuccessfulGeneration } from "@/services/generation-memory-service";
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
 
@@ -64,6 +84,105 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
 
 function json(value: unknown) {
   return JSON.stringify(value);
+}
+
+function feedbackPlanDraftFingerprint(input: {
+  snapshot: Extract<FeedbackPlanInputSnapshot, { version: 2 }>;
+  type: FeedbackPlanCreateInput["type"];
+  outputRequirement: string;
+  generationMode: FeedbackGenerationMode;
+  generationApproach: StoredFeedbackGenerationApproach;
+  generationPreferences: FeedbackGenerationPreferences;
+  selectedStudentIds: Array<string | null>;
+  studentOverrides: Map<string, FeedbackPlanItemGenerationConfig>;
+}) {
+  const factSourceFingerprint = input.snapshot.sourceFingerprint || sha256(JSON.stringify({
+    scope: {
+      semesterId: input.snapshot.semesterId,
+      classId: input.snapshot.classId,
+      sessionId: input.snapshot.sessionId,
+      rangeStartSessionId: input.snapshot.rangeStartSessionId,
+      rangeEndSessionId: input.snapshot.rangeEndSessionId,
+    },
+    lessonMaterial: input.snapshot.lessonMaterial,
+    factItems: input.snapshot.factSnapshot.items,
+    intakeSources: input.snapshot.intakeSources,
+  }));
+  return sha256(JSON.stringify({
+    factSourceFingerprint,
+    type: input.type,
+    outputRequirement: input.outputRequirement,
+    generationMode: input.generationMode,
+    generationApproach: input.generationApproach,
+    generationPreferences: input.generationPreferences,
+    selectedStudentIds: [...input.selectedStudentIds].sort((left, right) => String(left).localeCompare(String(right))),
+    studentOverrides: [...input.studentOverrides.entries()].sort(([left], [right]) => left.localeCompare(right)),
+  }));
+}
+
+function beginFeedbackGenerationExecution(
+  value: string | null | undefined,
+  requestedApproach: FeedbackGenerationApproach,
+  now = new Date(),
+) {
+  const parsed = parseFeedbackGenerationExecutionSnapshot(value);
+  if (parsed && parsed.requestedApproach !== requestedApproach) {
+    throw new ApiError("反馈生成方式已经冻结，请另存为新计划后修改", 409, "conflict", false);
+  }
+  const snapshot = parsed ?? createFeedbackGenerationExecutionSnapshot(requestedApproach);
+  const timestamp = now.toISOString();
+  const attempts = snapshot.attempts.map((attempt) => attempt.status === "running"
+    ? { ...attempt, status: "interrupted" as const, completedAt: timestamp }
+    : attempt);
+  const actualApproach = snapshot.nextApproach;
+  const trigger = attempts.length === 0
+    ? "initial" as const
+    : actualApproach !== snapshot.requestedApproach
+      ? "explicit_fallback" as const
+      : "retry" as const;
+  const attempt = (attempts.at(-1)?.attempt ?? 0) + 1;
+  const next: FeedbackGenerationExecutionSnapshotV1 = {
+    ...snapshot,
+    attempts: [...attempts, {
+      attempt,
+      trigger,
+      actualApproach,
+      status: "running",
+      startedAt: timestamp,
+    }],
+  };
+  return { snapshot: next, attempt, actualApproach };
+}
+
+function completeFeedbackGenerationExecution(input: {
+  snapshot: FeedbackGenerationExecutionSnapshotV1;
+  attempt: number;
+  status: "failed" | "succeeded" | "interrupted";
+  completedAt?: Date;
+  error?: unknown;
+  generationRecordId?: string;
+}) {
+  const completedAt = (input.completedAt ?? new Date()).toISOString();
+  const attempts = input.snapshot.attempts.map((attempt) => attempt.attempt === input.attempt
+    ? {
+        ...attempt,
+        status: input.status,
+        completedAt,
+        ...(input.error ? {
+          error: {
+            code: input.error instanceof ApiError ? input.error.code : "llm_service_error",
+            message: messageForGenerationError(input.error).slice(0, 500),
+            retryable: input.error instanceof ApiError ? input.error.retryable : true,
+          },
+        } : {}),
+        ...(input.generationRecordId ? { generationRecordId: input.generationRecordId } : {}),
+      }
+    : attempt);
+  return {
+    ...input.snapshot,
+    attempts,
+    ...(input.status === "succeeded" ? { restrictedCheckpoint: undefined } : {}),
+  } satisfies FeedbackGenerationExecutionSnapshotV1;
 }
 
 function generationPreferencesFromSnapshot(planType: string, inputSnapshot: string): FeedbackGenerationPreferences | undefined {
@@ -375,9 +494,9 @@ function parseCompositionSnapshot(value: string | null | undefined, planType: st
 }
 
 /**
- * Routes return both the legacy snapshot columns and parsed, version-checked
- * views. Keeping the raw columns makes old history readers compatible while
- * preventing new React code from knowing that the database stores JSON text.
+ * Routes keep the pre-beta.3 legacy snapshot columns for historical readers.
+ * The execution checkpoint is internal: only its public, version-checked
+ * progress view may leave the service boundary.
  */
 export function toFeedbackPlanItemView<T extends {
   evidenceSnapshot: string;
@@ -385,17 +504,20 @@ export function toFeedbackPlanItemView<T extends {
   auditSnapshot: string;
   finalText?: string | null;
   generationConfigSnapshot?: string | null;
+  generationExecutionSnapshot?: string | null;
 }>(item: T, planType: string) {
   const evidence = FeedbackEvidenceBundleSchema.safeParse(parseJson(item.evidenceSnapshot, null));
   const composition = FeedbackCompositionPlanSchema.safeParse(parseJson(item.compositionSnapshot, null));
   const audit = FeedbackAuditSnapshotSchema.safeParse(parseJson(item.auditSnapshot, null));
+  const { generationExecutionSnapshot, ...publicItem } = item;
   return {
-    ...item,
+    ...publicItem,
     finalText: typeof item.finalText === "string" ? stripFeedbackInternalBoundary(item.finalText) : item.finalText,
     evidence: evidence.success ? sanitizeFeedbackEvidenceBundle(evidence.data) : null,
     composition: composition.success ? sanitizeFeedbackComposition(composition.data) : parseCompositionSnapshot(item.compositionSnapshot, planType, item.finalText ?? ""),
     audit: audit.success ? audit.data : null,
     generationConfig: parseGenerationConfigSnapshot(item.generationConfigSnapshot),
+    generationExecution: feedbackGenerationExecutionPublicView(generationExecutionSnapshot ?? null),
   };
 }
 
@@ -408,6 +530,7 @@ export function toFeedbackPlanDetail<T extends {
     auditSnapshot: string;
     finalText?: string | null;
     generationConfigSnapshot?: string | null;
+    generationExecutionSnapshot?: string | null;
     generationDurationMs?: number | null;
   }>;
   generationElapsedMs?: number;
@@ -415,8 +538,13 @@ export function toFeedbackPlanDetail<T extends {
   generationStartedAt?: Date | null;
   generationCompletedAt?: Date | null;
   }>(plan: T) {
+  const storedGenerationApproach = normalizeStoredFeedbackGenerationApproach(
+    (plan as { generationApproach?: unknown }).generationApproach,
+  );
   return {
     ...plan,
+    generationApproach: storedGenerationApproach === "legacy" ? null : storedGenerationApproach,
+    generationApproachLabel: feedbackGenerationApproachLabel(storedGenerationApproach),
     items: plan.items.map((item) => toFeedbackPlanItemView(item, plan.type)),
     input: FeedbackPlanInputSnapshotSchema.safeParse(parseJson((plan as { inputSnapshot?: string }).inputSnapshot, null)).success
       ? FeedbackPlanInputSnapshotSchema.parse(parseJson((plan as { inputSnapshot?: string }).inputSnapshot, null))
@@ -859,6 +987,7 @@ export async function createFeedbackPlan(
     ...parsedInput,
     generationPreferences,
     generationMode: normalizedGenerationMode(parsedInput.generationMode),
+    generationApproach: feedbackGenerationApproachForNewPlan(parsedInput.generationApproach),
     lessonMaterial,
     sessionId: (await resolveSession(db, parsedInput.sessionId))?.id ?? parsedInput.sessionId,
     rangeStartSessionId: (await resolveSession(db, parsedInput.rangeStartSessionId))?.id ?? parsedInput.rangeStartSessionId,
@@ -998,6 +1127,7 @@ export async function createFeedbackPlan(
       type: input.type,
       outputRequirement: input.outputRequirement,
       generationMode: input.generationMode,
+      generationApproach: input.generationApproach,
       semesterId: input.semesterId,
       classId: input.classId,
       sessionId: input.sessionId,
@@ -1074,6 +1204,16 @@ export async function createFeedbackPlan(
     },
     intakeSources,
   };
+  const inputFingerprint = feedbackPlanDraftFingerprint({
+    snapshot: inputSnapshot,
+    type: input.type,
+    outputRequirement: input.outputRequirement,
+    generationMode: input.generationMode,
+    generationApproach: input.generationApproach,
+    generationPreferences,
+    selectedStudentIds: selectedIds,
+    studentOverrides: studentOverridesById,
+  });
 
   const frozenFactsByStudent = new Map(frozenFacts.map((fact) => [fact.studentId, fact.evidence]));
 
@@ -1099,9 +1239,10 @@ export async function createFeedbackPlan(
         sessionId: input.sessionId,
         rangeStartSessionId,
         rangeEndSessionId,
-        inputFingerprint: sourceFingerprint,
+        inputFingerprint,
         inputSnapshot: json(inputSnapshot),
         generationMode: input.generationMode,
+        generationApproach: input.generationApproach,
         items: {
           create: selectedIds.map((studentId) => {
             const bundle = frozenFactsByStudent.get(studentId);
@@ -1206,6 +1347,10 @@ export async function listFeedbackPlans(input: {
   });
   return plans.map((plan) => ({
     ...plan,
+    generationApproach: normalizeStoredFeedbackGenerationApproach(plan.generationApproach) === "legacy"
+      ? null
+      : normalizeStoredFeedbackGenerationApproach(plan.generationApproach),
+    generationApproachLabel: feedbackGenerationApproachLabel(plan.generationApproach),
     itemStatusCounts: generationProgress(plan.items),
     studentSummaries: plan.items.filter((item) => item.student).map((item) => ({ id: item.student!.id, name: item.student!.name, studentId: item.student!.studentId })),
   }));
@@ -1226,6 +1371,7 @@ type StoredFeedbackPlanDraft = {
   inputFingerprint: string;
   inputSnapshot: string;
   generationMode: string;
+  generationApproach: string;
   generationStartedAt: Date | null;
   generationCompletedAt: Date | null;
   planRevision: number;
@@ -1315,6 +1461,7 @@ async function storedFeedbackPlanDraft(id: string, db: FeedbackPlanDb) {
       inputFingerprint: true,
       inputSnapshot: true,
       generationMode: true,
+      generationApproach: true,
       generationStartedAt: true,
       generationCompletedAt: true,
       planRevision: true,
@@ -1462,18 +1609,20 @@ export async function updateFeedbackPlanDraft(
       : plan.displayName;
     const nextOutputRequirement = patch.outputRequirement ?? plan.outputRequirement;
     const nextGenerationMode = normalizedGenerationMode(patch.generationMode ?? plan.generationMode);
-    const nextFingerprint = sha256(JSON.stringify({
-      factSourceFingerprint: snapshot.sourceFingerprint ?? plan.inputFingerprint,
+    const nextGenerationApproach = patch.generationApproach
+      ?? normalizeStoredFeedbackGenerationApproach(plan.generationApproach);
+    const nextFingerprint = feedbackPlanDraftFingerprint({
+      snapshot,
       type: nextType,
       outputRequirement: nextOutputRequirement,
       generationMode: nextGenerationMode,
+      generationApproach: nextGenerationApproach,
       generationPreferences,
       selectedStudentIds: selectedIds,
-      studentOverrides: Object.fromEntries(studentOverridesById),
-    }));
+      studentOverrides: studentOverridesById,
+    });
     const nextSnapshot = FeedbackPlanInputSnapshotV2Schema.parse({
       ...snapshot,
-      sourceFingerprint: nextFingerprint,
       generationPreferences,
       selectedStudentIds: selectedIds.flatMap((studentId) => studentId ? [studentId] : []),
       studentOverrides: [...studentOverridesById.entries()].map(([studentId, generationConfig]) => ({ studentId, generationConfig })),
@@ -1483,6 +1632,7 @@ export async function updateFeedbackPlanDraft(
       type: nextType,
       outputRequirement: nextOutputRequirement,
       generationMode: nextGenerationMode,
+      generationApproach: nextGenerationApproach,
       inputFingerprint: nextFingerprint,
       inputSnapshot: json(nextSnapshot),
       status: "draft",
@@ -1579,6 +1729,30 @@ export async function cloneFeedbackPlanDraft(
       throw new ApiError("班级组子计划不能单独修正，请从班级组计划建立修正计划", 409, "conflict", false);
     }
     const snapshot = feedbackPlanSnapshotV2(source);
+    const sourceGenerationApproach = normalizeStoredFeedbackGenerationApproach(source.generationApproach);
+    if (sourceGenerationApproach === "legacy" && input.generationApproach === undefined) {
+      throw new ApiError("旧生成方式计划另存为时必须选择受限反馈或自由反馈", 409, "conflict", false);
+    }
+    const generationApproach = feedbackGenerationApproachForDerivedPlan(
+      source.generationApproach,
+      input.generationApproach,
+    );
+    const selectedStudentIds = source.items.flatMap((item) => item.studentId ? [item.studentId] : []);
+    const studentOverrides = new Map(source.items.flatMap((item) => {
+      if (!item.studentId) return [];
+      const generationConfig = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
+      return generationConfig ? [[item.studentId, generationConfig] as const] : [];
+    }));
+    const inputFingerprint = feedbackPlanDraftFingerprint({
+      snapshot,
+      type: source.type as FeedbackPlanCreateInput["type"],
+      outputRequirement: source.outputRequirement,
+      generationMode: normalizedGenerationMode(source.generationMode),
+      generationApproach,
+      generationPreferences: normalizeFeedbackGenerationPreferences(source.type as FeedbackPlanCreateInput["type"], snapshot.generationPreferences),
+      selectedStudentIds: source.type === "class_update" ? [null] : selectedStudentIds,
+      studentOverrides,
+    });
     const displayName = input.displayName
       ? await allocateFeedbackPlanDisplayName(tx, source, input.displayName)
       : null;
@@ -1594,18 +1768,15 @@ export async function cloneFeedbackPlanDraft(
         sessionId: source.sessionId,
         rangeStartSessionId: source.rangeStartSessionId,
         rangeEndSessionId: source.rangeEndSessionId,
-        inputFingerprint: source.inputFingerprint,
+        inputFingerprint,
         inputSnapshot: json({
           ...snapshot,
           draftRequestKey: undefined,
-          selectedStudentIds: source.items.flatMap((item) => item.studentId ? [item.studentId] : []),
-          studentOverrides: source.items.flatMap((item) => {
-            if (!item.studentId) return [];
-            const generationConfig = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
-            return generationConfig ? [{ studentId: item.studentId, generationConfig }] : [];
-          }),
+          selectedStudentIds,
+          studentOverrides: [...studentOverrides.entries()].map(([studentId, generationConfig]) => ({ studentId, generationConfig })),
         }),
         generationMode: normalizedGenerationMode(source.generationMode),
+        generationApproach,
         items: {
           create: source.items.map((item) => ({
             studentId: item.studentId,
@@ -1632,7 +1803,11 @@ export async function saveFeedbackPlanAs(
 ) {
   await assertFeedbackPlanAvailable(input.planId, db);
   return db.$transaction(async (tx) => {
-    const clone = await cloneFeedbackPlanDraft({ planId: input.planId, displayName: input.displayName }, tx);
+    const clone = await cloneFeedbackPlanDraft({
+      planId: input.planId,
+      displayName: input.displayName,
+      generationApproach: input.patch.generationApproach,
+    }, tx);
     const { expectedPlanRevision: _sourceRevision, ...fields } = input.patch;
     void _sourceRevision;
     return updateFeedbackPlanDraft(clone.id, {
@@ -2333,6 +2508,19 @@ export async function generateFeedbackPlanItems(input: {
   };
   const context = hasFrozenV2Input ? null : await findContextForPlan(db, planInput);
   const contextByStudent = new Map(context?.students.map((student) => [student.id, student]) ?? []);
+  const classStudentNames = plan.type === "class_update"
+    ? (await db.student.findMany({
+        where: {
+          enrollments: {
+            some: {
+              semesterId: plan.semesterId,
+              classId: plan.classId,
+            },
+          },
+        },
+        select: { name: true },
+      })).map((student) => student.name)
+    : [];
   const frozenFactItems = planInputSnapshot.success && planInputSnapshot.data.version === 2
     ? planInputSnapshot.data.factSnapshot.items
     : [];
@@ -2478,16 +2666,25 @@ export async function generateFeedbackPlanItems(input: {
   }
   const startedAtByItem = new Map(selected.map((item) => [item.id, item.generationStartedAt ?? new Date()]));
   const results = [];
+  const executionByItem = new Map<string, {
+    snapshot: FeedbackGenerationExecutionSnapshotV1;
+    attempt: number;
+    actualApproach: FeedbackGenerationApproach;
+  }>();
 
   try {
-    // Client/config creation is part of generation. Keep it inside the recovery
-    // boundary so a missing model configuration cannot strand rows in
-    // `generating`.
-    const draftClient = createLLMClient("feedbackDraft");
-    const draftModel = getLLMModel("feedbackDraft");
+    let draftRuntime: { client: ReturnType<typeof createLLMClient>; model: string } | null = null;
+    let reviewRuntime: { client: ReturnType<typeof createLLMClient>; model: string } | null = null;
+    const getDraftRuntime = () => draftRuntime ??= {
+      client: createLLMClient("feedbackDraft"),
+      model: getLLMModel("feedbackDraft"),
+    };
+    const getReviewRuntime = () => reviewRuntime ??= {
+      client: createLLMClient("feedbackReview"),
+      model: getLLMModel("feedbackReview"),
+    };
     const generationMode = normalizedGenerationMode(plan.generationMode);
-    const reviewClient = generationMode === "fast" ? draftClient : createLLMClient("feedbackReview");
-    const reviewModel = generationMode === "fast" ? draftModel : getLLMModel("feedbackReview");
+    const storedApproach = normalizeStoredFeedbackGenerationApproach(plan.generationApproach);
     await input.onProgress?.({ type: "status", message: `开始生成 ${selected.length} 条反馈` });
     const failures: Array<{ itemId: string; name: string; message: string }> = [];
     for (const item of selected) {
@@ -2500,6 +2697,22 @@ export async function generateFeedbackPlanItems(input: {
         : "班级家长";
       const itemName = item.studentId ? studentName : "班级公共反馈";
       try {
+        if (storedApproach !== "legacy") {
+          const execution = beginFeedbackGenerationExecution(
+            item.generationExecutionSnapshot,
+            storedApproach,
+          );
+          const started = await db.feedbackPlanItem.updateMany({
+            where: { id: item.id, status: "generating" },
+            data: {
+              generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(execution.snapshot),
+            },
+          });
+          if (started.count !== 1) {
+            throw new ApiError("反馈条目状态已经变化，请刷新后重试", 409, "conflict", false);
+          }
+          executionByItem.set(item.id, execution);
+        }
         const effectiveConfig = effectiveFeedbackPlanConfig(plan, item);
         const bundle = bundleForPlanConfig(sanitizeFeedbackEvidenceBundle(assessmentBundleOverrides.get(item.id)
           ?? FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}))), effectiveConfig);
@@ -2508,89 +2721,206 @@ export async function generateFeedbackPlanItems(input: {
           : student?.communicationPreference;
         const referenceDate = hasFrozenV2Input ? frozenFact?.referenceDate : context?.session.date;
         const generationTaskIds = auditTaskIdsForBundle(bundle, item.tasks);
-        const generated = await generateFeedbackPlanComposition({
-          studentName,
-          planType: effectiveConfig.type,
-          outputRequirement: effectiveConfig.outputRequirement,
-          evidenceBundle: bundle,
-          style: effectiveConfig.generationPreferences?.tone === "professional"
-            ? "professional"
-            : effectiveConfig.generationPreferences?.tone === "gentle"
-              ? "gentle"
-              : preference?.terminology === "professional" ? "professional" : "gentle",
-          length: effectiveConfig.generationPreferences?.length === "short"
-            ? "short"
-            : effectiveConfig.generationPreferences?.length === "detailed"
-              ? "standard"
-              : preference?.length === "short" ? "short" : "standard",
-          draftClient,
-          draftModel,
-          reviewClient,
-          reviewModel,
-          generationMode,
-          generationPreferences: effectiveConfig.generationPreferences,
-          referenceDate,
-          existingTaskIds: generationTaskIds,
-          signal: input.signal,
-        });
+        const style = effectiveConfig.generationPreferences?.tone === "professional"
+          ? "professional" as const
+          : effectiveConfig.generationPreferences?.tone === "gentle"
+            ? "gentle" as const
+            : preference?.terminology === "professional" ? "professional" as const : "gentle" as const;
+        const length = effectiveConfig.generationPreferences?.length === "short"
+          ? "short" as const
+          : effectiveConfig.generationPreferences?.length === "detailed"
+            ? "standard" as const
+            : preference?.length === "short" ? "short" as const : "standard" as const;
+        const execution = executionByItem.get(item.id);
+        const actualApproach = execution?.actualApproach ?? null;
+        let composition: FeedbackCompositionPlan;
+        let draftComposition: FeedbackCompositionPlan | null = null;
+        let restrictedGeneration: RestrictedFeedbackGenerationResult | null = null;
+
+        if (actualApproach === "restricted") {
+          if (!execution) {
+            throw new ApiError("受限反馈缺少执行快照，请刷新后重试", 409, "conflict", false);
+          }
+          const planner = getDraftRuntime();
+          const writer = getReviewRuntime();
+          const checkpoint = RestrictedFeedbackCheckpointV1Schema.safeParse(execution.snapshot.restrictedCheckpoint);
+          restrictedGeneration = await generateRestrictedFeedback({
+            studentName,
+            planType: effectiveConfig.type,
+            outputRequirement: effectiveConfig.outputRequirement,
+            evidenceBundle: bundle,
+            style,
+            length,
+            generationPreferences: effectiveConfig.generationPreferences,
+            plannerClient: planner.client,
+            plannerModel: planner.model,
+            writerClient: writer.client,
+            writerModel: writer.model,
+            referenceDate,
+            forbiddenStudentNames: item.studentId === null
+              ? classStudentNames
+              : identity.otherStudentNames,
+            checkpoint: checkpoint.success ? checkpoint.data : null,
+            onCheckpoint: async (nextCheckpoint) => {
+              const nextSnapshot: FeedbackGenerationExecutionSnapshotV1 = {
+                ...execution.snapshot,
+                restrictedCheckpoint: nextCheckpoint,
+              };
+              const saved = await db.feedbackPlanItem.updateMany({
+                where: { id: item.id, status: "generating" },
+                data: {
+                  generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(nextSnapshot),
+                },
+              });
+              if (saved.count !== 1) {
+                throw new ApiError("反馈条目状态已经变化，策略检查点未保存", 409, "conflict", false);
+              }
+              execution.snapshot = nextSnapshot;
+            },
+            signal: input.signal,
+          });
+          composition = restrictedGeneration.composition;
+        } else {
+          const draft = getDraftRuntime();
+          const effectiveMode = actualApproach === "free" ? "fast" as const : generationMode;
+          const review = effectiveMode === "fast" ? draft : getReviewRuntime();
+          const generated = await generateFeedbackPlanComposition({
+            studentName,
+            planType: effectiveConfig.type,
+            outputRequirement: effectiveConfig.outputRequirement,
+            evidenceBundle: bundle,
+            style,
+            length,
+            draftClient: draft.client,
+            draftModel: draft.model,
+            reviewClient: review.client,
+            reviewModel: review.model,
+            generationMode: effectiveMode,
+            generationPreferences: effectiveConfig.generationPreferences,
+            referenceDate,
+            existingTaskIds: generationTaskIds,
+            signal: input.signal,
+          });
+          composition = generated.composition;
+          draftComposition = generated.draftComposition;
+        }
         const audit = createAuditSnapshot(
-          generated.composition,
+          composition,
           bundle,
           generationTaskIds,
           identity,
           { enforceParentAudience: true, generationPreferences: effectiveConfig.generationPreferences },
         );
-        const generation = await recordSuccessfulGeneration({
-          taskType: "feedback",
-          stage: generationMode === "fast" ? "plan-draft" : "plan-review",
-          semesterId: plan.semesterId,
-          classId: plan.classId,
-          sessionId: plan.sessionId,
-          studentId: item.studentId,
-          feedbackPlanItemId: item.id,
-          sourceRefs: item.studentId ? [{ type: "student", id: item.studentId }] : [],
-          promptVersion: generationMode === "fast" ? "feedback-plan-v2-fast" : "feedback-plan-v2",
-          modelRole: generationMode === "fast" ? "feedbackDraft" : "feedbackReview",
-          inputRevision: String(plan.planRevision),
-          inputSnapshot: {
-            evidenceBundle: bundle,
-            draftComposition: generated.draftComposition,
-            generationMode,
-            generationConfig: effectiveConfig,
-            generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
-          },
-          outputSnapshot: { composition: generated.composition, audit, generationMode },
-          finalText: generated.composition.draftFeedback,
-        }, db);
         const generationCompletedAt = new Date();
-        const writeResult = await db.feedbackPlanItem.updateMany({
-          where: { id: item.id, status: "generating" },
-          data: {
-            evidenceSnapshot: json(bundle),
-            compositionSnapshot: json(generated.composition),
-            auditSnapshot: json(audit),
-            finalText: generated.composition.draftFeedback,
-            finalTextHash: sha256(generated.composition.draftFeedback),
-            selectedGenerationId: generation.id,
-            status: "needs_review",
-            reviewMode: "model",
-            generationCompletedAt,
-            generationDurationMs: Math.max(0, generationCompletedAt.getTime() - startedAtByItem.get(item.id)!.getTime()),
-            itemRevision: { increment: 1 },
-          },
+        const updated = await db.$transaction(async (tx) => {
+          const generation = await recordSuccessfulGeneration({
+            taskType: "feedback",
+            stage: actualApproach === "restricted"
+              ? "plan-restricted"
+              : actualApproach === "free"
+                ? "plan-free"
+                : generationMode === "fast" ? "plan-draft" : "plan-review",
+            semesterId: plan.semesterId,
+            classId: plan.classId,
+            sessionId: plan.sessionId,
+            studentId: item.studentId,
+            feedbackPlanItemId: item.id,
+            sourceRefs: item.studentId ? [{ type: "student", id: item.studentId }] : [],
+            promptVersion: actualApproach === "restricted"
+              ? "feedback-plan-v3-restricted"
+              : actualApproach === "free"
+                ? "feedback-plan-v3-free"
+                : generationMode === "fast" ? "feedback-plan-v2-fast" : "feedback-plan-v2",
+            modelRole: actualApproach === "restricted"
+              ? "feedbackReview"
+              : actualApproach === "free"
+                ? "feedbackDraft"
+                : generationMode === "fast" ? "feedbackDraft" : "feedbackReview",
+            inputRevision: String(plan.planRevision),
+            variantKey: execution ? `feedback-plan-item:${item.id}:attempt:${execution.attempt}` : null,
+            inputSnapshot: restrictedGeneration ? {
+              generationApproach: "restricted",
+              requestedApproach: execution?.snapshot.requestedApproach,
+              strategy: restrictedGeneration.strategy,
+              writerInput: restrictedGeneration.writerInput,
+              generationConfig: effectiveConfig,
+              generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
+              planner: restrictedGeneration.planner,
+              writer: restrictedGeneration.writer,
+            } : {
+              evidenceBundle: bundle,
+              draftComposition,
+              ...(actualApproach ? { generationApproach: actualApproach } : { generationMode }),
+              generationConfig: effectiveConfig,
+              generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
+            },
+            outputSnapshot: {
+              composition,
+              audit,
+              ...(actualApproach ? { generationApproach: actualApproach } : { generationMode }),
+              ...(restrictedGeneration ? {
+                planner: restrictedGeneration.planner,
+                writer: restrictedGeneration.writer,
+              } : {}),
+            },
+            finalText: composition.draftFeedback,
+          }, tx);
+          const succeededExecutionSnapshot = execution
+            ? completeFeedbackGenerationExecution({
+              snapshot: execution.snapshot,
+              attempt: execution.attempt,
+              status: "succeeded",
+              completedAt: generationCompletedAt,
+              generationRecordId: generation.id,
+            })
+            : null;
+          const writeResult = await tx.feedbackPlanItem.updateMany({
+            where: { id: item.id, status: "generating" },
+            data: {
+              evidenceSnapshot: json(bundle),
+              compositionSnapshot: json(composition),
+              auditSnapshot: json(audit),
+              finalText: composition.draftFeedback,
+              finalTextHash: sha256(composition.draftFeedback),
+              selectedGenerationId: generation.id,
+              status: "needs_review",
+              reviewMode: "model",
+              generationError: null,
+              generationCompletedAt,
+              generationDurationMs: Math.max(0, generationCompletedAt.getTime() - startedAtByItem.get(item.id)!.getTime()),
+              ...(succeededExecutionSnapshot ? {
+                generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(succeededExecutionSnapshot),
+              } : {}),
+              itemRevision: { increment: 1 },
+            },
+          });
+          if (writeResult.count !== 1) {
+            throw new ApiError("反馈证据或偏好在生成期间发生变化，请刷新后重新生成", 409, "conflict", false);
+          }
+          const persisted = await tx.feedbackPlanItem.findUnique({ where: { id: item.id } });
+          if (!persisted) throw new Error("生成后的反馈条目无法读取");
+          return { persisted, succeededExecutionSnapshot };
         });
-        if (writeResult.count !== 1) {
-          throw new ApiError("反馈证据或偏好在生成期间发生变化，请刷新后重新生成", 409, "conflict", false);
+        if (execution && updated.succeededExecutionSnapshot) {
+          execution.snapshot = updated.succeededExecutionSnapshot;
         }
-        const updated = await db.feedbackPlanItem.findUnique({ where: { id: item.id } });
-        if (!updated) throw new Error("生成后的反馈条目无法读取");
-        results.push(updated);
-        await input.onProgress?.({ type: "item", itemId: updated.id, status: updated.status, message: itemName });
+        results.push(updated.persisted);
+        await input.onProgress?.({ type: "item", itemId: updated.persisted.id, status: updated.persisted.status, message: itemName });
       } catch (error) {
         if (input.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
         const original = originalStates.get(item.id);
         if (original) {
           const generationCompletedAt = new Date();
+          const execution = executionByItem.get(item.id);
+          if (execution) {
+            execution.snapshot = completeFeedbackGenerationExecution({
+              snapshot: execution.snapshot,
+              attempt: execution.attempt,
+              status: "failed",
+              completedAt: generationCompletedAt,
+              error,
+            });
+          }
           await db.feedbackPlanItem.updateMany({
             where: { id: item.id, status: "generating" },
             data: {
@@ -2600,6 +2930,9 @@ export async function generateFeedbackPlanItems(input: {
               generationDurationMs: Math.max(0, generationCompletedAt.getTime() - startedAtByItem.get(item.id)!.getTime()),
               approvedAt: original.approvedAt,
               exportedAt: original.exportedAt,
+              ...(execution ? {
+                generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(execution.snapshot),
+              } : {}),
             },
           });
         }
@@ -2619,6 +2952,18 @@ export async function generateFeedbackPlanItems(input: {
         const original = originalStates.get(item.id);
         if (!original) continue;
         const generationCompletedAt = new Date();
+        const execution = executionByItem.get(item.id);
+        if (execution && execution.snapshot.attempts.some((attempt) => (
+          attempt.attempt === execution.attempt && attempt.status === "running"
+        ))) {
+          execution.snapshot = completeFeedbackGenerationExecution({
+            snapshot: execution.snapshot,
+            attempt: execution.attempt,
+            status: "interrupted",
+            completedAt: generationCompletedAt,
+            error,
+          });
+        }
         await tx.feedbackPlanItem.updateMany({
           where: { id: item.id, status: "generating" },
           data: {
@@ -2628,6 +2973,9 @@ export async function generateFeedbackPlanItems(input: {
             generationDurationMs: Math.max(0, generationCompletedAt.getTime() - startedAtByItem.get(item.id)!.getTime()),
             approvedAt: original.approvedAt,
             exportedAt: original.exportedAt,
+            ...(execution ? {
+              generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(execution.snapshot),
+            } : {}),
           },
         });
       }
@@ -2860,6 +3208,7 @@ export async function startFeedbackPlanGeneration(input: {
   itemIds?: string[];
   assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
   generationMode?: FeedbackGenerationMode;
+  generationApproach?: FeedbackGenerationApproach;
   expectedPlanRevision?: number;
 }, db: PrismaClient = prisma, options: { allowBatchStart?: boolean } = {}) {
   const plan = await db.feedbackPlan.findUnique({
@@ -2873,6 +3222,7 @@ export async function startFeedbackPlanGeneration(input: {
       batchId: true,
       planRevision: true,
       generationStartedAt: true,
+      generationApproach: true,
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
@@ -2885,6 +3235,12 @@ export async function startFeedbackPlanGeneration(input: {
   }
   if (input.expectedPlanRevision && input.expectedPlanRevision !== plan.planRevision) {
     throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+  }
+  if (input.generationApproach) {
+    const storedApproach = normalizeStoredFeedbackGenerationApproach(plan.generationApproach);
+    if (storedApproach === "legacy" || storedApproach !== input.generationApproach) {
+      throw new ApiError("反馈生成方式与已保存计划不一致，请刷新后重试", 409, "conflict", false);
+    }
   }
   if (feedbackGenerationJobs.has(input.planId) && ["queued", "generating", "pause_requested"].includes(plan.status)) {
     return { accepted: true, status: plan.status };
@@ -3111,6 +3467,114 @@ export async function retryFeedbackPlanGeneration(
   });
   if (result.retried) void startFeedbackGenerationJob(input.planId, db).catch(() => undefined);
   return { accepted: true, ...result };
+}
+
+export async function retryFeedbackPlanGenerationWithFree(
+  input: { planId: string; itemIds?: string[] },
+  db: PrismaClient = prisma,
+  options: {
+    allowBatchControl?: boolean;
+    includeUnstarted?: boolean;
+    startJob?: boolean;
+  } = {},
+) {
+  const plan = await db.feedbackPlan.findUnique({
+    where: { id: input.planId },
+    select: {
+      id: true,
+      archivedAt: true,
+      batchId: true,
+      generationApproach: true,
+      generationStartedAt: true,
+      items: {
+        select: {
+          id: true,
+          status: true,
+          finalText: true,
+          selectedGenerationId: true,
+          approvedAt: true,
+          exportedAt: true,
+          generationExecutionSnapshot: true,
+        },
+      },
+    },
+  });
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
+  if (plan.batchId && !options.allowBatchControl) {
+    throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中切换生成方式", 409, "conflict", false);
+  }
+  if (normalizeStoredFeedbackGenerationApproach(plan.generationApproach) !== "restricted") {
+    throw new ApiError("只有受限反馈计划的失败或未开始条目可以改用自由反馈", 409, "conflict", false);
+  }
+  const requestedIds = input.itemIds?.length ? new Set(input.itemIds) : null;
+  const allowedStatuses = new Set(options.includeUnstarted
+    ? ["generation_failed", "evidence_ready", "queued"]
+    : ["generation_failed"]);
+  const inScope = plan.items.filter((item) => !requestedIds || requestedIds.has(item.id));
+  if (requestedIds && inScope.length !== requestedIds.size) {
+    throw new ApiError("部分反馈条目不存在", 404, "not_found", false);
+  }
+  const candidates = inScope.flatMap((item) => {
+    if (!allowedStatuses.has(item.status) || feedbackPlanItemHasGeneratedResult(item)) return [];
+    const snapshot = parseFeedbackGenerationExecutionSnapshot(item.generationExecutionSnapshot)
+      ?? createFeedbackGenerationExecutionSnapshot("restricted");
+    if (snapshot.requestedApproach !== "restricted" || snapshot.nextApproach === "free") return [];
+    return [{ item, snapshot }];
+  });
+  if (requestedIds && candidates.length !== requestedIds.size) {
+    throw new ApiError("所选条目不能改用自由反馈；只允许失败且尚无成功结果的受限反馈", 409, "conflict", false);
+  }
+  if (!candidates.length) {
+    throw new ApiError(options.includeUnstarted
+      ? "没有可改用自由反馈的失败或未开始条目"
+      : "没有可改用自由反馈的失败条目", 409, "conflict", false);
+  }
+
+  const confirmedAt = new Date();
+  const changed = await db.$transaction(async (tx) => {
+    let queued = 0;
+    for (const { item, snapshot } of candidates) {
+      const nextSnapshot = withExplicitFreeFeedbackFallback(snapshot, confirmedAt);
+      const nextStatus = item.status === "generation_failed" ? "queued" : item.status;
+      const updated = await tx.feedbackPlanItem.updateMany({
+        where: { id: item.id, planId: plan.id, status: item.status },
+        data: {
+          status: nextStatus,
+          generationError: null,
+          generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(nextSnapshot),
+          ...(nextStatus === "queued" ? {
+            generationStartedAt: null,
+            generationCompletedAt: null,
+            generationDurationMs: null,
+          } : {}),
+          itemRevision: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) {
+        throw new ApiError("反馈条目已被其他操作更新，请刷新后重试", 409, "conflict", false);
+      }
+      if (nextStatus === "queued") queued += 1;
+    }
+    const runStartedAt = new Date();
+    await tx.feedbackPlan.update({
+      where: { id: plan.id },
+      data: {
+        ...(queued ? {
+          status: "queued",
+          generationStartedAt: plan.generationStartedAt ?? runStartedAt,
+          generationCompletedAt: null,
+          generationRunStartedAt: runStartedAt,
+        } : {}),
+        planRevision: { increment: 1 },
+      },
+    });
+    return { changed: candidates.length, queued };
+  });
+  if (changed.queued && options.startJob !== false) {
+    void startFeedbackGenerationJob(plan.id, db).catch(() => undefined);
+  }
+  return { accepted: true, status: changed.queued ? "queued" : "prepared", ...changed };
 }
 
 export async function createPreferenceCandidate(input: {

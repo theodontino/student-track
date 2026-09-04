@@ -4,6 +4,7 @@ import type {
   FeedbackPlanItemGenerationConfig,
   FeedbackPlanType,
 } from "@/lib/feedback-plan";
+import type { FeedbackGenerationApproach } from "@/lib/feedback-generation-approach";
 import type { FeedbackGroupIntakeUnassigned } from "./feedback-task-types";
 
 export type TaskStage = "prepare" | "confirm" | "studio";
@@ -59,7 +60,9 @@ export type FeedbackTaskCurrentFactsSeed = {
   entries: FeedbackTaskClassDraft[];
   materialSelection: MaterialSelection;
   materialSelectionInitialized: boolean;
-  generationMode: "standard" | "fast";
+  generationApproach: FeedbackGenerationApproach;
+  /** beta.2 及更早草稿的内部兼容字段；新界面不再提供此选项。 */
+  generationMode?: "standard" | "fast";
   outputRequirement: string;
   preferences: FeedbackTaskPreferences;
   classOverrides: FeedbackTaskClassOverrideDraft[];
@@ -93,7 +96,9 @@ export type FeedbackTaskDraftV2 = {
   materialSelection: MaterialSelection;
   materialSelectionInitialized: boolean;
   pendingMaterialLessonNumber: number | null;
-  generationMode: "standard" | "fast";
+  generationApproach: FeedbackGenerationApproach;
+  /** beta.2 及更早本地草稿的内部兼容字段；新计划只写 generationApproach。 */
+  generationMode?: "standard" | "fast";
   outputRequirement: string;
   preferences: FeedbackTaskPreferences;
   classOverrides: FeedbackTaskClassOverrideDraft[];
@@ -152,7 +157,7 @@ export function createFeedbackTaskDraft(): FeedbackTaskDraftV2 {
     materialSelection: { mode: "none" },
     materialSelectionInitialized: false,
     pendingMaterialLessonNumber: null,
-    generationMode: "standard",
+    generationApproach: "restricted",
     outputRequirement: "为每名入选学生生成一条可复核的家长反馈",
     preferences: { length: "inherit", tone: "inherit", closureType: "positive_recognition", moduleKeys: ["observed_moment", "teacher_interpretation"] },
     classOverrides: [],

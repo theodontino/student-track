@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
+import { FeedbackGenerationApproachSchema } from "@/lib/feedback-generation-approach";
 import {
   FeedbackGenerationPreferencesSchema,
   FeedbackPlanInputSnapshotSchema,
@@ -37,6 +38,7 @@ export const FeedbackTaskRequestSchema = z.object({
   requestKey: z.string().trim().min(8).max(200).optional(),
   displayName: z.string().trim().min(1).max(120).optional(),
   generationMode: z.enum(["standard", "fast"]).default("standard"),
+  generationApproach: FeedbackGenerationApproachSchema.default("restricted"),
   type: z.enum(["event_micro", "stage_trend"]).default("event_micro"),
   outputRequirement: z.string().trim().min(1).max(2000).default("为每名入选学生生成一条可复核的家长反馈"),
   materialSelection: MaterialSelectionSchema.optional(),
@@ -63,7 +65,8 @@ export const FeedbackTaskRequestSchema = z.object({
   });
 });
 
-export type FeedbackTaskRequest = z.infer<typeof FeedbackTaskRequestSchema>;
+export type FeedbackTaskRequest = z.input<typeof FeedbackTaskRequestSchema>;
+type ParsedFeedbackTaskRequest = z.output<typeof FeedbackTaskRequestSchema>;
 
 type ScopeConfirmation = {
   classId: string;
@@ -83,7 +86,7 @@ function parsedSnapshot(value: unknown): { scopeConfirmation?: ScopeConfirmation
   }
 }
 
-function preferencesFor(input: FeedbackTaskRequest): FeedbackGenerationPreferences {
+function preferencesFor(input: ParsedFeedbackTaskRequest): FeedbackGenerationPreferences {
   return FeedbackGenerationPreferencesSchema.parse(input.preferences ?? defaultFeedbackGenerationPreferences(input.type));
 }
 
@@ -171,7 +174,7 @@ async function findExistingTask(
   throw new ApiError("本轮材料已经关联另一份未归档计划，请打开该计划或使用新计划入口", 409, "conflict", false);
 }
 
-async function createSingleTask(input: FeedbackTaskRequest, run: FeedbackIntakeRunView, db: PrismaClient) {
+async function createSingleTask(input: ParsedFeedbackTaskRequest, run: FeedbackIntakeRunView, db: PrismaClient) {
   const snapshot = parsedSnapshot(run.appliedSummary);
   assertScope(run, snapshot.scopeConfirmation);
   const result = await resolveFeedbackIntakeRun(run.id, {
@@ -182,6 +185,7 @@ async function createSingleTask(input: FeedbackTaskRequest, run: FeedbackIntakeR
       type: input.type,
       outputRequirement: input.outputRequirement,
       generationMode: input.generationMode,
+      generationApproach: input.generationApproach,
       studentIds: snapshot.scopeConfirmation!.studentIds,
       generationPreferences: preferencesFor(input),
       studentOverrides: input.studentOverrides,
@@ -301,6 +305,7 @@ export async function createFeedbackTask(raw: FeedbackTaskRequest, db: PrismaCli
     type: input.type,
     outputRequirement: input.outputRequirement,
     generationMode: input.generationMode,
+    generationApproach: input.generationApproach,
     generationPreferences: preferences,
     groupLessonId: input.groupLessonId,
     ...(materialSelection.mode === "linked_revision" ? { sharedLessonRevisionId: materialSelection.revisionId, sharedMaterialConfirmed: true } : {}),

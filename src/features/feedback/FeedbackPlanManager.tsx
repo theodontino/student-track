@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Badge, Button, StatusBanner } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
+import { feedbackGenerationApproachLabel, type FeedbackGenerationApproach } from "@/lib/feedback-generation-approach";
 import styles from "./feedback-plan-manager.module.css";
 
 export type FeedbackPlanSummary = {
   id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; batchId?: string | null;
+  generationApproach?: FeedbackGenerationApproach | null; generationApproachLabel?: string;
   session?: { code: string } | null; rangeEndSession?: { code: string } | null;
   class?: { id: string; code: string; name?: string | null } | null;
   semester?: { id: string; name: string } | null;
@@ -16,6 +18,7 @@ export type FeedbackPlanSummary = {
 
 export type FeedbackPlanBatchSummary = {
   id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; semester?: { id: string; name: string } | null;
+  generationApproach?: FeedbackGenerationApproach | null; generationApproachLabel?: string;
   plans: Array<{ id: string; class: { id: string; code: string; name?: string | null }; session?: { code: string } | null; rangeEndSession?: { code: string } | null }>;
   progress: { total: number; generated: number; approved: number; exported: number; failed: number; completedClasses: number; totalClasses: number };
 };
@@ -83,6 +86,12 @@ export function feedbackPlanManagerStatusText(
       : feedbackPlanDisplayState(task.plan) === "active"
   )).length;
   return `${tasks.length} 个未归档计划${activeCount ? ` · ${activeCount} 个活动中` : " · 请选择计划查看"}`;
+}
+
+export function feedbackPlanTaskGenerationApproachLabel(task: FeedbackPlanTaskRow) {
+  const record = task.kind === "batch" ? task.batch : task.plan;
+  return record.generationApproachLabel?.trim()
+    || feedbackGenerationApproachLabel(record.generationApproach);
 }
 
 function typeLabel(type: string) {
@@ -257,9 +266,10 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, ref
         const openTarget = isBatch ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
         const href = taskHref(openTarget);
         const title = isBatch ? task.batch.displayName ?? `班级组反馈 · ${task.batch.plans.length} 个班级` : task.plan.displayName ?? typeLabel(task.plan.type);
+        const generationApproach = feedbackPlanTaskGenerationApproachLabel(task);
         const description = isBatch
-          ? `${typeLabel(task.batch.type)} · ${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准`
-          : `${typeLabel(task.plan.type)} · ${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
+          ? `${typeLabel(task.batch.type)} · ${generationApproach} · ${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准`
+          : `${typeLabel(task.plan.type)} · ${generationApproach} · ${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
         return <article key={`${task.kind}:${task.id}`} className={`${styles.row} ${isCurrent ? styles.current : ""}`}>
           <div className={styles.meta}><div className={styles.title}><strong>{title}</strong><Badge tone={displayState === "completed" ? "success" : displayState === "active" ? "warning" : "info"}>{displayStateLabels[displayState]}</Badge>{isCurrent && <Badge tone="info">当前打开</Badge>}</div><span>{description} · 批准、导出进度分别保留</span></div>
           <div className={styles.actions}>{onOpen ? <Button uiSize="sm" variant="ghost" onClick={() => onOpen(openTarget)} disabled={Boolean(busyId)}>打开</Button> : <Link className="ui-button ui-button--ghost ui-button--sm" href={href}>打开</Link>}<Button uiSize="sm" variant="secondary" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button></div>

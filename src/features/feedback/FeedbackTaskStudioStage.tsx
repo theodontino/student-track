@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, StatusBanner } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
 import { createEmptyLessonFeedbackMaterial } from "@/lib/feedback-materials";
+import { feedbackGenerationApproachLabel } from "@/lib/feedback-generation-approach";
 import type { FeedbackContextResponse } from "./types";
 import type { FeedbackPlanWorkspace } from "./FeedbackPlanPanel";
 import { FeedbackPlanStudio } from "./FeedbackPlanStudio";
@@ -244,13 +245,14 @@ export function FeedbackTaskStudioStage(props: Props) {
     if (next) selectItem(next.plan, next.item);
   }
 
-  async function batchAction(action: "pause" | "continue" | "retry") {
+  async function batchAction(action: "pause" | "continue" | "retry" | "retry_with_free") {
     if (!batchId) return;
+    if (action === "retry_with_free" && !window.confirm("将当前班级组中失败和尚未开始的条目改用自由反馈？\n\n已成功的结果、正文和记录不会改变。")) return;
     setBusy(true); setError(""); setNotice("");
     try {
       await requestJson(`/api/report/feedback-plan-batches/${encodeURIComponent(batchId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
       await loadPlans();
-      setNotice(action === "pause" ? "已请求安全暂停整个班级组。" : action === "continue" ? "班级组生成已继续。" : "正在重试当前失败班级。");
+      setNotice(action === "pause" ? "已请求安全暂停整个班级组。" : action === "continue" ? "班级组生成已继续。" : action === "retry_with_free" ? "失败和尚未开始的条目正改用自由反馈。" : "正在重试当前失败班级。");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "班级组操作失败"); }
     finally { setBusy(false); }
   }
@@ -260,7 +262,7 @@ export function FeedbackTaskStudioStage(props: Props) {
     : <StatusBanner tone="danger">计划已建立但缺少可打开的班级单元。请从“反馈计划”重新打开。</StatusBanner>;
   const activeQueueEntry = filteredQueue.find(({ item, plan }) => item.id === target.itemId && plan.id === target.planId);
   return <div className={styles.studioStage}>
-    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成、批准和导出分别记录，失败项留在队列中重试。</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}{batch && ["queued", "running", "pause_requested"].includes(batch.status) && <Button variant="secondary" onClick={() => void batchAction("pause")} disabled={busy}>暂停整批</Button>}{batch?.status === "paused" && <Button variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续整批</Button>}{batch?.status === "failed" && <Button variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}<Button variant="ghost" onClick={props.onNewTask}>归档当前计划并新建</Button></div></header>
+    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成、批准和导出分别记录，失败项留在队列中重试。{batch ? `计划方式：${feedbackGenerationApproachLabel(batch.generationApproach)}` : ""}</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}{batch && ["queued", "running", "pause_requested"].includes(batch.status) && <Button variant="secondary" onClick={() => void batchAction("pause")} disabled={busy}>暂停整批</Button>}{batch?.status === "paused" && <Button variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续整批</Button>}{batch?.status === "failed" && <Button variant="secondary" onClick={() => void batchAction("retry")} disabled={busy}>重试失败班级</Button>}{batch?.status === "failed" && batch.generationApproach === "restricted" && <Button variant="secondary" onClick={() => void batchAction("retry_with_free")} disabled={busy}>改用自由反馈</Button>}<Button variant="ghost" onClick={props.onNewTask}>归档当前计划并新建</Button></div></header>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}{notice && <StatusBanner tone="success">{notice}</StatusBanner>}
     <button type="button" className="feedback-queue-mobile-trigger" onClick={() => setQueueOpen(true)}>{activeQueueEntry ? `${activeQueueEntry.item.student?.name ?? "反馈队列"} · ${itemStatusLabels[activeQueueEntry.item.status] ?? "选择条目"} · ${filteredQueue.findIndex(({ item, plan }) => item.id === target.itemId && plan.id === target.planId) + 1}/${filteredQueue.length}` : "当前筛选下没有学生任务"}</button>
     <div className="feedback-unified-studio">
@@ -271,7 +273,7 @@ export function FeedbackTaskStudioStage(props: Props) {
         <div className="feedback-plan-studio-filters">{(Object.keys(filterLabels) as QueueFilter[]).map((key) => <button type="button" key={key} aria-pressed={filter === key} className={filter === key ? "is-active" : ""} onClick={() => changeFilter(key)}>{filterLabels[key]}<small>{counts[key]}</small></button>)}</div>
         <nav className="feedback-queue-groups">{!filteredQueue.length
           ? <p className="feedback-queue-empty" role="status">当前班级与任务状态下没有学生任务。</p>
-          : plans.filter((plan) => (classFilter === "all" || plan.class.id === classFilter) && plan.items.some((item) => feedbackQueueMatches({ item, plan }, filter, classFilter))).map((plan) => <section key={plan.id}><header><div><strong>{plan.class.name ?? plan.class.code}</strong><small>生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></div>{plan.progress.failed > 0 && <Badge tone="danger">失败 {plan.progress.failed}</Badge>}</header><div>{plan.items.filter((item) => feedbackQueueMatches({ item, plan }, filter, classFilter)).map((item) => { const active = target.planId === plan.id && target.itemId === item.id; return <button type="button" key={`${plan.id}:${item.id}`} aria-current={active ? "true" : undefined} className={active ? "is-active" : ""} onClick={() => selectItem(plan, item)}><span><strong>{item.student?.name ?? (item.studentId ? "学生信息待加载" : "班级公共反馈")}</strong><small>{item.student?.studentId ?? (item.studentId ? "身份待加载" : "公共条目")} · {plan.class.name ?? plan.class.code}</small></span><Badge tone={feedbackQueueCategory(item.status) === "done" ? "success" : item.status === "generation_failed" || item.status === "stale" ? "danger" : "warning"}>{itemStatusLabels[item.status] ?? item.status}</Badge></button>; })}</div></section>)}</nav>
+          : plans.filter((plan) => (classFilter === "all" || plan.class.id === classFilter) && plan.items.some((item) => feedbackQueueMatches({ item, plan }, filter, classFilter))).map((plan) => <section key={plan.id}><header><div><strong>{plan.class.name ?? plan.class.code}</strong><small>{feedbackGenerationApproachLabel(plan.generationApproach)} · 生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></div>{plan.progress.failed > 0 && <Badge tone="danger">失败 {plan.progress.failed}</Badge>}</header><div>{plan.items.filter((item) => feedbackQueueMatches({ item, plan }, filter, classFilter)).map((item) => { const active = target.planId === plan.id && target.itemId === item.id; const attempts = item.generationExecution?.attempts ?? []; const actualApproach = attempts[attempts.length - 1]?.actualApproach; return <button type="button" key={`${plan.id}:${item.id}`} aria-current={active ? "true" : undefined} className={active ? "is-active" : ""} onClick={() => selectItem(plan, item)}><span><strong>{item.student?.name ?? (item.studentId ? "学生信息待加载" : "班级公共反馈")}</strong><small>{item.student?.studentId ?? (item.studentId ? "身份待加载" : "公共条目")} · {plan.class.name ?? plan.class.code} · {actualApproach ? `${feedbackGenerationApproachLabel(actualApproach)}实际执行` : "尚未执行"}</small></span><Badge tone={feedbackQueueCategory(item.status) === "done" ? "success" : item.status === "generation_failed" || item.status === "stale" ? "danger" : "warning"}>{itemStatusLabels[item.status] ?? item.status}</Badge></button>; })}</div></section>)}</nav>
       </aside>
       <div className="feedback-unified-studio__content" aria-label="计划条目详情">{activeQueueEntry
         ? <FeedbackPlanStudio workspace={workspace} focusItemId={activeQueueEntry.item.id} externalNavigator onNextItem={nextItem} batchControl={{ active: Boolean(batch), status: batch?.status ?? "", busy }} />

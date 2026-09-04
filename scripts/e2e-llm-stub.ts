@@ -72,6 +72,139 @@ function compositionPayload(prompt: string) {
   };
 }
 
+function jsonSection<T>(prompt: string, startMarker: string, endMarker: string): T | null {
+  const start = prompt.indexOf(startMarker);
+  if (start < 0) return null;
+  const contentStart = start + startMarker.length;
+  const end = prompt.indexOf(endMarker, contentStart);
+  if (end < 0) return null;
+  try {
+    return JSON.parse(prompt.slice(contentStart, end).trim()) as T;
+  } catch {
+    return null;
+  }
+}
+
+interface RestrictedPlannerBoundary {
+  outputRequirement?: string;
+  generationPreferences?: { closureType?: string } | null;
+  allowedModules?: string[];
+  allowedClosures?: string[];
+  planType?: string;
+}
+
+interface RestrictedEvidenceItem {
+  id?: string;
+  kind?: string;
+  content?: string;
+}
+
+interface RestrictedEvidenceBundle {
+  teachingEvidence?: RestrictedEvidenceItem[];
+  assessmentEvidence?: RestrictedEvidenceItem[];
+  teachingBackground?: string[];
+}
+
+interface RestrictedSourceIndexItem {
+  ref?: string;
+  origin?: string;
+  canDiscloseToWriter?: boolean;
+}
+
+function restrictedPlannerPayload(prompt: string) {
+  const boundary = jsonSection<RestrictedPlannerBoundary>(prompt, "计划边界：\n", "\n\n冻结证据：") ?? {};
+  const evidence = jsonSection<RestrictedEvidenceBundle>(prompt, "冻结证据：\n", "\n\n可引用来源索引：") ?? {};
+  const sourceIndex = jsonSection<RestrictedSourceIndexItem[]>(prompt, "可引用来源索引：\n", "\n\n只返回合法 JSON：") ?? [];
+  const evidenceItems = [...(evidence.teachingEvidence ?? []), ...(evidence.assessmentEvidence ?? [])];
+  const disclosable = sourceIndex.filter((item) => item.canDiscloseToWriter && typeof item.ref === "string");
+  const preferredOrigins = boundary.planType === "class_update"
+    ? ["teaching_background", "output_requirement", "teaching_evidence", "assessment_evidence"]
+    : ["teaching_evidence", "assessment_evidence", "teaching_background", "output_requirement"];
+  const source = preferredOrigins.flatMap((origin) => disclosable.filter((item) => item.origin === origin))[0]
+    ?? disclosable[0];
+  const ref = source?.ref ?? "teacher-output-requirement";
+  const indexedEvidence = evidenceItems.find((item) => item.id === ref);
+  const backgroundIndex = ref.startsWith("teaching-background:")
+    ? Number(ref.slice("teaching-background:".length)) - 1
+    : -1;
+  const content = indexedEvidence?.content
+    ?? (backgroundIndex >= 0 ? evidence.teachingBackground?.[backgroundIndex] : undefined)
+    ?? boundary.outputRequirement
+    ?? "根据已确认事实形成反馈";
+  const kind = source?.origin === "teaching_background"
+    ? "teaching_background"
+    : source?.origin === "output_requirement"
+      ? "teacher_instruction"
+      : indexedEvidence?.kind === "fact" ? "fact" : "interpretation";
+  const allowedModules = boundary.allowedModules?.filter(Boolean) ?? [];
+  const allowedClosures = boundary.allowedClosures?.filter(Boolean) ?? [];
+  const requestedClosure = boundary.generationPreferences?.closureType;
+  const closureType = requestedClosure && allowedClosures.includes(requestedClosure)
+    ? requestedClosure
+    : allowedClosures[0] ?? "positive_recognition";
+  const needParentAction = closureType === "home_cooperation";
+  const moduleKey = needParentAction && allowedModules.includes("parent_action")
+    ? "parent_action"
+    : allowedModules.find((key) => key !== "parent_action") ?? allowedModules[0] ?? "observed_moment";
+  return {
+    version: 1,
+    mainFocus: "根据已确认且允许披露的内容形成简洁反馈",
+    closureType,
+    points: [{ id: "P1", moduleKey, kind, content, evidenceRefs: [ref], confidence: "high" }],
+    contextOnly: [],
+    omit: [],
+    communicationIntent: "向家长清楚说明已确认的学习情况",
+    needParentAction,
+    parentAction: needParentAction ? {
+      type: "remind",
+      actionBrief: "按反馈内容完成一次简短复盘",
+      successCriteriaBrief: "能够说明本次学习要点",
+      notNeededBrief: "已经掌握时无需重复练习",
+      pointIds: ["P1"],
+    } : null,
+    unresolved: [],
+  };
+}
+
+interface RestrictedWriterDisclosure {
+  id?: string;
+  moduleKey?: string;
+  content?: string;
+}
+
+interface RestrictedWriterInput {
+  studentName?: string;
+  disclosures?: RestrictedWriterDisclosure[];
+  parentAction?: { type?: string; disclosureIds?: string[] } | null;
+}
+
+function restrictedWriterPayload(prompt: string) {
+  const input = jsonSection<RestrictedWriterInput>(prompt, "受限输入：\n", "\n\n只返回合法 JSON：") ?? {};
+  const disclosure = input.disclosures?.find((item) => item.id && item.moduleKey && item.content) ?? {
+    id: "D1",
+    moduleKey: "observed_moment",
+    content: "本次课堂学习情况已经完成记录",
+  };
+  const statement = disclosure.content!;
+  const modulePayload = {
+    key: disclosure.moduleKey!,
+    content: statement,
+    disclosureIds: [disclosure.id!],
+  };
+  const parentAction = input.parentAction ? {
+    action: "请按反馈内容完成一次简短复盘",
+    successCriteria: "能够说明本次学习要点",
+    notNeeded: "已经掌握时无需重复练习",
+  } : null;
+  return {
+    version: 1,
+    modules: [modulePayload],
+    coverage: [{ disclosureId: disclosure.id!, statement }],
+    parentAction,
+    draftFeedback: `${input.studentName ?? "学生"}家长您好，${statement}。`,
+  };
+}
+
 function completionContent(prompt: string) {
   const step = stepPayload(prompt);
   if (step) return JSON.stringify(step);
@@ -80,6 +213,12 @@ function completionContent(prompt: string) {
   }
   if (prompt.includes("反馈组装模型") || prompt.includes("反馈审核与润色模型") || prompt.includes("结构修复模型")) {
     return JSON.stringify(compositionPayload(prompt));
+  }
+  if (prompt.includes("Student Track 的反馈 Planner")) {
+    return JSON.stringify(restrictedPlannerPayload(prompt));
+  }
+  if (prompt.includes("Student Track 的反馈 Writer")) {
+    return JSON.stringify(restrictedWriterPayload(prompt));
   }
   if (prompt.includes("revised_scores") || prompt.includes("revised_events")) {
     return JSON.stringify({ is_valid: true, issues: [], suggestions: [], revised_scores: {}, revised_events: {}, revised_teacher_interventions: {} });

@@ -7,7 +7,7 @@ import SemesterPicker from "@/components/SemesterPicker";
 import { Badge, Button, PageHeader, StatusBanner } from "@/components/ui";
 import { SessionDialog } from "@/features/courses";
 import { requestJson } from "@/lib/api-client";
-import { lessonMaterialHasContent } from "@/lib/feedback-materials";
+import { lessonMaterialHasContent, parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type { FeedbackScriptLibraryResponse } from "@/lib/feedback-script-library";
 import type { FeedbackIntakeDecision } from "@/services/feedback-intake-service";
 import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
@@ -267,6 +267,19 @@ export function feedbackIntakeConfirmationOutcome(
     completed: settled.flatMap((result) => result.status === "fulfilled" ? [result.value.result] : []),
     failedEntries: targets.filter((_, index) => settled[index]?.status === "rejected"),
   };
+}
+
+export function feedbackIntakeConfirmationDisabled(input: {
+  contextActionBlocked: boolean;
+  selectedEntryCount: number;
+  actionableUnassignedCount: number;
+  mode: FeedbackTaskDraftV2["mode"];
+  unresolvedBlockingCount: number;
+}) {
+  return input.contextActionBlocked
+    || input.selectedEntryCount === 0
+    || input.actionableUnassignedCount > 0
+    || (input.mode === "single" && input.unresolvedBlockingCount > 0);
 }
 
 function isActionableUnassignedSource(source: FeedbackGroupIntakeUnassigned) {
@@ -1349,23 +1362,81 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       setError(`还有 ${unassignedCount} 份材料未归入班级或学生，请先处理或明确本轮不采用。`);
       return;
     }
-    if (!selectedEntries.length || selectedEntries.some((item) => !item.runId || !runs[item.runId])) {
-      setError(state.draft.mode === "group" ? "请先完成共同课一次投料，确保每个真实班级都形成材料运行。" : "请先整理本班材料。");
-      return;
-    }
-    const { alreadyAppliedEntries, blockedEntries, confirmableEntries } = partitionFeedbackIntakeConfirmationEntries(selectedEntries, runs, decisions);
-    if (state.draft.mode === "single" && blockedEntries.length) {
-      setError(`${blockedEntries.map((item) => item.className).join("、")}仍有异常尚未处理，请在材料详情中完成核对。`);
-      return;
-    }
-    if (state.draft.mode === "group" && !confirmableEntries.length && blockedEntries.length) {
-      setError(`${blockedEntries.map((item) => item.className).join("、")}仍有异常尚未处理；可以逐班核对，也可以明确设为“暂不纳入本轮”后先规划已准备班级。`);
+    if (!selectedEntries.length) {
+      setError(state.draft.mode === "group" ? "请先重新纳入至少一个班级。" : "当前课次没有可建立计划的班级范围。");
       return;
     }
     const startedScopeToken = operationScopeTokenRef.current;
     const operationSemesterId = context.context.semesterId;
     setBusy(true); setError(""); setNotice("正在确认课程材料并写入各班课堂事实…");
     try {
+      let effectiveEntries = selectedEntries;
+      let effectiveRuns = runs;
+      let effectiveDecisions = decisions;
+      if (selectedEntries.some((item) => !item.runId || !runs[item.runId])) {
+        setNotice("没有新文件，正在按已录入事实准备本轮核对…");
+        if (state.draft.mode === "group") {
+          const scope = feedbackGroupIntakeScope(groupEntriesRef.current, runs, state.draft.plannedSessionCodes);
+          const result = await requestJson<FeedbackGroupIntakeUploadResponse>("/api/feedback/intake/group-scan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              groupLessonId: state.draft.groupLessonId,
+              sessionCodes: scope.sessionCodes,
+              ...(Object.keys(scope.runIds).length ? { runIds: scope.runIds } : {}),
+              useExistingFacts: true,
+            }),
+          });
+          if (!operationScopeIsCurrent(startedScopeToken)) {
+            setNotice("原范围的已录入事实已经整理；当前页面未被旧结果覆盖，返回原范围即可继续。");
+            return;
+          }
+          acceptGroupIntake(result);
+          const preparedClasses = new Map(result.classes.map((item) => [item.sessionCode, item]));
+          effectiveEntries = selectedEntries.map((item) => {
+            const prepared = preparedClasses.get(item.sessionCode);
+            return prepared ? { ...item, runId: prepared.runId } : item;
+          });
+          effectiveRuns = Object.assign({}, runs, ...result.runs.map((run) => ({ [run.id]: run })));
+          effectiveDecisions = Object.assign({}, decisions, ...result.runs.map((run) => ({
+            [run.id]: Array.isArray(run.appliedSummary.decisions) ? run.appliedSummary.decisions : [],
+          })));
+        } else {
+          const selectedEntry = selectedEntries[0]!;
+          const result = await requestJson<{ run: FeedbackIntakeRunClient }>("/api/feedback/intake/scan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionCode: selectedEntry.sessionCode,
+              ...(selectedEntry.runId && !runs[selectedEntry.runId]?.planId ? { runId: selectedEntry.runId } : {}),
+              useExistingFacts: true,
+            }),
+          });
+          if (!operationScopeIsCurrent(startedScopeToken)) {
+            setNotice("原班级的已录入事实已经整理；当前页面未被旧结果覆盖，返回原班级即可继续。");
+            return;
+          }
+          acceptRun(result);
+          effectiveEntries = selectedEntries.map((item) => item.sessionCode === result.run.sessionCode
+            ? { ...item, runId: result.run.id }
+            : item);
+          effectiveRuns = { ...runs, [result.run.id]: result.run };
+          effectiveDecisions = {
+            ...decisions,
+            [result.run.id]: Array.isArray(result.run.appliedSummary.decisions) ? result.run.appliedSummary.decisions : [],
+          };
+        }
+      }
+      if (effectiveEntries.some((item) => !item.runId || !effectiveRuns[item.runId])) {
+        throw new Error(state.draft.mode === "group" ? "未能为所有已选班级准备事实核对。" : "未能为当前课次准备事实核对。");
+      }
+      const { alreadyAppliedEntries, blockedEntries, confirmableEntries } = partitionFeedbackIntakeConfirmationEntries(effectiveEntries, effectiveRuns, effectiveDecisions);
+      if (state.draft.mode === "single" && blockedEntries.length) {
+        throw new Error(`${blockedEntries.map((item) => item.className).join("、")}仍有异常尚未处理，请在材料详情中完成核对。`);
+      }
+      if (state.draft.mode === "group" && !confirmableEntries.length && blockedEntries.length) {
+        throw new Error(`${blockedEntries.map((item) => item.className).join("、")}仍有异常尚未处理；可以逐班核对，也可以明确设为“暂不纳入本轮”后先规划已准备班级。`);
+      }
       if (forcedInheritedMaterial && availableMaterial) {
         dispatch({ type: "draft", patch: { materialSelection: availableMaterial, materialSelectionInitialized: true, pendingMaterialLessonNumber: null } });
       }
@@ -1381,18 +1452,18 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       const targets = confirmableEntries;
       const settled = await Promise.allSettled(targets.map((item) => requestJson<{ result: FeedbackIntakeRunClient }>(`/api/feedback/intake/runs/${encodeURIComponent(item.runId)}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "confirm", decisions: decisions[item.runId] ?? [] }),
+        body: JSON.stringify({ action: "confirm", decisions: effectiveDecisions[item.runId] ?? [] }),
       })));
       const { completed, failedEntries } = feedbackIntakeConfirmationOutcome(targets, settled);
       if (!operationScopeIsCurrent(startedScopeToken)) {
         setNotice("原范围的课堂事实确认已经结束；当前页面未被旧结果覆盖，返回原范围即可继续。");
         return;
       }
-      const confirmedRuns = Object.assign({}, runs, ...completed.map((run) => ({ [run.id]: run })));
+      const confirmedRuns = Object.assign({}, effectiveRuns, ...completed.map((run) => ({ [run.id]: run })));
       setRuns(confirmedRuns);
       const recommendationRefreshFailures = await refreshAppliedFeedbackContexts(
         [...alreadyAppliedEntries, ...completed.flatMap((run) => {
-          const completedEntry = selectedEntries.find((item) => item.runId === run.id);
+          const completedEntry = effectiveEntries.find((item) => item.runId === run.id);
           return completedEntry ? [completedEntry] : [];
         })],
         completed,
@@ -1437,7 +1508,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
         materialSelectionInitialized: true,
         pendingMaterialLessonNumber: null,
       } satisfies FeedbackTaskDraftV2;
-      setNotice(`${state.draft.mode === "group" ? `共同录入完成：${selectedEntries.length} 个班的事实已经分别写入。` : "材料与课堂事实已确认。"} 正在建立可恢复的计划草稿…${recommendationNotice}`);
+      setNotice(`${state.draft.mode === "group" ? `共同录入完成：${effectiveEntries.length} 个班的事实已经分别写入。` : "材料与课堂事实已确认。"} 正在建立可恢复的计划草稿…${recommendationNotice}`);
       const created = await confirmScopeAndCreate({ draft: planningDraft, runs: confirmedRuns, startedScopeToken });
       if (!created && operationScopeIsCurrent(startedScopeToken)) {
         dispatch({ type: "restore", draft: planningDraft });
@@ -1497,7 +1568,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
             ...(operationDraft.revisionSource?.kind === "plan" ? { basedOnPlanId: operationDraft.revisionSource.planId } : {}),
             type: planType,
             outputRequirement: operationDraft.outputRequirement,
-            generationMode: operationDraft.generationMode,
+            generationApproach: operationDraft.generationApproach,
             ...(target.rangeStartSessionId ? { rangeStartSessionId: target.rangeStartSessionId } : {}),
             ...(target.rangeEndSessionId ? { rangeEndSessionId: target.rangeEndSessionId } : {}),
             ...(planType === "class_update" ? {} : { studentIds: target.studentIds }),
@@ -1521,7 +1592,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
           semesterId: operationSemesterId,
           type: planType,
           outputRequirement: operationDraft.outputRequirement,
-          generationMode: operationDraft.generationMode,
+          generationApproach: operationDraft.generationApproach,
           generationPreferences: operationDraft.preferences,
           groupLessonId: operationDraft.groupLessonId,
           ...(operationDraft.materialSelection.mode === "linked_revision" ? {
@@ -1941,6 +2012,35 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     }
   }
 
+  async function saveSessionCommonMaterial(input: { groupFeedbackRaw: string; assessmentBriefRaw: string }) {
+    const session = context.data?.session;
+    if (!session || commonMaterialAction !== "session") throw new Error("只有独立课次可以在这里单独保存课程背景。");
+    const startedScopeToken = operationScopeTokenRef.current;
+    setBusy(true);
+    setError("");
+    try {
+      const material = parseLessonFeedbackMaterial(
+        input.groupFeedbackRaw,
+        input.assessmentBriefRaw,
+        session.code,
+      );
+      await requestJson(`/api/sessions/${encodeURIComponent(session.id)}/common-material`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ material }),
+      });
+      await context.refresh();
+      if (!operationScopeIsCurrent(startedScopeToken)) {
+        setNotice("原课次的课程背景已保存；当前页面未被旧结果覆盖。");
+        return;
+      }
+      dispatch({ type: "draft", patch: { materialSelection: { mode: "session_snapshot" }, materialSelectionInitialized: true, pendingMaterialLessonNumber: null } });
+      setNotice("本课课程背景已保存，并已选为本次计划的课程背景。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selectedEntries = state.draft.entries.filter((item) => item.selected && !plannedSessionCodes.has(item.sessionCode));
   const scopedUnassignedSources = scopeFeedbackGroupUnassignedSources({
     sources: unassignedSources,
@@ -2056,7 +2156,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       })}</div>}</section>}
       <nav className={styles.taskRail} aria-label="反馈计划阶段"><button type="button" className={state.stage === "prepare" ? styles.activeRail : ""} disabled={busy} onClick={() => void showTaskStage("prepare")}><span>1</span><strong>录入</strong><small>{hasPlanDocument ? "查看采用的材料与事实" : state.draft.mode === "group" ? "共同投料、逐班核验" : "材料可选、事实确认"}</small></button><button type="button" className={state.stage === "confirm" ? styles.activeRail : ""} disabled={busy || (!hasPlanDocument && (!allSelectedRunsApplied || contextActionBlocked))} onClick={() => void showTaskStage("confirm")}><span>2</span><strong>规划</strong><small>{hasPlanDocument ? "查看或修正计划" : state.draft.mode === "group" ? "多班范围与例外" : "学生范围与反馈要求"}</small></button><button type="button" className={state.stage === "studio" ? styles.activeRail : ""} disabled={busy || !hasPlanDocument} onClick={() => void showTaskStage("studio")}><span>3</span><strong>生成</strong><small>{state.draft.mode === "group" || state.batchId ? "按班进度与局部重试" : "生成、复核与批准"}</small></button></nav>
       {hasPlanDocument && state.stage !== "studio" && <FeedbackTaskDocumentStage view={state.stage === "prepare" ? "intake" : "plan"} planId={state.planId} batchId={state.batchId} onPlan={() => void showTaskStage("confirm")} onStudio={() => void showTaskStage("studio")} onSaveHandlerChange={setDocumentSaveHandler} onDocumentResolved={resolveLoadedDocument} onTaskChanged={openChangedTask} onPlanChanged={refreshPlanManager} onContinueIntake={continueIndependentIntake} />}
-      {!hasPlanDocument && entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} studentTotal={state.draft.mode === "group" ? selectedEntries.reduce((total, item) => total + (studentsBySession[item.sessionCode]?.length ?? item.studentIds.length), 0) : studentsBySession[entry.sessionCode]?.length ?? entry.studentIds.length} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} confirmDisabled={contextActionBlocked || !selectedEntries.length || selectedEntries.some((item) => !item.runId || !runs[item.runId]) || actionableUnassignedCount > 0 || (state.draft.mode === "single" && unresolvedBlockingCount > 0)} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} decisions={currentRun ? decisions[currentRun.id] ?? [] : []} materialSummary={groupMaterialSummary} manualFactsHref={manualFactsHref} semesterMaterialsHref={semesterMaterialsHref} onIgnoreUnassigned={state.draft.mode === "group" && actionableUnassignedCount ? ignoreUnassignedSources : undefined} onDecision={updateDecision} onCommonMaterialChoice={selectCommonMaterial} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onUseExistingFacts={() => void scanInbox(true)} onContinue={() => void confirmMaterialsAndContinue()} />}
+      {!hasPlanDocument && entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} studentTotal={state.draft.mode === "group" ? selectedEntries.reduce((total, item) => total + (studentsBySession[item.sessionCode]?.length ?? item.studentIds.length), 0) : studentsBySession[entry.sessionCode]?.length ?? entry.studentIds.length} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} confirmDisabled={feedbackIntakeConfirmationDisabled({ contextActionBlocked, selectedEntryCount: selectedEntries.length, actionableUnassignedCount, mode: state.draft.mode, unresolvedBlockingCount })} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} sessionMaterial={commonMaterialAction === "session" ? context.data?.sessionCommonMaterial?.material ?? null : null} decisions={currentRun ? decisions[currentRun.id] ?? [] : []} materialSummary={groupMaterialSummary} manualFactsHref={manualFactsHref} semesterMaterialsHref={semesterMaterialsHref} onIgnoreUnassigned={state.draft.mode === "group" && actionableUnassignedCount ? ignoreUnassignedSources : undefined} onDecision={updateDecision} onCommonMaterialChoice={selectCommonMaterial} onSaveSessionMaterial={commonMaterialAction === "session" ? saveSessionCommonMaterial : undefined} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onUseExistingFacts={() => void scanInbox(true)} onContinue={() => void confirmMaterialsAndContinue()} />}
       {!hasPlanDocument && entry && state.stage === "confirm" && <TaskConfirmationStage draft={state.draft} plannedSessionCodes={[...plannedSessionCodes]} studentsBySession={studentsBySession} scopeSummary={state.draft.mode === "group" ? `${group?.name ?? "共同课"} · 第 ${groupLesson?.sequence ?? "-"} 讲 · ${selectedEntries.map((item) => item.className).join("、")}` : `${entry.className} · ${entry.sessionCode}`} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} onEntry={updateTaskEntry} onDraft={(patch) => dispatch({ type: "draft", patch })} onClassOverrideChange={(sessionCode, override) => dispatch({ type: "class-override", sessionCode, override })} onStudentOverrideChange={(studentId, generationConfig) => dispatch({ type: "student-override", studentId, generationConfig })} onBack={() => void showTaskStage("prepare")} onStart={() => void confirmScopeAndCreate()} />}
       {!hasPlanDocument && !entry && state.stage !== "studio" && <StatusBanner tone="warning">请先选择真实课次。</StatusBanner>}
       {state.stage === "studio" && <FeedbackTaskStudioStage semesterId={context.context.semesterId} className={context.context.className} sessionCode={context.context.sessionCode} planId={state.planId} batchId={state.batchId} context={context.data} onPlanChange={changeStudioPlan} pendingClassCount={pendingGroupDraft?.entries.filter((item) => item.selected).length ?? 0} onResumePending={pendingGroupDraft ? resumePendingGroupClasses : undefined} onNewTask={() => void endAndStartNew()} />}

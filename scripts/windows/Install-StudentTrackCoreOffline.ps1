@@ -28,6 +28,8 @@ $runtimeDataRoots = @(
     (Join-Path $runtimeRoot "feedback-inbox"),
     (Join-Path $runtimeRoot "archives")
 )
+$startLauncherPath = Join-Path $runtimeRoot "Start Student Track Core.cmd"
+$uninstallLauncherPath = Join-Path $runtimeRoot "Uninstall Student Track Core.cmd"
 
 foreach ($requiredDirectory in @($packageApp, $packageNode)) {
     if (-not (Test-Path -LiteralPath $requiredDirectory -PathType Container)) {
@@ -39,12 +41,12 @@ $env:PATH = "$packageNode;$env:PATH"
 . (Join-Path $packageApp "scripts\windows\StudentTrack-Core.Common.ps1")
 [void](Assert-StudentTrackCorePrerequisites -AllowGitHubActionsServerForCI:$AllowGitHubActionsServerForCI)
 
-if (Test-Path -LiteralPath $runtimeRoot) {
-    if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
-        throw "Student Track 安装位置不是目录：$runtimeRoot"
-    }
-    if (@(Get-ChildItem -LiteralPath $runtimeRoot -Force).Count -gt 0) {
-        throw "检测到已有 Student Track 程序或教学数据。离线包不会覆盖或恢复既有安装，请联系发布者获取升级或恢复方案。"
+if ((Test-Path -LiteralPath $runtimeRoot) -and -not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+    throw "Student Track 安装位置不是目录：$runtimeRoot"
+}
+foreach ($existingProgramPath in @($appRoot, $nodeRoot, $startLauncherPath)) {
+    if (Test-Path -LiteralPath $existingProgramPath) {
+        throw "检测到已有 Student Track Core 程序：$existingProgramPath。请先运行卸载器；数据库和运行数据会保留。"
     }
 }
 
@@ -70,6 +72,27 @@ function New-StudentTrackOfflineLauncher {
     return $launcher
 }
 
+function New-StudentTrackUninstallLauncher {
+    param([Parameter(Mandatory = $true)][string]$RuntimeRoot)
+
+    $launcher = Join-Path $RuntimeRoot "Uninstall Student Track Core.cmd"
+    @(
+        "@echo off",
+        "setlocal EnableExtensions DisableDelayedExpansion",
+        'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0app\scripts\windows\Uninstall-StudentTrackCore.ps1"',
+        'set "UNINSTALL_EXIT_CODE=%ERRORLEVEL%"',
+        'if "%UNINSTALL_EXIT_CODE%"=="0" del /f /q "%~f0"',
+        'if not "%UNINSTALL_EXIT_CODE%"=="0" pause',
+        'exit /b %UNINSTALL_EXIT_CODE%'
+    ) | Set-Content -LiteralPath $launcher -Encoding ascii
+    return $launcher
+}
+
+$runtimeRootExisted = Test-Path -LiteralPath $runtimeRoot -PathType Container
+$preexistingRuntimeDataRoots = @{}
+foreach ($runtimeDataRoot in $runtimeDataRoots) {
+    $preexistingRuntimeDataRoots[$runtimeDataRoot] = Test-Path -LiteralPath $runtimeDataRoot
+}
 [void](New-Item -ItemType Directory -Path $runtimeRoot -Force)
 $installationStarted = $false
 try {
@@ -83,6 +106,7 @@ try {
     & $prepareScript -AllowGitHubActionsServerForCI:$AllowGitHubActionsServerForCI
 
     $launcher = New-StudentTrackOfflineLauncher -RuntimeRoot $runtimeRoot
+    $uninstallLauncher = New-StudentTrackUninstallLauncher -RuntimeRoot $runtimeRoot
 } catch {
     if ($installationStarted) {
         foreach ($newProgramRoot in @($appRoot, $nodeRoot)) {
@@ -91,9 +115,17 @@ try {
             }
         }
         foreach ($newRuntimeDataRoot in $runtimeDataRoots) {
-            if (Test-Path -LiteralPath $newRuntimeDataRoot) {
+            if (-not $preexistingRuntimeDataRoots[$newRuntimeDataRoot] -and (Test-Path -LiteralPath $newRuntimeDataRoot)) {
                 Remove-Item -LiteralPath $newRuntimeDataRoot -Recurse -Force
             }
+        }
+        foreach ($newLauncher in @($startLauncherPath, $uninstallLauncherPath)) {
+            if (Test-Path -LiteralPath $newLauncher) {
+                Remove-Item -LiteralPath $newLauncher -Force
+            }
+        }
+        if (-not $runtimeRootExisted -and (Test-Path -LiteralPath $runtimeRoot) -and @(Get-ChildItem -LiteralPath $runtimeRoot -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $runtimeRoot -Force
         }
         Write-Warning "离线安装未完成，已移除本次创建的程序和运行目录；既有教学数据没有改动。"
     }
@@ -118,6 +150,7 @@ if (-not $SkipDesktopShortcut) {
 
 Write-Host "Student Track Core 离线安装完成。"
 Write-Host "程序目录：$runtimeRoot"
+Write-Host "卸载入口：$uninstallLauncher"
 if (-not $SkipDesktopShortcut) {
     Write-Host "以后请双击桌面的 Student Track Core 启动。"
 }

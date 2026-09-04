@@ -8,6 +8,20 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/feedback-generation-service")>(),
   generateFeedbackPlanComposition: generationMocks.generate,
 }));
+vi.mock("@/services/restricted-feedback-generation-service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/services/restricted-feedback-generation-service")>(),
+  generateRestrictedFeedback: async (input: { studentName: string; planType: string }) => {
+    const generated = await generationMocks.generate(input);
+    return {
+      strategy: { version: 1, mainFocus: "测试反馈", closureType: generated.composition.closureType, points: [], contextOnly: [], omit: [], communicationIntent: "测试", needParentAction: false, parentAction: null, unresolved: [] },
+      writerInput: { version: 1, studentName: input.studentName, recipient: "parent", plan: { type: input.planType, style: "gentle", length: "standard", closureType: generated.composition.closureType, communicationIntent: "测试" }, disclosures: [], parentAction: null, stableRules: ["测试边界"] },
+      writerOutput: { version: 1, modules: [], coverage: [], parentAction: null, draftFeedback: generated.composition.draftFeedback },
+      composition: generated.composition,
+      planner: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 }, reusedCheckpoint: false },
+      writer: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } },
+    };
+  },
+}));
 import { buildFeedbackPlanBatchExportWorkbook } from "@/services/feedback-export-service";
 import {
   cloneFeedbackPlanBatchDraft,
@@ -18,6 +32,7 @@ import {
   pauseFeedbackPlanBatch,
   renameFeedbackPlanBatch,
   retryFeedbackPlanBatch,
+  retryFeedbackPlanBatchWithFree,
   saveFeedbackPlanBatchAs,
   startFeedbackPlanBatch,
   unarchiveFeedbackPlanBatch,
@@ -767,6 +782,90 @@ describe("feedback plan batch service", () => {
     await retryFeedbackPlanBatch(batch.id);
     await vi.waitFor(async () => expect((await getFeedbackPlanBatch(batch.id))?.status).toBe("completed"), { timeout: 5000, interval: 50 });
     expect(callOrder).toEqual([studentIds[0], studentIds[0], studentIds[1]]);
+  });
+
+  it("switches only failed and not-started batch items to free generation", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-FREE-FALLBACK`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "合成批次显式降级",
+      generationApproach: "restricted",
+      plans: classIds.map((classId, index) => ({ classId, sessionId: sessionIds[index], studentIds: [studentIds[index]!] })),
+    });
+    const failedPlan = batch.plans[0]!;
+    const failedItem = failedPlan.items[0]!;
+    await prisma.feedbackPlanItem.update({
+      where: { id: failedItem.id },
+      data: {
+        status: "generation_failed",
+        generationError: "受限 Writer 失败",
+        generationExecutionSnapshot: JSON.stringify({
+          version: 1,
+          requestedApproach: "restricted",
+          nextApproach: "restricted",
+          attempts: [{
+            attempt: 1,
+            trigger: "initial",
+            actualApproach: "restricted",
+            status: "failed",
+            startedAt: "2098-01-01T08:00:00.000Z",
+            completedAt: "2098-01-01T08:00:01.000Z",
+            error: { code: "llm_service_error", message: "受限 Writer 失败", retryable: true },
+          }],
+        }),
+      },
+    });
+    await prisma.feedbackPlan.update({
+      where: { id: failedPlan.id },
+      data: { status: "generation_failed", generationStartedAt: new Date("2098-01-01T08:00:00.000Z") },
+    });
+    await prisma.feedbackPlanBatch.update({
+      where: { id: batch.id },
+      data: { status: "failed", currentPlanId: failedPlan.id, failedPlanId: failedPlan.id },
+    });
+
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const actualModes: string[] = [];
+    generationMocks.generate.mockImplementation(async (input: {
+      generationMode?: string;
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      actualModes.push(input.generationMode ?? "");
+      if (actualModes.length === 1) await firstGate;
+      const evidence = input.evidenceBundle.teachingEvidence[0] ?? { id: "fallback", content: "已确认课堂事实" };
+      const composition = {
+        version: 1 as const,
+        closureType: "positive_recognition" as const,
+        needParentAction: false,
+        parentAction: null,
+        modules: [
+          { key: "observed_moment", content: evidence.content, evidenceRefs: [evidence.id], status: "included" as const, reason: "自由反馈测试" },
+          { key: "teacher_interpretation", content: "方法逐步稳定", evidenceRefs: [evidence.id], status: "included" as const, reason: "自由反馈测试" },
+        ],
+        evidenceCoverage: [{ evidenceId: evidence.id, statement: evidence.content }],
+        draftFeedback: `${evidence.content}，方法逐步稳定。`,
+      };
+      return { draftComposition: composition, composition };
+    });
+
+    await retryFeedbackPlanBatchWithFree(batch.id);
+    await vi.waitFor(async () => {
+      const current = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: failedItem.id } });
+      expect(current.status).toBe("generating");
+    });
+    const preparedItems = await prisma.feedbackPlanItem.findMany({
+      where: { plan: { batchId: batch.id } },
+      orderBy: { plan: { batchOrder: "asc" } },
+    });
+    expect(preparedItems).toHaveLength(2);
+    expect(preparedItems.map((item) => JSON.parse(item.generationExecutionSnapshot).nextApproach)).toEqual(["free", "free"]);
+    expect(preparedItems[1]!.status).toBe("evidence_ready");
+    releaseFirst!();
+    await vi.waitFor(async () => expect((await getFeedbackPlanBatch(batch.id))?.status).toBe("completed"), { timeout: 5000, interval: 50 });
+    expect(actualModes).toEqual(["fast", "fast"]);
+    await expect(prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } })).resolves.toMatchObject({ generationApproach: "restricted" });
   });
 
   it("keeps pause, continue, and retry under the batch coordinator", async () => {

@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.3.0-beta.3",
+    title: "受限/自由反馈与可选课程材料",
+    changes: [
+      "新反馈计划显式选择受限或自由生成；受限成稿模型只读取服务端整理的可披露内容，不接触完整证据包或未披露信息。",
+      "生成方式在首次生成后随计划冻结；受限反馈失败不会自动降级，只有教师明确确认后，失败或未开始条目才改用自由方式。",
+      "外部文件和课程背景改为可选：已手工录入评分时可直接继续，独立课次可单独编写背景，没有学期材料库也不再阻断计划。",
+      "文字型出门测 PDF 改由应用内置的 PDF.js 本地解析，macOS 和 Windows Core 都无需另外安装 Poppler 或 pdftotext。",
+    ],
+  },
+  {
     version: "1.3.0-beta.2",
     title: "Windows Core 与学期公共材料导入",
     changes: [

@@ -4,6 +4,7 @@ import {
   feedbackPlanBatchDisplayState,
   feedbackPlanDisplayState,
   feedbackPlanManagerStatusText,
+  feedbackPlanTaskGenerationApproachLabel,
   shouldPollFeedbackPlanTask,
   shouldPollFeedbackPlanTasks,
   type FeedbackPlanBatchSummary,
@@ -76,6 +77,16 @@ describe("feedback plan manager state", () => {
       status: "completed",
       progress: { ...batch().progress, generated: 4, completedClasses: 2 },
     }))).toBe("completed");
+  });
+
+  it("labels restricted, free and historical generation approaches in the visible task rows", () => {
+    const restrictedPlan = plan({ generationApproach: "restricted" });
+    const freeBatch = batch({ generationApproach: "free" });
+    const legacyPlan = plan({ id: "plan-legacy", generationApproach: null });
+
+    expect(feedbackPlanTaskGenerationApproachLabel({ kind: "plan", id: restrictedPlan.id, plan: restrictedPlan })).toBe("受限反馈");
+    expect(feedbackPlanTaskGenerationApproachLabel({ kind: "batch", id: freeBatch.id, batch: freeBatch })).toBe("自由反馈");
+    expect(feedbackPlanTaskGenerationApproachLabel({ kind: "plan", id: legacyPlan.id, plan: legacyPlan })).toBe("旧生成方式");
   });
 });
 
