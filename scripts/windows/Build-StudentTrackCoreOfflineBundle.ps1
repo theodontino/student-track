@@ -35,7 +35,7 @@ if ($buildMetadata.config.env.NEXT_PUBLIC_STUDENT_TRACK_EDITION -ne "core") {
 
 $nodeExecutable = (Resolve-Path -LiteralPath $NodeExecutable).Path
 $nodeVersion = (& $nodeExecutable --version).Trim()
-if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch "^v24\\.") {
+if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch "^v24\.") {
     throw "离线包需要 Node.js 24 x64；当前为 $nodeVersion。"
 }
 $nodeArchitecture = (& $nodeExecutable -p "process.arch").Trim()

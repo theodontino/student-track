@@ -81,6 +81,10 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(installer).toContain('"v1.3.0-beta.2"');
     expect(installer).toContain("https://nodejs.org/dist/index.json");
     expect(installer).toContain('"win-x64-zip"');
+    expect(installer).toContain('^v24\\.');
+    expect(installer).toContain('^11\\.');
+    expect(installer).not.toContain('^v24\\\\.');
+    expect(installer).not.toContain('^11\\\\.');
     expect(installer).toContain('$windows.OSArchitecture -match "ARM"');
     expect(installer).toContain("https://github.com/$Repository/archive/refs/tags/$Tag.zip");
     expect(installer).toMatch(/Join-Path \$RuntimeRoot "node"/);
@@ -142,6 +146,8 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineClickInstaller).toContain("content created by this attempt was removed");
 
     expect(offlineBundle).toContain('STUDENT_TRACK_EDITION -ne "core"');
+    expect(offlineBundle).toContain('^v24\\.');
+    expect(offlineBundle).not.toContain('^v24\\\\.');
     expect(offlineBundle).toContain("status --porcelain");
     expect(offlineBundle).toContain("干净的已提交工作区");
     expect(offlineBundle).toContain("archive --format=zip");

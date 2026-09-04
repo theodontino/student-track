@@ -37,7 +37,7 @@ function Invoke-StudentTrackDownload {
 function Get-LatestNode24Release {
     $releases = @(Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json")
     $release = @($releases | Where-Object {
-        $_.version -match "^v24\\." -and $_.files -contains "win-x64-zip"
+        $_.version -match "^v24\." -and $_.files -contains "win-x64-zip"
     } | Select-Object -First 1)[0]
 
     if ($null -eq $release) {
@@ -58,7 +58,7 @@ function Assert-PortableNode {
     $version = (& $node --version).Trim()
     $architecture = (& $node -p "process.arch").Trim()
     $npmVersion = (& $npm --version).Trim()
-    if ($LASTEXITCODE -ne 0 -or $version -notmatch "^v24\\." -or $architecture -ne "x64" -or $npmVersion -notmatch "^11\\.") {
+    if ($LASTEXITCODE -ne 0 -or $version -notmatch "^v24\." -or $architecture -ne "x64" -or $npmVersion -notmatch "^11\.") {
         throw "需要 Node.js 24 x64 和 npm 11；当前为 $version / $architecture / npm $npmVersion。"
     }
 }
@@ -146,7 +146,7 @@ function New-StudentTrackDesktopShortcut {
 }
 
 Assert-StudentTrackWindowsClient
-if ($ReleaseTag -notmatch "^v[0-9]+\\.[0-9]+\\.[0-9]+") {
+if ($ReleaseTag -notmatch "^v[0-9]+\.[0-9]+\.[0-9]+") {
     throw "ReleaseTag 格式无效：$ReleaseTag"
 }
 
