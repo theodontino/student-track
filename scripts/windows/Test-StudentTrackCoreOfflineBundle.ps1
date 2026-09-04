@@ -9,6 +9,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if ($AllowGitHubActionsServerForCI) {
+    $env:GITHUB_ACTIONS = "true"
+}
+
 $archivePath = (Resolve-Path -LiteralPath $ArchivePath).Path
 $scratchRoot = [System.IO.Path]::GetFullPath($ScratchRoot)
 if (Test-Path -LiteralPath $scratchRoot) {
@@ -62,10 +66,9 @@ $env:HTTP_PROXY = "http://127.0.0.1:9"
 $env:HTTPS_PROXY = "http://127.0.0.1:9"
 $env:NO_PROXY = "127.0.0.1,localhost"
 
-$installerArguments = '/d /c ""' + $installerCommand + '""'
-$installerProcess = Start-Process -FilePath "cmd.exe" -ArgumentList $installerArguments -NoNewWindow -Wait -PassThru
-if ($installerProcess.ExitCode -ne 0) {
-    throw "离线安装器退出失败（退出码 $($installerProcess.ExitCode)）。"
+& $installerCommand
+if ($LASTEXITCODE -ne 0) {
+    throw "离线安装器退出失败（退出码 $LASTEXITCODE）。"
 }
 
 $installedRoot = Join-Path $env:LOCALAPPDATA "Student Track"

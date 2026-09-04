@@ -167,6 +167,7 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundleTest).toContain('$env:HTTP_PROXY = "http://127.0.0.1:9"');
     expect(offlineBundleTest).toContain("Expand-Archive");
     expect(offlineBundleTest).toContain("Install-StudentTrackCoreOffline.cmd");
+    expect(offlineBundleTest).toContain("& $installerCommand");
     expect(offlineBundleTest).toContain('Start-Process -FilePath "cmd.exe"');
     expect(offlineBundleTest).toContain('Join-Path $installedRoot "Start Student Track Core.cmd"');
     expect(offlineBundleTest).toContain("Offline Core CI Semester");
