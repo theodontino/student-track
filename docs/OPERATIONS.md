@@ -7,6 +7,7 @@
 ```bash
 npm install
 npx prisma migrate deploy
+# 仅用于空白开发库；实际教学数据禁止运行 db:seed
 npm run db:seed
 npm run dev
 ```
@@ -14,6 +15,23 @@ npm run dev
 启动后访问 `http://127.0.0.1:3000`。
 
 ### Windows Core 安装与启动
+
+#### 新 Windows 电脑（推荐）
+
+Windows Core 没有 MSI/EXE；使用 prerelease 附件中的单文件安装器即可。它以当前用户身份下载便携版
+Node.js 24 x64、beta.2 源码和 npm 依赖，不需要管理员权限，也不修改系统 Node.js。打开 PowerShell 后运行：
+
+```powershell
+$installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1" -OutFile $installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+安装器只面向第一次安装：若检测到 `%LOCALAPPDATA%\Student Track\app`，会停止而不覆盖程序或数据。
+它会在 `%LOCALAPPDATA%\Student Track\` 下安装程序和便携 Node，并创建桌面上的 **Student Track Core**
+启动入口。以后双击该入口即可；服务仍只监听 `http://127.0.0.1:3000`。
+
+#### 已有源码和 Node.js 的安装方式
 
 Windows Core 源码安装仅支持 Windows 10/11 x64、Node.js 24 x64 和 npm 11。克隆仓库后，在
 PowerShell 中依次运行：

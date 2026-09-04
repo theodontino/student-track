@@ -6,6 +6,7 @@ const scriptRoot = resolve(process.cwd(), "scripts", "windows");
 const common = readFileSync(resolve(scriptRoot, "StudentTrack-Core.Common.ps1"), "utf8");
 const prepare = readFileSync(resolve(scriptRoot, "Prepare-StudentTrackCore.ps1"), "utf8");
 const start = readFileSync(resolve(scriptRoot, "Start-StudentTrackCore.ps1"), "utf8");
+const installer = readFileSync(resolve(scriptRoot, "Install-StudentTrackCore.ps1"), "utf8");
 const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
 const verifyAgent = readFileSync(resolve(process.cwd(), "scripts", "verify-agent.ts"), "utf8");
 const allScripts = `${common}\n${prepare}\n${start}`;
@@ -63,6 +64,19 @@ describe("Windows Core PowerShell entrypoints", () => {
 
   it("does not probe, start, or call Full-only transcription and WCG tools", () => {
     expect(allScripts).not.toMatch(/funasr|diarize|tingwu|aliyun|wecom|wcg/i);
+  });
+
+  it("offers a clean-machine bootstrap without an administrator install or test-data seed", () => {
+    expect(installer).toContain("#requires -Version 5.1");
+    expect(installer).toContain('"v1.3.0-beta.2"');
+    expect(installer).toContain("https://nodejs.org/dist/index.json");
+    expect(installer).toContain('"win-x64-zip"');
+    expect(installer).toContain("https://github.com/$Repository/archive/refs/tags/$Tag.zip");
+    expect(installer).toMatch(/Join-Path \$RuntimeRoot "node"/);
+    expect(installer).toMatch(/Join-Path \$RuntimeRoot "app"/);
+    expect(installer).toContain('set "PATH=%~dp0node;%PATH%"');
+    expect(installer).toContain("Prepare-StudentTrackCore.ps1");
+    expect(installer).not.toMatch(/db:seed|funasr|diarize|tingwu|aliyun|wecom|wcg/i);
   });
 
   it("runs npm steps through Node instead of spawning the Windows cmd shim", () => {
