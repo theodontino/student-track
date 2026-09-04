@@ -75,6 +75,10 @@ describe("macOS Full offline bundle scripts", () => {
 
   it("verifies install, persistence, data-preserving uninstall, and reinstall", () => {
     expect(bundleTest).toContain("HTTP_PROXY");
+    expect(bundleTest).toContain('STUDENT_TRACK_DATA_ROOT="$STUDENT_TRACK_RUNTIME_ROOT/data"');
+    expect(bundleTest).toContain('STUDENT_TRACK_ARCHIVES_ROOT="$STUDENT_TRACK_RUNTIME_ROOT/archives"');
+    expect(bundleTest).toContain('STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT="$STUDENT_TRACK_RUNTIME_ROOT/feedback-attachments"');
+    expect(bundleTest).toContain('STUDENT_TRACK_FEEDBACK_INBOX_ROOT="$STUDENT_TRACK_RUNTIME_ROOT/feedback-inbox"');
     expect(bundleTest).toContain("Offline Full CI Semester");
     expect(bundleTest).toContain("127.0.0.1:$port");
     expect(bundleTest).toContain("uninstall-preservation-marker.txt");
