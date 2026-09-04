@@ -191,7 +191,6 @@ jobs:
     env:
       STUDENT_TRACK_EDITION: full
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
-      DATABASE_URL: file:${{ runner.temp }}/student-track-unit.db
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -201,6 +200,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm test -- --reporter=dot
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-unit.db
 
   core_unit:
     name: Core unit and integration tests
@@ -211,7 +212,6 @@ jobs:
     env:
       STUDENT_TRACK_EDITION: core
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
-      DATABASE_URL: file:${{ runner.temp }}/student-track-core-unit.db
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -221,6 +221,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm test -- --reporter=dot
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-core-unit.db
 
   core_browser:
     name: Core browser contract
@@ -295,7 +297,6 @@ jobs:
     env:
       STUDENT_TRACK_EDITION: full
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
-      DATABASE_URL: file:${{ runner.temp }}/student-track-build.db
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -305,6 +306,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm run build
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-build.db
 
   database_upgrade:
     name: Database upgrade
@@ -312,8 +315,6 @@ jobs:
     if: needs.classify.result == 'success' && needs.classify.outputs.run_database_upgrade == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      DATABASE_URL: file:${{ runner.temp }}/student-track-upgrade.db
     steps:
       - uses: actions/checkout@v5
         with:
@@ -325,6 +326,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm run db:verify-upgrade
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-upgrade.db
 
   contract_check:
     name: Contract integration
@@ -332,8 +335,6 @@ jobs:
     if: needs.classify.result == 'success' && needs.classify.outputs.run_contract_check == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    env:
-      DATABASE_URL: file:${{ runner.temp }}/student-track-contract.db
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -343,6 +344,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm test -- src/tests/wecom-file-transfer-contract.test.ts --reporter=dot
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-contract.db
 
   ci_policy:
     name: CI policy tests
@@ -350,8 +353,6 @@ jobs:
     if: needs.classify.result == 'success' && needs.classify.outputs.run_ci_policy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    env:
-      DATABASE_URL: file:${{ runner.temp }}/student-track-ci-policy.db
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -360,6 +361,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test -- src/tests/ci-policy.test.ts --reporter=dot
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-ci-policy.db
 
   release_policy:
     name: Release privacy
@@ -384,8 +387,6 @@ jobs:
     if: needs.classify.result == 'success' && needs.classify.outputs.run_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    env:
-      DATABASE_URL: file:${{ runner.temp }}/student-track-recovery.db
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -395,6 +396,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm test -- src/tests/database-backup.test.ts --reporter=dot
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-recovery.db
 
   macos_full:
     name: macOS Full production
@@ -405,18 +408,20 @@ jobs:
     env:
       STUDENT_TRACK_EDITION: full
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
-      DATABASE_URL: file:${{ runner.temp }}/student-track-macos-full.db
-      STUDENT_TRACK_RUNTIME_ROOT: ${{ runner.temp }}/student-track-runtime
-      STUDENT_TRACK_DATA_ROOT: ${{ runner.temp }}/student-track-runtime/data
-      STUDENT_TRACK_ARCHIVES_ROOT: ${{ runner.temp }}/student-track-runtime/archives
-      STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT: ${{ runner.temp }}/student-track-runtime/feedback-attachments
-      STUDENT_TRACK_FEEDBACK_INBOX_ROOT: ${{ runner.temp }}/student-track-runtime/feedback-inbox
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
+      - name: Configure isolated Full runtime
+        run: |
+          echo "DATABASE_URL=file:$RUNNER_TEMP/student-track-macos-full.db" >> "$GITHUB_ENV"
+          echo "STUDENT_TRACK_RUNTIME_ROOT=$RUNNER_TEMP/student-track-runtime" >> "$GITHUB_ENV"
+          echo "STUDENT_TRACK_DATA_ROOT=$RUNNER_TEMP/student-track-runtime/data" >> "$GITHUB_ENV"
+          echo "STUDENT_TRACK_ARCHIVES_ROOT=$RUNNER_TEMP/student-track-runtime/archives" >> "$GITHUB_ENV"
+          echo "STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT=$RUNNER_TEMP/student-track-runtime/feedback-attachments" >> "$GITHUB_ENV"
+          echo "STUDENT_TRACK_FEEDBACK_INBOX_ROOT=$RUNNER_TEMP/student-track-runtime/feedback-inbox" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npx prisma generate
       - run: npx prisma migrate deploy
@@ -454,8 +459,6 @@ jobs:
     env:
       STUDENT_TRACK_EDITION: core
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -463,6 +466,11 @@ jobs:
           node-version: 24
           architecture: x64
           cache: npm
+      - name: Configure Windows temp paths
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
       - name: Validate Windows PowerShell entrypoints
         shell: powershell
         run: |
