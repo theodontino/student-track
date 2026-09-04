@@ -18,8 +18,14 @@ npm run dev
 
 #### 新 Windows 电脑（推荐）
 
-Windows Core 没有 MSI/EXE；使用 prerelease 附件中的单文件安装器即可。它以当前用户身份下载便携版
-Node.js 24 x64、beta.2 源码和 npm 依赖，不需要管理员权限，也不修改系统 Node.js。打开 PowerShell 后运行：
+Windows Core 没有 MSI/EXE。给同事安装时，发送 prerelease 附件
+`StudentTrackCore-Windows-Installer.zip`；对方解压后双击其中的 `Install-StudentTrackCore.cmd` 即可。
+这个双击入口会从当前 beta.2 prerelease 拉取安装器，并把失败信息留在命令窗口中。
+
+它以当前用户身份下载便携版 Node.js 24 x64、beta.2 源码和 npm 依赖，不需要管理员权限，也不修改系统
+Node.js。若企业聊天软件不允许直接发送 `.cmd`，发送 zip 附件即可。
+
+也可以手动下载 `Install-StudentTrackCore.ps1` 后，在 PowerShell 中运行：
 
 ```powershell
 $installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"

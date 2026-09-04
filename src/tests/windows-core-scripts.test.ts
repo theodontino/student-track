@@ -7,6 +7,7 @@ const common = readFileSync(resolve(scriptRoot, "StudentTrack-Core.Common.ps1"),
 const prepare = readFileSync(resolve(scriptRoot, "Prepare-StudentTrackCore.ps1"), "utf8");
 const start = readFileSync(resolve(scriptRoot, "Start-StudentTrackCore.ps1"), "utf8");
 const installer = readFileSync(resolve(scriptRoot, "Install-StudentTrackCore.ps1"), "utf8");
+const clickInstaller = readFileSync(resolve(scriptRoot, "Install-StudentTrackCore.cmd"), "utf8");
 const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
 const verifyAgent = readFileSync(resolve(process.cwd(), "scripts", "verify-agent.ts"), "utf8");
 const allScripts = `${common}\n${prepare}\n${start}`;
@@ -78,6 +79,16 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(installer).toContain('set "PATH=%~dp0node;%PATH%"');
     expect(installer).toContain("Prepare-StudentTrackCore.ps1");
     expect(installer).not.toMatch(/db:seed|funasr|diarize|tingwu|aliyun|wecom|wcg/i);
+  });
+
+  it("offers a double-click launcher that fetches the published bootstrap and preserves errors", () => {
+    expect(clickInstaller).toMatch(/^@echo off/m);
+    expect(clickInstaller).toContain("releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1");
+    expect(clickInstaller).toContain("Invoke-WebRequest -UseBasicParsing");
+    expect(clickInstaller).toContain('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%INSTALLER_PATH%"');
+    expect(clickInstaller).toContain(":download_failed");
+    expect(clickInstaller).toContain(":install_failed");
+    expect(clickInstaller).not.toMatch(/db:seed|funasr|diarize|tingwu|aliyun|wecom|wcg/i);
   });
 
   it("runs npm steps through Node instead of spawning the Windows cmd shim", () => {
