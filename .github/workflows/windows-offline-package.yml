@@ -18,11 +18,16 @@ jobs:
     env:
       STUDENT_TRACK_EDITION: core
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
-      DATABASE_URL: file:${{ runner.temp }}/student-track-offline-package-build.db
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}
+      - name: Configure isolated build database
+        shell: pwsh
+        run: |
+          $databasePath = Join-Path $env:RUNNER_TEMP "student-track-offline-package-build.db"
+          $databaseUrl = "file:$($databasePath.Replace('\', '/'))"
+          "DATABASE_URL=$databaseUrl" >> $env:GITHUB_ENV
       - name: Verify requested source commit
         shell: pwsh
         env:

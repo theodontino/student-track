@@ -179,6 +179,11 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundleWorkflow).toContain("workflow_dispatch");
     expect(offlineBundleWorkflow).toContain("完整提交 SHA");
     expect(offlineBundleWorkflow).toContain("完整提交 SHA 构建");
+    expect(offlineBundleWorkflow).toContain("Configure isolated build database");
+    expect(offlineBundleWorkflow).toContain("$env:RUNNER_TEMP");
+    expect(offlineBundleWorkflow).toContain("DATABASE_URL=");
+    expect(offlineBundleWorkflow).toContain("$env:GITHUB_ENV");
+    expect(offlineBundleWorkflow).not.toContain("runner.temp");
     expect(offlineBundleWorkflow).toContain("OFFLINE_SOURCE_COMMIT");
   });
 
