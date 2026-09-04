@@ -16,14 +16,32 @@ npm run dev
 
 ### Windows Core 安装与启动
 
-#### 新 Windows 电脑（推荐）
+#### 给教师的新 Windows 电脑：钉钉离线完整包（推荐）
 
-Windows Core 没有 MSI/EXE。给同事安装时，发送 prerelease 附件
-`StudentTrackCore-Windows-Installer.zip`；对方解压后双击其中的 `Install-StudentTrackCore.cmd` 即可。
-这个双击入口会从当前 beta.2 prerelease 拉取安装器，并把失败信息留在命令窗口中。
+Windows Core 没有 MSI/EXE。发布者应先确认目标完整提交已经通过 Windows Core CI，再以该提交 SHA 运行
+GitHub Actions 的 **Build Windows Core offline package**。下载其中的
+`StudentTrackCore-Windows-x64-<版本>.zip` 后，核对包内 `BUILD-INFO.json` 的 `sourceCommit`，再作为钉钉附件发送。
+该包只由受控 Windows 构建环境生成；不要从 macOS 复制 `node_modules` 或自行拼装文件。这个临时构建产物不会自动追加
+到既有 tag 或 prerelease；发布者必须按其实际提交和验收状态说明交付边界。
 
-它以当前用户身份下载便携版 Node.js 24 x64、beta.2 源码和 npm 依赖，不需要管理员权限，也不修改系统
-Node.js。若企业聊天软件不允许直接发送 `.cmd`，发送 zip 附件即可。
+在这套手动工作流尚未合入默认分支之前，可从目标 PR 的成功 `windows-core` 检查下载同样经过构建和离线验收的
+ZIP artifact；它同样保留 14 天，且不是既有 prerelease 的正式附件。合入默认分支后，才可以使用手动工作流按完整提交 SHA
+重新构建交付包。
+
+教师保存并解压 ZIP，进入 `StudentTrackCore` 文件夹后双击 `Install-StudentTrackCoreOffline.cmd`。安装器会把程序和
+便携 Node 24/npm 11 复制到 `%LOCALAPPDATA%\Student Track\`，在本地执行已随包携带的 Prisma migration，并创建桌面
+上的 **Student Track Core** 启动入口。整个教师端安装过程不访问 GitHub、nodejs.org、npm、SheetJS 或 Prisma 下载站，
+不需要管理员权限，也不会修改系统 Node.js。
+
+离线包包含 Windows x64 的 Core 生产构建、依赖、Prisma 生成物、许可证和对应源码；不包含数据库、`data`、附件、
+收件箱、备份、日志、`.env` 或任何教学数据。首次安装如果在 `%LOCALAPPDATA%\Student Track\` 发现程序目录、数据库、
+运行数据、附件、收件箱或备份中的任一已有内容，会停止而不覆盖或迁移它们。如果全新安装中断，只会移除本次创建的
+程序和运行目录；当前离线包只支持首次安装，尚未提供离线升级流程；不能把新 ZIP 覆盖到旧目录，应联系发布者获取升级或恢复方案。
+
+#### 联网源码安装（仅开发或网络已确认可用时）
+
+旧的 `StudentTrackCore-Windows-Installer.zip` 只有一个联网引导器，不是离线包：它会下载 GitHub、Node.js 和 npm
+依赖。它不适合作为中国大陆教师的默认交付方式，保留仅供开发者或网络条件明确可用的安装场景。
 
 也可以手动下载 `Install-StudentTrackCore.ps1` 后，在 PowerShell 中运行：
 
@@ -33,7 +51,7 @@ Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 ```
 
-安装器只面向第一次安装：若检测到 `%LOCALAPPDATA%\Student Track\app`，会停止而不覆盖程序或数据。
+联网安装器同样只面向第一次安装：若检测到 `%LOCALAPPDATA%\Student Track\app`，会停止而不覆盖程序或数据。
 它会在 `%LOCALAPPDATA%\Student Track\` 下安装程序和便携 Node，并创建桌面上的 **Student Track Core**
 启动入口。以后双击该入口即可；服务仍只监听 `http://127.0.0.1:3000`。
 

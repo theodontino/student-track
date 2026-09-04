@@ -109,6 +109,30 @@ jobs:
         env:
           VERIFY_ARTIFACT_NAME: verification-windows-core-${{ github.run_id }}
       - run: npm run build
+      - name: Build and verify the offline Windows Core package
+        shell: pwsh
+        run: |
+          $packageOutput = Join-Path $env:RUNNER_TEMP "student-track-core-offline-package"
+          $offlineCheck = Join-Path $env:RUNNER_TEMP "student-track-core-offline-check"
+
+          & .\scripts\windows\Build-StudentTrackCoreOfflineBundle.ps1 -OutputDirectory $packageOutput
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $archive = Get-ChildItem -LiteralPath $packageOutput -Filter "StudentTrackCore-Windows-x64-*.zip" -File
+          if ($archive.Count -ne 1) { throw "离线包构建没有产生唯一 ZIP。" }
+
+          & .\scripts\windows\Test-StudentTrackCoreOfflineBundle.ps1 `
+            -ArchivePath $archive[0].FullName `
+            -ScratchRoot $offlineCheck `
+            -AllowGitHubActionsServerForCI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload verified offline Windows Core package
+        uses: actions/upload-artifact@v7
+        with:
+          name: student-track-core-windows-x64-${{ github.sha }}
+          path: ${{ runner.temp }}/student-track-core-offline-package/StudentTrackCore-Windows-x64-*.zip
+          if-no-files-found: error
+          retention-days: 14
       - name: Start, persist, and bind only to loopback
         shell: pwsh
         run: |

@@ -19,7 +19,7 @@ function Assert-StudentTrackCorePrerequisites {
     }
 
     $windows = Get-CimInstance -ClassName Win32_OperatingSystem
-    if ($windows.OSArchitecture -notmatch "64") {
+    if ($windows.OSArchitecture -notmatch "64" -or $windows.OSArchitecture -match "ARM") {
         throw "仅支持 Windows 10/11 x64；当前系统为 $($windows.Caption) $($windows.OSArchitecture)。"
     }
     $supportedClient = $windows.Caption -match "Windows (10|11)"

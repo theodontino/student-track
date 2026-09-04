@@ -25,12 +25,18 @@ git clone https://github.com/theodontino/student-track.git
 cd student-track
 npm install
 npx prisma migrate deploy # 首次运行及升级执行迁移
+# 仅用于空白开发库；实际教学数据和 Windows 离线包禁止运行 db:seed
 npm run db:seed
 npm run dev              # → http://127.0.0.1:3000
 npm run verify:quick
 ```
 
-Windows 10/11 x64 的 Core 源码安装使用专用 PowerShell 入口；需要 Node.js 24 x64 和 npm 11：
+给教师安装 Windows 10/11 x64 的 Core 时，优先使用发布者通过钉钉发送的
+`StudentTrackCore-Windows-x64-<版本>.zip`：解压后进入 `StudentTrackCore`，双击
+`Install-StudentTrackCoreOffline.cmd`。该完整包已经携带 Windows Node、依赖、Prisma 生成物和 Core 生产构建，
+安装时不需要访问 GitHub、Node.js 或 npm。
+
+源码安装只面向开发者；它需要 Node.js 24 x64 和 npm 11：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Prepare-StudentTrackCore.ps1

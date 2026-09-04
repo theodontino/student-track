@@ -8,7 +8,13 @@ const prepare = readFileSync(resolve(scriptRoot, "Prepare-StudentTrackCore.ps1")
 const start = readFileSync(resolve(scriptRoot, "Start-StudentTrackCore.ps1"), "utf8");
 const installer = readFileSync(resolve(scriptRoot, "Install-StudentTrackCore.ps1"), "utf8");
 const clickInstaller = readFileSync(resolve(scriptRoot, "Install-StudentTrackCore.cmd"), "utf8");
+const offlinePrepare = readFileSync(resolve(scriptRoot, "Prepare-StudentTrackCoreOffline.ps1"), "utf8");
+const offlineInstaller = readFileSync(resolve(scriptRoot, "Install-StudentTrackCoreOffline.ps1"), "utf8");
+const offlineClickInstaller = readFileSync(resolve(scriptRoot, "Install-StudentTrackCoreOffline.cmd"), "utf8");
+const offlineBundle = readFileSync(resolve(scriptRoot, "Build-StudentTrackCoreOfflineBundle.ps1"), "utf8");
+const offlineBundleTest = readFileSync(resolve(scriptRoot, "Test-StudentTrackCoreOfflineBundle.ps1"), "utf8");
 const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+const offlineBundleWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "windows-offline-package.yml"), "utf8");
 const verifyAgent = readFileSync(resolve(process.cwd(), "scripts", "verify-agent.ts"), "utf8");
 const allScripts = `${common}\n${prepare}\n${start}`;
 
@@ -18,6 +24,7 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(common).toMatch(/\^v24\\\./);
     expect(common).toMatch(/\^11\\\./);
     expect(common).toContain('$nodeArchitecture -ne "x64"');
+    expect(common).toContain('$windows.OSArchitecture -match "ARM"');
     expect(common).toContain('$env:STUDENT_TRACK_EDITION = "core"');
     expect(common).toContain('$env:GITHUB_ACTIONS -eq "true"');
     expect(prepare).toContain("AllowGitHubActionsServerForCI");
@@ -59,6 +66,7 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(start).toContain("$buildMetadata.config.env.NEXT_PUBLIC_STUDENT_TRACK_EDITION");
     expect(start).toContain('$buildEdition -ne "core"');
     expect(start).toContain('$env:NODE_ENV = "production"');
+    expect(start).toContain('$env:NPM_CONFIG_OFFLINE = "true"');
     expect(start).toContain('"--hostname", "127.0.0.1", "--port", "3000"');
     expect(start).not.toContain("db:seed");
   });
@@ -73,6 +81,7 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(installer).toContain('"v1.3.0-beta.2"');
     expect(installer).toContain("https://nodejs.org/dist/index.json");
     expect(installer).toContain('"win-x64-zip"');
+    expect(installer).toContain('$windows.OSArchitecture -match "ARM"');
     expect(installer).toContain("https://github.com/$Repository/archive/refs/tags/$Tag.zip");
     expect(installer).toMatch(/Join-Path \$RuntimeRoot "node"/);
     expect(installer).toMatch(/Join-Path \$RuntimeRoot "app"/);
@@ -93,6 +102,77 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(clickInstaller).toContain(":download_failed");
     expect(clickInstaller).toContain(":install_failed");
     expect(clickInstaller).not.toMatch(/db:seed|funasr|diarize|tingwu|aliyun|wecom|wcg/i);
+  });
+
+  it("builds and installs a Windows-only offline bundle without a teacher-side download or build", () => {
+    for (const script of [offlinePrepare, offlineInstaller, offlineBundle]) {
+      expect(script.charCodeAt(0)).toBe(0xfeff);
+    }
+    expect(offlineClickInstaller.charCodeAt(0)).not.toBe(0xfeff);
+    expect(offlineClickInstaller).toMatch(/^@echo off/m);
+    expect(offlineClickInstaller).toContain("Install-StudentTrackCoreOffline.ps1");
+    expect(offlineClickInstaller).not.toMatch(/https?:\/\//i);
+
+    expect(offlinePrepare).toContain('$env:NPM_CONFIG_OFFLINE = "true"');
+    expect(offlinePrepare).toContain('@($prismaCli, "migrate", "deploy")');
+    expect(offlinePrepare).toContain('@("run", "db:backup")');
+    expect(offlinePrepare).toContain('@("run", "db:verify-backup")');
+    expect(offlinePrepare).not.toContain('@("ci")');
+    expect(offlinePrepare).not.toContain('"generate"');
+    expect(offlinePrepare).not.toContain('@("run", "build")');
+    expect(offlinePrepare).not.toContain("db:seed");
+
+    expect(offlineInstaller).toContain('$packageApp = Join-Path $packageRoot "app"');
+    expect(offlineInstaller).toContain('$packageNode = Join-Path $packageRoot "node"');
+    expect(offlineInstaller).toContain('$runtimeRoot = Join-Path $env:LOCALAPPDATA "Student Track"');
+    expect(offlineInstaller).toContain('$runtimeDataRoots = @(');
+    expect(offlineInstaller).toContain('Get-ChildItem -LiteralPath $runtimeRoot -Force');
+    expect(offlineInstaller).toContain("升级或恢复方案");
+    expect(offlineInstaller).toContain('Copy-Item -LiteralPath $packageApp -Destination $runtimeRoot');
+    expect(offlineInstaller).toContain('Copy-Item -LiteralPath $packageNode -Destination $runtimeRoot');
+    expect(offlineInstaller).toContain("Prepare-StudentTrackCoreOffline.ps1");
+    expect(offlineInstaller).toContain("StudentTrack-Core.Common.ps1");
+    expect(offlineInstaller).toContain("New-StudentTrackOfflineLauncher");
+    expect(offlineInstaller).toContain('Join-Path $RuntimeRoot "Start Student Track Core.cmd"');
+    expect(offlineInstaller).toContain("WScript.Shell");
+    expect(offlineInstaller).toContain("Remove-Item -LiteralPath $newProgramRoot -Recurse -Force");
+    expect(offlineInstaller).toContain('set "NPM_CONFIG_OFFLINE=true"');
+    expect(offlineInstaller).not.toMatch(/https?:\/\/|Invoke-WebRequest|npm ci|db:seed/i);
+    expect(offlineClickInstaller).toContain("GITHUB_ACTIONS");
+    expect(offlineClickInstaller).toContain("content created by this attempt was removed");
+
+    expect(offlineBundle).toContain('STUDENT_TRACK_EDITION -ne "core"');
+    expect(offlineBundle).toContain("status --porcelain");
+    expect(offlineBundle).toContain("干净的已提交工作区");
+    expect(offlineBundle).toContain("archive --format=zip");
+    expect(offlineBundle).toContain("node_modules");
+    expect(offlineBundle).toContain("src\\generated\\prisma");
+    expect(offlineBundle).toContain("robocopy.exe");
+    expect(offlineBundle).toContain("/XD cache dev");
+    expect(offlineBundle).toContain("Install-StudentTrackCoreOffline.ps1");
+    expect(offlineBundle).toContain("LICENSE");
+    expect(offlineBundle).toContain("student-track-$version-source.zip");
+    expect(offlineBundle).toContain("Compress-Archive");
+    expect(offlineBundle).toContain('"app\\.next\\dev"');
+    expect(offlineBundle).not.toMatch(/https?:\/\/|db:seed|funasr|diarize|tingwu|aliyun|wecom|wcg/i);
+
+    expect(offlineBundleTest.charCodeAt(0)).toBe(0xfeff);
+    expect(offlineBundleTest).toContain('$env:NPM_CONFIG_OFFLINE = "true"');
+    expect(offlineBundleTest).toContain('$env:HTTP_PROXY = "http://127.0.0.1:9"');
+    expect(offlineBundleTest).toContain("Expand-Archive");
+    expect(offlineBundleTest).toContain("Install-StudentTrackCoreOffline.cmd");
+    expect(offlineBundleTest).toContain('Start-Process -FilePath "cmd.exe"');
+    expect(offlineBundleTest).toContain('Join-Path $installedRoot "Start Student Track Core.cmd"');
+    expect(offlineBundleTest).toContain("Offline Core CI Semester");
+    expect(ciWorkflow).toContain("Build and verify the offline Windows Core package");
+    expect(ciWorkflow).toContain("Upload verified offline Windows Core package");
+    expect(ciWorkflow).toContain("student-track-core-windows-x64-${{ github.sha }}");
+    expect(ciWorkflow).toContain("Build-StudentTrackCoreOfflineBundle.ps1");
+    expect(ciWorkflow).toContain("Test-StudentTrackCoreOfflineBundle.ps1");
+    expect(offlineBundleWorkflow).toContain("workflow_dispatch");
+    expect(offlineBundleWorkflow).toContain("完整提交 SHA");
+    expect(offlineBundleWorkflow).toContain("完整提交 SHA 构建");
+    expect(offlineBundleWorkflow).toContain("OFFLINE_SOURCE_COMMIT");
   });
 
   it("runs npm steps through Node instead of spawning the Windows cmd shim", () => {
