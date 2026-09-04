@@ -82,7 +82,7 @@ export function FeedbackWorkflowDemo() {
             <Button variant="secondary">选择文件、文件夹或 ZIP</Button>
           </section>
           <section className={styles.inboxCard}>
-            <div><span className={styles.eyebrow}>入口 B · 固定目录</span><strong>读取反馈收件箱</strong><p><code>~/Library/Application Support/Student Track/feedback-inbox</code></p></div>
+            <div><span className={styles.eyebrow}>入口 B · 固定目录</span><strong>读取反馈收件箱</strong><p><code>Student Track 数据目录 / feedback-inbox</code></p></div>
             <Button variant="secondary" onClick={() => setInboxScanned(true)}>{inboxScanned ? "重新扫描" : "扫描收件箱"}</Button>
             {inboxScanned && <small>发现 1 个助教表、1 个 STEP 文件、28 份 PDF；等待统一核对。</small>}
           </section>

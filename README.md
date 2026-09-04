@@ -4,7 +4,7 @@
 
 **核心工作流**：`家校背景 + 课堂记录 → 教师确认 → 上下文组装 → LLM 反馈草稿 → Excel 导出`
 
-当前版本为 **1.3.0-beta.1**（Zhuiver `MINOR` 预发布）。反馈入口继续使用唯一三段式流程；反馈计划是可命名、可保存和可派生的业务主体，班级与学期支持 30 天回收，课次事实可在备份后独立清空。
+当前版本为 **1.3.0-beta.2**（Zhuiver `MINOR` 预发布）。同一套源码和数据库按构建配置提供 Full 与 Core：macOS 默认保持 Full，Windows 10/11 x64 首先支持 Core；学期公共材料可从 Excel 整库导入，并在新共同讲次中形成待确认草稿。反馈计划继续作为课后工作的业务主体，班级与学期支持 30 天回收，课次事实可在备份后独立清空。
 
 ## 实验性能力：STEP Bridge
 
@@ -25,10 +25,26 @@ git clone https://github.com/theodontino/student-track.git
 cd student-track
 npm install
 npx prisma migrate deploy # 首次运行及升级执行迁移
+# 仅用于空白开发库；实际教学数据和 Windows 离线包禁止运行 db:seed
 npm run db:seed
 npm run dev              # → http://127.0.0.1:3000
 npm run verify:quick
 ```
+
+给教师安装 Windows 10/11 x64 的 Core 时，优先使用发布者通过钉钉发送的
+`StudentTrackCore-Windows-x64-<版本>.zip`：解压后进入 `StudentTrackCore`，双击
+`Install-StudentTrackCoreOffline.cmd`。该完整包已经携带 Windows Node、依赖、Prisma 生成物和 Core 生产构建，
+安装时不需要访问 GitHub、Node.js 或 npm。
+
+源码安装只面向开发者；它需要 Node.js 24 x64 和 npm 11：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Prepare-StudentTrackCore.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Start-StudentTrackCore.ps1
+```
+
+该入口把私有数据放在 `%LOCALAPPDATA%\Student Track\`，不会写入测试数据。支持范围、目录布局、
+重复准备和升级备份规则见[运维手册](docs/OPERATIONS.md#windows-core-安装与启动)。
 
 ## 工程文档
 

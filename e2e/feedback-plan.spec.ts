@@ -26,7 +26,20 @@ async function openTask(page: Page, className: string = TEST_FIXTURE.class.name,
 }
 
 async function uploadCurrent(page: Page, fileName: string, contents: string) {
-  await page.locator('input[type="file"]').first().setInputFiles({ name: fileName, mimeType: "text/plain", buffer: Buffer.from(contents) });
+  const materialCard = page.locator('section[aria-labelledby="feedback-material-title"]');
+  await expect(materialCard.getByText(/0\/[1-9]\d* 名学生/)).toBeVisible({ timeout: 15_000 });
+  const addFileButton = materialCard.getByRole("button", { name: /^(添加文件|继续添加)$/ });
+  await expect(addFileButton).toBeEnabled({ timeout: 15_000 });
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    addFileButton.click(),
+  ]);
+  const uploadFinished = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/feedback/intake/upload"
+  ));
+  await fileChooser.setFiles({ name: fileName, mimeType: "text/plain", buffer: Buffer.from(contents) });
+  expect((await uploadFinished).ok()).toBeTruthy();
   await expect(page.getByText(/材料已整理|等待教师确认/).first()).toBeVisible();
 }
 
@@ -73,11 +86,11 @@ test("golden A: single class uses two teacher confirmations before review", asyn
 
   await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
   await expect(page).toHaveURL(/view=intake/);
-  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/反馈生成 · 事实已冻结/)).toBeVisible();
   await expect(page.getByText(/文件不是必填项，教师确认事实才是进入规划的必要门槛/)).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(/view=intake/);
-  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/反馈生成 · 事实已冻结/)).toBeVisible();
 
   await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
   await expect(page).toHaveURL(/view=plan/);
@@ -519,7 +532,6 @@ test("group task advances a ready class and later scans only the unfinished clas
   expect(batchRequests).toHaveLength(1);
   expect(batchRequests[0]?.plans).toEqual([expect.objectContaining({ classId: TEST_FIXTURE.class.id, intakeRunId: runA.id })]);
   const currentTasks = page.getByLabel("反馈计划选择器");
-  await currentTasks.getByRole("button", { name: "刷新" }).click();
   const currentBatchRow = currentTasks.locator("article").filter({ hasText: "初版计划" });
   await expect(currentBatchRow).toContainText("已完成");
   await currentBatchRow.getByRole("button", { name: "打开" }).click();
@@ -646,7 +658,7 @@ test("new lead-class session confirms shared course material with the material a
   await expect(page).toHaveURL(/view=plan/);
   await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
-  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/反馈生成 · 事实已冻结/)).toBeVisible();
   await page.getByRole("button", { name: "继续录入事实" }).click();
   await expect(page.getByRole("dialog", { name: "继续录入事实" })).toContainText("事实已冻结，如需修改，请谨慎录入新事实并新建计划。");
   await page.getByRole("dialog", { name: "继续录入事实" }).getByRole("button", { name: "确认并继续录入" }).click();
@@ -711,7 +723,7 @@ test("named plan draft supports Command-S, autosave and reload recovery", async 
     action: "plan_draft",
     patch: { displayName: "E2E 快捷键保存草稿" },
   });
-  await expect(page.getByText("计划已保存。", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("反馈计划名称与保存状态").getByRole("status")).toHaveText("已保存");
 
   await page.reload();
   await expect(page).toHaveURL(/view=plan/);
@@ -779,7 +791,7 @@ test("named multi-class draft saves and a batch-only legacy link restores the wo
     action: "plan_draft",
     displayName: "E2E 多班快捷键草稿",
   });
-  await expect(page.getByText("计划已保存。", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("反馈计划名称与保存状态").getByRole("status")).toHaveText("已保存");
 
   await page.reload();
   await expect(page).toHaveURL(/view=plan/);
@@ -814,7 +826,7 @@ test("named multi-class draft saves and a batch-only legacy link restores the wo
   await expect(page.getByRole("heading", { name: "E2E 多班快捷键草稿" })).toBeVisible();
   await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
   await expect(page).toHaveURL(/view=intake/);
-  await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/反馈生成 · 事实已冻结/)).toBeVisible();
 });
 
 test("an approved plan creates a separately named revision without changing the original", async ({ page, request }) => {
@@ -853,6 +865,32 @@ test("an approved plan creates a separately named revision without changing the 
     expectedHashes: { [editedItem.id]: editedItem.finalTextHash },
   } });
   expect(approved.ok()).toBeTruthy();
+
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[1].code}&planId=${original.id}&view=studio`);
+  const completedQueue = page.getByLabel("反馈队列");
+  const completedFilter = completedQueue.locator(".feedback-plan-studio-filters").getByRole("button", { name: /已完成/ });
+  await expect(completedFilter).toHaveAttribute("aria-pressed", "true");
+  await expect(completedQueue).toContainText(TEST_FIXTURE.students[0].name);
+  await expect(page.getByLabel("计划条目详情").getByLabel(`${TEST_FIXTURE.students[0].name}反馈计划文本`)).toHaveValue(originalText);
+  await expect(page).not.toHaveURL(/queue=/);
+  await expect(page).toHaveURL(new RegExp(`itemId=${editedItem.id}`));
+  await page.reload();
+  await expect(completedFilter).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("计划条目详情").getByLabel(`${TEST_FIXTURE.students[0].name}反馈计划文本`)).toHaveValue(originalText);
+
+  const actionFilter = completedQueue.locator(".feedback-plan-studio-filters").getByRole("button", { name: /待处理/ });
+  await actionFilter.click();
+  await expect(actionFilter).toHaveAttribute("aria-pressed", "true");
+  await expect(completedQueue).not.toContainText(TEST_FIXTURE.students[0].name);
+  await expect(page.getByLabel("计划条目详情")).toContainText("当前班级与任务状态下没有学生任务");
+  await expect(page).toHaveURL(/queue=action/);
+  await expect(page).not.toHaveURL(/itemId=/);
+
+  await completedFilter.click();
+  await expect(completedQueue).toContainText(TEST_FIXTURE.students[0].name);
+  await expect(page.getByLabel("计划条目详情").getByLabel(`${TEST_FIXTURE.students[0].name}反馈计划文本`)).toHaveValue(originalText);
+  await expect(page).toHaveURL(/queue=done/);
+  await expect(page).toHaveURL(new RegExp(`itemId=${editedItem.id}`));
 
   const beforeResponse = await request.get(`/api/report/feedback-plans/${original.id}`);
   expect(beforeResponse.ok()).toBeTruthy();

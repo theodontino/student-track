@@ -17,6 +17,7 @@ import {
   type FeedbackEvidenceBundle,
 } from "@/lib/feedback-plan";
 import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
+import { getProductCapabilities } from "@/lib/product-edition";
 import type { FeedbackContextStudent } from "./context-types";
 import type { StudentAssessmentEvidence } from "@/lib/feedback-materials";
 import { LLMRoleAssignmentsPanel } from "@/features/system/LLMRoleAssignmentsPanel";
@@ -429,6 +430,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   const [studioItemId, setStudioItemId] = useState("");
   const candidateDefaultsKey = useRef("");
   const llmWorkspace = useLLMConfiguration();
+  const capabilities = getProductCapabilities();
 
   function changePlanType(nextType: FeedbackPlanType) {
     setType(nextType);
@@ -1183,7 +1185,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
         <Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || archivedReadOnly || selectedItemIds.length === 0}>批准所选可通过项</Button>
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button>
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button>
-        <Button uiSize="sm" variant="secondary" onClick={() => void exportWeComDrafts(activePlan)} disabled={busy || !activePlan.items.some((item) => item.studentId && ["approved", "exported"].includes(item.status) && item.finalText?.trim())}>导出企微草稿 JSON</Button>
+        {capabilities.wecomDraftExport && <Button uiSize="sm" variant="secondary" onClick={() => void exportWeComDrafts(activePlan)} disabled={busy || !activePlan.items.some((item) => item.studentId && ["approved", "exported"].includes(item.status) && item.finalText?.trim())}>导出企微草稿 JSON</Button>}
         {!archivedReadOnly && <Button uiSize="sm" variant="ghost" onClick={() => void archivePlan(activePlan)} disabled={busy}>归档计划</Button>}
       </>}
     </div> : null;

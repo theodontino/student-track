@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseAssessmentPdf } from "@/services/assessment-pdf-service";
 import { resolveIntakeStudentIdentity } from "@/services/feedback-intake-service";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 
 export const runtime = "nodejs";
 
@@ -27,6 +29,7 @@ export async function POST(request: NextRequest) {
     if (!session?.classId) {
       return NextResponse.json({ error: "课次不存在或未关联班级" }, { status: 404 });
     }
+    await assertSessionAvailable(session.id);
     const students = await prisma.student.findMany({
       where: {
         OR: [
@@ -68,6 +71,9 @@ export async function POST(request: NextRequest) {
         : !matched ? "未能自动匹配当前班级学生，请手动选择" : undefined,
     });
   } catch (error) {
+    if (error instanceof ApiError) {
+      return NextResponse.json(apiErrorBody(error), { status: error.status });
+    }
     const message = error instanceof Error ? error.message : "解析出门测 PDF 失败";
     const status = /缺少 pdftotext/.test(message) ? 503 : 400;
     return NextResponse.json({ error: message }, { status });

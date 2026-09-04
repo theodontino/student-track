@@ -14,6 +14,7 @@ import { prisma } from "@/lib/prisma";
 import { createFeedbackPlanBatch, startFeedbackPlanBatch } from "@/services/feedback-plan-batch-service";
 import { startFeedbackPlanGeneration } from "@/services/feedback-plan-service";
 import { resolveFeedbackIntakeRun, type FeedbackIntakeRunView } from "@/services/feedback-intake-service";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 const MaterialSelectionSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("linked_revision"), revisionId: z.string().trim().min(1).max(200) }),
@@ -214,6 +215,14 @@ export async function createFeedbackTask(raw: FeedbackTaskRequest, db: PrismaCli
   if (runs.length !== uniqueRunIds.length) throw new ApiError("有班级的材料运行不存在", 404, "not_found", false);
   const runById = new Map(runs.map((run) => [run.id, run]));
   const orderedRuns = uniqueRunIds.map((id) => runById.get(id)!);
+  for (const run of orderedRuns) {
+    const session = await db.classSession.findUnique({
+      where: { code: run.sessionCode },
+      select: { id: true },
+    });
+    if (!session) throw new ApiError("反馈材料目标课次不存在", 404, "not_found", false);
+    await assertSessionAvailable(session.id, db);
+  }
   const existing = await findExistingTask(input, orderedRuns, db);
   if (existing) return existing;
 

@@ -2,6 +2,7 @@ import "dotenv/config";
 import { readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { verifyDatabaseBackup } from "../src/services/database-backup-service";
+import { resolveStudentTrackArchiveRoot } from "../src/lib/runtime-paths";
 
 async function latestBackup(archiveDir: string) {
   const files = (await readdir(archiveDir)).filter(
@@ -17,7 +18,7 @@ async function latestBackup(archiveDir: string) {
 }
 
 async function main() {
-  const archiveDir = resolve(process.cwd(), "archives");
+  const archiveDir = resolveStudentTrackArchiveRoot();
   const backupPath = process.argv[2] ? resolve(process.argv[2]) : await latestBackup(archiveDir);
   const manifest = await verifyDatabaseBackup(backupPath);
   console.log(`恢复演练通过: ${backupPath}`);

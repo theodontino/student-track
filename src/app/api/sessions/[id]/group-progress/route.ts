@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionGroupProgress, setSessionGroupProgress } from "@/services/group-lesson-service";
 import { ServiceError } from "@/services/service-error";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 
 function failure(error: unknown) {
+  if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
   if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
   console.error("session group progress error", error);
   return NextResponse.json({ error: "更新班级组共同进度失败" }, { status: 500 });

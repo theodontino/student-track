@@ -46,6 +46,7 @@ import {
 import {
   clearFeedbackTaskDraft,
   feedbackTaskDraftScopeKey,
+  hydrateFeedbackTaskPendingGroupDraft,
   readFeedbackTaskDraft,
   readFeedbackTaskStartupDraft,
   syncFeedbackTaskSingleDraftGroupSnapshots,
@@ -470,6 +471,7 @@ function scopeMatchesEntry(entry: FeedbackTaskClassDraft, run: FeedbackIntakeRun
 export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatchId = "" }: { initialPlanId?: string; initialBatchId?: string }) {
   const context = useFeedbackTaskContext();
   const [state, dispatch] = useReducer(feedbackTaskReducer, { planId: initialPlanId, batchId: initialBatchId }, initialState);
+  const [planManagerRefreshKey, setPlanManagerRefreshKey] = useState(0);
   const [runs, setRuns] = useState<Record<string, FeedbackIntakeRunClient>>({});
   const [decisions, setDecisions] = useState<Record<string, FeedbackIntakeDecision[]>>({});
   const [busy, setBusy] = useState(false);
@@ -502,6 +504,9 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
   useLayoutEffect(() => { switchSessionRef.current = context.switchSession; }, [context.switchSession]);
   const setDocumentSaveHandler = useCallback((handler: (() => Promise<boolean>) | null) => {
     documentSaveHandlerRef.current = handler;
+  }, []);
+  const refreshPlanManager = useCallback(() => {
+    setPlanManagerRefreshKey((current) => current + 1);
   }, []);
   const resolveLoadedDocument = useCallback((target: FeedbackStudioPlanTarget & { batchId: string }) => {
     const view = new URLSearchParams(window.location.search).get("view");
@@ -620,14 +625,15 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       setPendingGroupDraft(null);
       return;
     }
-    const saved = readFeedbackTaskDraft({
+    const scope: FeedbackTaskDraftScope = {
       semesterId: context.context.semesterId,
       classId: session.classId,
       sessionCode: session.code,
       groupLessonId: groupLesson.id,
-    });
-    setPendingGroupDraft(saved?.mode === "group" && saved.entries.some((item) => item.selected) ? saved : null);
-  }, [context.context.semesterId, context.data?.session, contextCurrent, groupLesson, state.batchId, state.planId, state.stage]);
+    };
+    const hydrated = hydrateFeedbackTaskPendingGroupDraft(scope, pendingGroupDraft);
+    if (hydrated !== pendingGroupDraft) setPendingGroupDraft(hydrated);
+  }, [context.context.semesterId, context.data?.session, contextCurrent, groupLesson, pendingGroupDraft, state.batchId, state.planId, state.stage]);
 
   useEffect(() => {
     if (!context.hydrated || !currentDraftScopeKey || restoredScopeKey.current === currentDraftScopeKey || state.planId || state.batchId) return;
@@ -1549,6 +1555,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       planId = created.batch.plans[0]?.id ?? "";
     }
     if (!planId) throw new Error("计划草稿建立后没有返回可打开的计划");
+    refreshPlanManager();
     const snapshot = operationDraft.mode === "single" ? operationDraft.groupSnapshot : null;
     const storedGroupDraft = snapshot?.entries[0] ? readFeedbackTaskDraft({
       semesterId: operationSemesterId,
@@ -2031,11 +2038,12 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     classId: context.context.classId ?? "",
     sessionCode: context.context.sessionCode,
   })}`;
+  const semesterMaterialsHref = `/semesters/${encodeURIComponent(context.context.semesterId)}#semester-common-materials`;
   const hasPlanDocument = Boolean(state.planId || state.batchId);
 
   return <main className={styles.page}>
     <PageHeader title="课后工作台" description="录入负责核验材料并沉淀课堂事实；每份反馈计划独立保存规划、生成结果与复核进度，三步可随时回看。" actions={<div className={styles.headerActions}><Badge tone="info">{packageMetadata.version}</Badge><Link className="ui-button ui-button--ghost ui-button--md" href="/feedback/tools">高级工具</Link></div>} />
-    <FeedbackPlanManager semesterId={context.context.semesterId} currentPlanId={state.planId} currentBatchId={state.batchId} onOpen={(target) => void openFeedbackTask(target)} onArchived={releaseArchivedTask} />
+    <FeedbackPlanManager semesterId={context.context.semesterId} currentPlanId={state.planId} currentBatchId={state.batchId} refreshKey={planManagerRefreshKey} onOpen={(target) => void openFeedbackTask(target)} onArchived={releaseArchivedTask} />
     {(error || context.error) && <StatusBanner tone="danger">{error || context.error}</StatusBanner>}{notice && <StatusBanner tone="info">{notice}</StatusBanner>}
     <section className={styles.taskCard}>
       {state.stage === "prepare" && !hasPlanDocument && <div className="feedback-context-section"><SemesterPicker semesterId={context.context.semesterId} onSemesterChange={context.setSemesterId} classId={context.context.classId} className={context.context.className} onClassChange={context.setClass} sessionCode={context.context.sessionCode} onSessionChange={context.setSessionCode} refreshKey={context.refreshKey} disabled={busy || Boolean(state.draft.revisionSource)} /><div className="feedback-new-session"><Button variant="secondary" onClick={() => setSessionDialogOpen(true)} disabled={busy || Boolean(state.draft.revisionSource) || !context.context.semesterId || !context.context.classId}>新建真实课次</Button></div></div>}
@@ -2047,8 +2055,8 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
         return <article key={item.sessionCode} className={item.sessionCode === entry?.sessionCode ? styles.groupClassActive : ""}><div><strong>{item.className}</strong><small>{item.sessionCode} · {studentsBySession[item.sessionCode]?.length ?? item.studentIds.length} 人 · {alreadyPlanned ? "已进入生成" : item.selected ? "已纳入本轮" : "本轮暂不处理"}</small></div><div><Badge tone={alreadyPlanned || run?.status === "applied" ? "success" : "warning"}>{label}</Badge><Button uiSize="sm" variant="ghost" disabled={busy || loadingGroupRosters || alreadyPlanned} aria-pressed={!item.selected} onClick={() => updateTaskEntry(item.sessionCode, { selected: !item.selected })}>{alreadyPlanned ? "已有计划" : item.selected ? "暂不纳入本轮" : "重新纳入本轮"}</Button><Button uiSize="sm" variant="ghost" disabled={busy || loadingGroupRosters} onClick={() => dispatch({ type: "draft", patch: { activeSessionCode: item.sessionCode } })}>设为当前班</Button></div></article>;
       })}</div>}</section>}
       <nav className={styles.taskRail} aria-label="反馈计划阶段"><button type="button" className={state.stage === "prepare" ? styles.activeRail : ""} disabled={busy} onClick={() => void showTaskStage("prepare")}><span>1</span><strong>录入</strong><small>{hasPlanDocument ? "查看采用的材料与事实" : state.draft.mode === "group" ? "共同投料、逐班核验" : "材料可选、事实确认"}</small></button><button type="button" className={state.stage === "confirm" ? styles.activeRail : ""} disabled={busy || (!hasPlanDocument && (!allSelectedRunsApplied || contextActionBlocked))} onClick={() => void showTaskStage("confirm")}><span>2</span><strong>规划</strong><small>{hasPlanDocument ? "查看或修正计划" : state.draft.mode === "group" ? "多班范围与例外" : "学生范围与反馈要求"}</small></button><button type="button" className={state.stage === "studio" ? styles.activeRail : ""} disabled={busy || !hasPlanDocument} onClick={() => void showTaskStage("studio")}><span>3</span><strong>生成</strong><small>{state.draft.mode === "group" || state.batchId ? "按班进度与局部重试" : "生成、复核与批准"}</small></button></nav>
-      {hasPlanDocument && state.stage !== "studio" && <FeedbackTaskDocumentStage view={state.stage === "prepare" ? "intake" : "plan"} planId={state.planId} batchId={state.batchId} onPlan={() => void showTaskStage("confirm")} onStudio={() => void showTaskStage("studio")} onSaveHandlerChange={setDocumentSaveHandler} onDocumentResolved={resolveLoadedDocument} onTaskChanged={openChangedTask} onContinueIntake={continueIndependentIntake} />}
-      {!hasPlanDocument && entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} studentTotal={state.draft.mode === "group" ? selectedEntries.reduce((total, item) => total + (studentsBySession[item.sessionCode]?.length ?? item.studentIds.length), 0) : studentsBySession[entry.sessionCode]?.length ?? entry.studentIds.length} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} confirmDisabled={contextActionBlocked || !selectedEntries.length || selectedEntries.some((item) => !item.runId || !runs[item.runId]) || actionableUnassignedCount > 0 || (state.draft.mode === "single" && unresolvedBlockingCount > 0)} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} decisions={currentRun ? decisions[currentRun.id] ?? [] : []} materialSummary={groupMaterialSummary} manualFactsHref={manualFactsHref} onIgnoreUnassigned={state.draft.mode === "group" && actionableUnassignedCount ? ignoreUnassignedSources : undefined} onDecision={updateDecision} onCommonMaterialChoice={selectCommonMaterial} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onUseExistingFacts={() => void scanInbox(true)} onContinue={() => void confirmMaterialsAndContinue()} />}
+      {hasPlanDocument && state.stage !== "studio" && <FeedbackTaskDocumentStage view={state.stage === "prepare" ? "intake" : "plan"} planId={state.planId} batchId={state.batchId} onPlan={() => void showTaskStage("confirm")} onStudio={() => void showTaskStage("studio")} onSaveHandlerChange={setDocumentSaveHandler} onDocumentResolved={resolveLoadedDocument} onTaskChanged={openChangedTask} onPlanChanged={refreshPlanManager} onContinueIntake={continueIndependentIntake} />}
+      {!hasPlanDocument && entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} studentTotal={state.draft.mode === "group" ? selectedEntries.reduce((total, item) => total + (studentsBySession[item.sessionCode]?.length ?? item.studentIds.length), 0) : studentsBySession[entry.sessionCode]?.length ?? entry.studentIds.length} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} confirmDisabled={contextActionBlocked || !selectedEntries.length || selectedEntries.some((item) => !item.runId || !runs[item.runId]) || actionableUnassignedCount > 0 || (state.draft.mode === "single" && unresolvedBlockingCount > 0)} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} decisions={currentRun ? decisions[currentRun.id] ?? [] : []} materialSummary={groupMaterialSummary} manualFactsHref={manualFactsHref} semesterMaterialsHref={semesterMaterialsHref} onIgnoreUnassigned={state.draft.mode === "group" && actionableUnassignedCount ? ignoreUnassignedSources : undefined} onDecision={updateDecision} onCommonMaterialChoice={selectCommonMaterial} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onUseExistingFacts={() => void scanInbox(true)} onContinue={() => void confirmMaterialsAndContinue()} />}
       {!hasPlanDocument && entry && state.stage === "confirm" && <TaskConfirmationStage draft={state.draft} plannedSessionCodes={[...plannedSessionCodes]} studentsBySession={studentsBySession} scopeSummary={state.draft.mode === "group" ? `${group?.name ?? "共同课"} · 第 ${groupLesson?.sequence ?? "-"} 讲 · ${selectedEntries.map((item) => item.className).join("、")}` : `${entry.className} · ${entry.sessionCode}`} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} onEntry={updateTaskEntry} onDraft={(patch) => dispatch({ type: "draft", patch })} onClassOverrideChange={(sessionCode, override) => dispatch({ type: "class-override", sessionCode, override })} onStudentOverrideChange={(studentId, generationConfig) => dispatch({ type: "student-override", studentId, generationConfig })} onBack={() => void showTaskStage("prepare")} onStart={() => void confirmScopeAndCreate()} />}
       {!hasPlanDocument && !entry && state.stage !== "studio" && <StatusBanner tone="warning">请先选择真实课次。</StatusBanner>}
       {state.stage === "studio" && <FeedbackTaskStudioStage semesterId={context.context.semesterId} className={context.context.className} sessionCode={context.context.sessionCode} planId={state.planId} batchId={state.batchId} context={context.data} onPlanChange={changeStudioPlan} pendingClassCount={pendingGroupDraft?.entries.filter((item) => item.selected).length ?? 0} onResumePending={pendingGroupDraft ? resumePendingGroupClasses : undefined} onNewTask={() => void endAndStartNew()} />}

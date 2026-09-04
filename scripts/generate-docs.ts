@@ -1,7 +1,6 @@
 import { createClient } from "@libsql/client";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -45,9 +44,10 @@ function quoteIdentifier(value: string) {
 }
 
 async function compileSchema(): Promise<TableInfo[]> {
-  const prismaBin = resolve(root, "node_modules/.bin/prisma");
+  const prismaCli = resolve(root, "node_modules/prisma/build/index.js");
   const schemaPath = resolve(root, "prisma/schema.prisma");
-  const { stdout: sql } = await execFileAsync(prismaBin, [
+  const { stdout: sql } = await execFileAsync(process.execPath, [
+    prismaCli,
     "migrate",
     "diff",
     "--from-empty",
@@ -56,9 +56,7 @@ async function compileSchema(): Promise<TableInfo[]> {
     "--script",
   ], { cwd: root, env: { ...process.env, NO_COLOR: "1" }, maxBuffer: 10 * 1024 * 1024 });
 
-  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "student-track-docs-"));
-  const databasePath = resolve(temporaryRoot, "schema.db");
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: ":memory:" });
   try {
     await client.executeMultiple(sql);
     const tableRows = await client.execute(
@@ -100,7 +98,6 @@ async function compileSchema(): Promise<TableInfo[]> {
     return tables;
   } finally {
     client.close();
-    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
@@ -201,7 +198,9 @@ async function renderRoutesDoc() {
 async function syncFile(path: string, content: string) {
   if (checkOnly) {
     const existing = await readFile(path, "utf8").catch(() => "");
-    if (existing !== content) throw new Error(`${relative(root, path)} 已过期，请运行 npm run docs:generate`);
+    if (existing.replaceAll("\r\n", "\n") !== content.replaceAll("\r\n", "\n")) {
+      throw new Error(`${relative(root, path)} 已过期，请运行 npm run docs:generate`);
+    }
     return;
   }
   await mkdir(dirname(path), { recursive: true });

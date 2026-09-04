@@ -5,7 +5,12 @@ import { access, copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { sqliteFileUrl } from "../src/lib/sqlite-file-url";
 import { resolveDatabasePath } from "../src/services/database-backup-service";
+
+const WINDOWS_WORKER_TEMP_ENV = "STUDENT_TRACK_INTERNAL_UPGRADE_TEMP";
+const TEMPORARY_DIRECTORY_PREFIX = "student-track-upgrade-";
 
 // These tables contain business evidence or audit text. Foreign-key columns
 // that are intentionally remapped by the semester migration are omitted from
@@ -119,7 +124,7 @@ async function inspect(
   databasePath: string,
   preservedColumns: Record<string, string[]> = PRESERVED_COLUMNS,
 ): Promise<Inspection> {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     const tables = await existingTables(client);
     const rowCounts: Record<string, number> = {};
@@ -176,7 +181,7 @@ function assertColumnsAvailable(
 }
 
 async function assertNewSchema(databasePath: string) {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     const tables = await existingTables(client);
     for (const table of ["StudentClassEnrollment", "Class", "Student", "FeedbackPlan", "FeedbackPlanBatch"]) {
@@ -250,7 +255,7 @@ async function migrationNames(projectRoot: string) {
 }
 
 async function applyMigrationFiles(projectRoot: string, databasePath: string, names: string[]) {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     for (const name of names) {
       const sql = await readFile(path.join(projectRoot, "prisma", "migrations", name, "migration.sql"), "utf8");
@@ -262,7 +267,7 @@ async function applyMigrationFiles(projectRoot: string, databasePath: string, na
 }
 
 async function seedSyntheticLegacyDatabase(databasePath: string) {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     await client.executeMultiple(`
       INSERT INTO "Semester" ("id", "name", "startDate", "endDate", "createdAt") VALUES
@@ -319,7 +324,7 @@ async function seedSyntheticLegacyDatabase(databasePath: string) {
 }
 
 async function seedSynthetic129FeedbackDatabase(databasePath: string) {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     await client.executeMultiple(`
       INSERT INTO "Semester" ("id", "name", "startDate", "endDate", "createdAt") VALUES
@@ -358,7 +363,7 @@ async function seedSynthetic129FeedbackDatabase(databasePath: string) {
 }
 
 async function assertNamedFeedbackPlanUpgradeSemantics(databasePath: string) {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     const plans = await client.execute(`
       SELECT displayName, basedOnPlanId, status, inputSnapshot
@@ -435,7 +440,7 @@ async function assertNamedFeedbackPlanUpgradeSemantics(databasePath: string) {
 }
 
 async function assertSyntheticSemantics(databasePath: string) {
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     const classRows = await client.execute(`SELECT id, semesterId, code FROM Class WHERE code = 'G3-01' ORDER BY semesterId`);
     if (classRows.rows.length !== 2) throw new Error("跨学期班级未拆分为两个实体");
@@ -477,7 +482,7 @@ async function verifySyntheticUpgrade(projectRoot: string, temporaryDirectory: s
   if (!newMigrations.length) throw new Error("找不到学期班级迁移");
   await applyMigrationFiles(projectRoot, databasePath, oldNames);
   await seedSyntheticLegacyDatabase(databasePath);
-  const legacyClient = createClient({ url: `file:${databasePath}` });
+  const legacyClient = createClient({ url: sqliteFileUrl(databasePath) });
   const workHistoryCount = await tableRowCount(legacyClient, "WorkHistory");
   legacyClient.close();
   if (workHistoryCount !== 1) throw new Error(`合成旧库 WorkHistory 行数异常：${workHistoryCount}`);
@@ -513,7 +518,7 @@ async function verifySynthetic1210FeedbackUpgrade(projectRoot: string, temporary
   if (!names.includes(currentMigration)) throw new Error("找不到 1.3.0-beta.1 回收站迁移");
   await applyMigrationFiles(projectRoot, databasePath, names.filter((name) => name < currentMigration));
   await seedSynthetic129FeedbackDatabase(databasePath);
-  const client = createClient({ url: `file:${databasePath}` });
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
   try {
     await client.execute(`UPDATE FeedbackPlan SET displayName = '固定 1.2.10 计划' WHERE id = 'plan-129'`);
     await client.execute(`UPDATE FeedbackPlanBatch SET displayName = '固定 1.2.10 批次' WHERE id = 'batch-129'`);
@@ -529,41 +534,84 @@ async function verifySynthetic1210FeedbackUpgrade(projectRoot: string, temporary
   await assertNewSchema(databasePath);
 }
 
-async function main() {
+async function verifyUpgrade(temporaryDirectory: string) {
   const projectRoot = process.cwd();
   const liveDatabase = resolveDatabasePath(process.env.DATABASE_URL ?? "file:./dev.db");
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "student-track-upgrade-"));
   const copiedDatabase = path.join(temporaryDirectory, "upgrade.db");
-  try {
-    const verifiedLiveCopy = await access(liveDatabase).then(() => true, (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return false;
-      throw error;
+  const verifiedLiveCopy = await access(liveDatabase).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  if (verifiedLiveCopy) {
+    await copyFile(liveDatabase, copiedDatabase);
+    const prismaCli = path.join(projectRoot, "node_modules", "prisma", "build", "index.js");
+    const migration = spawnSync(process.execPath, [prismaCli, "migrate", "deploy"], {
+      cwd: projectRoot,
+      env: { ...process.env, DATABASE_URL: sqliteFileUrl(copiedDatabase) },
+      stdio: "pipe",
+      encoding: "utf8",
     });
-    if (verifiedLiveCopy) {
-      await copyFile(liveDatabase, copiedDatabase);
-      const prismaCli = path.join(projectRoot, "node_modules", "prisma", "build", "index.js");
-      const migration = spawnSync(process.execPath, [prismaCli, "migrate", "deploy"], {
-        cwd: projectRoot,
-        env: { ...process.env, DATABASE_URL: `file:${copiedDatabase}` },
-        stdio: "pipe",
-        encoding: "utf8",
-      });
-      if (migration.status !== 0) {
-        const details = [migration.stdout, migration.stderr].map((value) => value.trim()).filter(Boolean).join("\n");
-        throw new Error(`数据库副本迁移失败${details ? `：\n${details}` : ""}`);
-      }
-      const after = await inspect(copiedDatabase);
-      if (after.integrity.join(",") !== "ok" || after.foreignKeys.length) throw new Error("真实数据库副本完整性检查失败");
-      await assertNewSchema(copiedDatabase);
+    if (migration.status !== 0) {
+      const details = [migration.stdout, migration.stderr].map((value) => value.trim()).filter(Boolean).join("\n");
+      throw new Error(`数据库副本迁移失败${details ? `：\n${details}` : ""}`);
     }
-    await verifySyntheticUpgrade(projectRoot, temporaryDirectory);
-    await verifySynthetic129FeedbackUpgrade(projectRoot, temporaryDirectory);
-    await verifySynthetic1210FeedbackUpgrade(projectRoot, temporaryDirectory);
-    console.log(verifiedLiveCopy
-      ? "数据库升级验证通过：全新迁移链、固定合成旧库、固定 1.2.9/1.2.10 反馈库和真实库副本均通过完整性检查；旧反馈计划、批次、V1 快照、状态及其他业务证据未丢失。"
-      : "数据库升级验证通过：全新迁移链、固定合成旧库和固定 1.2.9/1.2.10 反馈库通过完整性检查；未发现真实数据库，已跳过副本验证。");
+    const after = await inspect(copiedDatabase);
+    if (after.integrity.join(",") !== "ok" || after.foreignKeys.length) throw new Error("真实数据库副本完整性检查失败");
+    await assertNewSchema(copiedDatabase);
+  }
+  await verifySyntheticUpgrade(projectRoot, temporaryDirectory);
+  await verifySynthetic129FeedbackUpgrade(projectRoot, temporaryDirectory);
+  await verifySynthetic1210FeedbackUpgrade(projectRoot, temporaryDirectory);
+  console.log(verifiedLiveCopy
+    ? "数据库升级验证通过：全新迁移链、固定合成旧库、固定 1.2.9/1.2.10 反馈库和真实库副本均通过完整性检查；旧反馈计划、批次、V1 快照、状态及其他业务证据未丢失。"
+    : "数据库升级验证通过：全新迁移链、固定合成旧库和固定 1.2.9/1.2.10 反馈库通过完整性检查；未发现真实数据库，已跳过副本验证。");
+}
+
+function checkedWorkerDirectory(value: string) {
+  const resolved = path.resolve(value);
+  const temporaryRoot = path.resolve(os.tmpdir());
+  const relative = path.relative(temporaryRoot, resolved);
+  if (
+    !path.basename(resolved).startsWith(TEMPORARY_DIRECTORY_PREFIX)
+    || relative.startsWith("..")
+    || path.isAbsolute(relative)
+  ) {
+    throw new Error(`Windows 数据库验证临时目录无效：${resolved}`);
+  }
+  return resolved;
+}
+
+async function main() {
+  const workerDirectory = process.env[WINDOWS_WORKER_TEMP_ENV]?.trim();
+  if (process.platform === "win32" && !workerDirectory) {
+    const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), TEMPORARY_DIRECTORY_PREFIX));
+    try {
+      const worker = spawnSync(process.execPath, [
+        "--import",
+        "tsx",
+        fileURLToPath(import.meta.url),
+      ], {
+        cwd: process.cwd(),
+        env: { ...process.env, [WINDOWS_WORKER_TEMP_ENV]: temporaryDirectory },
+        stdio: "inherit",
+      });
+      if (worker.error) throw worker.error;
+      if (worker.status !== 0) process.exitCode = worker.status ?? 1;
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  const temporaryDirectory = workerDirectory
+    ? checkedWorkerDirectory(workerDirectory)
+    : await mkdtemp(path.join(os.tmpdir(), TEMPORARY_DIRECTORY_PREFIX));
+  try {
+    await verifyUpgrade(temporaryDirectory);
   } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    if (!workerDirectory) {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   }
 }
 

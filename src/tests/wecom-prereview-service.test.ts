@@ -6,10 +6,12 @@ vi.mock("@/lib/llm", async (importOriginal) => ({
 import { WeComExtractionError } from "@/services/wecom-handoff-extraction-service";
 import {
   callLlmWithSchemaFallback,
+  filterAvailableWccDrafts,
   parsePreReviewText,
   readPreReviewError,
   type PreReviewSuggestion,
 } from "@/services/wecom-prereview-service";
+import type { PrismaClient } from "@/generated/prisma/client";
 
 type CompletionResponse = { choices: Array<{ message: { content: string | null; reasoning_content?: string | null } }> };
 
@@ -105,6 +107,27 @@ describe("parsePreReviewText", () => {
     expect(readPreReviewError(JSON.stringify({ verdict: "review", error: "schema_invalid: empty content" })))
       .toBe("schema_invalid: empty content");
     expect(readPreReviewError(JSON.stringify({ verdict: "review" }))).toBeNull();
+  });
+});
+
+describe("WCC pre-review recycle scope", () => {
+  it("keeps unbound and active-session drafts but excludes recycled or unknown sessions", async () => {
+    const findMany = vi.fn().mockResolvedValue([{ code: "ACTIVE-SESSION" }]);
+    const database = { classSession: { findMany } } as unknown as PrismaClient;
+    const drafts = [
+      { id: "wcc-unbound", sessionCode: null },
+      { id: "wcc-active", sessionCode: "ACTIVE-SESSION" },
+      { id: "wcc-recycled", sessionCode: "RECYCLED-SESSION" },
+      { id: "wcc-unknown", sessionCode: "UNKNOWN-SESSION" },
+    ];
+
+    await expect(filterAvailableWccDrafts(database, drafts)).resolves.toEqual(drafts.slice(0, 2));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        code: { in: ["ACTIVE-SESSION", "RECYCLED-SESSION", "UNKNOWN-SESSION"] },
+        semester: { deletedAt: null },
+      }),
+    }));
   });
 });
 

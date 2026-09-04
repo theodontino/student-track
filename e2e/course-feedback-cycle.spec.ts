@@ -163,10 +163,23 @@ async function startPlan(request: APIRequestContext, planId: string) {
 
 async function uploadClassMaterials(page: Page, classIndex: 0 | 1) {
   const className = fixture.classes[classIndex].name;
-  await page.locator('input[type="file"]').first().setInputFiles([
+  const materialCard = page.locator('section[aria-labelledby="feedback-material-title"]');
+  await expect(materialCard.getByText(/0\/[1-9]\d* 名学生/)).toBeVisible({ timeout: 15_000 });
+  const addFileButton = materialCard.getByRole("button", { name: /^(添加文件|继续添加)$/ });
+  await expect(addFileButton).toBeEnabled({ timeout: 15_000 });
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    addFileButton.click(),
+  ]);
+  const uploadFinished = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && ["/api/feedback/intake/upload", "/api/feedback/intake/group-upload"].includes(new URL(response.url()).pathname)
+  ));
+  await fileChooser.setFiles([
     { name: `${className}-助教表.xlsx`, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: assistantRoster(classIndex) },
     { name: `${className}.step-classroom.txt`, mimeType: "text/plain", buffer: Buffer.from(stepText(classIndex)) },
   ]);
+  expect((await uploadFinished).ok()).toBeTruthy();
   await expect(page.getByText(/材料已整理|等待教师确认/).first()).toBeVisible();
   await expect(page.getByText("2 个文件", { exact: true }).first()).toBeVisible();
   const runId = new URL(page.url()).searchParams.get("intakeRunId");

@@ -4,7 +4,9 @@ import { includeIndependentFeedbackStudent, TaskConfirmationStage } from "@/feat
 import { TaskPreparationStage } from "@/features/feedback/TaskPreparationStage";
 import { syncFeedbackItemDrafts } from "@/features/feedback/FeedbackPlanPanel";
 import {
+  defaultFeedbackQueueFilter,
   feedbackQueueCategory,
+  resolveFeedbackQueueTarget,
   feedbackStudioInitialPlanTarget,
   feedbackStudioPlanTarget,
   shouldRefreshFeedbackTaskBatch,
@@ -82,6 +84,39 @@ describe("feedback task group workspace state", () => {
     for (const status of ["evidence_ready", "queued", "generating", "pause_requested", "paused", "generation_failed", "stale"]) {
       expect(feedbackQueueCategory(status)).toBe("action");
     }
+  });
+
+  it("opens an all-completed queue on the first non-empty completed category", () => {
+    const queue = [
+      { plan: { id: "plan-a", class: { id: "class-a" } }, item: { id: "item-a", status: "approved" } },
+      { plan: { id: "plan-b", class: { id: "class-b" } }, item: { id: "item-b", status: "exported" } },
+    ];
+    const filter = defaultFeedbackQueueFilter(queue, "all");
+
+    expect(filter).toBe("done");
+    expect(resolveFeedbackQueueTarget(queue, filter, "all", { planId: "plan-a", itemId: "" })).toEqual({ planId: "plan-a", itemId: "item-a" });
+  });
+
+  it("clears the queue target instead of retaining another class when the combined filter is empty", () => {
+    const queue = [
+      { plan: { id: "plan-a", class: { id: "class-a" } }, item: { id: "item-a", status: "evidence_ready" } },
+      { plan: { id: "plan-b", class: { id: "class-b" } }, item: { id: "item-b", status: "approved" } },
+    ];
+
+    expect(resolveFeedbackQueueTarget(queue, "action", "class-b", { planId: "plan-a", itemId: "item-a" })).toBeNull();
+  });
+
+  it("moves the right-hand target into the selected class and task status", () => {
+    const queue = [
+      { plan: { id: "plan-a", class: { id: "class-a" } }, item: { id: "item-action", status: "generating" } },
+      { plan: { id: "plan-a", class: { id: "class-a" } }, item: { id: "item-review", status: "needs_review" } },
+      { plan: { id: "plan-b", class: { id: "class-b" } }, item: { id: "item-done", status: "approved" } },
+    ];
+
+    expect(resolveFeedbackQueueTarget(queue, "review", "class-a", { planId: "plan-a", itemId: "item-action" })).toEqual({
+      planId: "plan-a",
+      itemId: "item-review",
+    });
   });
 
   it("maps persistent intake, plan and studio views without treating studio as available before a plan exists", () => {

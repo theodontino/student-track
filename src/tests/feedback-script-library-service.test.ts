@@ -28,7 +28,7 @@ function exampleWorkbook() {
 
 afterEach(async () => {
   await prisma.classSession.deleteMany({ where: { code: sessionCode } });
-  await prisma.semester.deleteMany({ where: { name: semesterName } });
+  await prisma.semester.deleteMany({ where: { name: { startsWith: semesterName } } });
 });
 
 describe("feedback script library service", () => {
@@ -57,7 +57,7 @@ describe("feedback script library service", () => {
     ]));
   });
 
-  it("replaces one semester library and recommends the selected session progress", async () => {
+  it("saves one semester library and recommends the selected session progress", async () => {
     const semester = await prisma.semester.create({
       data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" },
     });
@@ -88,6 +88,50 @@ describe("feedback script library service", () => {
     const stored = await prisma.semester.findUniqueOrThrow({ where: { id: semester.id } });
     expect(stored.feedbackScriptLibraryJson).toContain("第一课群反馈");
     expect(stored.feedbackScriptLibraryJson).not.toContain(".xlsx");
+  });
+
+  it("requires explicit replacement and preserves the old library when parsing fails", async () => {
+    const semester = await prisma.semester.create({
+      data: { name: `${semesterName}-REPLACE`, startDate: "2099-01-01", endDate: "2099-12-31" },
+    });
+    await saveFeedbackScriptLibrary(prisma, semester.id, exampleWorkbook());
+    const oldRecord = await prisma.semester.findUniqueOrThrow({ where: { id: semester.id } });
+
+    const replacement = workbookBuffer([
+      ["替换后的规范化库名"],
+      ["课次", "课程主题", "群反馈", "统一测评说明", "全对的私反馈", "有错误的私反馈"],
+      [1, "新主题", "课程标题：正文标题\n新群反馈", "新测评说明", "新全对模板", "新有误模板"],
+    ]);
+    await expect(saveFeedbackScriptLibrary(prisma, semester.id, replacement)).rejects.toMatchObject({
+      status: 409,
+      message: "当前学期已有公共材料库，整体替换前需要明确确认",
+    });
+
+    await expect(saveFeedbackScriptLibrary(prisma, semester.id, new ArrayBuffer(0), undefined, true)).rejects.toThrow("上传文件为空");
+    const afterParseFailure = await prisma.semester.findUniqueOrThrow({ where: { id: semester.id } });
+    expect(afterParseFailure.feedbackScriptLibraryJson).toBe(oldRecord.feedbackScriptLibraryJson);
+    expect(afterParseFailure.feedbackScriptLibraryName).toBe(oldRecord.feedbackScriptLibraryName);
+    expect(afterParseFailure.feedbackScriptLibraryUpdatedAt).toEqual(oldRecord.feedbackScriptLibraryUpdatedAt);
+
+    const saved = await saveFeedbackScriptLibrary(prisma, semester.id, replacement, undefined, true);
+    expect(saved.library).toMatchObject({
+      name: "替换后的规范化库名",
+      entries: [{
+        lessonNumber: 1,
+        topic: "新主题",
+        material: {
+          lessonTitle: "新主题",
+          assessmentBriefRaw: "新测评说明",
+          perfectPrivateTemplate: "新全对模板",
+          errorPrivateTemplate: "新有误模板",
+          semesterScriptSource: { lessonNumber: 1 },
+        },
+      }],
+    });
+    const stored = await prisma.semester.findUniqueOrThrow({ where: { id: semester.id } });
+    expect(stored.feedbackScriptLibraryName).toBe("替换后的规范化库名");
+    expect(stored.feedbackScriptLibraryJson).not.toContain(".xlsx");
+    expect(stored.feedbackScriptLibraryJson).not.toContain("scripts");
   });
 
   it("rejects duplicate lessons instead of silently choosing one", () => {

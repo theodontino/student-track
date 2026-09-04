@@ -111,7 +111,11 @@ export async function getAlertDashboard(
 
   const today = localDate(options.now ?? new Date());
   const sessions = await db.classSession.findMany({
-    where: { semesterId: semester.id, date: { lte: today } },
+    where: {
+      semesterId: semester.id,
+      date: { lte: today },
+      OR: [{ classId: null }, { class: { deletedAt: null } }],
+    },
     orderBy: [{ date: "desc" }, { semesterNumber: "desc" }, { createdAt: "desc" }],
     select: {
       id: true,

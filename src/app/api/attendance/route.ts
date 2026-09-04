@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { updateSessionAttendance, type AttendanceUpdate } from "@/services/attendance-service";
 import { ServiceError } from "@/services/service-error";
 import { requireSemesterId } from "@/services/student-enrollment-service";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 // GET /api/attendance?sessionId=xxx - get attendance for a session
 // GET /api/attendance?studentId=xxx - get attendance history for a student
@@ -16,11 +18,20 @@ export async function GET(request: NextRequest) {
     if (!sessionId && !studentId) {
       return NextResponse.json({ error: "缺少 sessionId 或 studentId" }, { status: 400 });
     }
+    if (sessionId) await assertSessionAvailable(sessionId);
 
     if (studentId) {
       const semesterId = requestedSemesterId ? await requireSemesterId(prisma, requestedSemesterId) : undefined;
       const records = await prisma.attendance.findMany({
-        where: { studentId, ...(sessionId ? { sessionId } : {}), ...(semesterId ? { session: { semesterId } } : {}) },
+        where: {
+          studentId,
+          ...(sessionId ? { sessionId } : {}),
+          session: {
+            semester: { deletedAt: null },
+            OR: [{ classId: null }, { class: { deletedAt: null } }],
+            ...(semesterId ? { semesterId } : {}),
+          },
+        },
         include: { session: { select: { date: true, semesterNumber: true, code: true } } },
         orderBy: { createdAt: "desc" },
       });
@@ -65,6 +76,7 @@ export async function GET(request: NextRequest) {
     })));
   } catch (error) {
     console.error("[/api/attendance] error:", error);
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     return NextResponse.json({ error: "获取考勤失败" }, { status: 500 });
   }
 }
@@ -76,6 +88,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(await updateSessionAttendance(body.sessionId, body.updates));
   } catch (error) {
     console.error("[/api/attendance] error:", error);
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     if (error instanceof ServiceError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }

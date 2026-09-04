@@ -175,7 +175,7 @@ function MaterialDetail({ source, busy, onAddFile, onAddFolder, onScan, onDecisi
     })}</div></section>}
     {source.status === "missing" && <p>这一来源是可选的；缺少它本身不会阻止确认。可以继续添加文件、选择文件夹或扫描收件箱。</p>}
     {source.status !== "missing" && source.issues.length === 0 && <p>{source.status === "applied" ? "这些文件已用于写入本轮课堂事实。" : "文件已读取，当前没有需要教师处理的异常。"}</p>}
-    <div className={styles.materialDialogInbox}>收件箱：~/Library/Application Support/Student Track/feedback-inbox<br />扫描不会移动或删除源文件。</div>
+    <div className={styles.materialDialogInbox}>收件箱：Student Track 数据目录中的 feedback-inbox<br />扫描不会移动或删除源文件。</div>
     <div className={styles.materialDialogActions}><Button variant="ghost" onClick={onScan}>扫描收件箱</Button><Button variant="ghost" onClick={onAddFolder}>选择文件夹</Button><Button variant="secondary" onClick={onAddFile}>添加文件</Button></div>
   </div>;
 }

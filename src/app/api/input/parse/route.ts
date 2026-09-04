@@ -11,8 +11,10 @@ import { apiErrorBody, apiStreamErrorBody, ApiError } from "@/lib/api-errors";
 import { ZodError } from "zod";
 import { isStepClassroomExport } from "@/lib/step-classroom-format";
 import { StepClassroomImportError, createStepClassroomDraft } from "@/services/step-classroom-import-service";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 function parseError(error: unknown) {
+  if (error instanceof ApiError) return error;
   if (error instanceof StepClassroomImportError) return new ApiError(error.message, error.status, "invalid_request", false);
   if (error instanceof ZodError) return new ApiError("LLM 输出未通过结构化校验", 502, "llm_schema_invalid", false);
   if (error instanceof Error && /LLM|模型|response|token/i.test(error.message)) {
@@ -43,6 +45,7 @@ export async function POST(request: NextRequest) {
       select: { id: true, classId: true, semesterId: true },
     });
     if (!session) return NextResponse.json({ error: "课次不存在", code: "not_found", retryable: false }, { status: 404 });
+    await assertSessionAvailable(session.id);
     if (!session.classId) return NextResponse.json({ error: "该课次未关联班级，无法补齐考勤", code: "invalid_request", retryable: false }, { status: 400 });
 
     // Name matching and absence completion must stay inside the selected class.

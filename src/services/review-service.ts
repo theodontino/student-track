@@ -19,6 +19,8 @@ import { adoptGenerationByOperationKey, compactHotGenerationRecordsForClass } fr
 import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
 import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
 import { restrictStepResultToTeacherObservations } from "@/services/step-classroom-import-service";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
+import { assertProductCapability } from "@/lib/product-capability-guard";
 
 type ReviewAction = "confirm" | "reject";
 type ReviewDb = PrismaClient | Prisma.TransactionClient;
@@ -167,6 +169,7 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
   const transactionBody = async (tx: Prisma.TransactionClient) => {
     const draft = await tx.draftRecord.findUnique({ where: { id: input.draftId } });
     if (!draft) throw new ServiceError("草稿不存在", 404);
+    if (draft.id.startsWith("wcc-")) assertProductCapability("wecomIntegration");
     if (
       draft.kind === "correction"
       && draft.status === "confirmed"
@@ -188,6 +191,17 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
     if (draft.status !== "pending" && !isConfirmedAmendment) {
       throw new ServiceError("草稿已经处理，不能重复提交", 409);
     }
+
+    const session = draft.sessionCode
+      ? await tx.classSession.findUnique({
+          where: { code: draft.sessionCode },
+          select: { id: true, date: true, semesterId: true, classId: true },
+        })
+      : null;
+    if (draft.sessionCode && !session) {
+      throw new ServiceError(`关联课次 ${draft.sessionCode} 已被删除，请重新录入`, 409);
+    }
+    if (session) await assertSessionAvailable(session.id, tx);
 
     if (input.action === "reject") {
       await tx.draftRecord.update({
@@ -224,15 +238,6 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
       throw new ServiceError("STEP 草案缺少学号绑定，不能按姓名猜测学生", 409);
     }
     const today = new Date().toISOString().split("T")[0];
-    const session = draft.sessionCode
-      ? await tx.classSession.findUnique({
-          where: { code: draft.sessionCode },
-          select: { id: true, date: true, semesterId: true, classId: true },
-        })
-      : null;
-    if (draft.sessionCode && !session) {
-      throw new ServiceError(`关联课次 ${draft.sessionCode} 已被删除，请重新录入`, 409);
-    }
     if (input.semesterId && (!session || session.semesterId !== input.semesterId)) {
       throw new ServiceError("草案不属于所选学期", 409);
     }

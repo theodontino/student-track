@@ -81,7 +81,11 @@ export async function getStudentSemesterSummaries(
 
   const asOfDate = localDate(options.now ?? new Date());
   const sessions = await db.classSession.findMany({
-    where: { semesterId: semester.id, date: { lte: asOfDate } },
+    where: {
+      semesterId: semester.id,
+      date: { lte: asOfDate },
+      OR: [{ classId: null }, { class: { deletedAt: null } }],
+    },
     select: { id: true },
   });
   const sessionIds = sessions.map((session) => session.id);

@@ -11,7 +11,7 @@ import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { assertClassInSemester } from "@/services/student-enrollment-service";
 import { resolveSemesterCommonMaterial } from "@/services/common-material-service";
-import { assertSemesterAvailable } from "@/services/academic-scope-recycle-service";
+import { assertSemesterAvailable, assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 type SessionDb = PrismaClient | Prisma.TransactionClient;
 
@@ -20,6 +20,11 @@ function localDate(date = new Date()) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function availableClassView(klass: { id: string; code: string; name: string | null; deletedAt: Date | null } | null) {
+  if (!klass || klass.deletedAt) return null;
+  return { id: klass.id, code: klass.code, name: klass.name };
 }
 
 async function reorderSemesterNumbers(
@@ -51,6 +56,8 @@ async function resolveSelectedClass(
     const matches = await db.class.findMany({
       where: {
         semesterId: input.semesterId,
+        deletedAt: null,
+        semester: { deletedAt: null },
         OR: [{ code: input.classCode }, { name: input.classCode }],
       },
       select: { id: true, code: true, name: true, semesterId: true },
@@ -95,7 +102,7 @@ async function getClassSessionCreationOptionsFromDb(
           id: true,
           name: true,
           leadClassId: true,
-          leadClass: { select: { id: true, code: true, name: true } },
+          leadClass: { select: { id: true, code: true, name: true, deletedAt: true } },
           lessons: {
             orderBy: { sequence: "asc" },
             select: {
@@ -103,6 +110,12 @@ async function getClassSessionCreationOptionsFromDb(
               title: true,
               sequence: true,
               sessionLinks: {
+                where: {
+                  session: {
+                    semester: { deletedAt: null },
+                    class: { deletedAt: null },
+                  },
+                },
                 select: {
                   session: {
                     select: {
@@ -132,7 +145,8 @@ async function getClassSessionCreationOptionsFromDb(
     };
   }
 
-  const isLeadClass = group.leadClassId === selectedClass.id;
+  const leadClass = availableClassView(group.leadClass);
+  const isLeadClass = leadClass?.id === selectedClass.id;
   const availableLessons: SessionCreationLessonOption[] = group.lessons.flatMap((lesson) => {
     const alreadyLinked = lesson.sessionLinks.some(({ session }) => session.classId === selectedClass.id);
     if (alreadyLinked) return [];
@@ -165,7 +179,7 @@ async function getClassSessionCreationOptionsFromDb(
   const maxSequence = group.lessons.at(-1)?.sequence ?? 0;
 
   let recommendation: SessionCreationRecommendation;
-  if (!group.leadClassId) {
+  if (!leadClass) {
     recommendation = { type: "choice_required", reason: "班级组尚未设置进度基准班，请先明确选择共同讲次或建立独立课次" };
   } else if (latestClassSession && input.date < latestClassSession.date) {
     recommendation = { type: "choice_required", reason: `所选日期早于该班最近课次（${latestClassSession.date}），回填课次需要明确选择共同讲次或独立课次` };
@@ -193,7 +207,7 @@ async function getClassSessionCreationOptionsFromDb(
     group: {
       id: group.id,
       name: group.name,
-      leadClass: group.leadClass,
+      leadClass,
       isLeadClass,
     },
     lessons: availableLessons,
@@ -356,12 +370,15 @@ export async function createClassSession(input: {
                 select: { id: true, title: true, sequence: true },
               });
               created = true;
-              const suggestedLessonNumber = input.commonMaterialLessonNumber ?? sequence;
-              const suggestedMaterial = await resolveSemesterCommonMaterial(tx, input.semesterId, suggestedLessonNumber);
+              const suggestedMaterial = await resolveSemesterCommonMaterial(tx, input.semesterId, sequence);
               if (suggestedMaterial) {
-                await tx.groupLesson.update({
+                lesson = await tx.groupLesson.update({
                   where: { id: lesson.id },
-                  data: { materialSnapshot: JSON.stringify(suggestedMaterial) },
+                  data: {
+                    materialSnapshot: JSON.stringify(suggestedMaterial),
+                    ...(suggestedMaterial.lessonTitle ? { title: suggestedMaterial.lessonTitle } : {}),
+                  },
+                  select: { id: true, title: true, sequence: true },
                 });
               }
             } else {
@@ -455,6 +472,7 @@ export async function deleteClassSession(input: { semesterId: string; code: stri
     if (!session || session.semesterId !== input.semesterId) {
       throw new ServiceError("课次不存在或不属于该学期", 404);
     }
+    await assertSessionAvailable(session.id, tx);
 
     const [metrics, attendances, events, communications, intakeRuns, groupLinks, planReferences, observationSources] = await Promise.all([
       tx.sessionMetric.count({ where: { sessionId: session.id } }),

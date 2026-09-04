@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { processDraftReview } from "@/services/review-service";
 import { assignWccDraftSession } from "@/services/wecom-handoff-consumer-service";
 import { readPreReviewError, readPreReviewSuggestion } from "@/services/wecom-prereview-service";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 
 function parsed(value: string) {
   try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
@@ -33,22 +34,37 @@ export async function GET(request: NextRequest) {
   const studentIds = [...new Set(drafts.map((draft) => draft.studentId).filter((id): id is string => Boolean(id)))];
   const students = studentIds.length
     ? await prisma.student.findMany({
-        where: { id: { in: studentIds } },
-        include: { enrollments: { include: { class: true, semester: true }, orderBy: { semester: { startDate: "desc" } } } },
+        where: {
+          id: { in: studentIds },
+          enrollments: { some: { class: { deletedAt: null }, semester: { deletedAt: null } } },
+        },
+        include: {
+          enrollments: {
+            where: { class: { deletedAt: null }, semester: { deletedAt: null } },
+            include: { class: true, semester: true },
+            orderBy: { semester: { startDate: "desc" } },
+          },
+        },
       })
     : [];
   const studentsById = new Map(students.map((student) => [student.id, student]));
   const classIds = [...new Set(students.flatMap((student) => student.enrollments.map((enrollment) => enrollment.classId)))];
   const allSessions = classIds.length
     ? await prisma.classSession.findMany({
-        where: { classId: { in: classIds } },
+        where: {
+          classId: { in: classIds },
+          semester: { deletedAt: null },
+          class: { deletedAt: null },
+        },
         select: { code: true, date: true, semesterNumber: true, classId: true, semesterId: true },
         orderBy: { date: "desc" },
       })
     : [];
 
   const output = [];
+  const availableSessionCodes = new Set(allSessions.map((session) => session.code));
   for (const draft of drafts) {
+    if (draft.sessionCode && !availableSessionCodes.has(draft.sessionCode)) continue;
     const student = draft.studentId ? studentsById.get(draft.studentId) ?? null : null;
     const result = parsed(draft.parsedResult);
     const source = result.wccSource && typeof result.wccSource === "object"
@@ -110,6 +126,7 @@ export async function PATCH(request: NextRequest) {
     const draft = await assignWccDraftSession(prisma, body.draftId, body.sessionCode);
     return NextResponse.json({ id: draft.id, sessionCode: draft.sessionCode });
   } catch (error) {
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     return NextResponse.json({ error: error instanceof Error ? error.message : "update_failed" }, { status: 400 });
   }
 }

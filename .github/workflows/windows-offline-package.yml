@@ -1,0 +1,78 @@
+name: Build Windows Core offline package
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 已通过同提交 Windows Core CI 的完整提交 SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    timeout-minutes: 35
+    runs-on: windows-latest
+    env:
+      STUDENT_TRACK_EDITION: core
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Configure isolated build database
+        shell: pwsh
+        run: |
+          $databasePath = Join-Path $env:RUNNER_TEMP "student-track-offline-package-build.db"
+          $databaseUrl = "file:$($databasePath.Replace('\', '/'))"
+          "DATABASE_URL=$databaseUrl" >> $env:GITHUB_ENV
+      - name: Verify requested source commit
+        shell: pwsh
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: |
+          if ($env:REQUESTED_REF -notmatch "^[0-9a-fA-F]{40}$") {
+            throw "离线包只能从完整提交 SHA 构建。"
+          }
+          $checkedOut = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($checkedOut -ne $env:REQUESTED_REF.ToLowerInvariant()) {
+            throw "检出的提交与请求的离线包提交不一致。"
+          }
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          architecture: x64
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+      - name: Build and verify offline package
+        shell: pwsh
+        run: |
+          $packageOutput = Join-Path $env:RUNNER_TEMP "student-track-core-offline-package"
+          $offlineCheck = Join-Path $env:RUNNER_TEMP "student-track-core-offline-check"
+
+          & .\scripts\windows\Build-StudentTrackCoreOfflineBundle.ps1 -OutputDirectory $packageOutput
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $archive = Get-ChildItem -LiteralPath $packageOutput -Filter "StudentTrackCore-Windows-x64-*.zip" -File
+          if ($archive.Count -ne 1) { throw "离线包构建没有产生唯一 ZIP。" }
+
+          & .\scripts\windows\Test-StudentTrackCoreOfflineBundle.ps1 `
+            -ArchivePath $archive[0].FullName `
+            -ScratchRoot $offlineCheck `
+            -AllowGitHubActionsServerForCI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          "OFFLINE_PACKAGE=$($archive[0].FullName)" >> $env:GITHUB_ENV
+          $buildInfo = Get-Content -LiteralPath (Join-Path $offlineCheck "expanded\StudentTrackCore\BUILD-INFO.json") -Raw | ConvertFrom-Json
+          "OFFLINE_SOURCE_COMMIT=$($buildInfo.sourceCommit)" >> $env:GITHUB_ENV
+      - name: Upload offline Windows Core package
+        uses: actions/upload-artifact@v7
+        with:
+          name: student-track-core-windows-x64-${{ env.OFFLINE_SOURCE_COMMIT }}
+          path: ${{ env.OFFLINE_PACKAGE }}
+          if-no-files-found: error
+          retention-days: 14

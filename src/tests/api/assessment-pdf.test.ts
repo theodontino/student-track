@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   parseAssessmentPdf: vi.fn(),
+  assertSessionAvailable: vi.fn(),
   sessionFindUnique: vi.fn(),
   studentFindMany: vi.fn(),
 }));
@@ -16,8 +17,12 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/services/assessment-pdf-service", () => ({
   parseAssessmentPdf: mocks.parseAssessmentPdf,
 }));
+vi.mock("@/services/academic-scope-recycle-service", () => ({
+  assertSessionAvailable: mocks.assertSessionAvailable,
+}));
 
 import { POST } from "@/app/api/feedback/assessment-pdf/route";
+import { ApiError } from "@/lib/api-errors";
 
 function request(fileName = "04示例报告（张三）.pdf") {
   const formData = new FormData();
@@ -42,7 +47,8 @@ const evidence = {
 
 describe("/api/feedback/assessment-pdf", () => {
   beforeEach(() => {
-    mocks.sessionFindUnique.mockReset().mockResolvedValue({ classId: "class-1" });
+    mocks.sessionFindUnique.mockReset().mockResolvedValue({ id: "session-1", classId: "class-1", semesterId: "semester-1" });
+    mocks.assertSessionAvailable.mockReset().mockResolvedValue({ id: "session-1" });
     mocks.studentFindMany.mockReset().mockResolvedValue([
       { id: "student-1", name: "张三", studentId: "TEST-STUDENT-1" },
       { id: "student-2", name: "李四", studentId: "TEST-STUDENT-2" },
@@ -67,6 +73,17 @@ describe("/api/feedback/assessment-pdf", () => {
       },
     });
     expect(mocks.parseAssessmentPdf).toHaveBeenCalledOnce();
+    expect(mocks.assertSessionAvailable).toHaveBeenCalledWith("session-1");
+  });
+
+  it("blocks PDF parsing for a session in the recycle bin", async () => {
+    mocks.assertSessionAvailable.mockRejectedValue(
+      new ApiError("课次所属范围位于回收站，当前不可用", 409, "scope_in_recycle_bin", false),
+    );
+    const response = await POST(request());
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: "scope_in_recycle_bin", retryable: false });
+    expect(mocks.parseAssessmentPdf).not.toHaveBeenCalled();
   });
 
   it("returns a reviewable result when no student can be matched", async () => {

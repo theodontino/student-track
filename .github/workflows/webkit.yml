@@ -43,8 +43,11 @@ permissions:
 
 jobs:
   browser:
-    timeout-minutes: 12
-    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    runs-on: macos-latest
+    env:
+      STUDENT_TRACK_EDITION: full
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -53,7 +56,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - run: npx playwright install --with-deps webkit
+      - run: npx playwright install webkit
       - run: npm run verify:browser
         env:
           VERIFY_ARTIFACT_NAME: verification-browser-${{ github.run_id }}

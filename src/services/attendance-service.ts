@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
+import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 export interface AttendanceUpdate {
   studentId: string;
@@ -18,6 +19,7 @@ export async function updateSessionAttendance(sessionId: string, updates: Attend
       select: { id: true, semesterId: true, classId: true, date: true },
     });
     if (!session) throw new ServiceError("课次不存在", 404);
+    await assertSessionAvailable(session.id, tx);
 
     const studentIds = Array.from(new Set(updates.map((update) => update.studentId)));
     if (

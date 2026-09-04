@@ -13,6 +13,7 @@ import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import { createEmptyLessonFeedbackMaterial, lessonMaterialHasContent } from "@/lib/feedback-materials";
 import { prisma } from "@/lib/prisma";
 import { assertSemesterAvailable, assertSessionAvailable } from "@/services/academic-scope-recycle-service";
+import { getFeedbackScriptMaterial } from "@/services/feedback-script-library-service";
 import { ServiceError } from "@/services/service-error";
 
 type GroupLessonDb = PrismaClient | Prisma.TransactionClient;
@@ -50,13 +51,23 @@ async function assertClassesAvailable(db: GroupLessonDb, semesterId: string, cla
 }
 
 const groupInclude = {
-  leadClass: { select: { id: true, code: true, name: true } },
-  memberships: { include: { class: true }, orderBy: { class: { code: "asc" as const } } },
+  leadClass: { select: { id: true, code: true, name: true, deletedAt: true } },
+  memberships: {
+    where: { class: { deletedAt: null, semester: { deletedAt: null } } },
+    include: { class: true },
+    orderBy: { class: { code: "asc" as const } },
+  },
   lessons: {
     orderBy: { sequence: "asc" as const },
     include: {
       revisions: { orderBy: { revision: "desc" as const }, take: 1 },
       sessionLinks: {
+        where: {
+          session: {
+            semester: { deletedAt: null },
+            class: { deletedAt: null },
+          },
+        },
         orderBy: { session: { date: "asc" as const } },
         include: { session: { include: { class: { select: { id: true, code: true, name: true } } } } },
       },
@@ -73,14 +84,29 @@ function lessonView<T extends { materialSnapshot: string; revisions: Array<{ mat
   };
 }
 
-function groupView<T extends { lessons: Array<{ materialSnapshot: string; revisions: Array<{ materialSnapshot: string }> }> }>(group: T) {
-  return { ...group, lessons: group.lessons.map(lessonView) };
+function availableClassView(klass: { id: string; code: string; name: string | null; deletedAt: Date | null } | null) {
+  if (!klass || klass.deletedAt) return null;
+  return { id: klass.id, code: klass.code, name: klass.name };
+}
+
+function groupView<T extends {
+  leadClassId: string | null;
+  leadClass: { id: string; code: string; name: string | null; deletedAt: Date | null } | null;
+  lessons: Array<{ materialSnapshot: string; revisions: Array<{ materialSnapshot: string }> }>;
+}>(group: T) {
+  const leadClass = availableClassView(group.leadClass);
+  return {
+    ...group,
+    leadClassId: leadClass ? group.leadClassId : null,
+    leadClass,
+    lessons: group.lessons.map(lessonView),
+  };
 }
 
 export async function listSemesterClassGroups(semesterId: string, db: GroupLessonDb = prisma) {
   await assertSemesterAvailable(semesterId, db);
   const groups = await db.classGroup.findMany({ where: { semesterId }, orderBy: { name: "asc" }, include: groupInclude });
-  return groups.map(groupView);
+  return groups.filter((group) => group.memberships.length > 0).map(groupView);
 }
 
 export async function createClassGroup(semesterId: string, raw: ClassGroupWriteInput, db: PrismaClient = prisma) {
@@ -101,6 +127,7 @@ export async function updateClassGroup(groupId: string, raw: ClassGroupWriteInpu
   return db.$transaction(async (tx) => {
     const existing = await tx.classGroup.findUnique({ where: { id: groupId }, select: { id: true, semesterId: true } });
     if (!existing) throw new ServiceError("班级组不存在", 404);
+    await assertSemesterAvailable(existing.semesterId, tx);
     await assertClassesAvailable(tx, existing.semesterId, input.classIds, groupId);
     await tx.classGroupMembership.deleteMany({ where: { groupId, classId: { notIn: input.classIds } } });
     for (const classId of input.classIds) {
@@ -116,8 +143,9 @@ export async function updateClassGroup(groupId: string, raw: ClassGroupWriteInpu
 }
 
 export async function deleteClassGroup(groupId: string, db: PrismaClient = prisma) {
-  const group = await db.classGroup.findUnique({ where: { id: groupId }, select: { id: true, _count: { select: { lessons: true } } } });
+  const group = await db.classGroup.findUnique({ where: { id: groupId }, select: { id: true, semesterId: true, _count: { select: { lessons: true } } } });
   if (!group) throw new ServiceError("班级组不存在", 404);
+  await assertSemesterAvailable(group.semesterId, db);
   if (group._count.lessons > 0) throw new ServiceError("班级组已有共同课，不能直接删除", 409);
   await db.classGroup.delete({ where: { id: groupId } });
   return { success: true };
@@ -125,10 +153,70 @@ export async function deleteClassGroup(groupId: string, db: PrismaClient = prism
 
 export async function createGroupLesson(groupId: string, raw: GroupLessonCreateInput, db: PrismaClient = prisma) {
   const input = GroupLessonCreateSchema.parse(raw);
-  const group = await db.classGroup.findUnique({ where: { id: groupId }, select: { id: true } });
-  if (!group) throw new ServiceError("班级组不存在", 404);
-  return db.groupLesson.create({
-    data: { groupId, title: input.title, sequence: input.sequence, materialSnapshot: materialJson(input.material) },
+  return db.$transaction(async (tx) => {
+    const group = await tx.classGroup.findUnique({ where: { id: groupId }, select: { id: true, semesterId: true } });
+    if (!group) throw new ServiceError("班级组不存在", 404);
+    await assertSemesterAvailable(group.semesterId, tx);
+    const libraryMaterial = lessonMaterialHasContent(input.material)
+      ? null
+      : await getFeedbackScriptMaterial(tx, group.semesterId, input.sequence);
+    const material = libraryMaterial ?? input.material;
+    const defaultTitle = `第 ${input.sequence} 讲`;
+    const title = input.title === defaultTitle && libraryMaterial?.lessonTitle
+      ? libraryMaterial.lessonTitle
+      : input.title;
+    return tx.groupLesson.create({
+      data: { groupId, title, sequence: input.sequence, materialSnapshot: materialJson(material) },
+    });
+  });
+}
+
+export async function reapplyGroupLessonSemesterMaterial(
+  lessonId: string,
+  replaceExisting: boolean,
+  db: PrismaClient = prisma,
+) {
+  return db.$transaction(async (tx) => {
+    const lesson = await tx.groupLesson.findUnique({
+      where: { id: lessonId },
+      select: {
+        id: true,
+        title: true,
+        sequence: true,
+        materialSnapshot: true,
+        revision: true,
+        confirmedAt: true,
+        group: { select: { semesterId: true } },
+        revisions: { orderBy: { revision: "desc" }, take: 1, select: { materialSnapshot: true } },
+      },
+    });
+    if (!lesson) throw new ServiceError("共同课不存在", 404);
+    await assertSemesterAvailable(lesson.group.semesterId, tx);
+    const currentMaterial = parseMaterial(lesson.materialSnapshot);
+    if (lessonMaterialHasContent(currentMaterial) && !replaceExisting) {
+      throw new ServiceError("当前共同讲次已有内容，重新套用前需要明确确认", 409);
+    }
+    const material = await getFeedbackScriptMaterial(tx, lesson.group.semesterId, lesson.sequence);
+    if (!material) throw new ServiceError(`学期公共材料库中没有第 ${lesson.sequence} 课`, 404);
+    const autoTitle = `第 ${lesson.sequence} 讲`;
+    const usesPreviousLibraryTitle = Boolean(
+      currentMaterial.semesterScriptSource
+      && currentMaterial.lessonTitle
+      && lesson.title === currentMaterial.lessonTitle,
+    );
+    const updated = await tx.groupLesson.update({
+      where: { id: lesson.id },
+      data: {
+        materialSnapshot: materialJson(material),
+        ...((lesson.title === autoTitle || usesPreviousLibraryTitle) && material.lessonTitle ? { title: material.lessonTitle } : {}),
+      },
+      select: { id: true, title: true, sequence: true, revision: true, confirmedAt: true, materialSnapshot: true },
+    });
+    return {
+      ...updated,
+      material: parseMaterial(updated.materialSnapshot),
+      hasUnconfirmedChanges: !lesson.revisions[0] || lesson.revisions[0].materialSnapshot !== updated.materialSnapshot,
+    };
   });
 }
 
@@ -137,9 +225,10 @@ export async function updateGroupLesson(lessonId: string, raw: GroupLessonUpdate
   return db.$transaction(async (tx) => {
     const existing = await tx.groupLesson.findUnique({
       where: { id: lessonId },
-      select: { id: true, sequence: true, _count: { select: { sessionLinks: true } } },
+      select: { id: true, sequence: true, group: { select: { semesterId: true } }, _count: { select: { sessionLinks: true } } },
     });
     if (!existing) throw new ServiceError("共同课不存在", 404);
+    await assertSemesterAvailable(existing.group.semesterId, tx);
     if (input.sequence !== undefined && input.sequence !== existing.sequence && existing._count.sessionLinks > 0) {
       throw new ServiceError("共同课已关联真实课次，不能修改讲次序号", 409);
     }
@@ -160,11 +249,13 @@ export async function deleteGroupLesson(lessonId: string, db: PrismaClient = pri
       where: { id: lessonId },
       select: {
         id: true,
+        group: { select: { semesterId: true } },
         _count: { select: { sessionLinks: true, revisions: true } },
         revisions: { select: { _count: { select: { feedbackPlanBatches: true } } } },
       },
     });
     if (!lesson) throw new ServiceError("共同课不存在", 404);
+    await assertSemesterAvailable(lesson.group.semesterId, tx);
     if (lesson._count.sessionLinks > 0) throw new ServiceError("共同课已关联真实课次，不能删除", 409);
     if (lesson.revisions.some((revision) => revision._count.feedbackPlanBatches > 0)) {
       throw new ServiceError("共同课已被反馈批次引用，不能删除", 409);
@@ -179,9 +270,10 @@ export async function confirmGroupLesson(lessonId: string, db: PrismaClient = pr
   return db.$transaction(async (tx) => {
     const lesson = await tx.groupLesson.findUnique({
       where: { id: lessonId },
-      include: { revisions: { orderBy: { revision: "desc" }, take: 1 } },
+      include: { group: { select: { semesterId: true } }, revisions: { orderBy: { revision: "desc" }, take: 1 } },
     });
     if (!lesson) throw new ServiceError("共同课不存在", 404);
+    await assertSemesterAvailable(lesson.group.semesterId, tx);
     const material = parseMaterial(lesson.materialSnapshot);
     if (!lessonMaterialHasContent(material)) throw new ServiceError("共同课材料为空，不能确认", 409);
     if (lesson.revisions[0]?.materialSnapshot === lesson.materialSnapshot) return lesson.revisions[0];
@@ -203,8 +295,10 @@ export async function linkGroupLessonSession(lessonId: string, raw: GroupLessonS
       include: { group: { include: { memberships: { select: { classId: true } } } } },
     });
     if (!lesson) throw new ServiceError("共同课不存在", 404);
+    await assertSemesterAvailable(lesson.group.semesterId, tx);
     const session = await tx.classSession.findUnique({ where: { id: input.sessionId }, select: { id: true, semesterId: true, classId: true } });
     if (!session) throw new ServiceError("课次不存在", 404);
+    await assertSessionAvailable(session.id, tx);
     if (session.semesterId !== lesson.group.semesterId || !session.classId || !lesson.group.memberships.some((item) => item.classId === session.classId)) {
       throw new ServiceError("课次不属于该班级组", 409);
     }
@@ -242,7 +336,7 @@ export async function unlinkGroupLessonSession(lessonId: string, sessionId: stri
       where: { sessionId },
       select: {
         groupLessonId: true,
-        groupLesson: { select: { groupId: true } },
+        groupLesson: { select: { groupId: true, group: { select: { semesterId: true } } } },
         session: {
           select: {
             class: { select: { classGroupMembership: { select: { groupId: true } } } },
@@ -251,6 +345,8 @@ export async function unlinkGroupLessonSession(lessonId: string, sessionId: stri
       },
     });
     if (!link || link.groupLessonId !== lessonId) throw new ServiceError("共同课课次关联不存在", 404);
+    await assertSemesterAvailable(link.groupLesson.group.semesterId, tx);
+    await assertSessionAvailable(sessionId, tx);
     if (link.session.class?.classGroupMembership?.groupId !== link.groupLesson.groupId) {
       throw new ServiceError(HISTORICAL_UNLINK_ERROR, 409);
     }
@@ -276,8 +372,9 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
                   id: true,
                   name: true,
                   leadClassId: true,
-                  leadClass: { select: { id: true, code: true, name: true } },
+                  leadClass: { select: { id: true, code: true, name: true, deletedAt: true } },
                   memberships: {
+                    where: { class: { deletedAt: null, semester: { deletedAt: null } } },
                     orderBy: { class: { code: "asc" } },
                     select: { class: { select: { id: true, code: true, name: true } } },
                   },
@@ -302,11 +399,17 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
                   id: true,
                   name: true,
                   leadClassId: true,
-                  leadClass: { select: { id: true, code: true, name: true } },
+                  leadClass: { select: { id: true, code: true, name: true, deletedAt: true } },
                 },
               },
               revisions: { orderBy: { revision: "desc" }, take: 1, select: { id: true, revision: true, confirmedAt: true, materialSnapshot: true } },
               sessionLinks: {
+                where: {
+                  session: {
+                    semester: { deletedAt: null },
+                    class: { deletedAt: null },
+                  },
+                },
                 select: {
                   session: {
                     select: {
@@ -330,6 +433,7 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
   const currentGroup = session.class?.classGroupMembership?.classGroup;
   const group = rawLesson?.group ?? currentGroup;
   if (!group) return null;
+  const leadClass = availableClassView(group.leadClass);
   const confirmed = rawLesson?.revisions[0] ?? null;
   const lesson = rawLesson ? {
     id: rawLesson.id,
@@ -368,10 +472,10 @@ export async function getSessionGroupProgress(sessionId: string, db: GroupLesson
       name: group.name,
       members,
     },
-    leadClass: group.leadClass,
-    isLeadClass: group.leadClassId === session.classId,
+    leadClass,
+    isLeadClass: leadClass?.id === session.classId,
     lesson,
-    status: lesson ? "linked" as const : group.leadClassId ? "independent" as const : "lead_required" as const,
+    status: lesson ? "linked" as const : leadClass ? "independent" as const : "lead_required" as const,
   };
 }
 
@@ -448,8 +552,24 @@ export async function setSessionGroupProgress(input: { sessionId: string; groupL
 export async function getConfirmedGroupLessonRevision(revisionId: string, db: GroupLessonDb = prisma) {
   const revision = await db.groupLessonRevision.findUnique({
     where: { id: revisionId },
-    include: { groupLesson: { include: { group: true, sessionLinks: { include: { session: true } } } } },
+    include: {
+      groupLesson: {
+        include: {
+          group: true,
+          sessionLinks: {
+            where: {
+              session: {
+                semester: { deletedAt: null },
+                class: { deletedAt: null },
+              },
+            },
+            include: { session: true },
+          },
+        },
+      },
+    },
   });
   if (!revision) throw new ServiceError("已确认共同课修订不存在", 404);
+  await assertSemesterAvailable(revision.groupLesson.group.semesterId, db);
   return { ...revision, material: parseMaterial(revision.materialSnapshot) };
 }

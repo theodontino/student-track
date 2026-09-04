@@ -169,10 +169,11 @@ async function operationDirectories() {
   return results;
 }
 
-async function markInterruptedOperations() {
+async function markInterruptedOperations(taskTypes?: ReadonlySet<LLMTaskType>) {
   for (const directory of await operationDirectories()) {
     if (activeDirectories.has(directory)) continue;
     const manifest = await readManifest(directory);
+    if (manifest && taskTypes && !taskTypes.has(manifest.taskType)) continue;
     if (manifest?.status !== "active") continue;
     await writePrivateJson(path.join(directory, manifestName), {
       ...manifest,
@@ -183,9 +184,19 @@ async function markInterruptedOperations() {
   }
 }
 
-async function purgeOldDays() {
+async function purgeOldDays(taskTypes?: ReadonlySet<LLMTaskType>) {
   const root = cacheRoot();
   const today = shanghaiDate();
+  if (taskTypes) {
+    for (const directory of await operationDirectories()) {
+      const [day] = path.relative(root, directory).split(path.sep);
+      if (!day || day === today || activeDirectories.has(directory)) continue;
+      const manifest = await readManifest(directory);
+      if (!manifest || !taskTypes.has(manifest.taskType)) continue;
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return;
+  }
   for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory() || entry.name === today) continue;
     const directory = path.join(root, entry.name);
@@ -194,16 +205,19 @@ async function purgeOldDays() {
   }
 }
 
-async function enforceCapacity() {
+async function enforceCapacity(taskTypes?: ReadonlySet<LLMTaskType>) {
   const operations = await Promise.all((await operationDirectories()).map(async (directory) => ({
     directory,
     manifest: await readManifest(directory),
     sizeBytes: await directorySize(directory),
   })));
-  let total = operations.reduce((sum, operation) => sum + operation.sizeBytes, 0);
+  const scopedOperations = taskTypes
+    ? operations.filter((operation) => operation.manifest && taskTypes.has(operation.manifest.taskType))
+    : operations;
+  let total = scopedOperations.reduce((sum, operation) => sum + operation.sizeBytes, 0);
   const limit = cacheLimitBytes();
   if (total <= limit) return;
-  const removable = operations
+  const removable = scopedOperations
     .filter((operation) => !activeDirectories.has(operation.directory) && operation.manifest?.status !== "active")
     .sort((left, right) => {
       const leftFailure = ["failed", "interrupted"].includes(left.manifest?.status || "") ? 0 : 1;
@@ -218,11 +232,11 @@ async function enforceCapacity() {
   }
 }
 
-async function prepareCacheArea() {
+async function prepareCacheArea(taskTypes?: ReadonlySet<LLMTaskType>) {
   await ensurePrivateDirectory(cacheRoot());
-  await markInterruptedOperations();
-  await purgeOldDays();
-  await enforceCapacity();
+  await markInterruptedOperations(taskTypes);
+  await purgeOldDays(taskTypes);
+  await enforceCapacity(taskTypes);
 }
 
 async function clearOlderSuccessfulGeneration(current: LLMCacheContext) {
@@ -558,11 +572,12 @@ async function snapshotReplayResponse(response: Response): Promise<{ status: num
   }
 }
 
-export async function getLLMCacheOverview(): Promise<LLMCacheOverview> {
-  await prepareCacheArea().catch(() => undefined);
+export async function getLLMCacheOverview(taskTypes?: readonly LLMTaskType[]): Promise<LLMCacheOverview> {
+  const taskTypeSet = taskTypes ? new Set(taskTypes) : undefined;
+  await prepareCacheArea(taskTypeSet).catch(() => undefined);
   const operations = (await Promise.all((await operationDirectories()).map(async (directory) => {
     const manifest = await readManifest(directory);
-    if (!manifest) return null;
+    if (!manifest || (taskTypeSet && !taskTypeSet.has(manifest.taskType))) return null;
     return { ...manifest, sizeBytes: await directorySize(directory) } satisfies LLMCacheSummary;
   }))).filter((value): value is LLMCacheSummary => value !== null)
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
@@ -574,8 +589,11 @@ export async function getLLMCacheOverview(): Promise<LLMCacheOverview> {
   };
 }
 
-export async function clearLLMCache(taskType?: LLMTaskType) {
-  await markInterruptedOperations();
+export async function clearLLMCache(
+  taskType?: LLMTaskType,
+  maintenanceTaskTypes?: readonly LLMTaskType[],
+) {
+  await markInterruptedOperations(maintenanceTaskTypes ? new Set(maintenanceTaskTypes) : undefined);
   let removed = 0;
   for (const directory of await operationDirectories()) {
     if (activeDirectories.has(directory)) continue;

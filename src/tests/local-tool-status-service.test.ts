@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getLocalToolsStatus,
   inspectFunASR,
@@ -11,6 +11,10 @@ import {
 } from "@/services/local-tool-status-service";
 
 const temporaryDirectories: string[] = [];
+const fullOnlyIt = (
+  process.env.STUDENT_TRACK_EDITION
+  ?? process.env.NEXT_PUBLIC_STUDENT_TRACK_EDITION
+) === "core" ? it.skip : it;
 
 function temporaryProject() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "student-track-local-tools-test-"));
@@ -48,13 +52,22 @@ function installWccHandoffFixture(cwd: string) {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
 describe("local-tool-status-service", () => {
-  it("reports available fixtures without returning API token contents", () => {
+  it("does not probe local tools through a direct service call in Core", () => {
+    vi.stubEnv("NEXT_PUBLIC_STUDENT_TRACK_EDITION", "core");
+    expect(() => getLocalToolsStatus()).toThrowError(expect.objectContaining({
+      status: 404,
+      code: "feature_unavailable",
+    }));
+  });
+
+  fullOnlyIt("reports available fixtures without returning API token contents", () => {
     const { cwd, homeDir } = temporaryProject();
     installFunASRFixture(cwd, homeDir);
     const exchangeRoot = installWccHandoffFixture(cwd);
@@ -79,7 +92,7 @@ describe("local-tool-status-service", () => {
     expect(JSON.stringify(result)).not.toContain("never-return-this");
   });
 
-  it("uses warnings for optional FunASR dependencies and blocks only selected core paths", () => {
+  fullOnlyIt("uses warnings for optional FunASR dependencies and blocks only selected core paths", () => {
     const { cwd, homeDir } = temporaryProject();
     installFunASRFixture(cwd, homeDir, false);
     const options = { cwd, homeDir, env: { PATH: "" } };
@@ -92,7 +105,7 @@ describe("local-tool-status-service", () => {
     });
   });
 
-  it("reports an unusable handoff path without inspecting WCC runtime", () => {
+  fullOnlyIt("reports an unusable handoff path without inspecting WCC runtime", () => {
     const { cwd, homeDir } = temporaryProject();
     const blockedParent = path.join(cwd, "blocked");
     writeFile(blockedParent);

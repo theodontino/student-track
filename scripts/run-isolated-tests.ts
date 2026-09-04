@@ -39,7 +39,11 @@ function prepareE2EServerWorkspace(projectRoot: string, rootDir: string) {
   ]) {
     fs.copyFileSync(path.join(projectRoot, file), path.join(serverRoot, file));
   }
-  fs.symlinkSync(path.join(projectRoot, "node_modules"), path.join(serverRoot, "node_modules"), "dir");
+  fs.symlinkSync(
+    path.join(projectRoot, "node_modules"),
+    path.join(serverRoot, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
   return serverRoot;
 }
 
@@ -48,7 +52,7 @@ async function main() {
   const testEnvironment = createIsolatedTestEnvironment();
   const fixtureArgument = process.argv.find((argument) => argument.startsWith("--fixture="));
   const fixtureProfile = fixtureArgument?.slice("--fixture=".length) ?? "default";
-  if (!new Set(["default", "course-cycle"]).has(fixtureProfile)) {
+  if (!new Set(["default", "course-cycle", "core"]).has(fixtureProfile)) {
     throw new Error(`Unknown test fixture profile: ${fixtureProfile}`);
   }
   const childArguments = process.argv.slice(3).filter((argument) => !argument.startsWith("--fixture="));
@@ -74,7 +78,7 @@ async function main() {
     testEnvironment.env.E2E_SERVER_MODE = process.env.E2E_SERVER_MODE ?? "production";
   }
   testEnvironment.env.E2E_FIXTURE_PROFILE = fixtureProfile;
-  if (fixtureProfile === "course-cycle") {
+  if (fixtureProfile === "course-cycle" || fixtureProfile === "core") {
     llmStub = await startE2ELlmStub({ delayMs: 600 });
     testEnvironment.env.LLM_API_BASE_URL = `${llmStub.baseUrl}/v1`;
     testEnvironment.env.LLM_API_KEY = "test-course-cycle-key";
@@ -100,7 +104,7 @@ async function main() {
   try {
     if (fixtureProfile === "course-cycle") {
       await seedCourseCycleFixture(testEnvironment.env.DATABASE_URL);
-    } else {
+    } else if (fixtureProfile === "default") {
       await seedTestFixture(testEnvironment.env.DATABASE_URL);
     }
   } catch (error) {

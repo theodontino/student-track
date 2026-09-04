@@ -3,8 +3,10 @@ import { ZodError } from "zod";
 import { ClassGroupWriteSchema } from "@/lib/contracts/group-lessons";
 import { createClassGroup, listSemesterClassGroups } from "@/services/group-lesson-service";
 import { ServiceError } from "@/services/service-error";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 
 function failure(error: unknown, fallback: string) {
+  if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
   if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
   if (error instanceof ZodError) return NextResponse.json({ error: "班级组参数无效" }, { status: 400 });
   console.error(fallback, error);

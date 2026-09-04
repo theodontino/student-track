@@ -14,8 +14,11 @@ permissions:
 
 jobs:
   quality:
-    timeout-minutes: 8
-    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    runs-on: macos-latest
+    env:
+      STUDENT_TRACK_EDITION: full
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -37,3 +40,186 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           include-hidden-files: true
+
+  quality-core:
+    timeout-minutes: 20
+    runs-on: macos-latest
+    env:
+      STUDENT_TRACK_EDITION: core
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run verify:quality
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/student-track-core-build.db
+          VERIFY_ARTIFACT_NAME: verification-quality-core-${{ github.run_id }}
+      - name: Upload Core quality verification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-quality-core-${{ github.run_id }}
+          path: .verification-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true
+
+  chromium:
+    timeout-minutes: 20
+    runs-on: macos-latest
+    env:
+      STUDENT_TRACK_EDITION: full
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx playwright install chromium
+      - run: npm run test:e2e:chromium
+      - name: Upload Chromium browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-chromium-${{ github.run_id }}
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true
+
+  core-browser:
+    timeout-minutes: 20
+    runs-on: macos-latest
+    env:
+      STUDENT_TRACK_EDITION: core
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx playwright install chromium
+      - name: Run Core browser contract
+        run: node --import tsx scripts/run-isolated-tests.ts playwright --fixture=core --project=chromium e2e/core-edition.spec.ts
+      - name: Upload Core browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-core-browser-${{ github.run_id }}
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true
+
+  windows-core:
+    needs: [quality, quality-core, chromium, core-browser]
+    timeout-minutes: 35
+    runs-on: windows-latest
+    env:
+      STUDENT_TRACK_EDITION: core
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          architecture: x64
+          cache: npm
+      - name: Validate Windows PowerShell entrypoints
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem scripts/windows/*.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber) $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Prepare Student Track Core from source
+        shell: pwsh
+        run: |
+          $runtimeRoot = Join-Path $env:LOCALAPPDATA "Student Track"
+          $dataRoot = Join-Path $runtimeRoot "data"
+          New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+          $settingsPath = Join-Path $dataRoot "llm-settings.json"
+          $settings = '{"activeProfileId":null,"profiles":[],"roleAssignments":{"feedbackDraftProfileId":null,"feedbackReviewProfileId":null,"wecomExtractionProfileId":null}}'
+          Set-Content -LiteralPath $settingsPath -Value $settings -NoNewline -Encoding utf8
+
+          & .\scripts\windows\Prepare-StudentTrackCore.ps1 -AllowGitHubActionsServerForCI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          foreach ($directory in @("database", "data", "feedback-attachments", "feedback-inbox", "archives")) {
+            $path = Join-Path $runtimeRoot $directory
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+              throw "准备脚本未创建运行目录：$path"
+            }
+          }
+          $databasePath = Join-Path $runtimeRoot "database\student-track.db"
+          if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf) -or (Get-Item -LiteralPath $databasePath).Length -eq 0) {
+            throw "准备脚本未建立完成迁移的 SQLite 数据库。"
+          }
+          if ((Get-Content -LiteralPath $settingsPath -Raw) -ne $settings) {
+            throw "准备脚本改写了既有 LLM 设置。"
+          }
+
+          "DATABASE_URL=$($env:DATABASE_URL)" >> $env:GITHUB_ENV
+          "STUDENT_TRACK_RUNTIME_ROOT=$runtimeRoot" >> $env:GITHUB_ENV
+          "STUDENT_TRACK_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
+          "STUDENT_TRACK_ARCHIVES_ROOT=$(Join-Path $runtimeRoot 'archives')" >> $env:GITHUB_ENV
+          "STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT=$(Join-Path $runtimeRoot 'feedback-attachments')" >> $env:GITHUB_ENV
+          "STUDENT_TRACK_FEEDBACK_INBOX_ROOT=$(Join-Path $runtimeRoot 'feedback-inbox')" >> $env:GITHUB_ENV
+      - name: Build and verify the offline Windows Core package
+        shell: pwsh
+        run: |
+          $packageOutput = Join-Path $env:RUNNER_TEMP "student-track-core-offline-package"
+          $offlineCheck = Join-Path $env:RUNNER_TEMP "student-track-core-offline-check"
+
+          & .\scripts\windows\Build-StudentTrackCoreOfflineBundle.ps1 -OutputDirectory $packageOutput
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $archive = Get-ChildItem -LiteralPath $packageOutput -Filter "StudentTrackCore-Windows-x64-*.zip" -File
+          if ($archive.Count -ne 1) { throw "离线包构建没有产生唯一 ZIP。" }
+
+          & .\scripts\windows\Test-StudentTrackCoreOfflineBundle.ps1 `
+            -ArchivePath $archive[0].FullName `
+            -ScratchRoot $offlineCheck `
+            -AllowGitHubActionsServerForCI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload verified offline Windows Core package
+        uses: actions/upload-artifact@v7
+        with:
+          name: student-track-core-windows-x64-${{ github.sha }}
+          path: ${{ runner.temp }}/student-track-core-offline-package/StudentTrackCore-Windows-x64-*.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Windows Core verification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-windows-core-${{ github.run_id }}
+          path: ${{ runner.temp }}/student-track-core-offline-check/*.log
+          if-no-files-found: ignore
+          retention-days: 7

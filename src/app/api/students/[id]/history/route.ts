@@ -12,7 +12,18 @@ export async function GET(
       where: { studentId: id },
       orderBy: { archivedAt: "desc" },
     });
-    return NextResponse.json(history);
+    const linkedSessionIds = [...new Set(history.flatMap((item) => item.sessionId ? [item.sessionId] : []))];
+    const availableSessionIds = linkedSessionIds.length
+      ? new Set((await prisma.classSession.findMany({
+          where: {
+            id: { in: linkedSessionIds },
+            semester: { deletedAt: null },
+            OR: [{ classId: null }, { class: { deletedAt: null } }],
+          },
+          select: { id: true },
+        })).map((session) => session.id))
+      : new Set<string>();
+    return NextResponse.json(history.filter((item) => !item.sessionId || availableSessionIds.has(item.sessionId)));
   } catch (error) {
     console.error("[/api/students/[id]/history] error:", error);
     return NextResponse.json({ error: "获取历史失败" }, { status: 500 });

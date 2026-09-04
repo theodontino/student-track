@@ -74,7 +74,7 @@ export function TaskConfirmationStage(props: Props) {
   return <div className={styles.planStage}>
     <section className={styles.planDocumentHeader} aria-label="反馈计划文档">
       <label><span>计划名称</span><input aria-label="计划名称" maxLength={120} value={props.draft.displayName} disabled={props.busy} onChange={(event) => props.onDraft({ displayName: event.target.value })} placeholder="例如：九月第一次课后反馈" /></label>
-      <div><span role="status">{props.saveState === "saving" ? "保存中…" : props.saveState === "dirty" ? "有未保存修改" : props.saveState === "error" ? props.saveMessage || "保存失败，可重试" : props.saveState === "saved" ? "已自动保存" : "建立后会自动保存"}</span>{props.onSave && <><Button uiSize="sm" variant="secondary" onClick={props.onSave} disabled={props.busy || props.saveState === "saving" || props.saveState === "saved"}>{props.saveState === "saving" ? "保存中…" : props.saveState === "saved" ? "已保存" : "保存"}</Button><kbd>⌘S</kbd></>}</div>
+      <div><span role="status">{props.saveState === "saving" ? "保存中…" : props.saveState === "dirty" ? "有未保存修改" : props.saveState === "error" ? props.saveMessage || "保存失败，可重试" : props.saveState === "saved" ? "已自动保存" : "建立后会自动保存"}</span>{props.onSave && <><Button uiSize="sm" variant="secondary" onClick={props.onSave} disabled={props.busy || props.saveState === "saving" || props.saveState === "saved"}>{props.saveState === "saving" ? "保存中…" : props.saveState === "saved" ? "已保存" : "保存"}</Button><kbd>Ctrl/⌘ S</kbd></>}</div>
     </section>
     <section className={styles.readonlyScopeSummary}>
       <div><span>本轮范围</span><strong>{props.scopeSummary}</strong><small>录入与课堂事实已经确认；如需修改班级或课次，请返回录入步骤。</small></div>

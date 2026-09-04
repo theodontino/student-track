@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { ApiError, apiErrorBody } from "@/lib/api-errors";
 import { ObservationStatusSchema } from "@/lib/contracts/teaching-summary";
 import { updateTeacherObservationStatus } from "@/services/teacher-observation-service";
 
@@ -14,6 +15,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json(observation);
   } catch (error) {
     if (error instanceof z.ZodError) return NextResponse.json({ error: "观察状态无效" }, { status: 400 });
+    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     if (error instanceof Error && error.message === "observation_not_found") {
       return NextResponse.json({ error: "观察不存在" }, { status: 404 });
     }

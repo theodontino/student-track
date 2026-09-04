@@ -12,7 +12,7 @@ import {
 function studentInclude(semesterId: string) {
   return {
     enrollments: {
-      where: { semesterId },
+      where: { semesterId, class: { deletedAt: null, semester: { deletedAt: null } } },
       include: { class: { select: { id: true, code: true, name: true, semesterId: true } } },
     },
     studentLabels: { include: { label: { select: { id: true, name: true } } } },
@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
         _max: { createdAt: true },
         where: {
           studentId: { in: students.map((s) => s.id) },
-          session: { semesterId: resolvedSemesterId },
+          session: { semesterId: resolvedSemesterId, OR: [{ classId: null }, { class: { deletedAt: null } }] },
         },
       });
       const metricIds = latestMetrics
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
         const metrics = await prisma.sessionMetric.findMany({
           where: {
             OR: metricIds.map((m) => ({ studentId: m.studentId, createdAt: m.createdAt })),
-            session: { semesterId: resolvedSemesterId },
+            session: { semesterId: resolvedSemesterId, OR: [{ classId: null }, { class: { deletedAt: null } }] },
           },
           select: { studentId: true, scoreA: true, scoreB: true, scoreC: true, scoreD: true },
         });
@@ -116,7 +116,9 @@ export async function POST(request: NextRequest) {
           select: { id: true, code: true, name: true, semesterId: true },
         });
         if (matches.length > 1) throw new ServiceError("班级名称不唯一，请使用 classId", 409);
-        selectedClass = matches[0] ?? null;
+        selectedClass = matches[0]
+          ? await assertClassInSemester(tx, matches[0].id, semesterId)
+          : null;
       }
       if (!selectedClass) throw new ServiceError("班级不存在", 404);
       const student = await tx.student.create({ data: { name, studentId, gender } });

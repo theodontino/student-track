@@ -88,6 +88,7 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page).toHaveURL(new RegExp(`semesterId=${TEST_FIXTURE.semester.id}`));
     await expect(page.getByLabel(/班级选择班级/)).toHaveValue(TEST_FIXTURE.class.id);
     await expect(page.getByLabel(/课次选择课次/)).toHaveValue(TEST_FIXTURE.sessions[0].code);
+    await expect(page.getByRole("heading", { name: "确定性待办" })).toBeVisible();
 
     await page.goto("/feedback/tools?tool=manual-facts&step=input");
     await expect(page.getByPlaceholder("例如：今天张三测验氧化还原全对，但上课走神。李四作业没交，情绪低落。给王五的妈妈打了电话讨论近况。")).toHaveValue("E2E 未提交课堂回顾");

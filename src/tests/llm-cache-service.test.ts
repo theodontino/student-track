@@ -55,8 +55,10 @@ describe.sequential("LLM operation cache", () => {
     const responsePath = path.join(directory, "calls", "001", "response.json");
     expect(await readFile(requestPath, "utf8")).toContain('"apiKey": "[REDACTED]"');
     expect(await readFile(responsePath, "utf8")).toContain("private reasoning");
-    expect((await stat(directory)).mode & 0o777).toBe(0o700);
-    expect((await stat(requestPath)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect((await stat(directory)).mode & 0o777).toBe(0o700);
+      expect((await stat(requestPath)).mode & 0o777).toBe(0o600);
+    }
     expect((await readdir(path.dirname(requestPath))).some((name) => name.endsWith(".tmp"))).toBe(false);
   });
 

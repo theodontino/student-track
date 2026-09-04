@@ -16,6 +16,7 @@ export async function GET(
       where: { id },
       include: {
         sessions: {
+          where: { OR: [{ classId: null }, { class: { deletedAt: null } }] },
           orderBy: { date: "desc" },
           include: {
             _count: { select: { attendances: true } },
@@ -23,7 +24,7 @@ export async function GET(
             groupLessonSession: { select: { groupLesson: { select: { id: true, sequence: true, title: true } } } },
           },
         },
-        classes: { orderBy: { code: "asc" } },
+        classes: { where: { deletedAt: null }, orderBy: { code: "asc" } },
       },
     });
     if (!semester) {
@@ -32,11 +33,11 @@ export async function GET(
 
     const classes = await listSemesterClasses(prisma, id);
     const totalStudents = await prisma.studentClassEnrollment.count({
-      where: { semesterId: id, rosterStatus: "ACTIVE" },
+      where: { semesterId: id, rosterStatus: "ACTIVE", class: { deletedAt: null } },
     });
     const totalSessions = semester.sessions.length;
     const attendances = await prisma.attendance.count({
-      where: { session: { semesterId: id } },
+      where: { session: { semesterId: id, OR: [{ classId: null }, { class: { deletedAt: null } }] } },
     });
 
     return NextResponse.json({

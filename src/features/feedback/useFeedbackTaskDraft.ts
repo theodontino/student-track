@@ -315,6 +315,32 @@ export function syncFeedbackTaskSingleDraftGroupSnapshots(input: {
   }
 }
 
+function pendingGroupDraftMatchesLesson(
+  draft: FeedbackTaskDraftV2 | null,
+  groupLessonId: string,
+): draft is FeedbackTaskDraftV2 {
+  return Boolean(
+    draft?.mode === "group"
+    && groupLessonId
+    && draft.groupLessonId === groupLessonId,
+  );
+}
+
+export function hydrateFeedbackTaskPendingGroupDraft(
+  scope: FeedbackTaskDraftScope,
+  pendingDraft: FeedbackTaskDraftV2 | null,
+) {
+  const groupLessonId = scope.groupLessonId ?? "";
+  if (pendingGroupDraftMatchesLesson(pendingDraft, groupLessonId)) {
+    writeFeedbackTaskDraft(scope, pendingDraft);
+    return pendingDraft.entries.some((entry) => entry.selected) ? pendingDraft : null;
+  }
+
+  const saved = readFeedbackTaskDraft(scope);
+  if (!pendingGroupDraftMatchesLesson(saved, groupLessonId)) return null;
+  return saved.entries.some((entry) => entry.selected) ? saved : null;
+}
+
 export function useFeedbackTaskDraftPersistence(
   draft: FeedbackTaskDraftV2,
   enabled: boolean,

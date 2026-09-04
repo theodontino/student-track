@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { requestJson } from "@/lib/api-client";
+import { getProductCapabilities } from "@/lib/product-edition";
 import {
   EMPTY_LLM_PROFILE,
   type LLMProfile,
@@ -13,7 +14,19 @@ import {
 
 type DeleteMode = "current" | "all" | null;
 
+export function roleAssignmentsRequestForEdition(
+  roleAssignments: LLMRoleAssignments,
+  includeWecomExtraction: boolean,
+): Partial<LLMRoleAssignments> {
+  if (includeWecomExtraction) return roleAssignments;
+  return {
+    feedbackDraftProfileId: roleAssignments.feedbackDraftProfileId,
+    feedbackReviewProfileId: roleAssignments.feedbackReviewProfileId,
+  };
+}
+
 export function useLLMConfiguration() {
+  const capabilities = getProductCapabilities();
   const [profiles, setProfiles] = useState<LLMProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
@@ -188,7 +201,12 @@ export function useLLMConfiguration() {
       const data = await requestJson<LLMSettingsResponse>("/api/settings/llm", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roleAssignments }),
+        body: JSON.stringify({
+          roleAssignments: roleAssignmentsRequestForEdition(
+            roleAssignments,
+            capabilities.wecomExtraction,
+          ),
+        }),
       });
       applyStore(data);
       setRoleStatus("模型分工已保存。");

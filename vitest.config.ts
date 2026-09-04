@@ -4,11 +4,48 @@ import { assertSafeTestDatabaseUrl } from "./scripts/test-environment";
 
 assertSafeTestDatabaseUrl();
 
+const isCoreEdition = (
+  process.env.STUDENT_TRACK_EDITION
+  ?? process.env.NEXT_PUBLIC_STUDENT_TRACK_EDITION
+) === "core";
+const isWindows = process.platform === "win32";
+
+const coreTestExcludes = [
+  "src/tests/api/wecomcatch-integration.test.ts",
+  "src/tests/diarize-api.test.ts",
+  "src/tests/diarize-tasks.test.ts",
+  "src/tests/local-tool-status-panel.test.tsx",
+  "src/tests/wecom-*.test.ts",
+];
+
+const coreCoverageExcludes = [
+  "src/app/api/diarize/**",
+  "src/app/api/integrations/wecomcatch/**",
+  "src/app/api/wecom/**",
+  "src/features/entry/diarize-*.ts",
+  "src/features/entry/use-audio-recorder.ts",
+  "src/features/useWeComAccess.ts",
+  "src/features/wecom-access.ts",
+  "src/features/wecom/**",
+  "src/lib/contracts/diarize.ts",
+  "src/lib/contracts/wecom-file-transfer.ts",
+  "src/lib/diarize-*.ts",
+  "src/lib/local-tool-status.ts",
+  "src/services/local-tool-status-service.ts",
+  "src/services/wecom-*.ts",
+];
+
 export default defineConfig({
   test: {
     globals: true,
     fileParallelism: false,
-    exclude: [...configDefaults.exclude, "e2e/**"],
+    testTimeout: isWindows ? 20_000 : 5_000,
+    hookTimeout: isWindows ? 30_000 : 10_000,
+    exclude: [
+      ...configDefaults.exclude,
+      "e2e/**",
+      ...(isCoreEdition ? coreTestExcludes : []),
+    ],
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],
@@ -30,6 +67,7 @@ export default defineConfig({
         "src/features/**/*.tsx",
         "src/components/ui/**/*.tsx",
         "scripts/test-*.ts",
+        ...(isCoreEdition ? coreCoverageExcludes : []),
       ],
       thresholds: {
         statements: 49,

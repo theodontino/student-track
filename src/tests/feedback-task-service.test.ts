@@ -136,4 +136,29 @@ describe("feedback task service", () => {
     expect(second.planId).not.toBe(first.planId);
     await expect(prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } })).resolves.toMatchObject({ planId: first.planId });
   });
+
+  it("does not return an existing task after the intake scope moves to the recycle bin", async () => {
+    const run = await createConfirmedRun();
+    const input = {
+      mode: "single" as const,
+      runIds: [run.id],
+      requestKey: `${marker}-recycled-existing-task`,
+      type: "event_micro" as const,
+      generationMode: "fast" as const,
+      outputRequirement: "回收范围不能恢复既有任务指针",
+      materialSelection: { mode: "none" as const },
+    };
+    const first = await createFeedbackTask(input, prisma);
+    createdPlanIds.push(first.planId!);
+    await prisma.class.update({ where: { id: classId }, data: { deletedAt: new Date() } });
+
+    try {
+      await expect(createFeedbackTask(input, prisma)).rejects.toMatchObject({
+        status: 409,
+        code: "scope_in_recycle_bin",
+      });
+    } finally {
+      await prisma.class.update({ where: { id: classId }, data: { deletedAt: null } });
+    }
+  });
 });

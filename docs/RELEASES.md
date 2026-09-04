@@ -4,7 +4,7 @@
 
 | 组件 | 版本 | 与另一端的关系 |
 |---|---:|---|
-| Student Track | 1.3.0-beta.1 | 计划成为反馈业务主体；新增班级/学期 30 天回收站、课次事实清空、统一状态与跨班反馈队列，按 Zhuiver 归为 MINOR 预发布。 |
+| Student Track | 1.3.0-beta.2 | 在 beta.1 计划主体与回收站基础上，增加同源 Core / Full 构建身份、Windows 10/11 x64 Core 运行路径，以及学期公共材料 Excel 整库导入和同号讲次草稿，按 Zhuiver 归为 MINOR 预发布。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 原生 SwiftUI 正式版；发布 `wcc.student-track-file.v1`，只读 receipt v1，并保持不发送边界。 |
 
 两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
@@ -13,7 +13,7 @@
 
 | 组件 | 版本 | 联合验证范围 |
 |---|---:|---|
-| Student Track | 1.3.0-beta.1 | 回收站、事实清空、计划另存和统一反馈队列不改变 GroupLesson 确认修订、handoff v1、教师批准和 no-send 边界。 |
+| Student Track | 1.3.0-beta.2 | Core 阻断全部录音转写（包括 FunASR 与云端 ASR）及企微/WCG 能力；Full 保持 handoff v1、教师批准和 no-send 草稿边界。公共材料替换不回写 GroupLesson 确认修订、真实课次或计划快照。 |
 | WCG | 0.6.0 | handoff 谱系、已批准反馈草稿不发送填入、逐条实时会话定位、前 50→前 150 降级和输入框安全复核；原生 SwiftUI 正式版。 |
 
 ## 1.2 Beta 发布历史

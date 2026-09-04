@@ -4,6 +4,37 @@
 
 Student Track 是单人维护的本地优先课后反馈自动化工具。架构优先保证数据安全、业务规则可读和低维护成本，不为尚未出现的并发或组织规模预建基础设施。Web 服务只绑定 `127.0.0.1`；当前不支持局域网或公网部署，也不以缺少身份认证的状态对外暴露。
 
+## 产品版本与运行目录
+
+产品能力在构建时由 `STUDENT_TRACK_EDITION=core|full` 决定，默认是 `full`。`next.config.ts` 校验该值
+并把同一版本身份注入服务端和浏览器构建；运行中的页面不能单独切换版本。能力表由
+`src/lib/product-edition.ts` 统一定义。Core 保留普通教学数据、反馈计划和已确认家校沟通；录音转写与
+企微/WCG 在主导航和移动导航中显式显示为不可点击的 Full 功能，集成设置、本地工具状态及反馈高级
+工具中的对应操作不提供入口。受限功能的直达页展示不可用说明，相关 API 统一返回
+`404 feature_unavailable`。页面隐藏或置灰不是服务端授权边界，受限 API 仍必须独立检查版本能力。
+
+`src/lib/runtime-paths.ts` 统一解析本机私有运行目录。组件专用变量优先，其次是
+`STUDENT_TRACK_DATA_ROOT` 或 `STUDENT_TRACK_RUNTIME_ROOT`；没有新配置时保留既有 macOS/开发路径，
+不静默移动数据。Windows Core 由启动脚本把数据库、`data`、反馈附件、反馈收件箱和备份固定在
+`%LOCALAPPDATA%\Student Track\` 的同级子目录。SQLite 继续只由 `DATABASE_URL` 定位，跨平台脚本必须
+使用标准 `file:` URL，而不是拼接带反斜杠的字符串。测试数据库位于系统临时目录；隔离 E2E 应用
+复用当前工作区的 `node_modules`，不接触真实运行目录。测试工具在 Windows 本机运行时可以使用目录
+junction，但日常 Windows CI 不依赖这套开发测试布局。
+Windows 发行只提供 Core，准备和启动脚本不探测、不启动也不调用本地 FunASR、通义听悟、阿里云 ASR
+或 WCG；全部录音转写与 WCG 只属于 macOS Full。
+
+## 验证环境职责
+
+macOS 是平台无关质量的主要环境。Full 与 Core 的 lint、类型检查、单元与集成测试、数据库升级演练、
+覆盖率和生产构建都在 macOS 验证；完整 Full Chromium、Full WebKit 和 Core Chromium 浏览器回归也在
+macOS 使用隔离数据库运行。Playwright WebKit 是 macOS WebKit 基线，不等同于直接控制正式 Safari。
+
+Windows CI 只证明 Windows 用户实际取得的 Core 交付物可用：PowerShell 和 `.cmd` 入口可执行，源码
+准备路径能建立 Windows 生产构建，离线 ZIP 能用 Windows Node、依赖、Prisma 生成物和 `.next` 组装，
+并能在断网条件下解压、安装、迁移数据库、仅监听 `127.0.0.1`、写入数据及重启后按稳定 ID 读取。
+Windows 不重复执行平台无关的完整质量门禁或浏览器业务回归。正式离线包仍必须在 Windows 组装；不能
+从 macOS 复制 `node_modules` 或 `.next` 代替 Windows 交付物构建。
+
 ## 前端模块边界
 
 App Router 页面只组合 Feature 工作台或执行兼容重定向。交互状态、请求和历史恢复归属 `src/features/`；通用控件归属 `src/components/ui/`，HTTP JSON 与文件下载归属 `src/lib/api-client.ts`。Feature 通过公开入口复用共享能力，不直接引用另一个 Feature 的内部文件。
@@ -32,7 +63,7 @@ AI 任务通过 `src/features/ai-workflow/` 的判别联合与 reducer 表达校
 
 `ClassGroupPanel` 是班级组共同进度的管理面：以共同讲次为行、当前成员班为列展示每个 `GroupLessonSession`，并单独列出组内未关联的真实课次。教师可以在这里关联、解除和改正共同进度，但不搬移 `ClassSession` 上的评分、考勤或事件。已关联课次的共同讲次冻结 `sequence`；尚无关联、无确认修订且未被反馈业务引用的误建草稿才可删除。历史课次以已保存的 `GroupLessonSession` 而不是当前 `ClassGroupMembership` 还原关系；已有历史关联只能保持原关联或在同一历史组内调整。
 
-共同课保存可编辑材料和不可变的教师确认修订，真实授课继续使用各班自己的 `ClassSession`。学期话术库由 `feedback-script-library-service` 规范化为公共材料；明确建立的新共同讲次可形成同号材料草稿，但不自动确认。没有共同课的课次把教师明确选择的材料保存到 `ClassSession.commonMaterialSnapshot`；关联共同课后该快照不参与反馈解析。共同进度只关联对象，不读取或合并学生评分、考勤、事件或沟通；后续反馈只能读取已确认修订或明确的课次快照并复制快照，草稿不会自动影响其他班。
+共同课保存可编辑材料和不可变的教师确认修订，真实授课继续使用各班自己的 `ClassSession`。学期公共材料库由 `feedback-script-library-service` 从一份 `.xlsx` 整库解析并规范化；已有库的替换必须显式确认，完整解析成功前不更新。明确建立的新共同讲次会自动复制同号材料为草稿，但不自动确认；已有讲次只在教师主动“重新套用”后更新当前草稿。没有共同课的课次把教师明确选择的材料保存到 `ClassSession.commonMaterialSnapshot`；关联共同课后该快照不参与反馈解析。共同进度只关联对象，不读取或合并学生评分、考勤、事件或沟通；后续反馈只能读取已确认修订或明确的课次快照并复制快照，草稿不会自动影响其他班。
 
 `feedback-plan-batch-service` 编排共同课的多个班级计划，并继续负责草稿保存、来源修订、历史读取、执行恢复、导出和归档。批次保存面向教师的名称、来源批次、共同课材料修订、默认输出要求和运行状态；每个子计划仍绑定一个真实班级和课次。班级可以覆盖默认输出要求与生成偏好，学生可以沿用既有条目级独立配置。批次服务不能跨班读取、合并或搬移事实和学生证据。
 

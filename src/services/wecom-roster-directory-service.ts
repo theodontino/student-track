@@ -12,9 +12,13 @@ export async function buildWccRosterSnapshot(
   const resolvedSemesterId = resolved?.id ?? semesterId;
   if (classId && resolvedSemesterId) await assertClassInSemester(prisma, classId, resolvedSemesterId);
   const [classes, semesters, enrollments] = await Promise.all([
-    prisma.class.findMany({ where: resolvedSemesterId ? { semesterId: resolvedSemesterId } : undefined, select: { id: true, code: true, name: true, semesterId: true }, orderBy: { code: "asc" } }),
+    prisma.class.findMany({
+      where: { deletedAt: null, semester: { deletedAt: null }, ...(resolvedSemesterId ? { semesterId: resolvedSemesterId } : {}) },
+      select: { id: true, code: true, name: true, semesterId: true },
+      orderBy: { code: "asc" },
+    }),
     prisma.semester.findMany({
-      where: semesterId ? { id: semesterId } : undefined,
+      where: { deletedAt: null, ...(semesterId ? { id: semesterId } : {}) },
       select: { id: true, name: true, startDate: true, endDate: true },
       orderBy: { startDate: "desc" },
     }),
@@ -23,6 +27,7 @@ export async function buildWccRosterSnapshot(
         ...(resolvedSemesterId ? { semesterId: resolvedSemesterId } : {}),
         rosterStatus: "ACTIVE",
         ...(classId ? { classId } : {}),
+        class: { deletedAt: null, semester: { deletedAt: null } },
       },
       include: { student: { select: { id: true, name: true, studentId: true } } },
       orderBy: { student: { studentId: "asc" } },

@@ -50,6 +50,7 @@ import {
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import type { LessonFeedbackMaterial, StudentAssessmentEvidence } from "@/lib/feedback-materials";
 import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
+import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
 import { createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
 import { generateFeedbackPlanComposition } from "@/services/feedback-generation-service";
@@ -1931,6 +1932,9 @@ export async function approveFeedbackPlanItems(input: { planId: string; itemIds?
 
 export async function updateTeacherTaskStatus(id: string, status: "pending" | "completed" | "cancelled", db: PrismaClient = prisma) {
   return db.$transaction(async (tx) => {
+    const existing = await tx.teacherTask.findUnique({ where: { id }, select: { planId: true } });
+    if (!existing) throw new ApiError("教师任务不存在", 404, "not_found", false);
+    await assertFeedbackPlanAvailable(existing.planId, tx);
     const task = await tx.teacherTask.update({
       where: { id },
       data: { status, completedAt: status === "completed" ? new Date() : null },
@@ -2051,9 +2055,19 @@ export async function invalidateFeedbackPlans(input: {
 }
 
 export async function listTeacherTasks(input: { semesterId?: string; classId?: string; status?: string }, db: PrismaClient = prisma) {
+  const planWhere: Prisma.FeedbackPlanWhereInput = {
+    ...(input.semesterId ? { semesterId: input.semesterId } : {}),
+    semester: { deletedAt: null },
+    class: { deletedAt: null },
+    OR: [
+      { batchId: null },
+      { batch: { plans: { none: { class: { deletedAt: { not: null } } } } } },
+    ],
+  };
   const baseWhere: Prisma.TeacherTaskWhereInput = {
     ...(input.classId ? { classId: input.classId } : {}),
-    ...(input.semesterId ? { plan: { semesterId: input.semesterId } } : {}),
+    class: { deletedAt: null, semester: { deletedAt: null } },
+    plan: planWhere,
   };
   const include = {
     student: { select: { id: true, name: true } },
@@ -2089,8 +2103,11 @@ export async function listTeacherTasks(input: { semesterId?: string; classId?: s
 }
 
 function feedbackAttachmentRoot() {
-  return path.resolve(process.env.STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT?.trim()
-    || path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-attachments"));
+  return path.resolve(resolveStudentTrackRuntimePath(
+    "feedback-attachments",
+    "STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT",
+    path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-attachments"),
+  ));
 }
 
 /** Removes only the controlled per-plan attachment directories after their database rows are purged. */
@@ -2150,6 +2167,7 @@ export async function addFeedbackAttachment(input: {
   bytes: Uint8Array;
 }, db: PrismaClient = prisma) {
   if (input.bytes.byteLength === 0 || input.bytes.byteLength > 25 * 1024 * 1024) throw new ApiError("附件大小必须在 1B 到 25MB 之间", 400, "invalid_request", false);
+  await assertFeedbackPlanAvailable(input.planId, db);
   const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
@@ -2182,6 +2200,7 @@ export async function addFeedbackAttachment(input: {
 }
 
 export async function removeFeedbackAttachment(input: { planId: string; attachmentId: string }, db: PrismaClient = prisma) {
+  await assertFeedbackPlanAvailable(input.planId, db);
   const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);

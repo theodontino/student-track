@@ -10,6 +10,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveStudentTrackArchiveRoot } from "@/lib/runtime-paths";
+import { sqliteFileUrl } from "@/lib/sqlite-file-url";
 
 const REQUIRED_TABLES = [
   "Class",
@@ -45,7 +48,7 @@ export interface DatabaseBackupResult {
 }
 
 function databaseUrlForPath(databasePath: string) {
-  return `file:${databasePath}`;
+  return sqliteFileUrl(databasePath);
 }
 
 function escapeSqlString(value: string) {
@@ -64,8 +67,9 @@ export function resolveDatabasePath(databaseUrl = process.env.DATABASE_URL) {
   if (!databaseUrl?.startsWith("file:")) {
     throw new Error("当前备份工具仅支持本地 SQLite file: DATABASE_URL");
   }
+  if (databaseUrl.startsWith("file://")) return fileURLToPath(new URL(databaseUrl));
   const value = databaseUrl.slice("file:".length);
-  return isAbsolute(value) ? value : resolve(/* turbopackIgnore: true */ process.cwd(), value);
+  return resolve(/* turbopackIgnore: true */ process.cwd(), value);
 }
 
 /**
@@ -111,7 +115,7 @@ export async function createDatabaseBackup(options: {
   prefix?: string;
 } = {}): Promise<DatabaseBackupResult> {
   const databasePath = resolve(/* turbopackIgnore: true */ options.databasePath ?? resolveDatabasePath());
-  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolve(/* turbopackIgnore: true */ process.cwd(), "archives"));
+  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolveStudentTrackArchiveRoot());
   const prefix = options.prefix ?? "student-track";
   await mkdir(/* turbopackIgnore: true */ archiveDir, { recursive: true });
 
@@ -184,7 +188,7 @@ export async function restoreDatabaseBackup(options: {
   archiveDir?: string;
 }) {
   const databasePath = resolve(/* turbopackIgnore: true */ options.databasePath ?? resolveDatabasePath());
-  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolve(/* turbopackIgnore: true */ process.cwd(), "archives"));
+  const archiveDir = resolve(/* turbopackIgnore: true */ options.archiveDir ?? resolveStudentTrackArchiveRoot());
   const backupPath = resolve(/* turbopackIgnore: true */ options.backupPath);
   const relativeBackupPath = relative(archiveDir, backupPath);
   if (relativeBackupPath.startsWith("..") || isAbsolute(relativeBackupPath)) {
@@ -201,7 +205,14 @@ export async function restoreDatabaseBackup(options: {
 
   try {
     await copyFile(/* turbopackIgnore: true */ backupPath, temporaryPath);
-    await rename(/* turbopackIgnore: true */ temporaryPath, databasePath);
+    if (process.platform === "win32") {
+      // The native SQLite client can retain a delete lock briefly after close
+      // on Windows, while replacing the file contents remains available.
+      await copyFile(/* turbopackIgnore: true */ temporaryPath, databasePath);
+      await rm(/* turbopackIgnore: true */ temporaryPath, { force: true });
+    } else {
+      await rename(/* turbopackIgnore: true */ temporaryPath, databasePath);
+    }
     await rm(/* turbopackIgnore: true */ `${databasePath}-wal`, { force: true });
     await rm(/* turbopackIgnore: true */ `${databasePath}-shm`, { force: true });
     const verification = await verifyDatabaseFile(databasePath);
@@ -209,6 +220,8 @@ export async function restoreDatabaseBackup(options: {
   } catch (error) {
     await rm(/* turbopackIgnore: true */ temporaryPath, { force: true });
     await copyFile(/* turbopackIgnore: true */ preRestore.backupPath, databasePath);
+    await rm(/* turbopackIgnore: true */ `${databasePath}-wal`, { force: true });
+    await rm(/* turbopackIgnore: true */ `${databasePath}-shm`, { force: true });
     await verifyDatabaseFile(databasePath);
     throw error;
   }

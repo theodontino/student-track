@@ -73,7 +73,11 @@ const logRoot = path.join(projectRoot, ".verification-logs");
 const runId = `${new Date().toISOString().replaceAll(":", "-")}-${mode}`;
 const runDir = path.join(logRoot, runId);
 const verbose = process.env.VERIFY_VERBOSE === "1";
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const configuredNpmCliPath = process.env.npm_execpath;
+if (!configuredNpmCliPath) {
+  throw new Error("verify:* 必须通过 npm run 调用");
+}
+const npmCliPath: string = configuredNpmCliPath;
 const maxCapturedCharacters = 2_000_000;
 const failureTailLines = 60;
 
@@ -123,7 +127,7 @@ function runStep(step: VerificationStep): Promise<StepResult> {
     let settled = false;
 
     console.log(`→ ${step.name}`);
-    const child = spawn(npmCommand, step.args, {
+    const child = spawn(process.execPath, [npmCliPath, ...step.args], {
       cwd: projectRoot,
       env: { ...process.env, FORCE_COLOR: "0" },
       stdio: ["ignore", "pipe", "pipe"],

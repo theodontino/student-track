@@ -31,6 +31,10 @@ import {
   type ResolvedObservationCandidate,
 } from "@/services/teacher-observation-service";
 import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
+import {
+  assertSemesterAvailable,
+  assertSessionAvailable,
+} from "@/services/academic-scope-recycle-service";
 
 const PROMPT_VERSION = "teaching-summary-v3";
 const OBSERVATION_VERSION = "teacher-observation-v1";
@@ -169,13 +173,19 @@ async function resolveScope(db: PrismaClient, scope: TeachingSummaryScope) {
       },
     });
     if (!session) throw new Error("session_not_found");
+    await assertSessionAvailable(session.id, db);
     return { semester: session.semester, date: session.date, sessions: [session] };
   }
+  await assertSemesterAvailable(scope.semesterId, db);
   const semester = await db.semester.findUnique({ where: { id: scope.semesterId } });
   if (!semester) throw new Error("semester_not_found");
   if (scope.date < semester.startDate || scope.date > semester.endDate) throw new Error("date_outside_semester");
   const sessions = await db.classSession.findMany({
-    where: { semesterId: semester.id, date: scope.date },
+    where: {
+      semesterId: semester.id,
+      date: scope.date,
+      OR: [{ classId: null }, { class: { deletedAt: null } }],
+    },
     orderBy: [{ semesterNumber: "asc" }, { code: "asc" }],
     include: { class: { select: { id: true, code: true, name: true } } },
   });
@@ -221,6 +231,7 @@ export async function buildTeachingSummaryContext(
           some: {
             semesterId: resolved.semester.id,
             rosterStatus: "ACTIVE",
+            class: { deletedAt: null },
             ...(hasSchoolSession ? {} : { classId: { in: classIds } }),
           },
         },
@@ -272,7 +283,11 @@ export async function buildTeachingSummaryContext(
     ? await db.sessionMetric.findMany({
         where: {
           studentId: { in: [...participantIds] },
-          session: { semesterId: resolved.semester.id, date: { lte: resolved.date } },
+          session: {
+            semesterId: resolved.semester.id,
+            date: { lte: resolved.date },
+            OR: [{ classId: null }, { class: { deletedAt: null } }],
+          },
         },
         include: { session: { select: { id: true, code: true, date: true, semesterNumber: true } } },
       })
@@ -282,7 +297,11 @@ export async function buildTeachingSummaryContext(
     ? await db.communication.findMany({
         where: {
           studentId: { in: [...participantIds] },
-          session: { semesterId: resolved.semester.id, date: { lte: resolved.date } },
+          session: {
+            semesterId: resolved.semester.id,
+            date: { lte: resolved.date },
+            OR: [{ classId: null }, { class: { deletedAt: null } }],
+          },
         },
         orderBy: { createdAt: "desc" },
         take: 500,

@@ -3,6 +3,7 @@ import { createFeedbackTaskDraft, type FeedbackTaskDraftV2 } from "@/features/fe
 import {
   clearFeedbackTaskDraft,
   feedbackTaskDraftScopeKey,
+  hydrateFeedbackTaskPendingGroupDraft,
   readFeedbackTaskDraft,
   readFeedbackTaskStartupDraft,
   syncFeedbackTaskSingleDraftGroupSnapshots,
@@ -164,6 +165,70 @@ describe("feedback task draft storage scope", () => {
     expect(writeFeedbackTaskDraft(scope, draft)).toBe(true);
     expect(readFeedbackTaskDraft(scope)?.groupLessonId).toBe("lesson-1");
     expect(readFeedbackTaskDraft({ ...scope, groupLessonId: "lesson-2" })).toBeNull();
+  });
+
+  it("keeps the matching in-memory pending group draft authoritative and repairs stale storage", () => {
+    const first = singleScope("pending-a");
+    const second = { ...singleScope("pending-b"), semesterId: first.semesterId };
+    const scope = { ...first, groupLessonId: "lesson-pending" };
+    const firstEntry = singleDraft(first, "run-a").entries[0];
+    const secondEntry = singleDraft(second, "run-b").entries[0];
+    const stale: FeedbackTaskDraftV2 = {
+      ...singleDraft(first, "run-a"),
+      requestKey: "request-stale",
+      mode: "group",
+      groupLessonId: "lesson-pending",
+      entries: [firstEntry, { ...secondEntry, selected: false }],
+      plannedSessionCodes: [],
+    };
+    const authoritative: FeedbackTaskDraftV2 = {
+      ...stale,
+      requestKey: "request-authoritative",
+      activeSessionCode: second.sessionCode,
+      entries: [{ ...firstEntry, selected: false }, secondEntry],
+      plannedSessionCodes: [first.sessionCode],
+    };
+    expect(writeFeedbackTaskDraft(scope, stale)).toBe(true);
+
+    expect(hydrateFeedbackTaskPendingGroupDraft(scope, authoritative)).toBe(authoritative);
+    expect(readFeedbackTaskDraft(scope)).toMatchObject({
+      requestKey: "request-authoritative",
+      activeSessionCode: second.sessionCode,
+      plannedSessionCodes: [first.sessionCode],
+      entries: [
+        { sessionCode: first.sessionCode, selected: false },
+        { sessionCode: second.sessionCode, selected: true },
+      ],
+    });
+  });
+
+  it("restores a pending group draft from storage when studio has no in-memory authority", () => {
+    const first = singleScope("restore-a");
+    const second = { ...singleScope("restore-b"), semesterId: first.semesterId };
+    const scope = { ...first, groupLessonId: "lesson-restore" };
+    const saved: FeedbackTaskDraftV2 = {
+      ...singleDraft(first, "run-a"),
+      requestKey: "request-saved-follow-up",
+      mode: "group",
+      groupLessonId: "lesson-restore",
+      activeSessionCode: second.sessionCode,
+      entries: [
+        { ...singleDraft(first, "run-a").entries[0], selected: false },
+        singleDraft(second, "run-b").entries[0],
+      ],
+      plannedSessionCodes: [first.sessionCode],
+    };
+    expect(writeFeedbackTaskDraft(scope, saved)).toBe(true);
+
+    expect(hydrateFeedbackTaskPendingGroupDraft(scope, null)).toMatchObject({
+      requestKey: "request-saved-follow-up",
+      activeSessionCode: second.sessionCode,
+      plannedSessionCodes: [first.sessionCode],
+      entries: [
+        { sessionCode: first.sessionCode, selected: false },
+        { sessionCode: second.sessionCode, selected: true },
+      ],
+    });
   });
 
   it("preserves classes explicitly excluded from a group draft and its single-mode snapshot", () => {

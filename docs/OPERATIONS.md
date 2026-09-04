@@ -7,22 +7,100 @@
 ```bash
 npm install
 npx prisma migrate deploy
+# 仅用于空白开发库；实际教学数据禁止运行 db:seed
 npm run db:seed
 npm run dev
 ```
 
 启动后访问 `http://127.0.0.1:3000`。
 
-运行数据默认继续保存在项目的 `data/` 目录。由其他本机进程启动后端、且工作目录不固定时，可以设置
-`STUDENT_TRACK_DATA_ROOT` 作为统一数据根目录；首批覆盖 LLM 设置、LLM 操作缓存和转写任务：
+### Windows Core 安装与启动
+
+#### 给教师的新 Windows 电脑：钉钉离线完整包（推荐）
+
+Windows Core 没有 MSI/EXE。发布者应先确认目标完整提交已经通过 Windows Core CI，再以该提交 SHA 运行
+GitHub Actions 的 **Build Windows Core offline package**。下载其中的
+`StudentTrackCore-Windows-x64-<版本>.zip` 后，核对包内 `BUILD-INFO.json` 的 `sourceCommit`，再作为钉钉附件发送。
+该包只由受控 Windows 构建环境生成；不要从 macOS 复制 `node_modules` 或自行拼装文件。这个临时构建产物不会自动追加
+到既有 tag 或 prerelease；发布者必须按其实际提交和验收状态说明交付边界。
+
+在这套手动工作流尚未合入默认分支之前，可从目标 PR 的成功 `windows-core` 检查下载同样经过构建和离线验收的
+ZIP artifact；它同样保留 14 天，且不是既有 prerelease 的正式附件。合入默认分支后，才可以使用手动工作流按完整提交 SHA
+重新构建交付包。
+
+教师保存并解压 ZIP，进入 `StudentTrackCore` 文件夹后双击 `Install-StudentTrackCoreOffline.cmd`。安装器会把程序和
+便携 Node 24/npm 11 复制到 `%LOCALAPPDATA%\Student Track\`，在本地执行已随包携带的 Prisma migration，并创建桌面
+上的 **Student Track Core** 启动入口。整个教师端安装过程不访问 GitHub、nodejs.org、npm、SheetJS 或 Prisma 下载站，
+不需要管理员权限，也不会修改系统 Node.js。
+
+离线包包含 Windows x64 的 Core 生产构建、依赖、Prisma 生成物、许可证和对应源码；不包含数据库、`data`、附件、
+收件箱、备份、日志、`.env` 或任何教学数据。首次安装如果在 `%LOCALAPPDATA%\Student Track\` 发现程序目录、数据库、
+运行数据、附件、收件箱或备份中的任一已有内容，会停止而不覆盖或迁移它们。如果全新安装中断，只会移除本次创建的
+程序和运行目录；当前离线包只支持首次安装，尚未提供离线升级流程；不能把新 ZIP 覆盖到旧目录，应联系发布者获取升级或恢复方案。
+
+#### 联网源码安装（仅开发或网络已确认可用时）
+
+旧的 `StudentTrackCore-Windows-Installer.zip` 只有一个联网引导器，不是离线包：它会下载 GitHub、Node.js 和 npm
+依赖。它不适合作为中国大陆教师的默认交付方式，保留仅供开发者或网络条件明确可用的安装场景。
+
+也可以手动下载 `Install-StudentTrackCore.ps1` 后，在 PowerShell 中运行：
+
+```powershell
+$installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1" -OutFile $installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+联网安装器同样只面向第一次安装：若检测到 `%LOCALAPPDATA%\Student Track\app`，会停止而不覆盖程序或数据。
+它会在 `%LOCALAPPDATA%\Student Track\` 下安装程序和便携 Node，并创建桌面上的 **Student Track Core**
+启动入口。以后双击该入口即可；服务仍只监听 `http://127.0.0.1:3000`。
+
+#### 已有源码和 Node.js 的安装方式
+
+Windows Core 源码安装仅支持 Windows 10/11 x64、Node.js 24 x64 和 npm 11。克隆仓库后，在
+PowerShell 中依次运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Prepare-StudentTrackCore.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Start-StudentTrackCore.ps1
+```
+
+准备脚本可重复执行：它创建运行目录，执行 `npm ci`、Prisma Client 生成、`migrate deploy` 和 Core
+生产构建。数据库不存在时先建立空 SQLite 文件；既有数据库会在迁移前创建并校验备份。脚本不会执行
+测试数据 seed，也不会删除数据库、运行数据或已有 LLM 设置。显式配置的 `LLM_SETTINGS_PATH` 仍保持最高
+优先级。启动脚本不重复安装或构建，只启动已准备好的生产服务并绑定
+`http://127.0.0.1:3000`；PowerShell 窗口需要在使用期间保持运行。
+
+Windows Core 的私有数据统一位于 `%LOCALAPPDATA%\Student Track\`：
+
+- `database\student-track.db`：SQLite 数据库；
+- `data\`：LLM 设置与操作缓存等运行数据；
+- `feedback-attachments\`：教师明确标记的反馈附件；
+- `feedback-inbox\`：教师主动扫描的材料收件箱；
+- `archives\`：迁移前和手动创建的数据库备份。
+
+Core 版不包含录音转写（包括本地 FunASR、通义听悟和阿里云 ASR）、企微/WCG、本地集成设置与工具状态。录音转写与企微家校在主导航和移动导航
+保留为不可点击的 Full 功能；高级工具和系统配置不提供绕行入口，直达受限页面只显示不可用说明，
+受限 API 返回 `404 feature_unavailable`。Windows 脚本不会探测、启动或调用仅供 Full 使用的
+FunASR 等转写工具，也不会探测、启动或调用仅供 macOS Full 使用的 WCG。普通学生档案、课堂事实、反馈计划和已确认家校沟通仍可使用。
+`pdftotext` 不是安装前置条件；未安装时只会提示暂时不能解析文字型 PDF，不阻断其他工作流。
+
+### 运行目录
+
+未配置运行根目录时，现有 macOS/开发环境继续使用项目 `data/`、`archives/` 和原有私有目录。由其他
+本机进程启动后端、且工作目录不固定时，可以设置 `STUDENT_TRACK_RUNTIME_ROOT`；其下使用 `data/`、
+`feedback-attachments/`、`feedback-inbox/` 和 `archives/`。也可以只设置 `STUDENT_TRACK_DATA_ROOT`
+来重定位 LLM 设置、LLM 操作缓存和转写任务：
 
 ```bash
-STUDENT_TRACK_DATA_ROOT="$HOME/Library/Application Support/Student Track/data" npm run start
+STUDENT_TRACK_RUNTIME_ROOT="$HOME/Library/Application Support/Student Track" npm run start
 ```
 
 组件专用变量 `LLM_SETTINGS_PATH`、`LLM_CACHE_ROOT` 和 `DIARIZE_DATA_DIR` 的优先级高于统一根目录。
-未配置统一根目录时保持原路径；设置变量也不会自动复制或迁移旧文件，切换前应先停止 Student Track，
-备份并核对目标目录。数据库、反馈附件和 WCG 交换目录继续使用各自现有配置，不受该变量影响。
+附件、收件箱和备份还可分别用 `STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT`、
+`STUDENT_TRACK_FEEDBACK_INBOX_ROOT` 和 `STUDENT_TRACK_ARCHIVES_ROOT` 覆盖。数据库始终由标准
+`file:` URL 形式的 `DATABASE_URL` 定位；Windows 脚本会自动生成该 URL。设置变量不会自动复制或
+迁移旧文件，切换前应先停止 Student Track、备份并核对目标目录。WCG 交换目录继续使用自身配置。
 
 ## 课后反馈的分析与成稿模型
 
@@ -130,7 +208,8 @@ npm run db:verify-upgrade
 npm run db:backup
 ```
 
-备份保存在 `archives/`，包含：
+开发环境的备份默认保存在项目 `archives/`；配置 `STUDENT_TRACK_RUNTIME_ROOT` 后保存在运行根目录的
+`archives/`，Windows Core 则保存在 `%LOCALAPPDATA%\Student Track\archives\`。每份备份包含：
 
 - SQLite 一致性快照 `.db`
 - 同名 `.db.json` 清单
@@ -188,7 +267,7 @@ Student Track 的录音转写页面调用项目根目录 `diarize.sh`。该入�
 
 `auto` 模式保持现有“通义听悟 → 本地 FunASR → 阿里云 ASR”的尝试顺序，因此音频可能上传到云端。需要确保纯本地时，显式选择 `local` 引擎。设置页的“本地工具状态”只执行路径与可执行文件检查，不会自动安装或启动任务。
 
-反馈工作台批量读取文字型出门测 PDF 时依赖 Poppler 的 `pdftotext`。默认从系统 `PATH` 查找；如工具位于非标准目录，可用 `STUDENT_TRACK_PDFTOTEXT_PATH` 指定可执行文件。工作台支持浏览器文件夹选择；浏览器只把本次选中的文件交给 localhost 页面，不会授予长期目录访问权，刷新后如需重新解析应再次选择文件夹。原始 PDF 只通过进程内管道解析，不写入项目目录、数据库或当前标签页恢复存储；扫描件/OCR 暂不支持。
+反馈工作台批量读取文字型出门测 PDF 时可选依赖 Poppler 的 `pdftotext`。默认从系统 `PATH` 查找；如工具位于非标准目录，可用 `STUDENT_TRACK_PDFTOTEXT_PATH` 指定可执行文件。缺少该工具时页面只提示 PDF 暂不可解析，不影响其他功能。工作台支持浏览器文件夹选择；浏览器只把本次选中的文件交给 localhost 页面，不会授予长期目录访问权，刷新后如需重新解析应再次选择文件夹。原始 PDF 只通过进程内管道解析，不写入项目目录、数据库或当前标签页恢复存储；扫描件/OCR 暂不支持。
 
 Student Track 调用本地转写时默认使用纯转写模式，不输出说话人标签和时间轴。每个任务会在自己的输出目录生成任务级热词文件，内容包括基础化学热词和当前数据库中的学生姓名；学生名单变化后，下一次转写会自动使用新名单。
 
@@ -212,7 +291,7 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 默认完整导出会在存在未批准条目时阻断；需要先处理阻断项，或显式选择“仅导出已批准项”。部分导出
 会写入 `FeedbackExportRun`，后续补导时以条目 ID 和最终文本哈希提示已导出内容。
 
-教师明确选择“标记发送附件”后，文件复制到 `~/Library/Application Support/Student Track/feedback-attachments/`（可用 `STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT` 覆盖），目录与文件使用私有权限。数据库只保存文件显示名、MIME、大小、SHA-256 和受控相对定位符；当前 Excel 只导出附件清单，不自动发送。原始课堂 PDF 仍按既有规则只作证据，未被标记为附件时不会复制到该目录。
+教师明确选择“标记发送附件”后，macOS 默认把文件复制到 `~/Library/Application Support/Student Track/feedback-attachments/`；Windows Core 使用 `%LOCALAPPDATA%\Student Track\feedback-attachments\`。也可用 `STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT` 覆盖。目录与文件使用私有权限。数据库只保存文件显示名、MIME、大小、SHA-256 和受控相对定位符；当前 Excel 只导出附件清单，不自动发送。原始课堂 PDF 仍按既有规则只作证据，未被标记为附件时不会复制到该目录。
 
 偏好候选必须在学生档案中由教师确认或拒绝；确认会使相关未批准反馈计划条目标记为 stale，历史已批准版本不变。教师任务在仪表盘和反馈计划中更新为 pending、completed 或 cancelled。
 
@@ -224,7 +303,8 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 ~/Library/Application Support/Student Track/feedback-inbox
 ```
 
-也可以用 `STUDENT_TRACK_FEEDBACK_INBOX_ROOT` 指定本机目录。只有教师点击“扫描收件箱”时才会读取；系统不常驻监听、不移动或删除源文件。ZIP 仅支持本次解包的 `.xlsx`、STEP 文本和 PDF；加密、损坏或嵌套 ZIP 会列为异常，解包内容不持久化。临时投入单次上传上限为 100MB，超过时应改用固定收件箱再扫描。
+Windows Core 对应 `%LOCALAPPDATA%\Student Track\feedback-inbox\`。也可以用
+`STUDENT_TRACK_FEEDBACK_INBOX_ROOT` 指定本机目录。只有教师点击“扫描收件箱”时才会读取；系统不常驻监听、不移动或删除源文件。ZIP 仅支持本次解包的 `.xlsx`、STEP 文本和 PDF；加密、损坏或嵌套 ZIP 会列为异常，解包内容不持久化。临时投入单次上传上限为 100MB，超过时应改用固定收件箱再扫描。
 
 扫描只整理候选事实，不写课堂事实。单班材料直接进入当前课次；共同课材料先按班级和组内花名册路由，再为每个真实课次形成独立运行。个人 PDF 只有在组内能唯一确定学生及所属真实课次时才自动绑定，否则列为待核对材料。教师在第一页按来源处理日期、课次、身份和确定性冲突，再用“确认材料并进入下一步”一次写入各班事实；部分班级失败时停留第一页并列出失败班级。第二页按“班级组默认、班级例外、学生例外”设置命名计划；计划草稿与启动生成分开，启动失败仍进入工作室重试。第三页使用统一计划工作室，班级组先显示跨班学生清单，学生批准和正文仍归属自己的班级计划。
 
@@ -250,7 +330,9 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 
 ## 学期公共材料与主反馈（1.2）
 
-学期公共材料库（原话术库）按课次保存结构化材料，旧库读取时兼容转换。教师明确建立第 N 讲共同课时，系统只把话术库第 N 课复制为草稿；教师可以改选其他课次或在反馈入口明确跳过，确认后才形成共享修订。其他班明确选择已开始的同一 `GroupLesson` 后复用材料，不重新录入。独立课次可在三段式反馈第一阶段选择一条话术并明确保存为本课快照。
+学期详情中的“学期公共材料”是唯一管理入口，并提供 `#semester-common-materials` 稳定锚点。先下载无真实数据的 `.xlsx` 模板；必填列为“课次、群反馈、全对的私反馈、有错误的私反馈”，可选列为“课程主题、统一测评说明、备注”。一个学期只保留一套规范化材料：首次导入直接保存，已有库必须再次确认后整体替换；任一解析错误都会保留旧库。数据库不保存原工作簿、上传路径或文件名。
+
+教师明确建立第 N 讲共同课时，系统自动把材料库第 N 课的主题、群反馈、测评说明、两类私反馈模板及来源复制为草稿，主题作为默认标题；草稿仍须教师确认后才形成共享修订。没有同号材料时保持空白。材料库整体替换不会回写已有共同讲次；需要更新时在讲次上明确选择“重新套用同号材料”，已有内容会要求再次确认。重新套用只改变当前草稿，教师自定义标题、确认修订、真实课次材料和反馈计划快照不变。其他班明确选择已开始的同一 `GroupLesson` 后复用确认材料，不重新录入。独立课次可在三段式反馈第一阶段选择一条材料并明确保存为本课快照。
 
 创建计划时必须明确材料模式：当前共同课确认修订、独立课次快照或不使用。材料只作为课程背景复制进计划快照；后续库更新、共同课草稿修改或课次快照变化不影响既有计划。没有新上传文件时，只要当前课次已有确认课堂事实或明确公共材料，仍可以继续创建计划。
 
@@ -302,6 +384,8 @@ Student Track 不管理或删除 LM Studio 自身日志。LM Studio 的开发日
 
 升级到 1.3.0-beta.1 后运行 `npx prisma migrate deploy`。迁移只增加 `Semester.deletedAt`、`Class.deletedAt` 和 `DraftRecord.intakeRunId`；旧数据默认仍可用，历史录入草案继续通过 `feedback-intake:<runId>` 识别，新草案直接记录 `intakeRunId`。
 
+1.3.0-beta.2 不新增 Schema 或 migration，Core 与 Full 共用上述数据库。升级仍执行 `npx prisma migrate deploy` 以确认数据库已追平；Windows 准备脚本会在既有数据库迁移前自动创建并校验备份。
+
 ## 发布与封档
 
 ### Zhuiver 产品版本分类
@@ -331,7 +415,7 @@ npm run docs:generate
 npm run verify:release
 ```
 
-`verify:release` 包含完整 Git 历史隐私扫描、数据库升级演练和真实数据库未变化门禁；成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时按摘要指向的单个日志排查。也可以推送候选提交并等待同一提交的 CI `quality` 与 `browser` 全部通过，避免重复执行相同的全量验证。自动化通过后可以立即投入真实使用，不等待固定次数的人工课后流程。
+`verify:release` 包含完整 Git 历史隐私扫描、数据库升级演练和真实数据库未变化门禁；成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时按摘要指向的单个日志排查。也可以推送候选提交并等待同一提交的 macOS Full/Core 质量、Full Chromium/WebKit 与 Core Chromium 浏览器门禁全部通过，避免重复执行相同的全量验证。Windows Core 的必需门禁只负责 Windows 源码准备、离线包组装、安装、数据库初始化、回环监听和重启持久化；它不重新执行平台无关质量测试。自动化通过后可以立即投入真实使用，不等待固定次数的人工课后流程。
 
 人工冒烟只由变化边界触发：WCG Accessibility、会话定位或草稿填入变化时做一次真实“不发送”验证；破坏性 migration 先创建并验证备份，再检查迁移后的完整性、行数和领域不变量；安装、签名或进程托管变化在干净账户验证。没有变化的边界不重复执行人工流程。
 

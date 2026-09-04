@@ -37,7 +37,7 @@ export async function candidateSemesterIdsForEvidence(
 ) {
   if (evidenceDates.length === 0) return [];
   const semesters = await prisma.semester.findMany({
-    where: { OR: evidenceDates.map((date) => ({ startDate: { lte: date }, endDate: { gte: date } })) },
+    where: { deletedAt: null, OR: evidenceDates.map((date) => ({ startDate: { lte: date }, endDate: { gte: date } })) },
     select: { id: true, startDate: true, endDate: true },
   });
   const idsByDate = evidenceDates.map((date) => new Set(
@@ -63,6 +63,7 @@ export async function resolveStudentSemesterInCandidates(
     where: {
       studentId,
       semesterId: { in: candidateSemesterIds },
+      class: { deletedAt: null, semester: { deletedAt: null } },
       ...(activeOnly ? { rosterStatus: "ACTIVE" as const } : {}),
     },
     select: { semesterId: true },
@@ -129,6 +130,7 @@ export async function resolveWccHandoffAlignment(
         some: {
           semesterId: { in: candidateSemesterIds },
           rosterStatus: "ACTIVE",
+          class: { deletedAt: null, semester: { deletedAt: null } },
         },
       },
     },
@@ -136,7 +138,11 @@ export async function resolveWccHandoffAlignment(
       id: true,
       name: true,
       enrollments: {
-        where: { semesterId: { in: candidateSemesterIds }, rosterStatus: "ACTIVE" },
+        where: {
+          semesterId: { in: candidateSemesterIds },
+          rosterStatus: "ACTIVE",
+          class: { deletedAt: null, semester: { deletedAt: null } },
+        },
         select: { semesterId: true },
       },
     },

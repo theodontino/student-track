@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { ApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
+import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
 import { createDatabaseBackup, verifyDatabaseBackup } from "@/services/database-backup-service";
 
 export const RECYCLE_RETENTION_DAYS = 30;
@@ -13,8 +14,11 @@ type RecycleDb = PrismaClient | Prisma.TransactionClient;
 type ScopeKind = "class" | "semester";
 
 async function purgeFeedbackAttachmentDirectories(planIds: string[]) {
-  const root = path.resolve(process.env.STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT?.trim()
-    || path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-attachments"));
+  const root = path.resolve(resolveStudentTrackRuntimePath(
+    "feedback-attachments",
+    "STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT",
+    path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-attachments"),
+  ));
   for (const planId of [...new Set(planIds)]) {
     const directory = path.resolve(root, planId);
     if (path.relative(root, directory) !== planId) throw new Error("反馈计划附件目录无效");
@@ -197,48 +201,58 @@ export async function getRecycleImpact(kind: ScopeKind, id: string, db: RecycleD
   };
 }
 
-async function requestGenerationPause(kind: ScopeKind, id: string, db: PrismaClient) {
+async function requestGenerationPause(kind: ScopeKind, id: string, db: RecycleDb) {
   const planWhere: Prisma.FeedbackPlanWhereInput = kind === "semester"
     ? { semesterId: id }
     : { OR: [{ classId: id }, { batch: { plans: { some: { classId: id } } } }] };
   const plans = await db.feedbackPlan.findMany({ where: planWhere, select: { id: true, batchId: true } });
   const planIds = plans.map((plan) => plan.id);
   const batchIds = [...new Set(plans.flatMap((plan) => plan.batchId ? [plan.batchId] : []))];
-  await db.$transaction(async (tx) => {
-    if (batchIds.length) {
-      await tx.feedbackPlanBatch.updateMany({
-        where: { id: { in: batchIds }, status: { in: ["queued", "running"] } },
-        data: { status: "pause_requested", planRevision: { increment: 1 } },
-      });
-    }
-    if (planIds.length) {
-      await tx.feedbackPlan.updateMany({
-        where: { id: { in: planIds }, status: { in: ["queued", "generating"] } },
-        data: { status: "pause_requested", planRevision: { increment: 1 } },
-      });
-    }
-  });
+  if (batchIds.length) {
+    await db.feedbackPlanBatch.updateMany({
+      where: { id: { in: batchIds }, status: { in: ["queued", "running"] } },
+      data: { status: "pause_requested", planRevision: { increment: 1 } },
+    });
+  }
+  if (planIds.length) {
+    await db.feedbackPlan.updateMany({
+      where: { id: { in: planIds }, status: { in: ["queued", "generating"] } },
+      data: { status: "pause_requested", planRevision: { increment: 1 } },
+    });
+  }
 }
 
 export async function moveScopeToRecycleBin(kind: ScopeKind, id: string, db: PrismaClient = prisma) {
   const impact = await getRecycleImpact(kind, id, db);
-  await requestGenerationPause(kind, id, db);
-  const now = new Date();
-  if (kind === "class") {
-    await db.class.updateMany({ where: { id, deletedAt: null }, data: { deletedAt: now } });
-  } else {
-    await db.semester.updateMany({ where: { id, deletedAt: null }, data: { deletedAt: now } });
-  }
-  await db.systemLog.create({
-    data: {
-      action: `${kind}.recycled`,
-      targetType: kind === "class" ? "Class" : "Semester",
-      targetId: id,
-      targetName: impact.name,
-      detail: JSON.stringify({ purgeAt: purgeAt(now).toISOString(), impact }),
-    },
+  const deletion = await db.$transaction(async (tx) => {
+    const current = kind === "class"
+      ? await tx.class.findUnique({ where: { id }, select: { deletedAt: true } })
+      : await tx.semester.findUnique({ where: { id }, select: { deletedAt: true } });
+    if (!current) throw new ApiError(kind === "class" ? "班级不存在" : "学期不存在", 404, "not_found", false);
+    if (current.deletedAt) return { deletedAt: current.deletedAt, changed: false };
+
+    const deletedAt = new Date();
+    await requestGenerationPause(kind, id, tx);
+    if (kind === "class") {
+      await tx.class.update({ where: { id }, data: { deletedAt } });
+    } else {
+      await tx.semester.update({ where: { id }, data: { deletedAt } });
+    }
+    return { deletedAt, changed: true };
   });
-  return { ...impact, deletedAt: now.toISOString(), purgeAt: purgeAt(now).toISOString() };
+  const deadline = purgeAt(deletion.deletedAt);
+  if (deletion.changed) {
+    await db.systemLog.create({
+      data: {
+        action: `${kind}.recycled`,
+        targetType: kind === "class" ? "Class" : "Semester",
+        targetId: id,
+        targetName: impact.name,
+        detail: JSON.stringify({ purgeAt: deadline.toISOString(), impact }),
+      },
+    }).catch(() => undefined);
+  }
+  return { ...impact, deletedAt: deletion.deletedAt.toISOString(), purgeAt: deadline.toISOString() };
 }
 
 export async function restoreScope(kind: ScopeKind, id: string, db: PrismaClient = prisma) {
@@ -256,7 +270,7 @@ export async function restoreScope(kind: ScopeKind, id: string, db: PrismaClient
     if (purgeAt(semester.deletedAt).getTime() <= Date.now()) throw new ApiError("学期已超过 30 天恢复期限，等待永久清除", 409, "conflict", false);
     await db.semester.update({ where: { id }, data: { deletedAt: null } });
   }
-  await db.systemLog.create({ data: { action: `${kind}.restored`, targetType: kind === "class" ? "Class" : "Semester", targetId: id } });
+  await db.systemLog.create({ data: { action: `${kind}.restored`, targetType: kind === "class" ? "Class" : "Semester", targetId: id } }).catch(() => undefined);
   return { restored: true, id };
 }
 
@@ -296,17 +310,74 @@ async function collectPurgeTargets(kind: ScopeKind, id: string, db: RecycleDb) {
     where: { OR: [{ classId: { in: classIds } }, ...(batchIds.length ? [{ batchId: { in: batchIds } }] : [])] },
     select: { id: true },
   })).map((plan) => plan.id);
-  const sessionIds = (await db.classSession.findMany({
+  const sessions = await db.classSession.findMany({
     where: kind === "semester" ? { semesterId: id } : { classId: id },
-    select: { id: true },
-  })).map((session) => session.id);
-  return { classIds, semesterIds, batchIds, planIds, sessionIds };
+    select: { id: true, code: true, date: true },
+  });
+  const sessionIds = sessions.map((session) => session.id);
+  const sessionCodes = sessions.map((session) => session.code);
+  const studentIds = (await db.studentClassEnrollment.findMany({
+    where: { classId: { in: classIds } },
+    select: { studentId: true },
+  })).map((enrollment) => enrollment.studentId);
+  const observationIds = sessionIds.length
+    ? (await db.teacherObservationSource.findMany({
+        where: { communication: { sessionId: { in: sessionIds } } },
+        select: { observationId: true },
+      })).map((source) => source.observationId)
+    : [];
+  const intakeRunIds = sessionCodes.length
+    ? (await db.feedbackIntakeRun.findMany({
+        where: { sessionCode: { in: sessionCodes } },
+        select: { id: true },
+      })).map((run) => run.id)
+    : [];
+  return {
+    classIds,
+    studentIds: [...new Set(studentIds)],
+    semesterIds,
+    batchIds,
+    planIds,
+    sessionIds,
+    sessionCodes,
+    sessionDates: [...new Set(sessions.map((session) => session.date))],
+    intakeRunIds,
+    observationIds: [...new Set(observationIds)],
+  };
 }
 
 async function permanentlyPurgeScope(kind: ScopeKind, id: string, db: PrismaClient) {
   const targets = await collectPurgeTargets(kind, id, db);
   const itemIds = (await db.feedbackPlanItem.findMany({ where: { planId: { in: targets.planIds } }, select: { id: true } })).map((item) => item.id);
   await db.$transaction(async (tx) => {
+    if (targets.sessionIds.length) {
+      await tx.sessionMetricHistory.deleteMany({ where: { sessionId: { in: targets.sessionIds } } });
+    }
+    const draftScopes: Prisma.DraftRecordWhereInput[] = [
+      ...(targets.sessionCodes.length ? [{ sessionCode: { in: targets.sessionCodes } }] : []),
+      ...(targets.intakeRunIds.length
+        ? [
+            { intakeRunId: { in: targets.intakeRunIds } },
+            ...targets.intakeRunIds.map((runId) => ({ rawText: { contains: `feedback-intake:${runId}` } })),
+          ]
+        : []),
+    ];
+    if (draftScopes.length) {
+      await tx.draftRecord.deleteMany({
+        where: { OR: draftScopes },
+      });
+    }
+    const summaryCacheScopes: Prisma.TeachingSummaryCacheWhereInput[] = [
+      ...(targets.sessionCodes.length
+        ? [{ scopeType: "session", scopeKey: { in: targets.sessionCodes.map((code) => `session:${code}`) } }]
+        : []),
+      ...(kind === "semester"
+        ? [{ scopeType: "date", scopeKey: { startsWith: `date:${id}:` } }]
+        : targets.sessionDates.map((date) => ({ scopeType: "date", scopeKey: `date:${targets.semesterIds[0]}:${date}` }))),
+    ];
+    if (summaryCacheScopes.length) {
+      await tx.teachingSummaryCache.deleteMany({ where: { OR: summaryCacheScopes } });
+    }
     if (itemIds.length) await tx.generationRecord.deleteMany({ where: { feedbackPlanItemId: { in: itemIds } } });
     await tx.generationRecord.deleteMany({
       where: {
@@ -321,16 +392,35 @@ async function permanentlyPurgeScope(kind: ScopeKind, id: string, db: PrismaClie
     if (targets.batchIds.length) await tx.feedbackPlanBatch.deleteMany({ where: { id: { in: targets.batchIds } } });
     await tx.groupLessonSession.deleteMany({ where: { sessionId: { in: targets.sessionIds } } });
     await tx.classSession.deleteMany({ where: { id: { in: targets.sessionIds } } });
+    if (targets.observationIds.length) {
+      await tx.teacherObservation.deleteMany({
+        where: { id: { in: targets.observationIds }, sources: { none: {} } },
+      });
+    }
     await tx.studentClassEnrollment.deleteMany({ where: { classId: { in: targets.classIds } } });
     await tx.memoryCompactionRun.deleteMany({ where: { classId: { in: targets.classIds } } });
-    await tx.teachingMemory.deleteMany({ where: { OR: [{ scopeType: "class", scopeId: { in: targets.classIds } }, ...(kind === "semester" ? [{ semesterId: id }] : [])] } });
+    await tx.teachingMemory.deleteMany({
+      where: {
+        OR: [
+          { scopeType: "class", scopeId: { in: targets.classIds } },
+          ...(kind === "semester"
+            ? [{ semesterId: id }]
+            : [{
+                scopeType: "student",
+                scopeId: { in: targets.studentIds },
+                semesterId: { in: targets.semesterIds },
+                memoryTier: "semester",
+              }]),
+        ],
+      },
+    });
     await tx.classGroup.updateMany({ where: { leadClassId: { in: targets.classIds } }, data: { leadClassId: null } });
     await tx.classGroupMembership.deleteMany({ where: { classId: { in: targets.classIds } } });
     if (kind === "semester") await tx.classGroup.deleteMany({ where: { semesterId: id } });
     await tx.class.deleteMany({ where: { id: { in: targets.classIds } } });
     if (kind === "semester") await tx.semester.delete({ where: { id } });
-    await tx.systemLog.create({ data: { action: `${kind}.purged`, targetType: kind === "class" ? "Class" : "Semester", targetId: id } });
   }, { timeout: 30_000 });
+  await db.systemLog.create({ data: { action: `${kind}.purged`, targetType: kind === "class" ? "Class" : "Semester", targetId: id } }).catch(() => undefined);
   await purgeFeedbackAttachmentDirectories(targets.planIds);
   return targets;
 }

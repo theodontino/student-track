@@ -711,7 +711,12 @@ describe("feedback plan service", () => {
     expect(JSON.parse(exportRuns[0]!.itemManifest)[0]).toEqual({ itemId: item.id, finalTextHash: patched.finalTextHash });
   });
 
-  it("exports a stable no-send WCG package from teacher-approved personal feedback", async () => {
+  const fullOnlyIt = (
+    process.env.STUDENT_TRACK_EDITION
+    ?? process.env.NEXT_PUBLIC_STUDENT_TRACK_EDITION
+  ) === "core" ? it.skip : it;
+
+  fullOnlyIt("exports a stable no-send WCG package from teacher-approved personal feedback", async () => {
     const semester = await prisma.semester.create({ data: { name: `${semesterName}-WCG`, startDate: "2099-01-01", endDate: "2099-12-31" } });
     const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-WCG`, name: "企微草稿测试班" } });
     const student = await prisma.student.create({ data: { name: "张三", studentId: `${studentNumber}-WCG`, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
