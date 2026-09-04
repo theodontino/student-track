@@ -67,6 +67,7 @@ describe("Windows Core PowerShell entrypoints", () => {
   });
 
   it("offers a clean-machine bootstrap without an administrator install or test-data seed", () => {
+    expect(installer.charCodeAt(0)).toBe(0xfeff);
     expect(installer).toContain("#requires -Version 5.1");
     expect(installer).toContain('"v1.3.0-beta.2"');
     expect(installer).toContain("https://nodejs.org/dist/index.json");
