@@ -360,6 +360,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npx prisma generate
       - run: npm test -- src/tests/ci-policy.test.ts --reporter=dot
         env:
           DATABASE_URL: file:${{ runner.temp }}/student-track-ci-policy.db
