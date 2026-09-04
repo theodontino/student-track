@@ -1,117 +1,71 @@
-# WCG → Student Track 本地转交文件协议 v1
+# WCG → Student Track 本地转交：ST 适配说明
 
-本协议当前稳定配对由 WCG（WeComCatch GUI）v0.6.0 与 Student Track v1.1.4 共同维护；Student Track 1.1.5-beta.2 仅修复本地反馈计划、学生归属和转写任务路径的既有 UX/兼容性阻断，不改变 handoff v1、receipt v1、字段、目录结构或发送边界。Student Track 1.1.1 起与 WCG 0.5 beta 在完全保留 v1 字段、目录结构和原子写顺序的前提下增加不可变修订、反馈证据覆盖与不发送草稿填入。WCG
-负责发布完成包，Student Track 负责扫描、校验、业务提取并写回安全回执。
-旧候选 HTTP、CLI 和手工 JSON 集成已移除；业务交接只有本文件协议。
+WCG 与 Student Track 的跨仓协议由 `theodontino/protocol-st-wcg` 维护；本文件只说明 Student Track 如何消费该协议以及教师在 ST 内看到的行为，不重新定义字段、协议版本、哈希规则、目录结构或产品配对版本。
 
-## 目录与所有权
+当前同步到本仓的 Schema 与合成示例见 [`contracts/`](contracts/README.md)。任何跨仓可观察行为变化都应先在协议仓库完成治理和 snapshot sync，再修改 Student Track 适配器。
 
-默认根目录为 `~/Library/Application Support/WCC Student Track Exchange`，
-两端可分别通过 `WECOMCATCH_ST_EXCHANGE_ROOT` 和
-`STUDENT_TRACK_WCC_EXCHANGE_ROOT` 指向同一绝对路径：
+## Student Track 的职责
 
-```text
-<exchange-root>/v1/packages/<source-id>/<package-id>.json
-<exchange-root>/v1/packages/<source-id>/<package-id>.sha256
-<exchange-root>/v1/receipts/<source-id>/<package-id>/<receipt-id>.json
-```
+Student Track 只消费 WCG 已完成发布的本地 handoff 包，并保持以下稳定边界：
 
-- WCG 只创建 `packages`；ST 只创建不可变 `receipts`。
-- ST 不移动、覆盖或删除 WCG 包。
-- 两端不得把交换目录纳入 Git。
+- 只接受协议快照允许的完成包；不猜测未知字段、未知主版本或不完整文件。
+- 不移动、覆盖或删除 WCG 已发布包，也不依赖 WCG 进程持续运行。
+- 学生身份、学期归属、课次绑定和正式业务写入由 ST 自己确定；LLM 只产生候选事实，不能直接写正式沟通。
+- 包身份、哈希、Schema、证据和业务范围任一校验失败时，不产生正式沟通。
+- 处理结果通过不可变 receipt 表达；receipt 不写聊天正文、姓名、异常堆栈或模型原始输出。
+- replacement / correction 等修订语义只在教师确认事务中影响正式沟通；拒绝或谱系不完整时原沟通保持不变。
 
-## 不可变修订
+本地交换目录的默认位置、环境变量与启动排障见 [`OPERATIONS.md`](OPERATIONS.md)。协议层的目录布局、原子写顺序、SHA-256、幂等身份、错误码和 capability 以 `protocol-st-wcg` 为准。
 
-修订包仍是 handoff v1，ID 只在原包 ID 后追加 `.r2`、`.r3`。WCG 使用
-`handoff-evidence-v1` 对规范化消息证据、会话、时间范围和分类计算指纹；生成时间、
-生产者版本和包 ID 不参与指纹。已发布包和 receipt 永不覆盖或删除。
+## 教师操作流程
 
-WCG 首次升级只为既有已发布包建立谱系基线。后续证据变化形成一个待确认候选；
-候选再次变化时更新候选并要求重新确认，发布前指纹变化则拒绝。只有 Student Track
-最近 24 小时目录快照声明 `handoff-revisions-v1` 时，WCG 才允许显式发布修订。
+1. 在 WCG 中完成花名册门控与筛选，并显式发布待转交项目。
+2. 在 Student Track 的“企微家校 → 中转仓库”中扫描并接收新包。
+3. 能唯一匹配到当前业务范围的候选进入 ST 二次提取；无法唯一匹配的候选停在人工处理区。
+4. 模型或服务暂时不可用时可以重试；无价值或明确放弃的候选可以丢弃。
+5. 待复核候选必须绑定实际课次并由教师确认，之后才写入正式家校沟通。
 
-Student Track 按 root/parent/revision 解析谱系：待处理草案被 replacement 取代，
-已拒绝草案得到关联 replacement，已确认沟通得到 correction。correction 只有在教师
-确认事务中才保存 `CommunicationRevision` 并更新原沟通；拒绝或谱系不完整时原沟通
-完全不变。`sourceKey` 始终保持原始沟通身份。
-
-## 写入与完整性
-
-1. WCG 在同一目录写入隐藏临时 JSON，刷新文件后原子重命名为 `.json`。
-2. 对最终 JSON 原始字节计算小写 SHA-256。
-3. 最后原子写入只包含 `64 位哈希 + 换行` 的 `.sha256`。
-4. `.sha256` 是包已完成的唯一标志；消费者忽略临时文件和孤立 JSON。
-
-幂等键为 `source.id + packageId + 文件 SHA-256`。相同包和哈希是安全重复；
-相同 `packageId` 但哈希不同是 `package_conflict`，不得猜测或覆盖。
-
-## 数据边界
-
-Package 只包含 WCG 已完成基础清洗的标准化消息片段和来源审计字段，不包含
-Student Track 学生 ID、课次、评分、标签或正式沟通记录，也不得包含凭据、
-绝对路径、数据库位置和模型原始响应。学生匹配、业务筛选、二次提取、课次
-绑定和教师复核均属于后续 Student Track 消费端职责。
-
-Receipt 只包含包标识、文件哈希、消费版本、结果和白名单错误码。不得写入聊天
-正文、姓名、异常堆栈或模型输出。失败后通过新增回执表达新尝试，不覆盖旧回执。
-
-## 契约文件
-
-- `docs/contracts/wcc-student-track-file-v1.schema.json`
-- `docs/contracts/student-track-receipt-v1.schema.json`
-- `docs/contracts/examples/`
-
-未知主版本、超过 80 条消息、重复消息 ID、非法时间、文件哈希不一致和 Schema
-外字段必须安全拒绝。
-
-## 当前操作流程
-
-1. WCG 完成花名册门控和 LLM 筛选，在"中转仓库"点击"发布待转交项目"。
-2. Student Track 在"企微家校 → 中转仓库"点击"扫描并接收新包"。
-3. 唯一姓名匹配的包进入 ST 二次提取；无法唯一匹配的包停在人工匹配区。
-4. 模型或服务暂时不可用的包可重试；无价值或明确放弃的包可丢弃。
-5. ST 待复核候选仍需选择实际课次并由教师确认，才写入正式家校沟通。
-
-WCG 关闭不影响第 2～5 步。任何一端都不会删除 WCG 原始归档。
+WCG 关闭不影响 Student Track 已接收包的后续处理。任何一端都不会因为 ST 消费成功而删除 WCG 原始归档。
 
 ## 课次绑定规则
 
-ST 不允许 LLM 猜测课次。只有证据消息能够确定唯一课次时才自动绑定；其余候选
-必须由教师在复核面板选择实际课次。具体规则：
+ST 不允许 LLM 猜测课次。只有证据能够确定唯一课次时才自动绑定；其余情况由教师显式选择。
 
-1. **自动绑定：同日且唯一**
-   - 按 `Asia/Shanghai` 将这条候选实际引用的证据消息归一为日期范围。
-   - 仅当范围只有一天、学生当前班级在当天恰好一节课时，
-     才写入 `sessionCode`。
-   - LLM 仅负责学生匹配和事实摘要，不参与课次选择。
-2. **一日多次课（少数情况）**
-   - LLM 提取后该班的 `sessionCode` 仍可为空（同日多课或跨日消息），候选
-     留在"中转仓库"列表里集中展示，由教师在下拉中手动挑选。
-   - 不在协议层强约束"必须唯一一节"，以兼容现实里同日加课/补课场景。
-   - 中转仓库面板为缺课次项提供"按 `occurredAt.min` 选最近一节"快捷按钮
-     （`pickNearestWithinDistance`，30 天内），写入 `sessionOverrides` 后
-     仍可手动下拉覆盖。
-3. **找不到唯一课次时**
-   - 候选仍会保留为待复核，不自动拒绝。教师可在面板下拉中选择，或主动使用
-     "按日期选最近一节"的快捷建议；快捷建议不自动写入。
-4. **课次信息标签（如每节课讲什么）**
-   - 当前不实现，标记为可删占位；不进入 `ClassSession` 的契约字段，LLM 也
-     不扫描课次详情作为上下文。
-5. **跨日匹配（如分多天连续讨论同一学生）**
-   - 当前不实现，列为待实现项。决策点：用最早一节 / 最晚一节 / 中位数 / 全部
-     候选都建 draft，尚未定稿。引入前必须先和教师确认业务规则再改协议。
+1. **同日且唯一时自动绑定**
+   - 按 `Asia/Shanghai` 将候选实际引用的证据消息归一为日期范围。
+   - 仅当范围只有一天，且学生当前班级当天恰好一节课时，才写入 `sessionCode`。
+   - LLM 可参与学生匹配和事实摘要，但不参与课次选择。
+2. **同日多课或证据跨日时保持未绑定**
+   - 候选继续留在中转仓库，由教师通过下拉选择实际课次。
+   - “按 `occurredAt.min` 选最近一节”只提供快捷建议；建议不能自动替代教师确认。
+3. **找不到唯一课次时不自动拒绝**
+   - 候选保持待复核，教师可以手动选择或主动采用快捷建议。
+4. **不得为匹配方便补造课次信息**
+   - LLM 不扫描或虚构课次详情来完成绑定。
+   - 新建课次仍由教师显式填写日期；同班同日已有课次时只提示，不强制一日一课。
 
-新建课次时（`SessionDialog`）要求教师手动填日期；若选中的日期该班级已有
-课次，仅给非阻断提示（"本班当天已有 N 节课，仍将创建"），不强制单对单硬
-绑定。
+## 不可变修订在 ST 中的效果
+
+协议中的修订谱系由 WCG 发布并由 ST 校验。Student Track 的产品侧处理原则是：
+
+- 尚未确认的旧候选可以被合法 replacement 取代；
+- 已拒绝候选可以保留与 replacement 的关联；
+- 已确认沟通只有在合法 correction 经教师确认后才保存 `CommunicationRevision` 并更新正式沟通；
+- 谱系冲突、证据不完整或教师拒绝 correction 时，既有正式沟通完全不变；
+- `sourceKey` 始终保持原始沟通身份。
+
+修订编号、指纹算法、发布前检查与 capability 约束属于协议规范，不在本文件复制。
 
 ## 历史回执修复
 
-`GET /api/wecom/handoff/receipt-repair` 只读校验缺少 `receiptId` 的历史台账：
-包、marker、SHA-256 和终态均合法才列为可修复。已有合法回执只补关联；没有合法
-回执才按既有终态创建新回执。缺包、冲突和非终态记录跳过。
+`GET /api/wecom/handoff/receipt-repair` 只读检查缺少 `receiptId` 的历史台账。只有包、完成标志、SHA-256 和既有终态都合法时才列为可修复：已有合法回执只补关联；没有合法回执才按既有终态创建新回执；缺包、冲突和非终态记录保持不变。
 
-实际执行 `POST` 前必须先查看预检结果，并提交确认文本
-`REPAIR_HANDOFF_RECEIPTS`。服务会先创建和验证 `pre-handoff-receipt-repair`
-数据库备份。数据库写入仅限原台账行的 `receiptId`，不修改状态、结果、草案、
-正式沟通或包文件。
+执行 `POST` 前必须先查看预检结果，并提交确认文本 `REPAIR_HANDOFF_RECEIPTS`。服务会先创建并验证 `pre-handoff-receipt-repair` 数据库备份。允许的数据库写入仅限原台账行的 `receiptId`，不得修改状态、结果、草案、正式沟通或包文件。
+
+## 验证入口
+
+- 本仓快照说明：[`contracts/README.md`](contracts/README.md)
+- Student Track 运维与交换目录：[`OPERATIONS.md`](OPERATIONS.md)
+- 长期设计边界：[`DECISIONS.md`](DECISIONS.md)
+- 当前产品与 WCG 的发布兼容关系：[`RELEASES.md`](RELEASES.md)
+- 跨仓 canonical、版本与联合 conformance：`theodontino/protocol-st-wcg`

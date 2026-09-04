@@ -1,54 +1,52 @@
 # 发布与兼容性
 
-## 当前稳定版本
+本文件只维护**当前产品版本的跨组件兼容关系和发布边界**。产品版本唯一来源是根 `package.json`；版本历史、Zhuiver 分类理由和每次验证证据保存在 `docs/release-evidence/`、Git tag 与 GitHub Release 中，不在这里重复维护一份时间线。
 
-| 组件 | 版本 | 与另一端的关系 |
+## 当前发布基线
+
+| 组件 | 版本 | 当前关系 |
 |---|---:|---|
-| Student Track | 1.3.0-beta.3 | 在 beta.2 的 Core / Full 与公共材料基础上，增加受限/自由反馈生成、可选课程材料、内置文字型 PDF 解析，以及 Windows Core 与 macOS Full 离线安装和保留数据卸载，按 Zhuiver 归为 MINOR 预发布。 |
-| WCG（WeComCatch GUI） | 0.6.0 | 原生 SwiftUI 正式版；发布 `wcc.student-track-file.v1`，只读 receipt v1，并保持不发送边界。 |
+| Student Track | 1.3.0-beta.3 | Core / Full 共用同一业务数据与 Prisma Schema；当前预发布包含受限/自由反馈生成、可选课程材料、内置文字型 PDF 解析，以及 Windows Core 与 macOS Full 离线安装和保留数据卸载。 |
+| WCG（WeComCatch GUI） | 0.6.0 | 当前正式 WCG；与 ST 通过 `protocol-st-wcg` 管理的 handoff、receipt、已批准草稿包和只读花名册目录契约协作，并保持 no-send 边界。 |
 
-两端的业务交付只使用本地 handoff 文件；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。协议字段、目录结构、包写入顺序与 receipt v1 不随上述小版本变动。
+Student Track 与 WCG 的业务交付以本地文件为主；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。
 
-## 当前联合验证
+跨仓字段、目录、哈希、错误码、capability、授权、no-send 与兼容矩阵的 canonical 来源是 `theodontino/protocol-st-wcg`。本仓 `docs/contracts/` 只保存同步快照，`WECOM_FILE_HANDOFF.md` 只说明 Student Track 适配行为。
 
-| 组件 | 版本 | 联合验证范围 |
-|---|---:|---|
-| Student Track | 1.3.0-beta.3 | Core 继续阻断全部录音转写与企微/WCG；Full 保持 handoff v1、教师批准和 no-send 草稿边界。受限 Writer 只读取服务端披露输入，历史计划按 `legacy` 兼容；两种离线安装均不携带教学数据，卸载保留数据库和运行目录。 |
-| WCG | 0.6.0 | handoff 谱系、已批准反馈草稿不发送填入、逐条实时会话定位、前 50→前 150 降级和输入框安全复核；原生 SwiftUI 正式版。 |
+## 当前联合验证边界
 
-## 1.2 Beta 发布历史
+- **Student Track Core**：继续阻断全部录音转写与企微/WCG Full 集成；不得因为构建在 Windows 上而意外开放 Full 能力。
+- **Student Track Full**：保持 WCG handoff、教师批准和 no-send 草稿边界；受限 Writer 只读取服务端披露输入，历史计划继续按兼容值处理。
+- **离线交付**：Windows Core 与 macOS Full 安装包不携带教学数据；卸载保留数据库和运行目录。macOS ZIP 在签名与公证完成前不称为 `.app` 正式安装包。
+- **WCG**：联合验证聚焦 handoff 谱系、已批准反馈草稿不发送填入、会话定位、输入框安全复核和协议兼容性；WCG 自身 SwiftUI / FastAPI / Accessibility 内部接口不属于 ST 协议快照。
 
-| 组件 | 版本 | 联合验证范围 |
-|---|---:|---|
-| Student Track | 1.2.0-beta.3 | 在 beta.2 基础上提供三段式统一课后任务：材料合并、教师确认事实、FeedbackPlan 工作室；支持固定收件箱、拖拽/文件夹/ZIP，保留高级五步工作台、FeedbackPlan 历史、批次和 WCG no-send 边界；按 Zhuiver 归为 MINOR，不改变 handoff v1、receipt v1 或正式协议。 |
-| Student Track | 1.2.0-beta.4 | 班级组增加显式主班和自动共同进度：主班推进共同课、其他班顺序跟随，反馈页提示班级组与材料状态并允许确认共享；真实课次与 no-send 边界不变，按 Zhuiver 归为 MINOR。 |
-| Student Track | 1.2.0-beta.5 | 在 beta.4 班级组进度上统一学期公共材料库、共同课草稿/确认和主反馈材料选择；独立课次支持明确公共材料快照，明确“不使用”不再回退到其他修订，旧工作台/API/no-send 边界保留。 |
-| WCG（WeComCatch GUI） | 0.6.0 | 与当前稳定版相同；本 beta 不要求 WCG 变更。 |
+当前 Student Track 版本的完整发布证据必须存在于 `docs/release-evidence/<package version>.md`，并通过发布记录检查器；本文件不复制 CI job 数量、运行 URL 或一次性验收状态。
 
-### STEP Bridge 的发布边界
+## STEP Bridge 的发布边界
 
-ST ↔ STEP 当前桥接是 `experimental`，不属于 Student Track 当前稳定产品承诺，也不作为 ST 1.2 的正式协议交付条件。现阶段只保证当前已验证的 ST + STEP 组合，实验文件格式可以随两端数据模型调整，旧实验格式不承诺长期兼容。
+ST ↔ STEP 当前桥接是 `experimental`，不属于 Student Track 当前稳定产品承诺，也不作为正式协议交付条件。现阶段只保证当前已验证的 ST + STEP 组合；实验文件格式可以随两端数据模型调整，旧实验格式不承诺长期兼容。
 
-正式 `.stsession/.stlesson`、canonical Schema、revision/ledger、compatibility matrix 和联合 conformance 已延期到 STEP 核心课堂模型和真实桥接需求明显稳定后再由 `Protocol-of-sts` 收口。实验 bridge 的当前实现、测试和真实使用结果可以作为未来协议设计输入，但不登记为正式协议兼容证据。
+正式 `.stsession/.stlesson`、canonical Schema、revision/ledger、compatibility matrix 和联合 conformance 只有在 STEP 核心课堂模型与真实桥接需求稳定后，才由 `Protocol-of-sts` 重新建立 RFC。已长期延期的历史提案不作为当前实现蓝图。
 
 实验期仍保持稳定安全边界：`studentId` 精确匹配、班级和目标课次一致、确定性课堂事实不由 LLM 改写或补分、模型失败不阻断教师复核、坐标和触控 UI 数据不进入 ST、教师确认前不写正式记录。
 
-Student Track 的日常和稳定版门禁以分级自动化为准：纯文档、普通应用、平台/构建敏感和发布/高风险改动分别采用 L0–L3。发布候选按 L3 运行当前实际支持的完整矩阵；所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化。固定次数的真实课后流程和重复人工合成演练不再阻断发布。
+## 发布门禁
 
-发布证据保存当前 gate 运行（其中记录 `HEAD_SHA`）和最近完成产品验证的 `PRODUCT_VERIFIED_SHA`。两者不同时，只有在后续累计改动严格属于 L0 且当前 gate 已通过时才能沿用产品证据；版本、产品、构建、平台或协议输入变化时必须重新完成相应验证。
+Student Track 的验证按影响范围分为 L0–L3。发布候选按 L3 运行当前实际支持的完整矩阵；所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化。
 
-版本级别遵循协议仓库 `Zhuiver.md`：Student Track `1.2.0` 是统一课后反馈工作流的 MINOR；`1.2.1` 在既有班级组、多班批次和三段式入口上补齐一站式编排，归为 PATCH。协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
-`docs/release-evidence/` 中的 Zhuiver 记录，并通过 `npm run release:check-version`。
+CI 分别记录当前候选 `HEAD_SHA` 与最近完成产品验证的 `PRODUCT_VERIFIED_SHA`。只有后续累计改动严格属于 L0 且当前文档 gate 通过时，才允许继承产品证据；版本、产品、构建、平台、数据库或协议输入变化时必须重新完成对应验证。
 
-人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及**已接受的正式跨仓协议**变化时仍使用精确提交的两端自动化；实验 STEP bridge 的当前 adapter 变化不触发正式 compatibility 流程。发布 gate 对所有 in-scope job 的失败、超时、取消和异常跳过负责，但不重复调查成功或预期跳过的 job。
+人工冒烟只由相关边界变化触发，例如 WCG Accessibility/草稿填入、破坏性 migration、安装签名或进程托管。已经通过且输入未变化的范围不重复验收。
 
 ## 发布时的文档检查
 
-每次发布至少同步检查：
+每次发布至少确认：
 
-- 根 `README.md` 的功能描述与版本；
-- `docs/WECOM_FILE_HANDOFF.md` 的兼容版本和协议边界；
-- `docs/ARCHITECTURE.md`、`docs/DOMAIN.md`、`docs/OPERATIONS.md` 中的运行链路；
-- 由脚本生成的路由和 Schema 文档。
+- 根 `README.md` 展示的当前版本与 `package.json` 一致；
+- 本文件的 Student Track 当前版本与 `package.json` 一致；
+- `docs/release-evidence/<version>.md` 存在并记录该版本的 Zhuiver 与验证证据；
+- `docs/WECOM_FILE_HANDOFF.md` 只描述 ST 适配行为，不重新声明协议或产品配对版本；
+- `docs/ARCHITECTURE.md`、`docs/DOMAIN.md`、`docs/OPERATIONS.md` 仍与当前运行链路一致；
+- 自动生成的路由和 Schema 文档没有漂移。
 
-接口、已接受协议或数据迁移发生不兼容变化时，先更新契约和测试，再发布实现；仅小版本功能更新不改动 handoff v1。实验性 STEP bridge 在正式协议收口前按当前两端组合维护，不承担长期旧格式兼容义务。
+接口、已接受协议或数据迁移发生不兼容变化时，先更新 canonical 契约和测试，再发布实现。

@@ -47,34 +47,38 @@ Student Track 正在向 1.0 收敛：默认只接受维护、稳定性、兼容�
 
 ## 文档规则
 
-只在稳定认知变化时更新文档：
+只在稳定认知变化时更新长期文档：
 
 - 领域概念变化：`docs/DOMAIN.md`
 - 架构或稳定规则变化：`docs/ARCHITECTURE.md`
 - 启动、迁移、备份或恢复变化：`docs/OPERATIONS.md`
 - 重要且难以逆转的选择：`docs/DECISIONS.md`
 - 隐私分类、禁止提交内容和泄露处置：`docs/PRIVACY.md`
+- LLM 提示词边界变化：`docs/PROMPTING.md`
+- 稳定 UX 规则变化：`docs/UX.md`
 
-任务过程、Bug、Feature、重构和技术债进入 GitHub Issues。路由、Schema 和 ER 图等机械事实由脚本生成。
+当前事实必须保持唯一来源：
 
-纯 Markdown 改动按 L0 运行 `npm run docs:check`、`npm run docs:links` 和 `npm run privacy:check`；修改发布记录时再运行对应的 `npm run release:check-version -- <record>`。Schema 或 API 路由变化仍需追加文档检查，但它们属于产品改动，不能按 L0 处理。
+- Student Track 产品版本只以 `package.json` 为源；根 README 与 `docs/RELEASES.md` 只是可检查的展示副本。
+- 当前跨组件配对只在 `docs/RELEASES.md` 维护；单个版本的历史理由与验证证据进入 `docs/release-evidence/`。
+- 不在 `PRODUCT_VERSIONING.md`、WCG 适配说明、架构或决策文档中额外维护“当前版本/当前基线”。
+- 路由、Schema 和 ER 图等机械事实由脚本生成。
+
+任务过程、Bug、Feature、重构和技术债进入 GitHub Issues。已经由 release evidence 保存的版本历史不要再次复制到长期文档。
+
+纯 Markdown 改动按 L0 运行 `npm run docs:check`、`npm run docs:links`、`node scripts/check-doc-semantics.mjs` 和 `npm run privacy:check`；修改发布记录时再运行对应的 `npm run release:check-version -- <record>`。Schema 或 API 路由变化仍需追加文档检查，但它们属于产品改动，不能按 L0 处理。
 
 ## 跨仓库协议治理
 
-Student Track 与 WCG 的跨仓库契约以独立的 `student-track-wcg-protocols` 仓库为唯一规范来源。
-涉及跨仓 JSON、HTTP、交换目录、哈希、错误码、能力、授权、no-send 或发布顺序的 Feature，
-必须先在协议仓库建立并接受 Issue/RFC，再在本仓库实现。`docs/contracts/` 中已登记的 Schema
-与示例是生成快照，不得在本仓库单独编辑；边界和同步方式见 `docs/contracts/README.md`。
+Student Track 与 WCG 的跨仓库契约以独立的 `theodontino/protocol-st-wcg` 仓库为唯一规范来源。涉及跨仓 JSON、HTTP、交换目录、哈希、错误码、能力、授权、no-send 或发布顺序的 Feature，必须先在该协议仓库建立并接受 Issue/RFC，再在本仓库实现。`docs/contracts/` 中已登记的 Schema 与示例是生成快照，不得在本仓库单独编辑；边界和同步方式见 `docs/contracts/README.md`。
+
+Student Track 与 STEP 的正式协议治理入口是 `theodontino/Protocol-of-sts`。当前 experimental STEP bridge 不是正式协议，不得把历史延期 RFC 当作实现蓝图或兼容承诺。
 
 ## 产品版本（Zhuiver）
 
-Student Track 的程序版本遵循协议仓库 `Zhuiver.md`，而协议 `contractVersion`、URL 路径、
-协议快照 tag 和兼容矩阵继续遵循协议仓库自己的版本规则。两者不能互相替代。
+Student Track 的程序版本遵循 `theodontino/Protocol-of-sts` 中的 `Zhuiver.md`；WCG 或 STEP 协议的 `contractVersion`、URL 路径、协议快照 tag 和兼容矩阵继续遵循各自协议仓库的版本规则。产品版本和协议版本不能互相替代。
 
-每个发布 PR 必须写明上一版本、本版本、Zhuiver 分类（`PATCH`/`MINOR`/`MAJOR`）、用户
-主张、核心工作流、领域模型和协议影响。页面数量、文件数量、代码行数和重写技术栈不能
-单独决定版本级别。使用 `docs/release-evidence/TEMPLATE.md` 与
-`npm run release:check-version -- <record>` 形成可检查的发布记录。
+每个发布 PR 必须写明上一版本、本版本、Zhuiver 分类（`PATCH`/`MINOR`/`MAJOR`）、用户主张、核心工作流、领域模型和协议影响。页面数量、文件数量、代码行数和重写技术栈不能单独决定版本级别。使用 `docs/release-evidence/TEMPLATE.md` 与 `npm run release:check-version -- <record>` 形成可检查的发布记录。
 
 ## 完成标准
 
@@ -85,7 +89,7 @@ Student Track 的程序版本遵循协议仓库 `Zhuiver.md`，而协议 `contra
 ### Agent 验证策略
 
 - 任何验证开始前，先按累计改动记录 L0–L3 等级和 `browser`、`database`、`build`、`windows`、`macos`、`contract`、`ci`、`release` 等实际影响范围。混合改动取最高等级，范围取并集；无法可靠分类时按 L2，并运行通用基线与生产构建。
-- L0 只适用于严格文档白名单，不包含 CI workflow、依赖或构建配置、Prisma 和协议快照。只运行文档与隐私检查；不得运行构建、应用测试、E2E 或平台流程。
+- L0 只适用于严格文档白名单，不包含 CI workflow、依赖或构建配置、Prisma、检查脚本和协议快照。只运行文档与隐私检查；不得运行构建、应用测试、E2E 或平台流程。
 - L1 普通应用改动运行 lint、类型检查、单元/集成测试和 Chromium 冒烟。
 - L2 平台或构建敏感改动运行适用的通用检查，再追加受影响 scope 的平台、集成或 E2E；只有 Windows 敏感改动要求 Windows，只有浏览器敏感改动要求完整浏览器矩阵。
 - L3 发布或高风险改动运行当前实际支持的完整发布矩阵：macOS Full 生产构建与启动、Windows Core 离线包构建、安装、启动和重启持久化、Chromium 与 WebKit 发布 E2E，以及发布级隐私、迁移、备份和恢复检查。仓库具备签名和公证流程前，不把 macOS 步骤称为 packaging。
