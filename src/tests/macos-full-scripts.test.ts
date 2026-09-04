@@ -19,6 +19,9 @@ describe("macOS Full offline bundle scripts", () => {
     expect(common).toMatch(/arm64\|x86_64/);
     expect(common).toContain("v24.*");
     expect(common).toContain("11.*");
+    expect(common).toContain('node_version="$("$node_executable" --version)"');
+    expect(common).toContain('node_architecture="$("$node_executable" -p \'process.arch\')"');
+    expect(common).toContain('npm_version="$("$npm_executable" --version)"');
     expect(common).toContain('export STUDENT_TRACK_EDITION="full"');
     expect(common).toContain('$HOME/Library/Application Support/Student Track');
     for (const directory of ["database", "data", "feedback-attachments", "feedback-inbox", "archives"]) {

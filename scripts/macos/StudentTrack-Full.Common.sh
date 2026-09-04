@@ -44,24 +44,24 @@ student_track_assert_portable_node() {
   local node_version
   local node_architecture
   local npm_version
-  node_version="$($node_executable --version)"
-  node_architecture="$($node_executable -p 'process.arch')"
-  npm_version="$($npm_executable --version)"
+  node_version="$("$node_executable" --version)"
+  node_architecture="$("$node_executable" -p 'process.arch')"
+  npm_version="$("$npm_executable" --version)"
   case "$node_version" in
     v24.*) ;;
     *)
-      echo "离线包需要 Node.js 24；当前为 $node_version。" >&2
+      echo "离线包需要 Node.js 24；当前为 ${node_version}。" >&2
       return 1
       ;;
   esac
   if [ "$node_architecture" != "$(student_track_expected_node_arch)" ]; then
-    echo "Node.js 架构与当前 Mac 不一致：$node_architecture。" >&2
+    echo "Node.js 架构与当前 Mac 不一致：${node_architecture}。" >&2
     return 1
   fi
   case "$npm_version" in
     11.*) ;;
     *)
-      echo "离线包需要 npm 11；当前为 $npm_version。" >&2
+      echo "离线包需要 npm 11；当前为 ${npm_version}。" >&2
       return 1
       ;;
   esac
