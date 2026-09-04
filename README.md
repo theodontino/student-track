@@ -8,13 +8,13 @@
 
 ## 实验性能力：STEP Bridge
 
-Student Track 当前包含实验性的 STEP 人工文件桥，用于验证 ST 与 STEP 之间的班级花名册和课堂事实流转。该能力**不属于当前稳定产品承诺，也不作为 ST 1.2 的正式协议交付要求**。
+Student Track 当前包含实验性的 STEP 人工文件桥，用于验证 ST 与 STEP 之间的班级花名册和课堂事实流转。该能力**不属于当前稳定产品承诺，也不作为当前 Student Track 的正式跨仓协议交付要求**。
 
 当前实验桥只保证当前已验证的 ST + STEP 组合可用；文件头、字段和 adapter 可以随两端数据模型继续调整，旧实验文件不承诺长期兼容。现阶段优先保持桥接简单、可读、可修改，不为短命格式建立永久 migration、revision ledger 或 compatibility matrix。
 
 仍然保持少数硬边界：按稳定 `studentId` 精确匹配；班级和目标课次必须一致；STEP 的确定性课堂事实不由 LLM 改写或补分；模型失败不能阻断教师复核；坐标和触控 UI 数据不得进入 ST；教师确认前不写正式记录。
 
-正式 `.stsession/.stlesson`、canonical Schema、revision/ledger、联合 conformance 与长期兼容策略已延期到 STEP 核心数据模型和真实桥接需求明显稳定以后，再由 `Protocol-of-sts` 收口。当前实施范围见 GitHub Issue #43。
+历史 `.stsession/.stlesson`、canonical Schema、revision/ledger、联合 conformance 与长期兼容方案对应的 RFC-0001 已长期冻结、软撤回，从未 accepted 或实现，也不再作为未来蓝图。未来只有在 STEP 核心数据模型和真实桥接需求出现明确稳定信号后，才由 `Protocol-of-sts` 基于届时活下来的实际格式新建 RFC；不得直接恢复 RFC-0001。当前实验桥实施范围见 GitHub Issue #43。
 
 ## 快速启动
 
