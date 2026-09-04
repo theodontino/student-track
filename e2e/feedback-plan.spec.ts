@@ -26,12 +26,19 @@ async function openTask(page: Page, className: string = TEST_FIXTURE.class.name,
 }
 
 async function uploadCurrent(page: Page, fileName: string, contents: string) {
-  await expect(page.getByRole("button", { name: /^(添加文件|继续添加)$/ })).toBeEnabled({ timeout: 15_000 });
+  const materialCard = page.locator('section[aria-labelledby="feedback-material-title"]');
+  await expect(materialCard.getByText(/0\/[1-9]\d* 名学生/)).toBeVisible({ timeout: 15_000 });
+  const addFileButton = materialCard.getByRole("button", { name: /^(添加文件|继续添加)$/ });
+  await expect(addFileButton).toBeEnabled({ timeout: 15_000 });
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    addFileButton.click(),
+  ]);
   const uploadFinished = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && new URL(response.url()).pathname === "/api/feedback/intake/upload"
   ));
-  await page.locator('input[type="file"]').first().setInputFiles({ name: fileName, mimeType: "text/plain", buffer: Buffer.from(contents) });
+  await fileChooser.setFiles({ name: fileName, mimeType: "text/plain", buffer: Buffer.from(contents) });
   expect((await uploadFinished).ok()).toBeTruthy();
   await expect(page.getByText(/材料已整理|等待教师确认/).first()).toBeVisible();
 }

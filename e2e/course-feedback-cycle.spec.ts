@@ -163,12 +163,19 @@ async function startPlan(request: APIRequestContext, planId: string) {
 
 async function uploadClassMaterials(page: Page, classIndex: 0 | 1) {
   const className = fixture.classes[classIndex].name;
-  await expect(page.getByRole("button", { name: /^(添加文件|继续添加)$/ })).toBeEnabled({ timeout: 15_000 });
+  const materialCard = page.locator('section[aria-labelledby="feedback-material-title"]');
+  await expect(materialCard.getByText(/0\/[1-9]\d* 名学生/)).toBeVisible({ timeout: 15_000 });
+  const addFileButton = materialCard.getByRole("button", { name: /^(添加文件|继续添加)$/ });
+  await expect(addFileButton).toBeEnabled({ timeout: 15_000 });
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    addFileButton.click(),
+  ]);
   const uploadFinished = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && ["/api/feedback/intake/upload", "/api/feedback/intake/group-upload"].includes(new URL(response.url()).pathname)
   ));
-  await page.locator('input[type="file"]').first().setInputFiles([
+  await fileChooser.setFiles([
     { name: `${className}-助教表.xlsx`, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: assistantRoster(classIndex) },
     { name: `${className}.step-classroom.txt`, mimeType: "text/plain", buffer: Buffer.from(stepText(classIndex)) },
   ]);
