@@ -46,6 +46,7 @@ import {
 import {
   clearFeedbackTaskDraft,
   feedbackTaskDraftScopeKey,
+  hydrateFeedbackTaskPendingGroupDraft,
   readFeedbackTaskDraft,
   readFeedbackTaskStartupDraft,
   syncFeedbackTaskSingleDraftGroupSnapshots,
@@ -624,14 +625,15 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       setPendingGroupDraft(null);
       return;
     }
-    const saved = readFeedbackTaskDraft({
+    const scope: FeedbackTaskDraftScope = {
       semesterId: context.context.semesterId,
       classId: session.classId,
       sessionCode: session.code,
       groupLessonId: groupLesson.id,
-    });
-    setPendingGroupDraft(saved?.mode === "group" && saved.entries.some((item) => item.selected) ? saved : null);
-  }, [context.context.semesterId, context.data?.session, contextCurrent, groupLesson, state.batchId, state.planId, state.stage]);
+    };
+    const hydrated = hydrateFeedbackTaskPendingGroupDraft(scope, pendingGroupDraft);
+    if (hydrated !== pendingGroupDraft) setPendingGroupDraft(hydrated);
+  }, [context.context.semesterId, context.data?.session, contextCurrent, groupLesson, pendingGroupDraft, state.batchId, state.planId, state.stage]);
 
   useEffect(() => {
     if (!context.hydrated || !currentDraftScopeKey || restoredScopeKey.current === currentDraftScopeKey || state.planId || state.batchId) return;
