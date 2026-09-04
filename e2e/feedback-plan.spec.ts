@@ -723,7 +723,7 @@ test("named plan draft supports Command-S, autosave and reload recovery", async 
     action: "plan_draft",
     patch: { displayName: "E2E 快捷键保存草稿" },
   });
-  await expect(page.getByText("计划已保存。", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("反馈计划名称与保存状态").getByRole("status")).toHaveText("已保存");
 
   await page.reload();
   await expect(page).toHaveURL(/view=plan/);
@@ -791,7 +791,7 @@ test("named multi-class draft saves and a batch-only legacy link restores the wo
     action: "plan_draft",
     displayName: "E2E 多班快捷键草稿",
   });
-  await expect(page.getByText("计划已保存。", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("反馈计划名称与保存状态").getByRole("status")).toHaveText("已保存");
 
   await page.reload();
   await expect(page).toHaveURL(/view=plan/);

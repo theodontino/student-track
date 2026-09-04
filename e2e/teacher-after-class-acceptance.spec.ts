@@ -111,7 +111,7 @@ test.describe("教师纯页面课后验收", () => {
       ));
       await page.keyboard.press("Meta+s");
       expect((await saved).ok()).toBeTruthy();
-      await expect(page.getByText("计划已保存。", { exact: true })).toBeVisible();
+      await expect(page.getByLabel("反馈计划名称与保存状态").getByRole("status")).toHaveText("已保存");
       await page.reload();
       await expect(page.getByRole("navigation", { name: "反馈计划阶段" })).toContainText("规划");
       await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
