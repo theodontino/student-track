@@ -34,8 +34,7 @@ jobs:
         run: npm run docs:check
       - if: inputs.run_docs
         run: npm run docs:links
-      - if: inputs.run_docs
-        run: node scripts/check-doc-semantics.mjs
+      - run: node scripts/check-doc-semantics.mjs
       - run: npm run privacy:check
       - name: Validate changed release records
         if: inputs.run_release_record
