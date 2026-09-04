@@ -1,16 +1,17 @@
 @echo off
-setlocal
+setlocal EnableExtensions DisableDelayedExpansion
 title Student Track Core Installer
 
-set "INSTALLER_URL=https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1"
-set "INSTALLER_PATH=%TEMP%\Install-StudentTrackCore-v1.3.0-beta.2.ps1"
+set "ST_BOOTSTRAP_URL=https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1"
+set "ST_BOOTSTRAP_FILE=%TEMP%\Install-StudentTrackCore-v1.3.0-beta.2.ps1"
 
 echo Downloading Student Track Core installer...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '%INSTALLER_URL%' -OutFile '%INSTALLER_PATH%'"
-if errorlevel 1 goto :download_failed
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Remove-Item -LiteralPath $env:ST_BOOTSTRAP_FILE -Force -ErrorAction SilentlyContinue; Invoke-WebRequest -UseBasicParsing -Uri $env:ST_BOOTSTRAP_URL -OutFile $env:ST_BOOTSTRAP_FILE } catch { Write-Error $_; exit 1 }"
+set "DOWNLOAD_EXIT_CODE=%ERRORLEVEL%"
+if not "%DOWNLOAD_EXIT_CODE%"=="0" goto :download_failed
 
 echo Starting installer...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%INSTALLER_PATH%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ST_BOOTSTRAP_FILE%"
 set "INSTALL_EXIT_CODE=%ERRORLEVEL%"
 if not "%INSTALL_EXIT_CODE%"=="0" goto :install_failed
 
@@ -23,7 +24,7 @@ exit /b 0
 echo.
 echo Download failed. Check the Internet connection and try again.
 pause
-exit /b 1
+exit /b %DOWNLOAD_EXIT_CODE%
 
 :install_failed
 echo.

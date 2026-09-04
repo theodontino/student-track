@@ -83,9 +83,13 @@ describe("Windows Core PowerShell entrypoints", () => {
 
   it("offers a double-click launcher that fetches the published bootstrap and preserves errors", () => {
     expect(clickInstaller).toMatch(/^@echo off/m);
+    expect(clickInstaller).toContain("setlocal EnableExtensions DisableDelayedExpansion");
     expect(clickInstaller).toContain("releases/download/v1.3.0-beta.2/Install-StudentTrackCore.ps1");
     expect(clickInstaller).toContain("Invoke-WebRequest -UseBasicParsing");
-    expect(clickInstaller).toContain('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%INSTALLER_PATH%"');
+    expect(clickInstaller).toContain("$ErrorActionPreference='Stop'");
+    expect(clickInstaller).toContain("SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
+    expect(clickInstaller).toContain("Remove-Item -LiteralPath $env:ST_BOOTSTRAP_FILE");
+    expect(clickInstaller).toContain('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ST_BOOTSTRAP_FILE%"');
     expect(clickInstaller).toContain(":download_failed");
     expect(clickInstaller).toContain(":install_failed");
     expect(clickInstaller).not.toMatch(/db:seed|funasr|diarize|tingwu|aliyun|wecom|wcg/i);
