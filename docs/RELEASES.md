@@ -33,12 +33,14 @@ ST ↔ STEP 当前桥接是 `experimental`，不属于 Student Track 当前稳�
 
 实验期仍保持稳定安全边界：`studentId` 精确匹配、班级和目标课次一致、确定性课堂事实不由 LLM 改写或补分、模型失败不阻断教师复核、坐标和触控 UI 数据不进入 ST、教师确认前不写正式记录。
 
-Student Track 的日常和稳定版门禁以自动化为准：普通改动通过 `verify:quick`，高风险与发布改动通过 `verify:release`，随后即可进入真实使用。所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化；固定次数的真实课后流程和重复人工合成演练不再阻断发布。
+Student Track 的日常和稳定版门禁以分级自动化为准：纯文档、普通应用、平台/构建敏感和发布/高风险改动分别采用 L0–L3。发布候选按 L3 运行当前实际支持的完整矩阵；所有 `verify:*` 命令自动确认真实 SQLite 主文件与 WAL 的 size、mtime、SHA-256 未变化。固定次数的真实课后流程和重复人工合成演练不再阻断发布。
+
+发布证据保存当前 gate 运行（其中记录 `HEAD_SHA`）和最近完成产品验证的 `PRODUCT_VERIFIED_SHA`。两者不同时，只有在后续累计改动严格属于 L0 且当前 gate 已通过时才能沿用产品证据；版本、产品、构建、平台或协议输入变化时必须重新完成相应验证。
 
 版本级别遵循协议仓库 `Zhuiver.md`：Student Track `1.2.0` 是统一课后反馈工作流的 MINOR；`1.2.1` 在既有班级组、多班批次和三段式入口上补齐一站式编排，归为 PATCH。协议 v1 的版本身份和兼容矩阵独立维护。后续发布必须附带
 `docs/release-evidence/` 中的 Zhuiver 记录，并通过 `npm run release:check-version`。
 
-人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及**已接受的正式跨仓协议**变化时仍使用精确提交的两端自动化；实验 STEP bridge 的当前 adapter 变化不触发正式 compatibility 流程。
+人工冒烟只在相关边界变化时触发：WCG Accessibility、会话定位或草稿填入变化时执行一次真实“不发送”验证；破坏性 migration、安装签名或进程托管按各自风险验证。涉及**已接受的正式跨仓协议**变化时仍使用精确提交的两端自动化；实验 STEP bridge 的当前 adapter 变化不触发正式 compatibility 流程。发布 gate 对所有 in-scope job 的失败、超时、取消和异常跳过负责，但不重复调查成功或预期跳过的 job。
 
 ## 发布时的文档检查
 

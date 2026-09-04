@@ -1,24 +1,177 @@
-name: CI
+name: CI policy
 
 on:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*"]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      minimum_level:
+        description: Minimum validation level for this manual run
+        required: true
+        default: L3
+        type: choice
+        options:
+          - L1
+          - L2
+          - L3
 
 concurrency:
-  group: quality-${{ github.workflow }}-${{ github.ref }}
+  group: ci-policy-${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
+  actions: read
   contents: read
+  checks: read
 
 jobs:
-  quality:
-    timeout-minutes: 20
-    runs-on: macos-latest
+  classify:
+    name: Classify CI changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    outputs:
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+      base_sha: ${{ steps.classify.outputs.base_sha }}
+      validated_sha: ${{ steps.classify.outputs.validated_sha }}
+      level: ${{ steps.classify.outputs.level }}
+      scopes: ${{ steps.classify.outputs.scopes }}
+      changed_paths: ${{ steps.classify.outputs.changed_paths }}
+      plan: ${{ steps.classify.outputs.plan }}
+      product_verified_sha_candidate: ${{ steps.classify.outputs.product_verified_sha_candidate }}
+      product_evidence_inherited: ${{ steps.classify.outputs.product_evidence_inherited }}
+      run_docs: ${{ steps.classify.outputs.run_docs }}
+      run_privacy: ${{ steps.classify.outputs.run_privacy }}
+      run_release_record: ${{ steps.classify.outputs.run_release_record }}
+      run_l1: ${{ steps.classify.outputs.run_l1 }}
+      run_browser_full: ${{ steps.classify.outputs.run_browser_full }}
+      run_chromium_smoke: ${{ steps.classify.outputs.run_chromium_smoke }}
+      run_chromium_full: ${{ steps.classify.outputs.run_chromium_full }}
+      run_webkit_full: ${{ steps.classify.outputs.run_webkit_full }}
+      run_production_build: ${{ steps.classify.outputs.run_production_build }}
+      run_windows_core: ${{ steps.classify.outputs.run_windows_core }}
+      run_macos_full: ${{ steps.classify.outputs.run_macos_full }}
+      run_database_upgrade: ${{ steps.classify.outputs.run_database_upgrade }}
+      run_contract_check: ${{ steps.classify.outputs.run_contract_check }}
+      run_ci_policy: ${{ steps.classify.outputs.run_ci_policy }}
+      run_privacy_history: ${{ steps.classify.outputs.run_privacy_history }}
+      run_release: ${{ steps.classify.outputs.run_release }}
+      effective_product_sha: ${{ steps.effective.outputs.product_sha }}
+      effective_level: ${{ steps.effective.outputs.level }}
+      effective_scopes: ${{ steps.effective.outputs.scopes }}
+      evidence_base: ${{ steps.effective.outputs.base }}
     env:
-      STUDENT_TRACK_EDITION: full
-      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
+      CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
+      CI_VALIDATED_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Find reusable product evidence
+        id: prior_evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node --import tsx scripts/resolve-ci-evidence.ts
+      - name: Classify cumulative changes
+        id: classify
+        env:
+          PRIOR_PRODUCT_SHA: ${{ steps.prior_evidence.outputs.prior_product_verified_sha }}
+          CI_FORCE_LEVEL: ${{ startsWith(github.ref, 'refs/tags/') && 'L3' || (github.event_name == 'workflow_dispatch' && inputs.minimum_level || '') }}
+          CI_FORCE_SCOPES: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || (github.event_name == 'workflow_dispatch' && inputs.minimum_level == 'L3' && 'release' || (github.event_name == 'workflow_dispatch' && inputs.minimum_level == 'L2' && 'ci' || '')) }}
+        run: |
+          args=(--head "$CI_HEAD_SHA")
+          if [[ -n "$CI_BASE_SHA" && ! "$CI_BASE_SHA" =~ ^0+$ ]]; then
+            args+=(--base "$CI_BASE_SHA")
+          fi
+          if [[ -n "$PRIOR_PRODUCT_SHA" ]]; then
+            args+=(--product-verified-sha "$PRIOR_PRODUCT_SHA")
+          fi
+          node --import tsx scripts/classify-ci-changes.ts "${args[@]}"
+      - name: Resolve effective evidence identity
+        id: effective
+        env:
+          HEAD_SHA: ${{ steps.classify.outputs.head_sha }}
+          BASE_SHA: ${{ steps.classify.outputs.base_sha }}
+          LEVEL: ${{ steps.classify.outputs.level }}
+          SCOPES_JSON: ${{ steps.classify.outputs.scopes }}
+          PRODUCT_SHA: ${{ steps.classify.outputs.product_verified_sha_candidate }}
+        run: >-
+          node -e '
+          const fs = require("node:fs");
+          const scopes = new Set(JSON.parse(process.env.SCOPES_JSON || "[]"));
+          const values = {
+            product_sha: process.env.PRODUCT_SHA || "none",
+            level: process.env.LEVEL,
+            scopes: scopes.size ? [...scopes].join(",") : "none",
+            base: process.env.BASE_SHA || "none",
+          };
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            Object.entries(values).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
+          '
+      - name: Summarize classification
+        env:
+          HEAD_SHA: ${{ steps.classify.outputs.head_sha }}
+          VALIDATED_SHA: ${{ steps.classify.outputs.validated_sha }}
+          PRODUCT_SHA: ${{ steps.effective.outputs.product_sha }}
+          LEVEL: ${{ steps.effective.outputs.level }}
+          SCOPES: ${{ steps.effective.outputs.scopes }}
+          INHERITED: ${{ steps.classify.outputs.product_evidence_inherited }}
+        run: |
+          {
+            echo "## CI classification"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| HEAD_SHA | \`$HEAD_SHA\` |"
+            echo "| VALIDATED_SHA | \`$VALIDATED_SHA\` |"
+            echo "| PRODUCT_VERIFIED_SHA | \`$PRODUCT_SHA\` |"
+            echo "| Level | $LEVEL |"
+            echo "| Scopes | $SCOPES |"
+            echo "| Product evidence inherited | $INHERITED |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  documentation:
+    name: Documentation and privacy
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_privacy == 'true'
+    uses: ./.github/workflows/documentation.yml
+    with:
+      run_docs: ${{ needs.classify.outputs.run_docs == 'true' }}
+      run_release_record: ${{ needs.classify.outputs.run_release_record == 'true' }}
+      changed_paths: ${{ needs.classify.outputs.changed_paths }}
+    permissions:
+      contents: read
+
+  lint:
+    name: Lint
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_l1 == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  typecheck:
+    name: Typecheck
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_l1 == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -27,23 +180,54 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - run: npm run verify:quality
-        env:
-          DATABASE_URL: file:${{ runner.temp }}/student-track-build.db
-          VERIFY_ARTIFACT_NAME: verification-quality-${{ github.run_id }}
-      - name: Upload quality verification logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: verification-quality-${{ github.run_id }}
-          path: .verification-logs
-          if-no-files-found: ignore
-          retention-days: 7
-          include-hidden-files: true
+      - run: npm run typecheck
 
-  quality-core:
-    timeout-minutes: 20
+  unit:
+    name: Unit and integration tests
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_l1 == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      STUDENT_TRACK_EDITION: full
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
+      DATABASE_URL: file:${{ runner.temp }}/student-track-unit.db
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm test -- --reporter=dot
+
+  core_unit:
+    name: Core unit and integration tests
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_windows_core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      STUDENT_TRACK_EDITION: core
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
+      DATABASE_URL: file:${{ runner.temp }}/student-track-core-unit.db
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm test -- --reporter=dot
+
+  core_browser:
+    name: Core browser contract
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_windows_core == 'true'
     runs-on: macos-latest
+    timeout-minutes: 20
     env:
       STUDENT_TRACK_EDITION: core
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
@@ -55,66 +239,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - run: npm run verify:quality
-        env:
-          DATABASE_URL: file:${{ runner.temp }}/student-track-core-build.db
-          VERIFY_ARTIFACT_NAME: verification-quality-core-${{ github.run_id }}
-      - name: Upload Core quality verification logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: verification-quality-core-${{ github.run_id }}
-          path: .verification-logs
-          if-no-files-found: ignore
-          retention-days: 7
-          include-hidden-files: true
-
-  chromium:
-    timeout-minutes: 20
-    runs-on: macos-latest
-    env:
-      STUDENT_TRACK_EDITION: full
-      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npx prisma generate
       - run: npx playwright install chromium
-      - run: npm run test:e2e:chromium
-      - name: Upload Chromium browser artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: verification-chromium-${{ github.run_id }}
-          path: |
-            playwright-report
-            test-results
-          if-no-files-found: ignore
-          retention-days: 7
-          include-hidden-files: true
-
-  core-browser:
-    timeout-minutes: 20
-    runs-on: macos-latest
-    env:
-      STUDENT_TRACK_EDITION: core
-      NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npx prisma generate
-      - run: npx playwright install chromium
-      - name: Run Core browser contract
-        run: node --import tsx scripts/run-isolated-tests.ts playwright --fixture=core --project=chromium e2e/core-edition.spec.ts
-      - name: Upload Core browser artifacts
+      - run: node --import tsx scripts/run-isolated-tests.ts playwright --fixture=core --project=chromium e2e/core-edition.spec.ts
+      - name: Upload Core browser diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -126,13 +253,209 @@ jobs:
           retention-days: 7
           include-hidden-files: true
 
-  windows-core:
-    needs: [quality, quality-core, chromium, core-browser]
+  chromium_smoke:
+    name: Chromium smoke
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_chromium_smoke == 'true'
+    uses: ./.github/workflows/webkit.yml
+    with:
+      project: chromium
+      suite: smoke
+    permissions:
+      contents: read
+
+  chromium_full:
+    name: Chromium full
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_chromium_full == 'true'
+    uses: ./.github/workflows/webkit.yml
+    with:
+      project: chromium
+      suite: full
+    permissions:
+      contents: read
+
+  webkit_full:
+    name: WebKit full
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_webkit_full == 'true'
+    uses: ./.github/workflows/webkit.yml
+    with:
+      project: webkit
+      suite: full
+    permissions:
+      contents: read
+
+  production_build:
+    name: Production build
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_production_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      STUDENT_TRACK_EDITION: full
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
+      DATABASE_URL: file:${{ runner.temp }}/student-track-build.db
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+
+  database_upgrade:
+    name: Database upgrade
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_database_upgrade == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: file:${{ runner.temp }}/student-track-upgrade.db
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run db:verify-upgrade
+
+  contract_check:
+    name: Contract integration
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_contract_check == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DATABASE_URL: file:${{ runner.temp }}/student-track-contract.db
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm test -- src/tests/wecom-file-transfer-contract.test.ts --reporter=dot
+
+  ci_policy:
+    name: CI policy tests
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_ci_policy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DATABASE_URL: file:${{ runner.temp }}/student-track-ci-policy.db
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test -- src/tests/ci-policy.test.ts --reporter=dot
+
+  release_policy:
+    name: Release privacy
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_privacy_history == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run privacy:history
+
+  release_recovery:
+    name: Release backup and restore
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DATABASE_URL: file:${{ runner.temp }}/student-track-recovery.db
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm test -- src/tests/database-backup.test.ts --reporter=dot
+
+  macos_full:
+    name: macOS Full production
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_macos_full == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      STUDENT_TRACK_EDITION: full
+      NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
+      DATABASE_URL: file:${{ runner.temp }}/student-track-macos-full.db
+      STUDENT_TRACK_RUNTIME_ROOT: ${{ runner.temp }}/student-track-runtime
+      STUDENT_TRACK_DATA_ROOT: ${{ runner.temp }}/student-track-runtime/data
+      STUDENT_TRACK_ARCHIVES_ROOT: ${{ runner.temp }}/student-track-runtime/archives
+      STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT: ${{ runner.temp }}/student-track-runtime/feedback-attachments
+      STUDENT_TRACK_FEEDBACK_INBOX_ROOT: ${{ runner.temp }}/student-track-runtime/feedback-inbox
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npm run build
+      - name: Start Full production service
+        run: |
+          log_path="$RUNNER_TEMP/student-track-macos-full.log"
+          npm run start -- --port 3320 >"$log_path" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..60}; do
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              tail -200 "$log_path"
+              exit 1
+            fi
+            if curl --fail --silent --show-error http://127.0.0.1:3320/api/semesters >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          tail -200 "$log_path"
+          echo "macOS Full production service did not become ready within 60 seconds." >&2
+          exit 1
+
+  windows_core:
+    name: Windows Core offline package
+    needs: classify
+    if: needs.classify.result == 'success' && needs.classify.outputs.run_windows_core == 'true'
     timeout-minutes: 35
     runs-on: windows-latest
     env:
       STUDENT_TRACK_EDITION: core
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: core
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -223,3 +546,171 @@ jobs:
           path: ${{ runner.temp }}/student-track-core-offline-check/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+  product_evidence:
+    name: Product evidence | product=${{ needs.classify.outputs.effective_product_sha }} | base=${{ needs.classify.outputs.evidence_base }} | level=${{ needs.classify.outputs.effective_level }} | scopes=${{ needs.classify.outputs.effective_scopes }}
+    needs:
+      - classify
+      - lint
+      - typecheck
+      - unit
+      - core_unit
+      - core_browser
+      - chromium_smoke
+      - chromium_full
+      - webkit_full
+      - production_build
+      - database_upgrade
+      - contract_check
+      - ci_policy
+      - release_policy
+      - release_recovery
+      - macos_full
+      - windows_core
+    if: always() && needs.classify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+      PRODUCT_SHA: ${{ needs.classify.outputs.effective_product_sha }}
+      INHERITED: ${{ needs.classify.outputs.product_evidence_inherited }}
+      L1_REQUIRED: ${{ needs.classify.outputs.run_l1 }}
+      CHROMIUM_SMOKE_REQUIRED: ${{ needs.classify.outputs.run_chromium_smoke }}
+      CHROMIUM_FULL_REQUIRED: ${{ needs.classify.outputs.run_chromium_full }}
+      WEBKIT_FULL_REQUIRED: ${{ needs.classify.outputs.run_webkit_full }}
+      BUILD_REQUIRED: ${{ needs.classify.outputs.run_production_build }}
+      DATABASE_REQUIRED: ${{ needs.classify.outputs.run_database_upgrade }}
+      CONTRACT_REQUIRED: ${{ needs.classify.outputs.run_contract_check }}
+      CI_POLICY_REQUIRED: ${{ needs.classify.outputs.run_ci_policy }}
+      RELEASE_POLICY_REQUIRED: ${{ needs.classify.outputs.run_privacy_history }}
+      RELEASE_RECOVERY_REQUIRED: ${{ needs.classify.outputs.run_release }}
+      MACOS_REQUIRED: ${{ needs.classify.outputs.run_macos_full }}
+      WINDOWS_REQUIRED: ${{ needs.classify.outputs.run_windows_core }}
+      LINT_RESULT: ${{ needs.lint.result }}
+      TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+      UNIT_RESULT: ${{ needs.unit.result }}
+      CORE_UNIT_RESULT: ${{ needs.core_unit.result }}
+      CORE_BROWSER_RESULT: ${{ needs.core_browser.result }}
+      CHROMIUM_SMOKE_RESULT: ${{ needs.chromium_smoke.result }}
+      CHROMIUM_FULL_RESULT: ${{ needs.chromium_full.result }}
+      WEBKIT_FULL_RESULT: ${{ needs.webkit_full.result }}
+      BUILD_RESULT: ${{ needs.production_build.result }}
+      DATABASE_RESULT: ${{ needs.database_upgrade.result }}
+      CONTRACT_RESULT: ${{ needs.contract_check.result }}
+      CI_POLICY_RESULT: ${{ needs.ci_policy.result }}
+      RELEASE_POLICY_RESULT: ${{ needs.release_policy.result }}
+      RELEASE_RECOVERY_RESULT: ${{ needs.release_recovery.result }}
+      MACOS_RESULT: ${{ needs.macos_full.result }}
+      WINDOWS_RESULT: ${{ needs.windows_core.result }}
+    steps:
+      - name: Verify required product jobs
+        run: |
+          failed=false
+          require_result() {
+            local label="$1"
+            local required="$2"
+            local result="$3"
+            if [[ "$required" == "true" && "$result" != "success" ]]; then
+              echo "$label was required but concluded: $result" >&2
+              failed=true
+            elif [[ "$required" != "true" && "$result" != "skipped" ]]; then
+              echo "$label was not required but concluded: $result" >&2
+              failed=true
+            fi
+          }
+
+          require_result lint "$L1_REQUIRED" "$LINT_RESULT"
+          require_result typecheck "$L1_REQUIRED" "$TYPECHECK_RESULT"
+          require_result unit "$L1_REQUIRED" "$UNIT_RESULT"
+          require_result core-unit "$WINDOWS_REQUIRED" "$CORE_UNIT_RESULT"
+          require_result core-browser "$WINDOWS_REQUIRED" "$CORE_BROWSER_RESULT"
+          require_result chromium-smoke "$CHROMIUM_SMOKE_REQUIRED" "$CHROMIUM_SMOKE_RESULT"
+          require_result chromium-full "$CHROMIUM_FULL_REQUIRED" "$CHROMIUM_FULL_RESULT"
+          require_result webkit-full "$WEBKIT_FULL_REQUIRED" "$WEBKIT_FULL_RESULT"
+          require_result production-build "$BUILD_REQUIRED" "$BUILD_RESULT"
+          require_result database-upgrade "$DATABASE_REQUIRED" "$DATABASE_RESULT"
+          require_result contract-check "$CONTRACT_REQUIRED" "$CONTRACT_RESULT"
+          require_result ci-policy "$CI_POLICY_REQUIRED" "$CI_POLICY_RESULT"
+          require_result release-policy "$RELEASE_POLICY_REQUIRED" "$RELEASE_POLICY_RESULT"
+          require_result release-recovery "$RELEASE_RECOVERY_REQUIRED" "$RELEASE_RECOVERY_RESULT"
+          require_result macos-full "$MACOS_REQUIRED" "$MACOS_RESULT"
+          require_result windows-core "$WINDOWS_REQUIRED" "$WINDOWS_RESULT"
+
+          if [[ ! "$PRODUCT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "No trusted PRODUCT_VERIFIED_SHA is available for this HEAD." >&2
+            failed=true
+          fi
+          if [[ "$INHERITED" != "true" && "$PRODUCT_SHA" != "$HEAD_SHA" ]]; then
+            echo "Non-inherited product evidence must identify the current HEAD." >&2
+            failed=true
+          fi
+          if [[ "$failed" == "true" ]]; then
+            exit 1
+          fi
+      - name: Record product evidence
+        env:
+          LEVEL: ${{ needs.classify.outputs.effective_level }}
+          SCOPES: ${{ needs.classify.outputs.effective_scopes }}
+          VALIDATED_SHA: ${{ needs.classify.outputs.validated_sha }}
+        run: |
+          {
+            echo "## Product evidence"
+            echo
+            echo "HEAD_SHA: \`$HEAD_SHA\`"
+            echo
+            echo "VALIDATED_SHA: \`$VALIDATED_SHA\`"
+            echo
+            echo "PRODUCT_VERIFIED_SHA: \`$PRODUCT_SHA\`"
+            echo
+            echo "Level/scopes: $LEVEL / $SCOPES"
+            echo
+            echo "Inherited: $INHERITED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  gate:
+    name: CI / gate
+    needs:
+      - classify
+      - documentation
+      - product_evidence
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require the classified validation plan
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DOCUMENTATION_REQUIRED: ${{ needs.classify.outputs.run_privacy }}
+          DOCUMENTATION_RESULT: ${{ needs.documentation.result }}
+          PRODUCT_EVIDENCE_RESULT: ${{ needs.product_evidence.result }}
+          HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+          PRODUCT_SHA: ${{ needs.classify.outputs.effective_product_sha }}
+          LEVEL: ${{ needs.classify.outputs.effective_level }}
+          SCOPES: ${{ needs.classify.outputs.effective_scopes }}
+        run: |
+          failed=false
+          if [[ "$CLASSIFY_RESULT" != "success" ]]; then
+            echo "Classification concluded: $CLASSIFY_RESULT" >&2
+            failed=true
+          fi
+          if [[ "$DOCUMENTATION_REQUIRED" == "true" && "$DOCUMENTATION_RESULT" != "success" ]]; then
+            echo "Documentation/privacy was required but concluded: $DOCUMENTATION_RESULT" >&2
+            failed=true
+          elif [[ "$DOCUMENTATION_REQUIRED" != "true" && "$DOCUMENTATION_RESULT" != "skipped" ]]; then
+            echo "Documentation/privacy was unexpectedly run or skipped incorrectly: $DOCUMENTATION_RESULT" >&2
+            failed=true
+          fi
+          if [[ "$PRODUCT_EVIDENCE_RESULT" != "success" ]]; then
+            echo "Product evidence concluded: $PRODUCT_EVIDENCE_RESULT" >&2
+            failed=true
+          fi
+          if [[ "$failed" == "true" ]]; then
+            exit 1
+          fi
+          {
+            echo "## CI gate"
+            echo
+            echo "Current HEAD \`$HEAD_SHA\` passed $LEVEL ($SCOPES)."
+            echo
+            echo "Product evidence: \`$PRODUCT_SHA\`."
+          } >> "$GITHUB_STEP_SUMMARY"

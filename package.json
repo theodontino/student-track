@@ -33,6 +33,7 @@
     "test:watch": "node --import tsx scripts/run-isolated-tests.ts vitest-watch",
     "test:coverage": "node --import tsx scripts/run-isolated-tests.ts vitest-coverage",
     "test:e2e": "node --import tsx scripts/run-isolated-tests.ts playwright --project=webkit",
+    "test:e2e:smoke:chromium": "node --import tsx scripts/run-isolated-tests.ts playwright --project=chromium e2e/v0.16-smoke.spec.ts",
     "test:e2e:chromium": "node --import tsx scripts/run-isolated-tests.ts playwright --project=chromium",
     "test:e2e:webkit": "node --import tsx scripts/run-isolated-tests.ts playwright --project=webkit",
     "test:e2e:course-cycle": "node --import tsx scripts/run-isolated-tests.ts playwright --fixture=course-cycle --project=webkit e2e/course-feedback-cycle.spec.ts e2e/teacher-after-class-acceptance.spec.ts",

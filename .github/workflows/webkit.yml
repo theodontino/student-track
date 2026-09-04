@@ -1,48 +1,21 @@
-name: WebKit UI
+name: Browser checks
 
 on:
-  workflow_dispatch:
-  pull_request:
-    paths:
-      - "src/app/**"
-      - "src/components/**"
-      - "src/features/**"
-      - "public/**"
-      - "e2e/**"
-      - "prisma/**"
-      - "playwright.config.ts"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/run-isolated-tests.ts"
-      - "scripts/test-environment.ts"
-      - "scripts/test-fixture.ts"
-      - ".github/workflows/webkit.yml"
-  push:
-    branches: [main]
-    paths:
-      - "src/app/**"
-      - "src/components/**"
-      - "src/features/**"
-      - "public/**"
-      - "e2e/**"
-      - "prisma/**"
-      - "playwright.config.ts"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/run-isolated-tests.ts"
-      - "scripts/test-environment.ts"
-      - "scripts/test-fixture.ts"
-      - ".github/workflows/webkit.yml"
-
-concurrency:
-  group: webkit-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      project:
+        required: true
+        type: string
+      suite:
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   browser:
+    name: ${{ inputs.project }} ${{ inputs.suite }}
     timeout-minutes: 20
     runs-on: macos-latest
     env:
@@ -56,16 +29,44 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
-      - run: npx playwright install webkit
-      - run: npm run verify:browser
+      - name: Validate browser request
         env:
-          VERIFY_ARTIFACT_NAME: verification-browser-${{ github.run_id }}
-      - name: Upload browser verification logs
+          BROWSER_PROJECT: ${{ inputs.project }}
+          BROWSER_SUITE: ${{ inputs.suite }}
+        run: |
+          if [[ "$BROWSER_PROJECT" != "chromium" && "$BROWSER_PROJECT" != "webkit" ]]; then
+            echo "Unsupported Playwright project: $BROWSER_PROJECT" >&2
+            exit 1
+          fi
+          if [[ "$BROWSER_SUITE" != "smoke" && "$BROWSER_SUITE" != "full" ]]; then
+            echo "Unsupported browser suite: $BROWSER_SUITE" >&2
+            exit 1
+          fi
+          if [[ "$BROWSER_SUITE" == "smoke" && "$BROWSER_PROJECT" != "chromium" ]]; then
+            echo "The smoke suite is defined only for Chromium." >&2
+            exit 1
+          fi
+      - name: Install browser
+        env:
+          BROWSER_PROJECT: ${{ inputs.project }}
+        run: npx playwright install "$BROWSER_PROJECT"
+      - name: Run Chromium smoke
+        if: inputs.suite == 'smoke'
+        run: npm run test:e2e:smoke:chromium
+      - name: Run full browser suite
+        if: inputs.suite == 'full'
+        env:
+          BROWSER_PROJECT: ${{ inputs.project }}
+        run: node --import tsx scripts/run-isolated-tests.ts playwright "--project=$BROWSER_PROJECT"
+      - name: Upload browser diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: verification-browser-${{ github.run_id }}
-          path: .verification-logs
+          name: verification-${{ inputs.project }}-${{ inputs.suite }}-${{ github.run_id }}
+          path: |
+            .verification-logs
+            playwright-report
+            test-results
           if-no-files-found: ignore
           retention-days: 7
           include-hidden-files: true

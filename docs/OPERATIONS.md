@@ -134,6 +134,19 @@ STUDENT_TRACK_RUNTIME_ROOT="$HOME/Library/Application Support/Student Track" npm
 
 E2E 使用独立应用副本、端口、LLM 配置和转写目录，不复用已运行的开发服务，也不连接真实 LLM。
 
+### 变更分级与 CI 证据
+
+任何本地或 CI 验证开始前，先按累计改动记录一个等级和必要的影响范围。混合改动取最高等级，影响范围取并集；无法可靠分类时按 L2。`privacy:check` 始终执行；Markdown、Schema 或 API 路由变化时追加 `docs:check` 和 `docs:links`。
+
+- **L0 文档改动**：严格限于文档白名单，不含 CI workflow、依赖或构建配置、Prisma 和协议快照。只运行 `docs:check`、`docs:links` 和 `privacy:check`；发布记录另运行 `release:check-version`。不得运行构建、应用测试、E2E 或平台流程。
+- **L1 普通应用改动**：运行 lint、typecheck、单元/集成测试和 Chromium 冒烟。
+- **L2 平台或构建敏感改动**：运行适用的通用检查，再追加受影响 scope 的平台、集成或 E2E。只有 Windows 敏感改动要求 Windows，只有浏览器敏感改动要求完整浏览器矩阵。
+- **L3 发布或高风险改动**：运行当前实际支持的完整发布矩阵，包括 macOS Full 生产构建与启动、Windows Core 离线包构建、安装、启动和重启持久化、Chromium 与 WebKit 发布 E2E，以及发布级隐私、迁移、备份和恢复检查。仓库具备签名和公证流程前，不把 macOS 步骤称为 packaging。
+
+CI 分别记录当前候选 `HEAD_SHA` 和最近完成产品验证的 `PRODUCT_VERIFIED_SHA`，最终 gate 始终在当前 `HEAD_SHA` 上运行。产品改动通过相应门禁后更新 `PRODUCT_VERIFIED_SHA`；其后的严格 L0 提交只重新运行文档与隐私门禁，并在 gate 确认 `PRODUCT_VERIFIED_SHA` 是当前提交的可信祖先、累计差异仍为 L0 后继承产品证据。无法证明时不得继承。workflow 应始终触发，由 job 条件决定运行范围，最终 gate 汇总当前提交所需证据并作为 required check。
+
+同一 `HEAD_SHA` 下，确认属于抖动的失败 job 可以单独重试一次，不重启整个矩阵，也不重跑同一提交中无关的成功 job。修复产生新提交后必须重新分类，并运行该新提交计划要求的全部 job；除严格 L0 按上一段继承产品证据外，不跨 SHA 沿用 job 结果。成功和预期跳过的 job 不需要调查，也不启动审计或评审 subagent；任何 in-scope job 出现失败、超时、取消或异常跳过都必须调查。
+
 需要验证一整个课程反馈周期时，运行：
 
 ```bash
@@ -402,7 +415,7 @@ npm run release:check-version -- docs/release-evidence/X.Y.Z.md
 ```
 
 检查器通过只表示版本字段和证据结构完整；正式发布仍必须完成下面的 `verify:release`、
-同一提交 CI 或适用的人工边界验收。
+当前 `HEAD_SHA` 的 L3 CI gate 和适用的人工边界验收。
 
 正式检查点按以下顺序执行：
 
@@ -415,7 +428,7 @@ npm run docs:generate
 npm run verify:release
 ```
 
-`verify:release` 包含完整 Git 历史隐私扫描、数据库升级演练和真实数据库未变化门禁；成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时按摘要指向的单个日志排查。也可以推送候选提交并等待同一提交的 macOS Full/Core 质量、Full Chromium/WebKit 与 Core Chromium 浏览器门禁全部通过，避免重复执行相同的全量验证。Windows Core 的必需门禁只负责 Windows 源码准备、离线包组装、安装、数据库初始化、回环监听和重启持久化；它不重新执行平台无关质量测试。自动化通过后可以立即投入真实使用，不等待固定次数的人工课后流程。
+`verify:release` 包含完整 Git 历史隐私扫描、数据库升级演练和真实数据库未变化门禁；成功时只输出精简摘要，完整日志保存在 `.verification-logs/`；失败时按摘要指向的单个日志排查。也可以推送候选提交并等待当前 `HEAD_SHA` 的 L3 gate 通过。该 gate 包含 macOS Full 生产构建与启动、完整 Chromium/WebKit、Windows Core 离线包组装、安装、数据库初始化、回环监听和重启持久化；Windows job 不重复执行平台无关质量测试。若产品验证后只追加严格 L0 的发布说明，当前 gate 可以沿用已验证的 `PRODUCT_VERIFIED_SHA`，并在 CI 摘要和发布证据中保留这层关系。自动化通过后可以立即投入真实使用，不等待固定次数的人工课后流程。
 
 人工冒烟只由变化边界触发：WCG Accessibility、会话定位或草稿填入变化时做一次真实“不发送”验证；破坏性 migration 先创建并验证备份，再检查迁移后的完整性、行数和领域不变量；安装、签名或进程托管变化在干净账户验证。没有变化的边界不重复执行人工流程。
 
@@ -432,14 +445,13 @@ gh release create vX.Y.Z --verify-tag --generate-notes --title "Student Track vX
 
 ## 后续接手开发
 
-新任务开始前按顺序阅读 `AGENTS.md`、`docs/DOMAIN.md`、`docs/ARCHITECTURE.md` 和与任务相关的代码。随后执行：
+新任务开始前按顺序阅读 `AGENTS.md`、`docs/DOMAIN.md`、`docs/ARCHITECTURE.md` 和与任务相关的代码。先只读确认工作区与近期基线：
 
 ```bash
 git status --short
 git log -5 --oneline
-npm run docs:check
-npx prisma migrate status
-npm test
 ```
+
+随后按计划改动的等级和影响范围选择验证；不得在尚未分类时默认运行 `npm test`、构建、E2E 或平台流程。
 
 本地外部依赖需要单独确认：LLM 配置保存在本机运行配置中；音频转写依赖 `~/tools/funasr-diarize`；WCG 交付只依赖共享交换目录。核心学生数据以 `dev.db` 及通过验证的 `archives/` 备份为准。
