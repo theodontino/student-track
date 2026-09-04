@@ -155,6 +155,8 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundle).toContain("src\\generated\\prisma");
     expect(offlineBundle).toContain("robocopy.exe");
     expect(offlineBundle).toContain("/XD cache dev");
+    expect(offlineBundle).toContain("$robocopyExitCode = $LASTEXITCODE");
+    expect(offlineBundle).toContain("$global:LASTEXITCODE = 0");
     expect(offlineBundle).toContain("Install-StudentTrackCoreOffline.ps1");
     expect(offlineBundle).toContain("LICENSE");
     expect(offlineBundle).toContain("student-track-$version-source.zip");

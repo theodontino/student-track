@@ -90,9 +90,12 @@ $bundleGeneratedPrisma = Join-Path $bundleApp "src\generated\prisma"
 [void](New-Item -ItemType Directory -Path $bundleGeneratedPrisma -Force)
 Copy-Item -Path (Join-Path $generatedClientRoot "*") -Destination $bundleGeneratedPrisma -Recurse -Force
 & robocopy.exe $nextRoot (Join-Path $bundleApp ".next") /E /XD cache dev /NFL /NDL /NJH /NJS | Out-Null
-if ($LASTEXITCODE -gt 7) {
-    throw "复制 Core 生产构建失败（robocopy 退出码 $LASTEXITCODE）。"
+$robocopyExitCode = $LASTEXITCODE
+if ($robocopyExitCode -gt 7) {
+    throw "复制 Core 生产构建失败（robocopy 退出码 $robocopyExitCode）。"
 }
+# Robocopy 将 1 视为成功复制；不要让该成功码误导调用方。
+$global:LASTEXITCODE = 0
 
 $nodeRoot = Split-Path -Parent $nodeExecutable
 Copy-Item -Path (Join-Path $nodeRoot "*") -Destination $bundleNode -Recurse -Force
