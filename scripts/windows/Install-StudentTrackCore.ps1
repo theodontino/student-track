@@ -37,8 +37,7 @@ function Invoke-StudentTrackDownload {
 function Get-LatestNode24Release {
     $releases = @(Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json")
     $release = @($releases | Where-Object {
-        $_.version -match "^v24\\."
-        -and $_.files -contains "win-x64-zip"
+        $_.version -match "^v24\\." -and $_.files -contains "win-x64-zip"
     } | Select-Object -First 1)[0]
 
     if ($null -eq $release) {
