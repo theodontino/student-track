@@ -57,7 +57,7 @@ Student Track 正在向 1.0 收敛：默认只接受维护、稳定性、兼容�
 
 任务过程、Bug、Feature、重构和技术债进入 GitHub Issues。路由、Schema 和 ER 图等机械事实由脚本生成。
 
-修改 Markdown、Schema 或 API 路由后运行 `npm run docs:check` 和 `npm run docs:links`；CI 使用相同命令阻止过期生成物与失效本地链接进入主分支。
+纯 Markdown 改动按 L0 运行 `npm run docs:check`、`npm run docs:links` 和 `npm run privacy:check`；修改发布记录时再运行对应的 `npm run release:check-version -- <record>`。Schema 或 API 路由变化仍需追加文档检查，但它们属于产品改动，不能按 L0 处理。
 
 ## 跨仓库协议治理
 
@@ -78,22 +78,20 @@ Student Track 的程序版本遵循协议仓库 `Zhuiver.md`，而协议 `contra
 
 ## 完成标准
 
-验证采用“本地精简输出、CI 全量兜底、失败时按需展开”的流程。测试运行时间本身不是问题，默认禁止为了汇报成功而读取或回传完整测试日志。
-
-```bash
-npm run verify:quick
-```
-
-`verify:quick` 执行 lint、类型检查和单元/集成测试；成功时只输出步骤、耗时和测试摘要，完整日志写入被 Git 忽略的 `.verification-logs/`。
+验证采用“先分类、按影响范围运行、失败时按需展开”的流程。测试运行时间本身不是问题，但不得为了汇报成功而重复运行无关门禁或读取、回传完整测试日志。详细口径见 `docs/OPERATIONS.md` 的“变更分级与 CI 证据”。
 
 所有 `verify:*` 入口都会在运行前后自动比较真实 SQLite 主文件和 WAL 的 size、mtime 与 SHA-256；自动化测试必须使用隔离临时数据库，真实库指纹变化时验证直接失败。验证通过后可以立即进入真实使用，不以固定次数的人工重复流程作为日常发布门禁。
 
 ### Agent 验证策略
 
-- 文案、样式、小型组件或低风险重构：运行改动直接相关的测试（如有），然后运行 `npm run verify:quick`。完整覆盖率、构建和双浏览器回归交给 CI。
-- API、Service、状态管理、LLM、导入、回滚或数据写入：先运行相关测试，再运行 `npm run verify:quick`；涉及页面、导航或用户流程时再运行 `npm run test:e2e`（WebKit / Safari 基线）。
-- Schema、migration、发布候选或跨模块高风险变更：运行 `npm run verify:release`，或者推送当前提交并等待同一提交的 CI `quality` 与 `browser` 全部通过。已通过同一提交的 CI 时，不重复本地全量验证。
-- CI 的 `quality` 运行 `npm run verify:quality`；`browser` 运行 `npm run verify:browser`。两个浏览器使用各自的隔离临时数据库。
+- 任何验证开始前，先按累计改动记录 L0–L3 等级和 `browser`、`database`、`build`、`windows`、`macos`、`contract`、`ci`、`release` 等实际影响范围。混合改动取最高等级，范围取并集；无法可靠分类时按 L2，并运行通用基线与生产构建。
+- L0 只适用于严格文档白名单，不包含 CI workflow、依赖或构建配置、Prisma 和协议快照。只运行文档与隐私检查；不得运行构建、应用测试、E2E 或平台流程。
+- L1 普通应用改动运行 lint、类型检查、单元/集成测试和 Chromium 冒烟。
+- L2 平台或构建敏感改动运行适用的通用检查，再追加受影响 scope 的平台、集成或 E2E；只有 Windows 敏感改动要求 Windows，只有浏览器敏感改动要求完整浏览器矩阵。
+- L3 发布或高风险改动运行当前实际支持的完整发布矩阵：macOS Full 生产构建与启动、Windows Core 离线包构建、安装、启动和重启持久化、Chromium 与 WebKit 发布 E2E，以及发布级隐私、迁移、备份和恢复检查。仓库具备签名和公证流程前，不把 macOS 步骤称为 packaging。
+- CI 分别记录当前候选 `HEAD_SHA` 和最近完成产品验证的 `PRODUCT_VERIFIED_SHA`。严格 L0 提交在当前 `HEAD_SHA` 通过 gate，并确认祖先关系和累计差异仍为 L0 后，可以继承产品证据；产品改动通过相应门禁后再更新 `PRODUCT_VERIFIED_SHA`。
+- 同一 `HEAD_SHA` 下，确认属于抖动的失败 job 可以单独重试一次，不重启整个矩阵。修复产生新提交后必须重新分类，并运行该新提交计划要求的全部 job；只有严格 L0 可以按上一条继承产品证据。
+- 不为成功或预期跳过的 CI job 启动审计或评审 subagent。任何 in-scope job 出现失败、超时、取消或异常跳过都要调查。
 - 人工冒烟只由相关边界变化触发：WCG Accessibility、会话定位或草稿填入变化时验证一次真实“不发送”；破坏性 migration 先备份并验证迁移；安装、签名或进程托管变化在干净环境验证。未变化的边界不重复人工验收。
 - 成功时只读取命令退出状态和精简摘要，不打开 `.verification-logs/` 或 CI artifact。
 - 失败时只查看失败步骤打印的末尾日志；仍无法定位时，再读取该步骤的单个日志或 CI artifact，不批量读取全部日志。

@@ -14,7 +14,7 @@ const offlineClickInstaller = readFileSync(resolve(scriptRoot, "Install-StudentT
 const offlineBundle = readFileSync(resolve(scriptRoot, "Build-StudentTrackCoreOfflineBundle.ps1"), "utf8");
 const offlineBundleTest = readFileSync(resolve(scriptRoot, "Test-StudentTrackCoreOfflineBundle.ps1"), "utf8");
 const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
-const windowsCoreJob = ciWorkflow.split("\n  windows-core:")[1] ?? "";
+const windowsCoreJob = (ciWorkflow.split("\n  windows_core:")[1] ?? "").split("\n  product_evidence:")[0];
 const webkitWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "webkit.yml"), "utf8");
 const offlineBundleWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "windows-offline-package.yml"), "utf8");
 const verifyAgent = readFileSync(resolve(process.cwd(), "scripts", "verify-agent.ts"), "utf8");
@@ -49,14 +49,18 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(common).not.toMatch(/\$env:LLM_SETTINGS_PATH\s*=/i);
   });
 
-  it("keeps platform-independent quality and browser checks on macOS", () => {
-    expect(ciWorkflow).toMatch(/quality:\n(?:.*\n)*?\s+runs-on: macos-latest/);
-    expect(ciWorkflow).toContain("quality-core:");
-    expect(ciWorkflow).toContain("npm run test:e2e:chromium");
+  it("keeps common, Core, and browser checks independent from the Windows package", () => {
+    for (const job of ["lint", "typecheck", "unit", "core_unit", "core_browser", "chromium_full", "webkit_full"]) {
+      expect(ciWorkflow).toContain(`\n  ${job}:`);
+    }
+    expect(ciWorkflow).toContain("name: CI / gate");
+    expect(webkitWorkflow).toContain("npm run test:e2e:smoke:chromium");
     expect(ciWorkflow).toContain("--fixture=core --project=chromium e2e/core-edition.spec.ts");
     expect(webkitWorkflow).toContain("runs-on: macos-latest");
-    expect(webkitWorkflow).toContain("npx playwright install webkit");
-    expect(webkitWorkflow).not.toContain("--with-deps webkit");
+    expect(webkitWorkflow).toContain('npx playwright install "$BROWSER_PROJECT"');
+    expect(webkitWorkflow).not.toContain("--with-deps");
+    expect(windowsCoreJob).toContain("needs: classify");
+    expect(windowsCoreJob).toContain("run_windows_core == 'true'");
     expect(windowsCoreJob).not.toContain("verify:quality");
     expect(windowsCoreJob).not.toContain("playwright");
     expect(windowsCoreJob).not.toContain("test:e2e");

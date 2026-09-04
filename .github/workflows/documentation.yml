@@ -1,23 +1,56 @@
-name: Documentation guard
+name: Documentation checks
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      run_docs:
+        required: true
+        type: boolean
+      run_release_record:
+        required: true
+        type: boolean
+      changed_paths:
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  documentation:
+  checks:
+    name: Documentation and privacy
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run docs:check
-      - run: npm run docs:links
+      - if: inputs.run_docs
+        run: npm run docs:check
+      - if: inputs.run_docs
+        run: npm run docs:links
       - run: npm run privacy:check
+      - name: Validate changed release records
+        if: inputs.run_release_record
+        env:
+          CHANGED_PATHS_JSON: ${{ inputs.changed_paths }}
+        run: >-
+          node -e '
+          const { existsSync } = require("node:fs");
+          const { spawnSync } = require("node:child_process");
+          const changes = JSON.parse(process.env.CHANGED_PATHS_JSON || "[]");
+          const records = [...new Set(changes.flatMap((change) => [change.path, change.previousPath])
+            .filter((path) => typeof path === "string"
+              && /^docs\/release-evidence\/.+\.md$/.test(path)
+              && !path.endsWith("/TEMPLATE.md")
+              && existsSync(path)))];
+          for (const record of records) {
+            const result = spawnSync("npm", ["run", "release:check-version", "--", record], { stdio: "inherit" });
+            if (result.status !== 0) process.exit(result.status ?? 1);
+          }
+          '
