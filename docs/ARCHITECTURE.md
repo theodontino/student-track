@@ -17,10 +17,23 @@ Student Track 是单人维护的本地优先课后反馈自动化工具。架构
 `STUDENT_TRACK_DATA_ROOT` 或 `STUDENT_TRACK_RUNTIME_ROOT`；没有新配置时保留既有 macOS/开发路径，
 不静默移动数据。Windows Core 由启动脚本把数据库、`data`、反馈附件、反馈收件箱和备份固定在
 `%LOCALAPPDATA%\Student Track\` 的同级子目录。SQLite 继续只由 `DATABASE_URL` 定位，跨平台脚本必须
-使用标准 `file:` URL，而不是拼接带反斜杠的字符串。测试数据库位于系统临时目录；Windows 的隔离
-E2E 应用用目录 junction 复用 `node_modules`，不接触真实运行目录。
+使用标准 `file:` URL，而不是拼接带反斜杠的字符串。测试数据库位于系统临时目录；隔离 E2E 应用
+复用当前工作区的 `node_modules`，不接触真实运行目录。测试工具在 Windows 本机运行时可以使用目录
+junction，但日常 Windows CI 不依赖这套开发测试布局。
 Windows 发行只提供 Core，准备和启动脚本不探测、不启动也不调用本地 FunASR、通义听悟、阿里云 ASR
 或 WCG；全部录音转写与 WCG 只属于 macOS Full。
+
+## 验证环境职责
+
+macOS 是平台无关质量的主要环境。Full 与 Core 的 lint、类型检查、单元与集成测试、数据库升级演练、
+覆盖率和生产构建都在 macOS 验证；完整 Full Chromium、Full WebKit 和 Core Chromium 浏览器回归也在
+macOS 使用隔离数据库运行。Playwright WebKit 是 macOS WebKit 基线，不等同于直接控制正式 Safari。
+
+Windows CI 只证明 Windows 用户实际取得的 Core 交付物可用：PowerShell 和 `.cmd` 入口可执行，源码
+准备路径能建立 Windows 生产构建，离线 ZIP 能用 Windows Node、依赖、Prisma 生成物和 `.next` 组装，
+并能在断网条件下解压、安装、迁移数据库、仅监听 `127.0.0.1`、写入数据及重启后按稳定 ID 读取。
+Windows 不重复执行平台无关的完整质量门禁或浏览器业务回归。正式离线包仍必须在 Windows 组装；不能
+从 macOS 复制 `node_modules` 或 `.next` 代替 Windows 交付物构建。
 
 ## 前端模块边界
 

@@ -132,6 +132,10 @@ $server = $null
 try {
     $server = Start-CoreServer
     Wait-CoreServer $server
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 3000)
+    if ($listeners.Count -eq 0 -or @($listeners | Where-Object LocalAddress -ne "127.0.0.1").Count -gt 0) {
+        throw "离线 Core 生产服务存在非 127.0.0.1 的监听地址。"
+    }
     $body = @{ name = "Offline Core CI Semester"; startDate = "2099-01-01"; endDate = "2099-06-30" } | ConvertTo-Json
     $created = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3000/api/semesters" -ContentType "application/json" -Body $body
     if (-not $created.id) {

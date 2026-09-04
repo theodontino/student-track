@@ -14,6 +14,8 @@ const offlineClickInstaller = readFileSync(resolve(scriptRoot, "Install-StudentT
 const offlineBundle = readFileSync(resolve(scriptRoot, "Build-StudentTrackCoreOfflineBundle.ps1"), "utf8");
 const offlineBundleTest = readFileSync(resolve(scriptRoot, "Test-StudentTrackCoreOfflineBundle.ps1"), "utf8");
 const ciWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+const windowsCoreJob = ciWorkflow.split("\n  windows-core:")[1] ?? "";
+const webkitWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "webkit.yml"), "utf8");
 const offlineBundleWorkflow = readFileSync(resolve(process.cwd(), ".github", "workflows", "windows-offline-package.yml"), "utf8");
 const verifyAgent = readFileSync(resolve(process.cwd(), "scripts", "verify-agent.ts"), "utf8");
 const allScripts = `${common}\n${prepare}\n${start}`;
@@ -41,12 +43,24 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(common).toContain('return "file:$normalizedPath"');
     expect(common).not.toContain("[System.Uri]::new");
     expect(ciWorkflow).toContain('"DATABASE_URL=$($env:DATABASE_URL)"');
-    expect(ciWorkflow).toContain("$createdId = $created.id");
-    expect(ciWorkflow).toContain('"http://127.0.0.1:3000/api/semesters/$createdId"');
-    expect(ciWorkflow).toContain("$persisted.id -ne $createdId");
-    expect(ciWorkflow).toContain("TEMP: ${{ runner.temp }}");
-    expect(ciWorkflow).toContain("TMP: ${{ runner.temp }}");
+    expect(offlineBundleTest).toContain("$createdId = $created.id");
+    expect(offlineBundleTest).toContain('"http://127.0.0.1:3000/api/semesters/$createdId"');
+    expect(offlineBundleTest).toContain("$persisted.id -ne $createdId");
     expect(common).not.toMatch(/\$env:LLM_SETTINGS_PATH\s*=/i);
+  });
+
+  it("keeps platform-independent quality and browser checks on macOS", () => {
+    expect(ciWorkflow).toMatch(/quality:\n(?:.*\n)*?\s+runs-on: macos-latest/);
+    expect(ciWorkflow).toContain("quality-core:");
+    expect(ciWorkflow).toContain("npm run test:e2e:chromium");
+    expect(ciWorkflow).toContain("--fixture=core --project=chromium e2e/core-edition.spec.ts");
+    expect(webkitWorkflow).toContain("runs-on: macos-latest");
+    expect(webkitWorkflow).toContain("npx playwright install webkit");
+    expect(webkitWorkflow).not.toContain("--with-deps webkit");
+    expect(windowsCoreJob).not.toContain("verify:quality");
+    expect(windowsCoreJob).not.toContain("playwright");
+    expect(windowsCoreJob).not.toContain("test:e2e");
+    expect(windowsCoreJob).not.toMatch(/^\s+- run: npm run build\s*$/m);
   });
 
   it("prepares dependencies, Prisma, migrations, backup, and the Core production build without seeding", () => {
@@ -172,6 +186,8 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundleTest).toContain("& $installerCommand");
     expect(offlineBundleTest).toContain('Start-Process -FilePath "cmd.exe"');
     expect(offlineBundleTest).toContain('Join-Path $installedRoot "Start Student Track Core.cmd"');
+    expect(offlineBundleTest).toContain("Get-NetTCPConnection -State Listen -LocalPort 3000");
+    expect(offlineBundleTest).toContain('LocalAddress -ne "127.0.0.1"');
     expect(offlineBundleTest).toContain("Offline Core CI Semester");
     expect(ciWorkflow).toContain("Build and verify the offline Windows Core package");
     expect(ciWorkflow).toContain("Upload verified offline Windows Core package");

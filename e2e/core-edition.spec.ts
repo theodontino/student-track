@@ -23,7 +23,7 @@ function publicMaterialWorkbook() {
 }
 
 test.describe("Student Track Core edition", () => {
-  test.skip(process.env.E2E_FIXTURE_PROFILE !== "core", "仅由 Windows Core CI 使用空白隔离库运行");
+  test.skip(process.env.E2E_FIXTURE_PROFILE !== "core", "仅由 Core 浏览器门禁使用空白隔离库运行");
 
   test("runs the Core gate and the ordinary teaching-to-backup workflow", async ({ page, request }) => {
     test.setTimeout(120_000);
