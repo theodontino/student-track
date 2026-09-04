@@ -620,6 +620,7 @@ model FeedbackPlan {
   inputFingerprint    String
   inputSnapshot       String   @default("{}") // 版本化课程材料与计划输入快照
   generationMode      String   @default("standard") // "standard" | "fast"
+  generationApproach  String   @default("legacy") // "legacy" | "restricted" | "free"
   generationStartedAt DateTime?
   generationCompletedAt DateTime?
   generationElapsedMs Int      @default(0)
@@ -664,6 +665,7 @@ model FeedbackPlanBatch {
   type                   String   // "event_micro" | "stage_trend"
   outputRequirement      String
   generationMode         String   @default("standard")
+  generationApproach     String   @default("legacy") // "legacy" | "restricted" | "free"
   status                 String   @default("draft")
   currentPlanId          String?
   failedPlanId           String?
@@ -692,6 +694,7 @@ model FeedbackPlanItem {
   status               String   @default("evidence_ready")
   generationError      String?
   generationConfigSnapshot String  @default("{}") // 版本化学生独立反馈计划配置；空对象表示沿用批次公共配置
+  generationExecutionSnapshot String @default("{}") // 版本化生成方式、尝试、失败与显式降级记录
   evidenceSnapshot     String   @default("{}")
   compositionSnapshot  String   @default("{}")
   auditSnapshot        String   @default("{}")

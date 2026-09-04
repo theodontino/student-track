@@ -11,6 +11,10 @@ import {
   type FeedbackPlanType,
 } from "@/lib/feedback-plan";
 import type { LessonFeedbackMaterial } from "@/lib/feedback-materials";
+import {
+  feedbackGenerationApproachLabel,
+  type FeedbackGenerationApproach,
+} from "@/lib/feedback-generation-approach";
 import { requestJson } from "@/lib/api-client";
 import type { FeedbackTaskCurrentFactsSeed, FeedbackTaskPreferences } from "./feedback-task-state";
 import type { FeedbackStudioPlanTarget } from "./feedback-task-types";
@@ -60,6 +64,8 @@ type PlanDetail = {
   status: string;
   outputRequirement: string;
   generationMode?: "standard" | "fast";
+  generationApproach?: FeedbackGenerationApproach | null;
+  generationApproachLabel?: string;
   generationStartedAt?: string | null;
   generationCompletedAt?: string | null;
   archivedAt?: string | null;
@@ -80,6 +86,11 @@ type PlanDetail = {
     exportedAt?: string | null;
     student?: { id?: string; name: string; studentId?: string } | null;
     generationConfig?: FeedbackPlanItemGenerationConfig | null;
+    generationExecution?: {
+      requestedApproach: FeedbackGenerationApproach;
+      nextApproach: FeedbackGenerationApproach;
+      attempts: Array<{ actualApproach: FeedbackGenerationApproach; status: string }>;
+    } | null;
   }>;
 };
 
@@ -91,6 +102,8 @@ type BatchDetail = {
   status: string;
   outputRequirement: string;
   generationMode?: "standard" | "fast";
+  generationApproach?: FeedbackGenerationApproach | null;
+  generationApproachLabel?: string;
   planRevision?: number;
   sharedLessonRevision?: { id: string; groupLesson: { id: string } } | null;
   plans: Array<{
@@ -112,6 +125,7 @@ type PlanningFields = {
   displayName: string;
   outputRequirement: string;
   generationMode: "standard" | "fast";
+  generationApproach: FeedbackGenerationApproach | null;
   generationPreferences: FeedbackGenerationPreferences;
   studentSelections: Array<{ classId: string; studentIds: string[] }>;
   classOverrides: Array<{ classId: string; outputRequirement?: string; generationPreferences?: FeedbackGenerationPreferences }>;
@@ -232,6 +246,7 @@ function planningFields(document: LoadedDocument): PlanningFields {
       : displayName,
     outputRequirement: commonRequirement,
     generationMode: document.batch?.generationMode ?? document.plan.generationMode ?? "standard",
+    generationApproach: document.batch?.generationApproach ?? document.plan.generationApproach ?? null,
     generationPreferences: {
       ...common,
       length: common.length ?? "inherit",
@@ -341,6 +356,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
   const [studentTarget, setStudentTarget] = useState<{ plan: PlanDetail; studentId: string; studentName: string } | null>(null);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsName, setSaveAsName] = useState("");
+  const [saveAsApproach, setSaveAsApproach] = useState<FeedbackGenerationApproach>("restricted");
   const [continueIntakeOpen, setContinueIntakeOpen] = useState(false);
   const savedFingerprint = useRef("");
   const fieldsRef = useRef<PlanningFields | null>(null);
@@ -423,6 +439,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
       if (!canEditPlan) {
         if (fingerprint(currentFields) === savedFingerprint.current) return true;
         setSaveAsName(`${currentFields.displayName || "反馈计划"} 修订版`);
+        setSaveAsApproach(currentFields.generationApproach === "free" ? "free" : "restricted");
         setSaveAsOpen(true);
         return false;
       }
@@ -447,6 +464,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
             ...(namedFields.displayName.trim() ? { displayName: namedFields.displayName.trim() } : {}),
             outputRequirement: namedFields.outputRequirement,
             generationMode: namedFields.generationMode,
+            ...(namedFields.generationApproach ? { generationApproach: namedFields.generationApproach } : {}),
             generationPreferences: namedFields.generationPreferences,
             studentSelections: namedFields.studentSelections,
             classOverrides: namedFields.classOverrides,
@@ -463,6 +481,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
               ...(namedFields.displayName.trim() ? { displayName: namedFields.displayName.trim() } : {}),
               outputRequirement: namedFields.outputRequirement,
               generationMode: namedFields.generationMode,
+              ...(namedFields.generationApproach ? { generationApproach: namedFields.generationApproach } : {}),
               generationPreferences: namedFields.generationPreferences,
               studentIds: namedFields.studentSelections[0]?.studentIds ?? currentDocument.plan.items.flatMap((item) => item.studentId ? [item.studentId] : []),
               studentOverrides: namedFields.studentOverrides,
@@ -545,6 +564,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
       const currentDocument = documentRef.current;
       if (currentDocument && !documentIsEditable(currentDocument)) {
         setSaveAsName(`${fieldsRef.current?.displayName || "反馈计划"} 修订版`);
+        setSaveAsApproach(fieldsRef.current?.generationApproach === "free" ? "free" : "restricted");
         setSaveAsOpen(true);
       } else void save({ requireName: true });
     };
@@ -590,6 +610,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
 
   function cloneDraft() {
     setSaveAsName(`${fieldsRef.current?.displayName || "反馈计划"} 修订版`);
+    setSaveAsApproach(fieldsRef.current?.generationApproach === "free" ? "free" : "restricted");
     setSaveAsOpen(true);
   }
 
@@ -620,6 +641,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
           displayName,
           outputRequirement: currentFields.outputRequirement,
           generationMode: currentFields.generationMode,
+          generationApproach: saveAsApproach,
           generationPreferences: currentFields.generationPreferences,
           studentSelections: currentFields.studentSelections,
           classOverrides: currentFields.classOverrides,
@@ -638,6 +660,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
           displayName,
           outputRequirement: currentFields.outputRequirement,
           generationMode: currentFields.generationMode,
+          generationApproach: saveAsApproach,
           generationPreferences: currentFields.generationPreferences,
           studentIds: currentFields.studentSelections[0]?.studentIds ?? [],
           studentOverrides: currentFields.studentOverrides,
@@ -694,9 +717,9 @@ export function FeedbackTaskDocumentStage(props: Props) {
       const savedDocument = documentRef.current ?? document!;
       const expectedPlanRevision = documentRevision(savedDocument);
       if (savedDocument.kind === "batch") {
-        await requestJson(`/api/report/feedback-plan-batches/${encodeURIComponent(savedDocument.batch!.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "start", expectedPlanRevision }) });
+        await requestJson(`/api/report/feedback-plan-batches/${encodeURIComponent(savedDocument.batch!.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "start", generationApproach: fieldsRef.current?.generationApproach ?? undefined, expectedPlanRevision }) });
       } else {
-        await requestJson(`/api/report/feedback-plans/${encodeURIComponent(savedDocument.plan.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "start_generation", generationMode: fieldsRef.current?.generationMode ?? "standard", expectedPlanRevision }) });
+        await requestJson(`/api/report/feedback-plans/${encodeURIComponent(savedDocument.plan.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "start_generation", generationApproach: fieldsRef.current?.generationApproach ?? undefined, expectedPlanRevision }) });
       }
       props.onPlanChanged();
       props.onStudio();
@@ -801,7 +824,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
       entries,
       materialSelection: sharedRevisionId ? { mode: "linked_revision", revisionId: sharedRevisionId } : { mode: "none" },
       materialSelectionInitialized: Boolean(sharedRevisionId),
-      generationMode: currentFields.generationMode,
+      generationApproach: currentFields.generationApproach ?? "restricted",
       outputRequirement: currentFields.outputRequirement,
       preferences,
       classOverrides: currentDocument.plans.flatMap((plan) => {
@@ -845,7 +868,9 @@ export function FeedbackTaskDocumentStage(props: Props) {
     <section className={styles.strategy}>
       <div className={styles.strategyHeading}><div><strong>统一生成设置</strong><span>{frozen ? "当前修改只保留在页面工作副本，另存为后才会成为新草稿。" : "修改会自动保存到当前草稿。"}</span></div></div>
       <div className={styles.strategyRows}>
-        <label>生成方式<select value={fields.generationMode} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationMode: event.target.value as "standard" | "fast" })}><option value="standard">标准反馈</option><option value="fast">快速草稿</option></select></label>
+        {!fields.generationApproach
+          ? <label>生成方式<strong>{feedbackGenerationApproachLabel(null)}</strong><small>这是 beta.2 及更早计划，可继续按原方式运行；另存为新计划时需要选择受限反馈或自由反馈。</small></label>
+          : <label>生成方式<select value={fields.generationApproach} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationApproach: event.target.value as FeedbackGenerationApproach })}><option value="restricted">受限反馈</option><option value="free">自由反馈</option></select><small>{fields.generationApproach === "restricted" ? "写作模型只看到服务端整理出的可披露内容。" : "模型直接根据当前对象已冻结、已确认的材料成稿。"}</small></label>}
         <label>结尾类型<select value={fields.generationPreferences.closureType} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationPreferences: { ...fields.generationPreferences, closureType: event.target.value as FeedbackGenerationPreferences["closureType"] } })}>{FEEDBACK_CLOSURES_BY_TYPE[document.plan.type].map((value) => <option key={value} value={value}>{closureLabels[value] ?? value}</option>)}</select></label>
         <label>详略<select value={fields.generationPreferences.length ?? "inherit"} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationPreferences: { ...fields.generationPreferences, length: event.target.value as FeedbackGenerationPreferences["length"] } })}><option value="inherit">随家庭偏好</option><option value="short">简洁</option><option value="standard">标准</option><option value="detailed">详细</option></select></label>
         <label>语气<select value={fields.generationPreferences.tone ?? "inherit"} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationPreferences: { ...fields.generationPreferences, tone: event.target.value as FeedbackGenerationPreferences["tone"] } })}><option value="inherit">随现有偏好</option><option value="gentle">温和</option><option value="professional">专业</option></select></label>
@@ -877,6 +902,6 @@ export function FeedbackTaskDocumentStage(props: Props) {
         setStudentTarget(null);
       } : undefined}
     />}
-    <Dialog open={saveAsOpen} title="另存为新计划" onClose={() => { if (!actionBusy) setSaveAsOpen(false); }}><form className="dialog-form" onSubmit={(event) => { event.preventDefault(); void saveAsCopy(); }}><StatusBanner tone="info">新计划会沿用当前冻结事实和页面中的规划设置；原计划、正文、批准与导出记录都不会修改。</StatusBanner><label>新计划名称<Input autoFocus required maxLength={120} value={saveAsName} onChange={(event) => setSaveAsName(event.target.value)} /></label><div className="dialog-form__actions"><Button variant="ghost" onClick={discardWorkingCopy} disabled={actionBusy}>放弃页面修改</Button><Button variant="secondary" onClick={() => setSaveAsOpen(false)} disabled={actionBusy}>取消</Button><Button type="submit" disabled={actionBusy || !saveAsName.trim()}>{actionBusy ? "正在另存…" : "另存为新计划"}</Button></div></form></Dialog>
+    <Dialog open={saveAsOpen} title="另存为新计划" onClose={() => { if (!actionBusy) setSaveAsOpen(false); }}><form className="dialog-form" onSubmit={(event) => { event.preventDefault(); void saveAsCopy(); }}><StatusBanner tone="info">新计划会沿用当前冻结事实和页面中的规划设置；原计划、正文、批准与导出记录都不会修改。</StatusBanner><label>新计划名称<Input autoFocus required maxLength={120} value={saveAsName} onChange={(event) => setSaveAsName(event.target.value)} /></label><label>新计划生成方式<select value={saveAsApproach} onChange={(event) => setSaveAsApproach(event.target.value as FeedbackGenerationApproach)} disabled={actionBusy}><option value="restricted">受限反馈</option><option value="free">自由反馈</option></select><small>生成方式会在首次生成后冻结。</small></label><div className="dialog-form__actions"><Button variant="ghost" onClick={discardWorkingCopy} disabled={actionBusy}>放弃页面修改</Button><Button variant="secondary" onClick={() => setSaveAsOpen(false)} disabled={actionBusy}>取消</Button><Button type="submit" disabled={actionBusy || !saveAsName.trim()}>{actionBusy ? "正在另存…" : "另存为新计划"}</Button></div></form></Dialog>
   </div>;
 }

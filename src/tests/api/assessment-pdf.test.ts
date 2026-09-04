@@ -113,4 +113,17 @@ describe("/api/feedback/assessment-pdf", () => {
       error: expect.stringContaining("对应不同学生"),
     });
   });
+
+  it("returns built-in PDF parser errors as invalid input", async () => {
+    mocks.parseAssessmentPdf.mockRejectedValue(
+      new Error("PDF 已加密，当前不支持密码保护的文件"),
+    );
+
+    const response = await POST(request("encrypted.pdf"));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "PDF 已加密，当前不支持密码保护的文件",
+    });
+  });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { includeIndependentFeedbackStudent, TaskConfirmationStage } from "@/features/feedback/TaskConfirmationStage";
 import { TaskPreparationStage } from "@/features/feedback/TaskPreparationStage";
-import { syncFeedbackItemDrafts } from "@/features/feedback/FeedbackPlanPanel";
+import { feedbackPlanItemActualApproach, syncFeedbackItemDrafts } from "@/features/feedback/FeedbackPlanPanel";
 import {
   defaultFeedbackQueueFilter,
   feedbackQueueCategory,
@@ -18,6 +18,7 @@ import {
   defaultFeedbackStudentIds,
   feedbackTaskGroupRestoreAttemptKey,
   feedbackGroupIntakeScope,
+  feedbackIntakeConfirmationDisabled,
   feedbackIntakeConfirmationOutcome,
   feedbackTaskGroupDraftForFollowUp,
   feedbackGroupMaterialSourceStatus,
@@ -133,9 +134,12 @@ describe("feedback task group workspace state", () => {
   });
 
   it("persists group drafts and initializes newly added override collections", () => {
-    const legacyDraft = Object.fromEntries(
-      Object.entries(groupDraft()).filter(([key]) => !["requestKey", "plannedSessionCodes", "classOverrides", "studentOverrides", "materialSelectionInitialized", "pendingMaterialLessonNumber", "unassignedSourceCount"].includes(key)),
-    );
+    const legacyDraft = {
+      ...Object.fromEntries(
+        Object.entries(groupDraft()).filter(([key]) => !["requestKey", "plannedSessionCodes", "classOverrides", "studentOverrides", "materialSelectionInitialized", "pendingMaterialLessonNumber", "unassignedSourceCount", "generationApproach"].includes(key)),
+      ),
+      generationMode: "fast",
+    };
     const restored = parseFeedbackTaskDraft(legacyDraft);
     expect(restored).toMatchObject({ mode: "group", groupLessonId: "lesson-1", entries });
     expect(restored?.requestKey).toMatch(/^[0-9a-f-]{36}$/);
@@ -145,6 +149,7 @@ describe("feedback task group workspace state", () => {
     expect(restored?.materialSelectionInitialized).toBe(true);
     expect(restored?.pendingMaterialLessonNumber).toBeNull();
     expect(restored?.displayName).toBe("初版计划");
+    expect(restored?.generationApproach).toBe("free");
   });
 
   it("keeps an explicit no-material choice after draft restoration", () => {
@@ -153,6 +158,23 @@ describe("feedback task group workspace state", () => {
     expect(restored?.materialSelection).toEqual({ mode: "none" });
     expect(restored?.materialSelectionInitialized).toBe(true);
     expect(resolveFeedbackTaskMaterialChoice(restored!, { mode: "linked_revision", revisionId: "revision-latest" })).toEqual({ value: "none" });
+  });
+
+  it("keeps the main confirmation action available before an intake run exists", () => {
+    expect(feedbackIntakeConfirmationDisabled({
+      contextActionBlocked: false,
+      selectedEntryCount: 1,
+      actionableUnassignedCount: 0,
+      mode: "single",
+      unresolvedBlockingCount: 0,
+    })).toBe(false);
+    expect(feedbackIntakeConfirmationDisabled({
+      contextActionBlocked: false,
+      selectedEntryCount: 1,
+      actionableUnassignedCount: 0,
+      mode: "single",
+      unresolvedBlockingCount: 1,
+    })).toBe(true);
   });
 
   it("shows a restored historical revision without previewing the latest material", () => {
@@ -311,6 +333,7 @@ describe("feedback task group workspace state", () => {
       ...groupDraft(),
       outputRequirement: "共同课统一要求",
       generationMode: "fast" as const,
+      generationApproach: "free" as const,
       preferences: { ...groupDraft().preferences, length: "detailed" as const, tone: "professional" as const },
       classOverrides: [{ sessionCode: "session-b", outputRequirement: "二班单独要求" }],
       unassignedSourceCount: 9,
@@ -343,6 +366,7 @@ describe("feedback task group workspace state", () => {
       groupLessonId: "lesson-1",
       outputRequirement: "共同课统一要求",
       generationMode: "fast",
+      generationApproach: "free",
       preferences: { length: "detailed", tone: "professional" },
       classOverrides: [{ sessionCode: "session-b", outputRequirement: "二班单独要求" }],
       plannedSessionCodes: ["session-a"],
@@ -428,6 +452,22 @@ describe("feedback task group workspace state", () => {
     expect(markup).toContain("没有推荐时默认全班");
     expect(markup).toContain("教师已调整范围");
     expect(markup).toContain("建立可保存计划");
+    expect(markup).toContain("受限反馈");
+    expect(markup).toContain("自由反馈");
+    expect(markup).not.toContain("标准反馈");
+    expect(markup).not.toContain("快速草稿");
+  });
+
+  it("shows the last actual generation approach for an item", () => {
+    expect(feedbackPlanItemActualApproach({
+      generationExecution: {
+        attempts: [
+          { actualApproach: "restricted" },
+          { actualApproach: "free" },
+        ],
+      },
+    })).toBe("free");
+    expect(feedbackPlanItemActualApproach({ generationExecution: null })).toBeNull();
   });
 
   it("excludes already planned classes from the confirmation page", () => {

@@ -83,11 +83,15 @@ export type FeedbackGroupIntakeUploadResponse = {
 export type FeedbackBatchClient = {
   id: string;
   status: string;
+  generationApproach?: "restricted" | "free" | null;
+  generationApproachLabel?: string;
   currentPlanId: string | null;
   failedPlanId?: string | null;
   plans: Array<{
     id: string;
     status: string;
+    generationApproach?: "restricted" | "free" | null;
+    generationApproachLabel?: string;
     class: { id: string; code: string; name: string | null };
     session?: { code: string } | null;
     rangeEndSession?: { code: string } | null;
@@ -97,6 +101,11 @@ export type FeedbackBatchClient = {
       status: string;
       studentId: string | null;
       student: { id: string; name: string; studentId: string } | null;
+      generationExecution?: {
+        requestedApproach: "restricted" | "free";
+        nextApproach: "restricted" | "free";
+        attempts: Array<{ actualApproach: "restricted" | "free"; status: string }>;
+      } | null;
     }>;
   }>;
 };

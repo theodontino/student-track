@@ -228,6 +228,12 @@ function classifyPath(rawPath: string): PathImpact {
     if (path.endsWith("/ci.yml") || path.endsWith("/ci.yaml")) {
       scopes.push("browser", "build", "windows", "macos");
     }
+    if (path.endsWith("/windows-offline-package.yml") || path.endsWith("/windows-offline-package.yaml")) {
+      scopes.push("windows");
+    }
+    if (path.endsWith("/macos-offline-package.yml") || path.endsWith("/macos-offline-package.yaml")) {
+      scopes.push("macos");
+    }
     return { level: "L2", scopes, reasons: ["CI execution policy"] };
   }
 
@@ -252,6 +258,10 @@ function classifyPath(rawPath: string): PathImpact {
 
   if (path.startsWith("scripts/windows/") || path === "src/tests/windows-core-scripts.test.ts") {
     return { level: "L2", scopes: ["windows"], reasons: ["Windows Core runtime"] };
+  }
+
+  if (path.startsWith("scripts/macos/") || path === "src/tests/macos-full-scripts.test.ts") {
+    return { level: "L2", scopes: ["macos"], reasons: ["macOS Full runtime"] };
   }
 
   if (path === "diarize.sh") {

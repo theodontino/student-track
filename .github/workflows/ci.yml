@@ -405,7 +405,7 @@ jobs:
     needs: classify
     if: needs.classify.result == 'success' && needs.classify.outputs.run_macos_full == 'true'
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       STUDENT_TRACK_EDITION: full
       NEXT_PUBLIC_STUDENT_TRACK_EDITION: full
@@ -450,6 +450,24 @@ jobs:
           tail -200 "$log_path"
           echo "macOS Full production service did not become ready within 60 seconds." >&2
           exit 1
+      - name: Build and verify the offline macOS Full bundle
+        run: |
+          output_root="$RUNNER_TEMP/student-track-full-offline-bundle"
+          scratch_root="$RUNNER_TEMP/student-track-full-offline-check"
+          ./scripts/macos/Build-StudentTrackFullOfflineBundle.sh --output "$output_root"
+          archive_path="$(find "$output_root" -maxdepth 1 -name 'StudentTrackFull-macOS-*.zip' -type f -print -quit)"
+          if [[ -z "$archive_path" ]]; then
+            echo "macOS Full 离线包构建没有产生 ZIP。" >&2
+            exit 1
+          fi
+          ./scripts/macos/Test-StudentTrackFullOfflineBundle.sh --archive "$archive_path" --scratch "$scratch_root"
+      - name: Upload verified offline macOS Full bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: student-track-full-macos-${{ github.sha }}
+          path: ${{ runner.temp }}/student-track-full-offline-bundle/StudentTrackFull-macOS-*.zip
+          if-no-files-found: error
+          retention-days: 14
 
   windows_core:
     name: Windows Core offline package

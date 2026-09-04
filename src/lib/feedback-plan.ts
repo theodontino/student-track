@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { LessonFeedbackMaterialSchema, StudentAssessmentEvidenceSchema } from "@/lib/contracts/feedback";
+import { FeedbackGenerationApproachSchema } from "@/lib/feedback-generation-approach";
 import { containsStudentDirectedAddress, stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
+
+export {
+  FEEDBACK_GENERATION_APPROACHES,
+  FeedbackGenerationApproachSchema,
+  type FeedbackGenerationApproach,
+} from "@/lib/feedback-generation-approach";
 
 export const FEEDBACK_PLAN_TYPES = ["class_update", "event_micro", "stage_trend", "course_end"] as const;
 export type FeedbackPlanType = typeof FEEDBACK_PLAN_TYPES[number];
@@ -387,6 +394,7 @@ export const FeedbackPlanCreateSchema = z.object({
   type: z.enum(FEEDBACK_PLAN_TYPES),
   outputRequirement: z.string().trim().min(1).max(2000),
   generationMode: z.enum(FEEDBACK_GENERATION_MODES).optional(),
+  generationApproach: FeedbackGenerationApproachSchema.default("restricted"),
   semesterId: z.string().trim().min(1).max(200),
   classId: z.string().trim().min(1).max(200),
   sessionId: z.string().trim().max(200).optional(),
@@ -407,13 +415,14 @@ export const FeedbackPlanCreateSchema = z.object({
     });
   }).optional(),
 });
-export type FeedbackPlanCreateInput = z.infer<typeof FeedbackPlanCreateSchema>;
+export type FeedbackPlanCreateInput = z.input<typeof FeedbackPlanCreateSchema>;
 
 export const FeedbackPlanDraftPatchSchema = z.object({
   displayName: z.string().trim().min(1).max(120).optional(),
   type: z.enum(FEEDBACK_PLAN_TYPES).optional(),
   outputRequirement: z.string().trim().min(1).max(2000).optional(),
   generationMode: z.enum(FEEDBACK_GENERATION_MODES).optional(),
+  generationApproach: FeedbackGenerationApproachSchema.optional(),
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
   generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
   studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200).superRefine((overrides, ctx) => {
@@ -439,6 +448,7 @@ export type FeedbackPlanRenameInput = z.infer<typeof FeedbackPlanRenameSchema>;
 
 export const FeedbackPlanCloneDraftSchema = z.object({
   displayName: z.string().trim().min(1).max(120).optional(),
+  generationApproach: FeedbackGenerationApproachSchema.optional(),
 });
 export type FeedbackPlanCloneDraftInput = z.infer<typeof FeedbackPlanCloneDraftSchema>;
 

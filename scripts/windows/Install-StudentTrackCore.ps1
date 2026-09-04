@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$ReleaseTag = "v1.3.0-beta.2",
+    [string]$ReleaseTag = "v1.3.0-beta.3",
     [switch]$NoDesktopShortcut
 )
 
@@ -132,6 +132,22 @@ function New-StudentTrackLauncher {
     return $launcher
 }
 
+function New-StudentTrackUninstallLauncher {
+    param([Parameter(Mandatory = $true)][string]$RuntimeRoot)
+
+    $launcher = Join-Path $RuntimeRoot "Uninstall Student Track Core.cmd"
+    @(
+        "@echo off",
+        "setlocal EnableExtensions DisableDelayedExpansion",
+        'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0app\scripts\windows\Uninstall-StudentTrackCore.ps1"',
+        'set "UNINSTALL_EXIT_CODE=%ERRORLEVEL%"',
+        'if "%UNINSTALL_EXIT_CODE%"=="0" del /f /q "%~f0"',
+        'if not "%UNINSTALL_EXIT_CODE%"=="0" pause',
+        'exit /b %UNINSTALL_EXIT_CODE%'
+    ) | Set-Content -LiteralPath $launcher -Encoding ASCII
+    return $launcher
+}
+
 function New-StudentTrackDesktopShortcut {
     param([Parameter(Mandatory = $true)][string]$Launcher)
 
@@ -164,6 +180,7 @@ try {
     & $prepare
 
     $launcher = New-StudentTrackLauncher -RuntimeRoot $runtimeRoot
+    $uninstallLauncher = New-StudentTrackUninstallLauncher -RuntimeRoot $runtimeRoot
     if (-not $NoDesktopShortcut) {
         New-StudentTrackDesktopShortcut -Launcher $launcher
     }
@@ -172,6 +189,7 @@ try {
     Write-Host "程序目录：$appRoot"
     Write-Host "数据目录：$runtimeRoot"
     Write-Host "启动方式：双击 $launcher，或桌面上的 Student Track Core。"
+    Write-Host "卸载方式：双击 $uninstallLauncher；教学数据库和运行数据会保留。"
 } finally {
     if (Test-Path -LiteralPath $temporaryRoot) {
         Remove-Item -LiteralPath $temporaryRoot -Recurse -Force

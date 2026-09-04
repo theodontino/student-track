@@ -5,6 +5,7 @@ import {
   FeedbackPlanStudentOverrideSchema,
 } from "@/lib/feedback-plan";
 import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
+import { FeedbackGenerationApproachSchema } from "@/lib/feedback-generation-approach";
 
 export const FEEDBACK_PLAN_BATCH_STATUSES = [
   "draft",
@@ -50,6 +51,7 @@ export const FeedbackPlanBatchCreateSchema = z.object({
   type: z.enum(["event_micro", "stage_trend"]),
   outputRequirement: z.string().trim().min(1).max(2000),
   generationMode: z.enum(["standard", "fast"]).default("standard"),
+  generationApproach: FeedbackGenerationApproachSchema.default("restricted"),
   generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
   groupLessonId: z.string().trim().min(1).max(200).optional(),
   sharedLessonRevisionId: z.string().trim().min(1).max(200).optional(),
@@ -97,6 +99,7 @@ export const FeedbackPlanBatchDraftPatchSchema = z.object({
   displayName: FeedbackProjectNameSchema.optional(),
   outputRequirement: z.string().trim().min(1).max(2000),
   generationMode: z.enum(["standard", "fast"]),
+  generationApproach: FeedbackGenerationApproachSchema.optional(),
   generationPreferences: FeedbackGenerationPreferencesSchema,
   studentSelections: z.array(FeedbackPlanBatchStudentSelectionSchema).min(1).max(20),
   classOverrides: z.array(FeedbackPlanBatchClassOverrideSchema).max(20).default([]),
@@ -140,13 +143,14 @@ export type FeedbackPlanBatchDraftPatch = z.infer<typeof FeedbackPlanBatchDraftP
 export type FeedbackPlanBatchRename = z.infer<typeof FeedbackPlanBatchRenameSchema>;
 
 export const FeedbackPlanBatchActionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("start"), expectedPlanRevision: z.number().int().positive().optional() }),
+  z.object({ action: z.literal("start"), generationApproach: FeedbackGenerationApproachSchema.optional(), expectedPlanRevision: z.number().int().positive().optional() }),
   z.object({ action: z.literal("pause") }),
   z.object({ action: z.literal("continue") }),
   z.object({ action: z.literal("retry") }),
+  z.object({ action: z.literal("retry_with_free") }),
   z.object({ action: z.literal("archive") }),
   z.object({ action: z.literal("unarchive") }),
-  z.object({ action: z.literal("clone_draft"), displayName: FeedbackProjectNameSchema.optional() }),
+  z.object({ action: z.literal("clone_draft"), displayName: FeedbackProjectNameSchema.optional(), generationApproach: FeedbackGenerationApproachSchema.optional() }),
   z.object({ action: z.literal("save_as"), displayName: FeedbackProjectNameSchema, patch: z.unknown() }),
   z.object({ action: z.literal("export"), mode: z.enum(["approved_only", "complete"]).default("approved_only"), allowRepeat: z.boolean().optional() }),
 ]);

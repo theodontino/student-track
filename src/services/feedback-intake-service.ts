@@ -23,7 +23,7 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 200;
 const ZIP_LOCAL_HEADER = 0x04034b50;
 const ZIP_CENTRAL_HEADER = 0x02014b50;
-const INTAKE_PARSER_VERSION = 3;
+const INTAKE_PARSER_VERSION = 4;
 
 type IntakeSource = "upload" | "inbox";
 export type IntakeKind = "assistant_roster" | "step_classroom" | "assessment_pdf";
@@ -1147,6 +1147,7 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
     type: input.plan?.type ?? "event_micro",
     outputRequirement: input.plan?.outputRequirement ?? "为每名入选学生生成一条可复核的家长反馈",
     ...(input.plan?.generationMode ? { generationMode: input.plan.generationMode } : {}),
+    ...(input.plan?.generationApproach ? { generationApproach: input.plan.generationApproach } : {}),
     semesterId: session.semesterId,
     classId: session.classId,
     sessionId: session.id,

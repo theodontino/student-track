@@ -11,6 +11,7 @@ import {
   FeedbackPlanItemPatchSchema,
   FeedbackPlanRenameSchema,
 } from "@/lib/feedback-plan";
+import { FeedbackGenerationApproachSchema } from "@/lib/feedback-generation-approach";
 import {
   approveFeedbackPlanItems,
   archiveFeedbackPlan,
@@ -25,6 +26,7 @@ import {
   renameFeedbackPlan,
   saveFeedbackPlanAs,
   retryFeedbackPlanGeneration,
+  retryFeedbackPlanGenerationWithFree,
   startFeedbackPlanGeneration,
   toFeedbackPlanDetail,
   toFeedbackPlanItemView,
@@ -158,10 +160,21 @@ export async function POST(request: NextRequest, context: Context) {
           ? body.generationMode
           : null;
       if (generationMode === null) throw new ApiError("生成方式参数无效", 400, "invalid_request", false);
+      const generationApproach = body.generationApproach === undefined
+        ? undefined
+        : FeedbackGenerationApproachSchema.safeParse(body.generationApproach);
+      if (generationApproach && !generationApproach.success) throw new ApiError("反馈生成方式参数无效", 400, "invalid_request", false);
       const expectedPlanRevision = typeof body.expectedPlanRevision === "number" && Number.isInteger(body.expectedPlanRevision) && body.expectedPlanRevision > 0
         ? body.expectedPlanRevision
         : undefined;
-      const result = await startFeedbackPlanGeneration({ planId: id, itemIds, assessmentEvidence: assessmentEvidence.data, generationMode, expectedPlanRevision });
+      const result = await startFeedbackPlanGeneration({
+        planId: id,
+        itemIds,
+        assessmentEvidence: assessmentEvidence.data,
+        generationMode,
+        generationApproach: generationApproach?.data,
+        expectedPlanRevision,
+      });
       return NextResponse.json(result, { status: 202 });
     }
     if (body.action === "pause_generation") {
@@ -173,6 +186,10 @@ export async function POST(request: NextRequest, context: Context) {
     if (body.action === "retry_generation") {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
       return NextResponse.json(await retryFeedbackPlanGeneration({ planId: id, itemIds }), { status: 202 });
+    }
+    if (body.action === "retry_with_free") {
+      const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
+      return NextResponse.json(await retryFeedbackPlanGenerationWithFree({ planId: id, itemIds }), { status: 202 });
     }
     if (body.action === "archive") {
       await archiveFeedbackPlan(id);

@@ -34,9 +34,12 @@ describe("semester common material navigation", () => {
       onScan={() => undefined}
       onUseExistingFacts={() => undefined}
       onCommonMaterialChoice={() => undefined}
+      onSaveSessionMaterial={async () => undefined}
       onContinue={() => undefined}
     />);
     expect(markup).toContain('href="/semesters/semester%2Fone#semester-common-materials"');
     expect(markup).not.toContain("/feedback/tools?tool=materials");
+    expect(markup).toContain("自定义本课背景");
+    expect(markup).toContain("本课课程背景（可选）");
   });
 });

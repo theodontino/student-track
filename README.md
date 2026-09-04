@@ -4,7 +4,7 @@
 
 **核心工作流**：`家校背景 + 课堂记录 → 教师确认 → 上下文组装 → LLM 反馈草稿 → Excel 导出`
 
-当前版本为 **1.3.0-beta.2**（Zhuiver `MINOR` 预发布）。同一套源码和数据库按构建配置提供 Full 与 Core：macOS 默认保持 Full，Windows 10/11 x64 首先支持 Core；学期公共材料可从 Excel 整库导入，并在新共同讲次中形成待确认草稿。反馈计划继续作为课后工作的业务主体，班级与学期支持 30 天回收，课次事实可在备份后独立清空。
+当前开发版本为 **1.3.0-beta.3**（Zhuiver `MINOR` 预发布）。同一套源码和数据库按构建配置提供 Full 与 Core：macOS 默认保持 Full，Windows 10/11 x64 首先支持 Core。课后工作台允许不上传文件、不使用公共材料或为独立课次直接编写背景；文字型 PDF 在应用内本地解析。新反馈计划可选受限或自由生成，生成方式冻结与教师明确降级都由计划和条目账本保留。
 
 ## 实验性能力：STEP Bridge
 
@@ -35,6 +35,14 @@ npm run verify:quick
 `StudentTrackCore-Windows-x64-<版本>.zip`：解压后进入 `StudentTrackCore`，双击
 `Install-StudentTrackCoreOffline.cmd`。该完整包已经携带 Windows Node、依赖、Prisma 生成物和 Core 生产构建，
 安装时不需要访问 GitHub、Node.js 或 npm。
+
+给教师安装 macOS Full 时，使用与目标 Mac 架构一致的
+`StudentTrackFull-macOS-<arm64|x64>-<版本>.zip`。解压后双击
+`Install-StudentTrackFullOffline.command`；完整包已经携带 Node 24、依赖、Prisma 生成物和 Full
+生产构建。macOS ZIP 不是已签名或公证的 `.app`，首次打开可能需要在 Finder 中右键选择“打开”。
+
+Windows 与 macOS 安装后都会在运行目录创建卸载入口。卸载只移除程序、便携 Node 和快捷方式，
+保留数据库、LLM 设置、附件、收件箱和备份；再次安装会继续使用原数据库。
 
 源码安装只面向开发者；它需要 Node.js 24 x64 和 npm 11：
 

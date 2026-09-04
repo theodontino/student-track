@@ -1,7 +1,10 @@
 "use client";
 
+import { useState, type FormEvent } from "react";
 import Link from "next/link";
+import { Button, Dialog, StatusBanner, Textarea } from "@/components/ui";
 import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
+import type { LessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type { FeedbackIntakeDecision } from "@/services/feedback-intake-service";
 import type { FeedbackIntakeRunClient } from "./feedback-task-types";
 import type { FeedbackTaskClassDraft, FeedbackTaskDraftV2 } from "./feedback-task-state";
@@ -25,11 +28,13 @@ export type TaskPreparationStageProps = {
   commonMaterialChoice: string;
   commonMaterialAction: "group" | "session" | "unavailable";
   commonMaterialHelp: string;
+  sessionMaterial?: Pick<LessonFeedbackMaterial, "groupFeedbackRaw" | "assessmentBriefRaw"> | null;
   decisions?: FeedbackIntakeDecision[];
   onFiles: (files: File[]) => void;
   onScan: () => void;
   onUseExistingFacts: () => void;
   onCommonMaterialChoice: (choice: string) => void;
+  onSaveSessionMaterial?: (input: { groupFeedbackRaw: string; assessmentBriefRaw: string }) => Promise<void>;
   onContinue: () => void;
   manualFactsHref: string;
   semesterMaterialsHref?: string;
@@ -107,6 +112,34 @@ function defaultMaterialSummary(run: FeedbackIntakeRunClient | null, entry: Feed
 
 export function TaskPreparationStage(props: TaskPreparationStageProps) {
   const materialSummary = props.materialSummary ?? defaultMaterialSummary(props.run, props.entry, props.studentTotal, props.decisions ?? []);
+  const [sessionMaterialDialogOpen, setSessionMaterialDialogOpen] = useState(false);
+  const [sessionMaterialSaving, setSessionMaterialSaving] = useState(false);
+  const [sessionMaterialError, setSessionMaterialError] = useState("");
+  const [groupFeedbackRaw, setGroupFeedbackRaw] = useState("");
+  const [assessmentBriefRaw, setAssessmentBriefRaw] = useState("");
+
+  function openSessionMaterialDialog() {
+    setGroupFeedbackRaw(props.sessionMaterial?.groupFeedbackRaw ?? "");
+    setAssessmentBriefRaw(props.sessionMaterial?.assessmentBriefRaw ?? "");
+    setSessionMaterialError("");
+    setSessionMaterialDialogOpen(true);
+  }
+
+  async function saveSessionMaterial(event: FormEvent) {
+    event.preventDefault();
+    if (!props.onSaveSessionMaterial) return;
+    setSessionMaterialSaving(true);
+    setSessionMaterialError("");
+    try {
+      await props.onSaveSessionMaterial({ groupFeedbackRaw, assessmentBriefRaw });
+      setSessionMaterialDialogOpen(false);
+    } catch (error) {
+      setSessionMaterialError(error instanceof Error ? error.message : "保存本课背景失败");
+    } finally {
+      setSessionMaterialSaving(false);
+    }
+  }
+
   return <div className={styles.stageContent}>
     {props.draft.mode === "single" && <section className={styles.intakePaths}>
       <div><strong>先补录课堂记录</strong><span>可以像原来一样手动写课堂回顾；有助教表、STEP 或测评文件时，再在下面补充。</span></div>
@@ -129,12 +162,22 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
       onDecision={props.onDecision}
     />
     <section className={styles.compactMaterialStrategy}>
-      <div><strong>课程公共材料</strong><span>{props.commonMaterialLabel}</span></div>
+      <div><strong>本课课程背景（可选）</strong><span>{props.commonMaterialLabel}</span></div>
       <label>本次课程材料<select value={props.commonMaterialChoice} disabled={props.busy || (props.commonMaterialAction === "unavailable" && props.commonMaterialOptions.length === 1)} onChange={(event) => props.onCommonMaterialChoice(event.target.value)}>{props.commonMaterialOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       <small>{props.commonMaterialHelp}</small>
       {props.commonMaterialPreview && <details><summary>预览所选材料</summary><div className={styles.commonLessonPreview}>{props.commonMaterialPreview}</div></details>}
+      {props.commonMaterialAction === "session" && props.onSaveSessionMaterial && <Button variant="ghost" uiSize="sm" onClick={openSessionMaterialDialog} disabled={props.busy}>{props.sessionMaterial ? "编辑本课背景" : "自定义本课背景"}</Button>}
       {!props.commonMaterialOptions.some((option) => option.value.startsWith("library:")) && <Link className="ui-button ui-button--ghost ui-button--sm" href={props.semesterMaterialsHref ?? "/semesters"}>管理学期公共材料</Link>}
       {props.commonMaterialAction === "group" && props.commonMaterialChoice.startsWith("library:") && <p>主按钮会同时确认并共享本讲材料，不需要再单独操作。</p>}
     </section>
+    <Dialog open={sessionMaterialDialogOpen} title="自定义本课课程背景" onClose={() => { if (!sessionMaterialSaving) setSessionMaterialDialogOpen(false); }}>
+      <form className="dialog-form" onSubmit={(event) => void saveSessionMaterial(event)}>
+        {sessionMaterialError && <StatusBanner tone="danger">{sessionMaterialError}</StatusBanner>}
+        <label>班级公共反馈或课程材料<Textarea rows={7} value={groupFeedbackRaw} disabled={sessionMaterialSaving} onChange={(event) => setGroupFeedbackRaw(event.target.value)} /></label>
+        <label>统一测评说明<Textarea rows={5} value={assessmentBriefRaw} disabled={sessionMaterialSaving} onChange={(event) => setAssessmentBriefRaw(event.target.value)} /></label>
+        <p className="dialog-form__hint">这份背景只保存到当前独立课次；进入计划时会复制进计划快照，不会改动学期材料库。</p>
+        <div className="dialog-form__actions"><Button variant="secondary" onClick={() => setSessionMaterialDialogOpen(false)} disabled={sessionMaterialSaving}>取消</Button><Button type="submit" disabled={sessionMaterialSaving}>{sessionMaterialSaving ? "保存中…" : "保存并用于本次计划"}</Button></div>
+      </form>
+    </Dialog>
   </div>;
 }
