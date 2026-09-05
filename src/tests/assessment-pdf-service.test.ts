@@ -128,6 +128,11 @@ describe("assessment PDF parser", () => {
     expect(() => parseAssessmentPdfText("只有图片，没有题集文字", "scan.pdf"))
       .toThrow("未识别到受支持的题集报告文字");
   });
+
+  it("rejects a summary correct rate outside 0% to 100%", () => {
+    expect(() => parseAssessmentPdfText(syntheticReport.replace("正确率为80%", "正确率为101%"), "invalid-rate.pdf"))
+      .toThrow("正确率必须在 0% 到 100% 之间");
+  });
 });
 
 describe("PDF.js text extraction", () => {
@@ -153,13 +158,17 @@ describe("PDF.js text extraction", () => {
   });
 
   it("extracts text from a fixed synthetic PDF without an external command", async () => {
-    const text = await extractPdfText(arrayBuffer(syntheticPdf([
+    const input = arrayBuffer(syntheticPdf([
       "PROBLEM SET REPORT 2099/07/13",
       "Synthetic assessment fixture",
-    ])));
+    ]));
+    const inputBytes = input.byteLength;
+    const text = await extractPdfText(input);
 
     expect(text).toContain("PROBLEM SET REPORT 2099/07/13");
     expect(text).toContain("Synthetic assessment fixture");
+    expect(input.byteLength).toBe(inputBytes);
+    expect(() => new Uint8Array(input)).not.toThrow();
   });
 
   it("loads the bundled CMap when extracting fixed synthetic Chinese text", async () => {

@@ -269,6 +269,9 @@ export function parseAssessmentPdfText(text: string, fileName: string): ParsedAs
   if (totalQuestions === null || correctRate === null) {
     throw new Error("题集报告中未找到总题数或正确率");
   }
+  if (correctRate < 0 || correctRate > 100) {
+    throw new Error("题集报告中的正确率必须在 0% 到 100% 之间");
+  }
 
   return {
     reportStudentName,
@@ -291,7 +294,10 @@ export async function extractPdfText(buffer: ArrayBuffer) {
   if (buffer.byteLength > MAX_PDF_BYTES) throw new Error("单份 PDF 不能超过 15 MB");
   configureLocalPdfJsWorker();
   const loadingTask = getDocument({
-    data: new Uint8Array(buffer),
+    // PDF.js may transfer its input to a worker and detach the underlying
+    // ArrayBuffer. Group intake must keep the original bytes for the routed
+    // per-class parse, so give PDF.js an owned copy.
+    data: new Uint8Array(buffer.slice(0)),
     cMapUrl: localPdfJsAssetDirectory("cmaps"),
     cMapPacked: true,
     iccUrl: localPdfJsAssetDirectory("iccs"),

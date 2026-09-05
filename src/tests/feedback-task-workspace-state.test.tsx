@@ -18,8 +18,9 @@ import {
   feedbackStudioPlanTarget,
   shouldRefreshFeedbackTaskBatch,
 } from "@/features/feedback/FeedbackTaskStudioStage";
-import { MaterialIntakeCard, MaterialIssueDecision, materialIssueChoices, shouldAcceptMaterialFiles } from "@/features/feedback/MaterialIntakeCard";
+import { droppedMaterialFiles, MaterialIntakeCard, MaterialIssueDecision, materialIssueChoices, shouldAcceptMaterialFiles } from "@/features/feedback/MaterialIntakeCard";
 import {
+  accumulateFeedbackGroupUnassigned,
   activeFeedbackStudentsForClass,
   createFeedbackTaskFollowUpDraft,
   defaultFeedbackStudentIds,
@@ -39,6 +40,7 @@ import {
   refreshAutomaticFeedbackStudentSelection,
   restoreFeedbackGroupMode,
   selectedFeedbackTaskStudentOverrides,
+  splitFeedbackIntakeUploadBatches,
 } from "@/features/feedback/FeedbackTaskWorkspace";
 import {
   createFeedbackTaskDraft,
@@ -547,6 +549,79 @@ describe("feedback task group workspace state", () => {
     expect(materialIssueChoices({ code: "assistant_class_mismatch", message: "班级不一致" }).map((item) => item.action)).toEqual(["ignore_source"]);
     expect(materialIssueChoices({ code: "student_mismatch", message: "学生未匹配" }).map((item) => item.action)).toEqual(["skip_student"]);
     expect(materialIssueChoices({ code: "assistant_date_mismatch", message: "日期不一致" }).map((item) => item.action)).toEqual(["ignore_source", "accept_source"]);
+    expect(materialIssueChoices({ code: "step_note_review", message: "STEP 自由备注" }).map(({ action, label }) => ({ action, label }))).toEqual([
+      { action: "use_observation", label: "采用备注" },
+      { action: "ignore_observation", label: "忽略备注" },
+    ]);
+  });
+
+  it("shows a saved legacy merge-observation decision as an adopted STEP note", () => {
+    const markup = renderToStaticMarkup(<MaterialIssueDecision
+      busy={false}
+      issue={{
+        id: "step-note",
+        runId: "run-a",
+        code: "step_note_review",
+        message: "甲同学 · 题1：原始备注",
+        decision: { issueId: "step-note", action: "merge_observation" },
+      }}
+      onDecision={() => undefined}
+    />);
+    expect(markup).toContain("采用备注");
+    expect(markup).toContain("忽略备注");
+    expect(markup).toMatch(/type="radio"[^>]*checked=""[^>]*\/>采用备注/);
+  });
+
+  it("offers every structured score candidate or preserves an existing score", () => {
+    const scoreConflict = {
+      studentId: "A001",
+      studentName: "甲同学",
+      dimension: "A" as const,
+      candidates: [
+        { id: "current:A", sourceKind: "current_metric" as const, sourceName: "当前已保存评分", label: "当前已保存评分", score: 4 },
+        { id: "pdf:A", sourceKind: "assessment_pdf" as const, sourceName: "甲同学.pdf", label: "出门测 甲同学.pdf", score: 4.2 },
+      ],
+    };
+    expect(materialIssueChoices({ code: "score_conflict", message: "A 分冲突", scoreConflict }).map(({ action, candidateId, label }) => ({ action, candidateId, label }))).toEqual([
+      { action: "use_score_candidate", candidateId: "current:A", label: "采用当前已保存评分：4" },
+      { action: "use_score_candidate", candidateId: "pdf:A", label: "采用出门测 甲同学.pdf：4.2" },
+      { action: "skip_score", candidateId: undefined, label: "保留现有 A 分" },
+    ]);
+    const markup = renderToStaticMarkup(<MaterialIssueDecision
+      busy={false}
+      issue={{
+        id: "score-issue",
+        runId: "run-a",
+        code: "score_conflict",
+        message: "甲同学的 A 分冲突",
+        scoreConflict,
+        decision: { issueId: "score-issue", action: "use_score_candidate", candidateId: "pdf:A" },
+      }}
+      onDecision={() => undefined}
+    />);
+    expect(markup).toContain("采用当前已保存评分：4");
+    expect(markup).toContain("采用出门测 甲同学.pdf：4.2");
+    expect(markup).toContain("保留现有 A 分");
+    expect(markup).toMatch(/checked=""[^>]*\/>采用出门测 甲同学\.pdf：4\.2/);
+  });
+
+  it("does not offer preserving a score when no current metric exists", () => {
+    const choices = materialIssueChoices({
+      code: "score_conflict",
+      message: "A 分冲突",
+      scoreConflict: {
+        studentId: "A001",
+        studentName: "甲同学",
+        dimension: "A",
+        candidates: [
+          { id: "assistant:A", sourceKind: "assistant_roster", sourceName: "助教表.xlsx", label: "助教表 助教表.xlsx", score: 4 },
+          { id: "pdf:A", sourceKind: "assessment_pdf", sourceName: "甲同学.pdf", label: "出门测 甲同学.pdf", score: 4.2 },
+        ],
+      },
+    });
+
+    expect(choices.map((choice) => choice.action)).toEqual(["use_score_candidate", "use_score_candidate"]);
+    expect(choices).not.toContainEqual(expect.objectContaining({ action: "skip_score" }));
   });
 
   it("keeps refreshing a completed batch while the teacher reviews students", () => {
@@ -774,7 +849,26 @@ describe("feedback task group workspace state", () => {
       { status: "rejected", reason: new Error("合成请求失败") },
     ]);
     expect(outcome.completed).toEqual([completedRun]);
+    expect(outcome.needsReview).toEqual([]);
+    expect(outcome.reviewEntries).toEqual([]);
     expect(outcome.failedEntries).toEqual([entries[1]]);
+  });
+
+  it("returns newly discovered conflicts to the same class for another review", () => {
+    const reviewedRun = run(entries[0], "needs_review", [{
+      id: "score-after-bind",
+      code: "score_conflict",
+      message: "绑定后发现 A 分冲突",
+      severity: "requires_teacher",
+    }]);
+    const outcome = feedbackIntakeConfirmationOutcome([entries[0]], [
+      { status: "fulfilled", value: { result: reviewedRun } },
+    ]);
+
+    expect(outcome.completed).toEqual([]);
+    expect(outcome.needsReview).toEqual([reviewedRun]);
+    expect(outcome.reviewEntries).toEqual([entries[0]]);
+    expect(outcome.failedEntries).toEqual([]);
   });
 
   it("preserves a teacher's explicit per-class inclusion when group mode is rebuilt", () => {
@@ -909,6 +1003,72 @@ describe("feedback task group workspace state", () => {
     expect(shouldAcceptMaterialFiles(false, 2)).toBe(true);
   });
 
+  it("recursively expands a Safari directory drop and keeps relative paths", async () => {
+    const first = new File(["first"], "甲.pdf", { type: "application/pdf" });
+    const second = new File(["second"], "乙.pdf", { type: "application/pdf" });
+    const fileEntry = (file: File, fullPath: string) => ({
+      isFile: true as const,
+      isDirectory: false as const,
+      fullPath,
+      file: (success: (value: File) => void) => success(file),
+    });
+    const nested = {
+      isFile: false as const,
+      isDirectory: true as const,
+      createReader: () => {
+        let read = false;
+        return { readEntries: (success: (entries: unknown[]) => void) => { success(read ? [] : [fileEntry(second, "/报告/子目录/乙.pdf")]); read = true; } };
+      },
+    };
+    const directory = {
+      isFile: false as const,
+      isDirectory: true as const,
+      createReader: () => {
+        let read = false;
+        return { readEntries: (success: (entries: unknown[]) => void) => { success(read ? [] : [fileEntry(first, "/报告/甲.pdf"), nested]); read = true; } };
+      },
+    };
+    const files = await droppedMaterialFiles({
+      items: [{ kind: "file", getAsFile: () => null, webkitGetAsEntry: () => directory }] as unknown as DataTransferItemList,
+      files: [] as unknown as FileList,
+    });
+    expect(files.map((file) => file.name)).toEqual(["甲.pdf", "乙.pdf"]);
+    expect(files.map((file) => file.webkitRelativePath)).toEqual(["报告/甲.pdf", "报告/子目录/乙.pdf"]);
+  });
+
+  it("falls back to the files captured at drop time when directory traversal fails", async () => {
+    const fallback = new File(["fallback"], "备用.pdf", { type: "application/pdf" });
+    let filesRead = 0;
+    const failedDirectory = {
+      isFile: false as const,
+      isDirectory: true as const,
+      createReader: () => ({
+        readEntries: (_success: (entries: unknown[]) => void, failure?: (error: DOMException) => void) => {
+          failure?.(new DOMException("目录读取失败"));
+        },
+      }),
+    };
+    const dataTransfer = {
+      items: [{ kind: "file", getAsFile: () => null, webkitGetAsEntry: () => failedDirectory }] as unknown as DataTransferItemList,
+      get files() {
+        filesRead += 1;
+        return (filesRead === 1 ? [fallback] : []) as unknown as FileList;
+      },
+    };
+
+    expect(await droppedMaterialFiles(dataTransfer)).toEqual([fallback]);
+    expect(filesRead).toBe(1);
+  });
+
+  it("splits a large assessment folder below the request body limit", () => {
+    const megabyte = 1024 * 1024;
+    const files = [35, 35, 35, 10].map((size, index) => ({ name: `${index}.pdf`, size: size * megabyte }));
+    expect(splitFeedbackIntakeUploadBatches(files).map((batch) => batch.map((file) => file.name))).toEqual([
+      ["0.pdf", "1.pdf"],
+      ["2.pdf", "3.pdf"],
+    ]);
+  });
+
   it("locks material issue decisions and detail entry points while confirmation is busy", () => {
     const decisionMarkup = renderToStaticMarkup(<MaterialIssueDecision
       busy
@@ -980,6 +1140,48 @@ describe("feedback task group workspace state", () => {
       candidateClassIds: ["class-b"],
     }], new Set())).toEqual([unresolved]);
     expect(mergeGroupUnassignedSources(continued, [], new Set(["同名学生.pdf"]))).toEqual([]);
+  });
+
+  it("keeps a blocking unassigned source across consecutive upload batches", () => {
+    const blocked = { fileName: "第一批重名.pdf", kind: "assessment_pdf" as const, reason: "姓名重名，无法自动归属" };
+    const afterFirst = accumulateFeedbackGroupUnassigned({
+      sources: [],
+      persistedActionableCount: 0,
+      incoming: [blocked],
+      routedFileNames: new Set(),
+    });
+    const afterSecond = accumulateFeedbackGroupUnassigned({
+      ...afterFirst,
+      incoming: [],
+      routedFileNames: new Set(["第二批已归属.pdf"]),
+    });
+
+    expect(afterSecond.sources).toEqual([blocked]);
+    expect(afterSecond.persistedActionableCount).toBe(1);
+    expect(feedbackIntakeConfirmationDisabled({
+      contextActionBlocked: false,
+      selectedEntryCount: 2,
+      actionableUnassignedCount: afterSecond.persistedActionableCount,
+      mode: "group",
+      unresolvedBlockingCount: 0,
+    })).toBe(true);
+  });
+
+  it("clears an earlier batch's unassigned source only after a later batch routes the same file", () => {
+    const blocked = { fileName: "同名学生.pdf", kind: "assessment_pdf" as const, reason: "姓名重名，无法自动归属" };
+    const afterFirst = accumulateFeedbackGroupUnassigned({
+      sources: [],
+      persistedActionableCount: 0,
+      incoming: [blocked],
+      routedFileNames: new Set(),
+    });
+    const afterSecond = accumulateFeedbackGroupUnassigned({
+      ...afterFirst,
+      incoming: [],
+      routedFileNames: new Set([blocked.fileName]),
+    });
+
+    expect(afterSecond).toEqual({ sources: [], persistedActionableCount: 0 });
   });
 
   it("keeps an unsaved item draft while navigating across plans", () => {

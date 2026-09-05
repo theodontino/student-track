@@ -148,7 +148,7 @@ const feedbackHistoryMetricSchema = z.object({
   sessionId: z.string().max(200).nullable().optional(),
   date: z.string().max(64),
   semesterNumber: z.number().int().min(0).max(10000),
-  scoreA: z.number().int().min(0).max(5).nullable(),
+  scoreA: z.number().min(0).max(5).nullable(),
   scoreB: z.number().int().min(0).max(5).nullable(),
   scoreC: z.number().int().min(0).max(5).nullable(),
   scoreD: z.number().int().min(0).max(5).nullable(),

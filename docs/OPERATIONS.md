@@ -41,7 +41,7 @@ GitHub Actions 的 **Build Windows Core offline package** 继续保留给临时�
 
 ```powershell
 $installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.4/Install-StudentTrackCore.ps1" -OutFile $installer
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.5/Install-StudentTrackCore.ps1" -OutFile $installer
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 ```
 
@@ -345,9 +345,9 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 ```
 
 Windows Core 对应 `%LOCALAPPDATA%\Student Track\feedback-inbox\`。也可以用
-`STUDENT_TRACK_FEEDBACK_INBOX_ROOT` 指定本机目录。只有教师点击“扫描收件箱”时才会读取；系统不常驻监听、不移动或删除源文件。ZIP 仅支持本次解包的 `.xlsx`、STEP 文本和 PDF；加密、损坏或嵌套 ZIP 会列为异常，解包内容不持久化。临时投入单次上传上限为 100MB，超过时应改用固定收件箱再扫描。
+`STUDENT_TRACK_FEEDBACK_INBOX_ROOT` 指定本机目录。只有教师点击“扫描收件箱”时才会读取；系统不常驻监听、不移动或删除源文件。ZIP 仅支持本次解包的 `.xlsx`、STEP 文本和 PDF；加密、损坏或嵌套 ZIP 会列为异常，解包内容不持久化。浏览器选择或拖入多个文件时会自动拆成不超过 80MB 的连续请求；单个普通文件或 ZIP 仍不得超过 50MB，单份 PDF 不得超过 15MB。超过对应解析上限的单文件不能导入，应先拆分或减小体积。
 
-扫描只整理候选事实，不写课堂事实。单班材料直接进入当前课次；共同课材料先按班级和组内花名册路由，再为每个真实课次形成独立运行。个人 PDF 只有在组内能唯一确定学生及所属真实课次时才自动绑定，否则列为待核对材料。教师在第一页按来源处理日期、课次、身份和确定性冲突，再用“确认材料并进入下一步”一次写入各班事实；部分班级失败时停留第一页并列出失败班级。第二页按“班级组默认、班级例外、学生例外”设置命名计划；计划草稿与启动生成分开，启动失败仍进入工作室重试。第三页使用统一计划工作室，班级组先显示跨班学生清单，学生批准和正文仍归属自己的班级计划。
+扫描只整理候选事实，不写课堂事实。单班材料直接进入当前课次；共同课材料先按班级和组内花名册路由，再为每个真实课次形成独立运行。STEP V1 与 V2 文件按各自版本读取，V2 中教师明确填写的完整 A/B/C 和考勤原样进入候选事实。个人 PDF 只有在组内能唯一确定学生及所属真实课次时才自动绑定，否则列为待核对材料；唯一匹配后正确率自动除以 20，并保留一位小数写入 A，不需要逐份批准。新候选与本轮其他来源或既有课堂记录的同一维分数不一致时，第一页显示每个来源和值，教师选择一个候选；已有课堂评分时可以保留现有值，首次建立评分必须选择实际候选。同一学生存在多份个人 PDF 时，即使换算后的 A 相同也必须选择一份，以保证正确率、知识点、错题证据和 A 候选同源。只有冲突维度被挂起，未冲突事实继续保留。教师处理完日期、课次、身份和事实冲突后，再用“确认材料并进入下一步”一次写入各班事实；PDF 仅更新 A 时保留该课次已有 B/C，首次建立完整评价时 B/C 使用现有中性基线 3。部分班级失败时停留第一页并列出失败班级。第二页按“班级组默认、班级例外、学生例外”设置命名计划；计划草稿与启动生成分开，启动失败仍进入工作室重试。第三页使用统一计划工作室，班级组先显示跨班学生清单，学生批准和正文仍归属自己的班级计划。
 
 三步导航在计划执行期间始终可用，当前视图由 `view=intake|plan|studio` 恢复。打开已有计划后，“录入”显示冻结的事实、材料来源、异常处理和确认时间，“规划”显示冻结的范围与配置；它们不是修改事实或回退运行状态的入口。“继续录入事实”建立独立录入，若要采用新增事实，需从录入页明确按当前事实建立新计划。普通“修正计划”则沿用原计划冻结事实。浏览器关闭前若草稿仍有未保存修改会提示。
 
@@ -430,6 +430,8 @@ Student Track 不管理或删除 LM Studio 自身日志。LM Studio 的开发日
 升级到 1.3.0-beta.3 后运行 `npx prisma migrate deploy`。本次迁移为 `FeedbackPlan` 和 `FeedbackPlanBatch` 增加 `generationApproach`，为 `FeedbackPlanItem` 增加 `generationExecutionSnapshot`。历史计划的方式默认为内部 `legacy`，新计划显式写入 `restricted` 或 `free`；Core 与 Full 使用同一 Schema 和 migration。
 
 升级到 1.3.0-beta.4 后运行 `npx prisma migrate deploy`。本次不删除字段或重建表，只把可以同时证明从未进入生成阶段、没有 GenerationRecord、执行快照、正文、批准或导出痕迹的历史顶层 `ready` Plan 改为 `draft`；Batch 只有在全部子 Plan 都满足时才同步改为 `draft`。`FeedbackIntakeRun.planId`、历史 `generationMode`、稳定 ID、正文、批准、导出和生成记录均保留原值。升级既有数据库前仍须先备份并校验。
+
+升级到 1.3.0-beta.5 后运行 `npx prisma migrate deploy`。本次将 `SessionMetric` 与 `SessionMetricHistory` 的 A 分改为 SQLite `REAL`，既有整数会等值保留，B/C/D、课次关系、操作人和历史记录不变；升级既有数据库前仍须先备份并校验。
 
 ## 发布与封档
 

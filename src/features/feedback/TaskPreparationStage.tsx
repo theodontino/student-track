@@ -3,12 +3,14 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { Button, Dialog, StatusBanner, Textarea } from "@/components/ui";
-import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
+import { ScoreDimensionLegend } from "@/components/ScoreDimensionLegend";
+import { isBlockingFeedbackIntakeIssue } from "@/lib/feedback-intake-rules";
 import type { LessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type { FeedbackIntakeDecision } from "@/services/feedback-intake-service";
 import type { FeedbackIntakeRunClient } from "./feedback-task-types";
 import type { FeedbackTaskClassDraft, FeedbackTaskDraftV2 } from "./feedback-task-state";
-import { MaterialIntakeCard, type GroupMaterialSummary, type MaterialSourceKind, type MaterialSourceSummary } from "./MaterialIntakeCard";
+import { MaterialIntakeCard, type GroupMaterialSummary, type MaterialIssueSummary, type MaterialSourceKind, type MaterialSourceSummary } from "./MaterialIntakeCard";
+import { selectedMaterialIssueDecision } from "./material-issue-actions";
 import styles from "./unified-feedback-workspace.module.css";
 
 export type { GroupMaterialSummary, MaterialIssueSummary, MaterialSourceKind, MaterialSourceStatus, MaterialSourceSummary } from "./MaterialIntakeCard";
@@ -39,6 +41,7 @@ export type TaskPreparationStageProps = {
   manualFactsHref: string;
   semesterMaterialsHref?: string;
   onIgnoreUnassigned?: () => void;
+  onIgnoreUnassignedSource?: (source: NonNullable<MaterialIssueSummary["unassignedSource"]>) => void;
   onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
   materialSummary?: GroupMaterialSummary;
 };
@@ -46,10 +49,7 @@ export type TaskPreparationStageProps = {
 const SOURCE_KINDS: MaterialSourceKind[] = ["assistant_roster", "step_classroom", "assessment_pdf"];
 
 function selectedDecision(issue: FeedbackIntakeRunClient["issues"][number], decisions: FeedbackIntakeDecision[]) {
-  return decisions.find((decision) => decision.issueId === issue.id)
-    ?? decisions.find((decision) => issue.sourceName && decision.sourceName === issue.sourceName && (
-      decision.action === "ignore_source" || (decision.action === "accept_source" && isSourceScopedBoundaryIssue(issue))
-    ));
+  return selectedMaterialIssueDecision(issue, decisions);
 }
 
 function defaultMaterialSummary(run: FeedbackIntakeRunClient | null, entry: FeedbackTaskClassDraft, studentTotal: number, decisions: FeedbackIntakeDecision[]): GroupMaterialSummary {
@@ -67,11 +67,15 @@ function defaultMaterialSummary(run: FeedbackIntakeRunClient | null, entry: Feed
       runId: run?.id,
       className: entry.className,
       sourceName: issue.sourceName,
+      sourceId: issue.sourceId,
       candidates: issue.candidates,
       stage: issue.stage,
       rowNumber: issue.rowNumber,
       reportedStudent: issue.reportedStudent,
       rosterHint: issue.rosterHint,
+      scoreConflict: issue.scoreConflict,
+      assessmentDuplicate: issue.assessmentDuplicate,
+      attendanceConflict: issue.attendanceConflict,
       decision: selectedDecision(issue, decisions),
     }));
     const common = { kind, fileCount: files.length, issueCount: unresolvedCount, status, files, issues: summarizedIssues } satisfies MaterialSourceSummary;
@@ -105,7 +109,24 @@ function defaultMaterialSummary(run: FeedbackIntakeRunClient | null, entry: Feed
     title: "本轮材料",
     scopeLabel: entry.className,
     issueCount: pendingIssues.filter((issue) => !selectedDecision(issue, decisions)).length,
-    issues: pendingIssues.map((issue) => ({ id: issue.id, code: issue.code, message: issue.message })),
+    issues: pendingIssues.map((issue) => ({
+      id: issue.id,
+      code: issue.code,
+      message: issue.message,
+      runId: run?.id,
+      className: entry.className,
+      sourceName: issue.sourceName,
+      sourceId: issue.sourceId,
+      candidates: issue.candidates,
+      stage: issue.stage,
+      rowNumber: issue.rowNumber,
+      reportedStudent: issue.reportedStudent,
+      rosterHint: issue.rosterHint,
+      scoreConflict: issue.scoreConflict,
+      assessmentDuplicate: issue.assessmentDuplicate,
+      attendanceConflict: issue.attendanceConflict,
+      decision: selectedDecision(issue, decisions),
+    })),
     sources,
   };
 }
@@ -145,6 +166,7 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
       <div><strong>先补录课堂记录</strong><span>可以像原来一样手动写课堂回顾；有助教表、STEP 或测评文件时，再在下面补充。</span></div>
       <Link className="ui-button ui-button--secondary ui-button--sm" href={props.manualFactsHref}>补录课堂记录</Link>
     </section>}
+    <ScoreDimensionLegend showAssessmentRule />
     <MaterialIntakeCard
       summary={materialSummary}
       busy={props.busy}
@@ -159,6 +181,7 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
         ? "将沿用原计划的范围与生成设置，读取刚确认的当前事实建立另一份计划；原计划和原正文不会修改。"
         : props.draft.mode === "group" ? "每个班分别确认；已完成班级会立即进入一份可恢复的计划草稿，未完成班级不会回滚。" : "确认课堂事实后立即建立可恢复的计划草稿；生成仍需在下一步单独启动。"}
       onIgnoreUnassigned={props.onIgnoreUnassigned}
+      onIgnoreUnassignedSource={props.onIgnoreUnassignedSource}
       onDecision={props.onDecision}
     />
     <section className={styles.compactMaterialStrategy}>

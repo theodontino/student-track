@@ -199,6 +199,8 @@ async function assertNewSchema(databasePath: string) {
     if (!classGroupColumns.has("leadClassId")) throw new Error("ClassGroup 缺少主班字段");
     const planInfo = await client.execute("PRAGMA table_info(\"FeedbackPlan\")");
     const batchInfo = await client.execute("PRAGMA table_info(\"FeedbackPlanBatch\")");
+    const metricInfo = await client.execute("PRAGMA table_info(\"SessionMetric\")");
+    const metricHistoryInfo = await client.execute("PRAGMA table_info(\"SessionMetricHistory\")");
     const planColumns = new Set(planInfo.rows.map((row) => String(row.name)));
     const batchColumns = new Set(batchInfo.rows.map((row) => String(row.name)));
     const planItemColumns = new Set((await client.execute("PRAGMA table_info(\"FeedbackPlanItem\")")).rows.map((row) => String(row.name)));
@@ -210,6 +212,10 @@ async function assertNewSchema(databasePath: string) {
     }
     if (!["generationError", "generationStartedAt", "generationCompletedAt", "generationDurationMs"].every((column) => planItemColumns.has(column))) {
       throw new Error("FeedbackPlanItem 缺少生成失败或计时字段");
+    }
+    for (const [table, info] of [["SessionMetric", metricInfo], ["SessionMetricHistory", metricHistoryInfo]] as const) {
+      const scoreA = info.rows.find((row) => String(row.name) === "scoreA");
+      if (String(scoreA?.type ?? "").toUpperCase() !== "REAL") throw new Error(`${table}.scoreA 不是 REAL`);
     }
     const batchStatus = batchInfo.rows.find((row) => String(row.name) === "status");
     const batchStatusDefault = String(batchStatus?.dflt_value ?? "").replaceAll("'", "").replaceAll('"', "");

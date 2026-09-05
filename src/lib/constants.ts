@@ -18,6 +18,13 @@ export const DIM_SHORT: Record<string, string> = {
   C: "作业",
 };
 
+export const SCORE_DIMENSION_DETAILS = [
+  { key: "A" as const, label: "学习&测验", description: "学习目标达成与课堂测验表现" },
+  { key: "B" as const, label: "精神&纪律", description: "精神面貌与课堂纪律" },
+  { key: "C" as const, label: "课后任务", description: "作业、订正等课后任务完成情况" },
+  { key: "D" as const, label: "考勤", description: "系统根据本学期已记录考勤自动计算" },
+];
+
 export const DIM_CONFIG = [
   { key: "A" as const, label: "学习", color: "bg-blue-500" },
   { key: "B" as const, label: "纪律", color: "bg-green-500" },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  dismissFeedbackGroupUnassignedSource,
   dismissFeedbackGroupUnassignedSourcesForSelectedClasses,
   scopeFeedbackGroupUnassignedSources,
 } from "@/features/feedback/feedback-group-unassigned";
@@ -107,5 +108,51 @@ describe("feedback group unassigned material scope", () => {
       selectedClassIds: ["class-b"],
       persistedActionableCount: dismissed.persistedActionableCount,
     }).actionableCount).toBe(1);
+  });
+
+  it("dismisses only the selected unresolved file and preserves unknown blockers", () => {
+    const selected: FeedbackGroupIntakeUnassigned = {
+      fileName: "无法识别.pdf",
+      kind: "assessment_pdf",
+      reason: "题集报告中未找到总题数或正确率",
+    };
+    const remaining: FeedbackGroupIntakeUnassigned = {
+      fileName: "另一份.pdf",
+      kind: "assessment_pdf",
+      reason: "PDF 未能唯一匹配当前班级学生",
+    };
+
+    expect(dismissFeedbackGroupUnassignedSource({
+      sources: [selected, remaining],
+      persistedActionableCount: 3,
+      fileName: selected.fileName,
+      kind: selected.kind,
+    })).toEqual({
+      sources: [remaining],
+      persistedActionableCount: 2,
+    });
+  });
+
+  it("does not dismiss a same-name source of a different kind", () => {
+    const pdf: FeedbackGroupIntakeUnassigned = {
+      fileName: "同名材料",
+      kind: "assessment_pdf",
+      reason: "PDF 异常",
+    };
+    const step: FeedbackGroupIntakeUnassigned = {
+      fileName: "同名材料",
+      kind: "step_classroom",
+      reason: "STEP 异常",
+    };
+
+    expect(dismissFeedbackGroupUnassignedSource({
+      sources: [pdf, step],
+      persistedActionableCount: 2,
+      fileName: pdf.fileName,
+      kind: pdf.kind,
+    })).toEqual({
+      sources: [step],
+      persistedActionableCount: 1,
+    });
   });
 });

@@ -2,7 +2,7 @@ import * as XLSX from "xlsx";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { ParseResult, ParsedStudent } from "@/lib/parser";
 import { completeClassAttendance } from "@/lib/nlAttendance";
-import { normalizeDimensionScore } from "@/config/rules";
+import { normalizeDimensionScore, normalizeScoreA } from "@/config/rules";
 import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
 import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
@@ -70,10 +70,10 @@ export function normalizeAssistantRosterDate(value: string, referenceDate = "") 
   return text;
 }
 
-function parseScore(value: unknown) {
+function parseScore(value: unknown, dimension: "A" | "B" | "C") {
   const text = clean(value);
   if (!text || text === "/" || text === "／" || text === "-") return null;
-  return normalizeDimensionScore(text);
+  return dimension === "A" ? normalizeScoreA(text) : normalizeDimensionScore(text);
 }
 
 function rowHasUsefulClassroomData(row: ParsedRosterRow) {
@@ -131,9 +131,9 @@ export function parseAssistantRosterFiles(files: Array<{ name: string; buffer: A
           studentId,
           classCode: explicitClassCode || lastClassCode,
           className: explicitClassName || lastClassName,
-          scoreA: quizIndex >= 0 ? parseScore(sourceRow[quizIndex]) : null,
-          scoreB: disciplineIndex >= 0 ? parseScore(sourceRow[disciplineIndex]) : null,
-          scoreC: homeworkIndex >= 0 ? parseScore(sourceRow[homeworkIndex]) : null,
+          scoreA: quizIndex >= 0 ? parseScore(sourceRow[quizIndex], "A") : null,
+          scoreB: disciplineIndex >= 0 ? parseScore(sourceRow[disciplineIndex], "B") : null,
+          scoreC: homeworkIndex >= 0 ? parseScore(sourceRow[homeworkIndex], "C") : null,
           note: noteIndex >= 0 ? clean(sourceRow[noteIndex]) : "",
           date: fileDate,
           lessonNumber,
