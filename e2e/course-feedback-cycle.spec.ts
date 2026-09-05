@@ -157,7 +157,7 @@ async function createRangePlan(request: APIRequestContext, input: {
 
 async function startPlan(request: APIRequestContext, planId: string) {
   await expectOk(await request.post(`/api/report/feedback-plans/${planId}`, {
-    data: { action: "start_generation", generationMode: "standard", assessmentEvidence: {} },
+    data: { action: "start_generation", assessmentEvidence: {} },
   }));
 }
 
@@ -421,16 +421,17 @@ test.describe("完整课程反馈周期", () => {
 
       await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
       await expect(page).toHaveURL(/view=intake/);
-      await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
+      await expect(page.getByLabel(/反馈生成 · 事实已冻结/)).toBeVisible();
       await expect(page.getByText(dailyLesson.topic, { exact: false }).first()).toBeVisible();
       await page.reload();
-      await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
+      await expect(page.getByLabel(/反馈生成 · 事实已冻结/)).toBeVisible();
 
       await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
       await expect(page).toHaveURL(/view=plan/);
       await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
       await expect(page.getByRole("heading", { name: "第六讲日常反馈" })).toBeVisible();
-      await expect(page.getByRole("textbox", { name: "总体要求", exact: true })).toBeDisabled();
+      await expect(page.getByRole("textbox", { name: "总体要求", exact: true })).toBeEnabled();
+      await expect(page.getByText(/只能另存为新计划；原计划和结果不会被覆盖/)).toBeVisible();
 
       await page.getByRole("button", { name: /生成 生成、复核与批准/ }).click();
       await expect(page).toHaveURL(/view=studio/);
@@ -441,11 +442,18 @@ test.describe("完整课程反馈周期", () => {
       let leadPlanView = await getPlan(request, dailyPlanId);
       const firstItem = leadPlanView.items[0];
       const teacherText = `${firstItem.student!.name}家长您好，本讲能够参与物质的量换算，请继续按课堂步骤复盘。`;
-      const editor = page.getByLabel(`${firstItem.student!.name}反馈计划文本`);
+      await page.getByLabel("反馈队列").getByRole("button", { name: new RegExp(`^${firstItem.student!.name}`) }).click();
+      const editorSection = page.getByLabel(`${firstItem.student!.name}教师最终正文`);
+      const editor = editorSection.getByLabel(`${firstItem.student!.name}反馈计划文本`);
+      const saved = page.waitForResponse((response) => (
+        new URL(response.url()).pathname === `/api/report/feedback-plans/${dailyPlanId}`
+        && response.request().method() === "PATCH"
+      ));
       await editor.fill(teacherText);
-      await page.getByRole("button", { name: "保存修改" }).click();
+      await expect(editorSection.getByRole("button", { name: "立即保存" })).toBeEnabled({ timeout: 500 });
+      expect((await saved).ok()).toBeTruthy();
       await expect(editor).toHaveValue(teacherText);
-      await expect(page.getByText(/已保存/).last()).toBeVisible();
+      await expect(editorSection.getByRole("button", { name: "已保存", exact: true })).toBeDisabled();
       leadPlanView = await getPlan(request, dailyPlanId);
       expect(leadPlanView.items[0].finalText).toBe(teacherText);
 
@@ -511,17 +519,20 @@ test.describe("完整课程反馈周期", () => {
       for (const [tool, expected] of [
         ["fact-editor", "当前课次事实"],
         ["materials", "公共材料"],
-        ["plan-builder", "反馈计划"],
-        ["active-plans", "反馈计划"],
+        ["plan-builder", "复核与反馈计划"],
+        ["active-plans", "未归档计划"],
       ] as const) {
         await page.goto(`/feedback/tools?tool=${tool}&${contextQuery}`);
         await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
         await expect(page.getByText(expected, { exact: false }).first()).toBeVisible();
       }
       await expect(page.getByText("3 个未归档计划")).toBeVisible();
-      await expect(page.getByText("事件型微反馈")).toBeVisible();
-      await expect(page.getByText("阶段趋势反馈")).toBeVisible();
-      await expect(page.getByText("结课教学总结")).toBeVisible();
+      await page.getByRole("button", { name: "选择计划" }).click();
+      const planSwitcher = page.getByRole("dialog", { name: "切换反馈计划" });
+      await planSwitcher.getByText("最近 5 项", { exact: true }).click();
+      await expect(planSwitcher.getByText("事件型微反馈")).toBeVisible();
+      await expect(planSwitcher.getByText("阶段趋势反馈")).toBeVisible();
+      await expect(planSwitcher.getByText("结课教学总结")).toBeVisible();
 
       await expectOk(await request.post(`/api/report/feedback-plans/${dailyPlanId}`, { data: { action: "archive" } }));
       await expectOk(await request.post(`/api/report/feedback-plans/${stagePlanId}`, { data: { action: "archive" } }));
@@ -529,19 +540,23 @@ test.describe("完整课程反馈周期", () => {
       const active = await request.get(`/api/report/feedback-plans?semesterId=${fixture.semester.id}&archived=false`);
       expect((await active.json()).plans).toHaveLength(0);
 
-      const rebuiltResponse = await request.post("/api/feedback/tasks", { data: {
-        mode: "single",
-        runIds: [runId],
-        generationMode: "fast",
-        type: "event_micro",
-        outputRequirement: "归档后重建课程日常反馈",
-        materialSelection: { mode: "linked_revision", revisionId: groupRevisionId },
+      const rebuiltResponse = await request.post(`/api/feedback/intake/runs/${runId}`, { data: {
+        action: "create_plan",
+        plan: {
+          displayName: "归档后重建课程日常反馈",
+          generationApproach: "free",
+          type: "event_micro",
+          outputRequirement: "归档后重建课程日常反馈",
+          studentIds: classStudents(0).map((student) => student.id),
+          commonMaterial: { mode: "linked_revision", revisionId: groupRevisionId },
+        },
       } });
       await expectOk(rebuiltResponse);
-      const rebuilt = await rebuiltResponse.json();
-      expect(rebuilt.planId).not.toBe(dailyPlanId);
-      await waitForPlan(request, rebuilt.planId, "in_review");
-      await expectOk(await request.post(`/api/report/feedback-plans/${rebuilt.planId}`, { data: { action: "archive" } }));
+      const rebuilt = (await rebuiltResponse.json()).result.plan as { id: string };
+      expect(rebuilt.id).not.toBe(dailyPlanId);
+      await startPlan(request, rebuilt.id);
+      await waitForPlan(request, rebuilt.id, "in_review");
+      await expectOk(await request.post(`/api/report/feedback-plans/${rebuilt.id}`, { data: { action: "archive" } }));
 
       await page.goto(`/history?semesterId=${fixture.semester.id}&archived=true`);
       await expect(page.getByText("总结完整六讲课程中的变化、稳定能力和后续学习方向")).toBeVisible();
