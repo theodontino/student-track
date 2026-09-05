@@ -356,10 +356,13 @@ export const FeedbackAuditItemSchema = z.object({
   taskId: z.string().max(200).optional(),
 });
 
+export const RESTRICTED_WRITER_OUTPUT_INVALID_CODE = "restricted_writer_output_invalid";
+
 export const HARD_FEEDBACK_AUDIT_CODES = new Set([
   "empty_text",
   "cross_student_content",
   "unconfirmed_evidence",
+  RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
 ]);
 
 export function isHardFeedbackAuditIssue(code: string) {

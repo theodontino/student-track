@@ -7,6 +7,7 @@ import {
   FEEDBACK_CLOSURE_TYPES,
   FEEDBACK_MODULES,
   PARENT_ACTION_TYPES,
+  RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
   FeedbackEvidenceBundleSchema,
   sanitizeFeedbackComposition,
   sanitizeFeedbackEvidenceBundle,
@@ -132,6 +133,10 @@ export const RestrictedWriterOutputV1Schema = z.object({
 });
 export type RestrictedWriterOutputV1 = z.infer<typeof RestrictedWriterOutputV1Schema>;
 
+const restrictedWriterDraftCandidateSchema = z.object({
+  draftFeedback: z.string().trim().min(1).max(10000),
+}).passthrough();
+
 const generationTokenUsageSchema = z.object({
   inputTokens: z.number().finite().nonnegative().nullable(),
   outputTokens: z.number().finite().nonnegative().nullable(),
@@ -168,14 +173,29 @@ export interface RestrictedGenerationStageTrace {
   usage: GenerationTokenUsage;
 }
 
-export interface RestrictedFeedbackGenerationResult {
+interface RestrictedFeedbackGenerationResultBase {
   strategy: FeedbackStrategyV1;
   writerInput: RestrictedWriterInputV1;
-  writerOutput: RestrictedWriterOutputV1;
   composition: FeedbackCompositionPlan;
   planner: RestrictedGenerationStageTrace & { reusedCheckpoint: boolean };
   writer: RestrictedGenerationStageTrace;
 }
+
+export type RestrictedFeedbackGenerationResult = RestrictedFeedbackGenerationResultBase & (
+  | {
+      kind: "validated";
+      writerOutput: RestrictedWriterOutputV1;
+      blocker: null;
+    }
+  | {
+      kind: "blocked_draft";
+      writerOutput: null;
+      blocker: {
+        code: typeof RESTRICTED_WRITER_OUTPUT_INVALID_CODE;
+        message: string;
+      };
+    }
+);
 
 export interface RestrictedFeedbackGenerationInput {
   studentName: string;
@@ -649,6 +669,26 @@ export function compileRestrictedComposition(input: {
   return { output, composition };
 }
 
+function blockedRestrictedWriterComposition(
+  strategy: FeedbackStrategyV1,
+  draftFeedback: string,
+): FeedbackCompositionPlan {
+  return sanitizeFeedbackComposition({
+    version: 1,
+    closureType: strategy.closureType,
+    needParentAction: false,
+    parentAction: null,
+    modules: [],
+    evidenceCoverage: [],
+    draftFeedback,
+  });
+}
+
+function restrictedWriterFailureMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "受限 Writer 输出字段不符合协议";
+  return `受限 Writer 草稿未通过程序核验：${message}`.slice(0, 1000);
+}
+
 function plannerPrompt(input: RestrictedFeedbackGenerationInput, evidence: FeedbackEvidenceBundle) {
   const modules = [...allowedModules(input)];
   const closures = [...allowedClosures(input)];
@@ -788,30 +828,42 @@ export async function writeRestrictedFeedback(input: RestrictedFeedbackGeneratio
   let usage = emptyUsage();
   const startedAt = performance.now();
   let failure: unknown = new ApiError("受限 Writer 输出无效", 502, "llm_schema_invalid", true);
+  let blockedDraft: { composition: FeedbackCompositionPlan; message: string } | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const basePrompt = writerPrompt(writerInput);
     const prompt = attempt === 1
       ? basePrompt
       : `${basePrompt}\n\n上一轮输出无效：${failure instanceof Error ? failure.message : "字段不符合协议"}。请只依据同一份受限输入返回修正后的完整 JSON。`;
-    const response = await createJsonCompletion({
-      client: input.writerClient,
-      role: "feedbackReview",
-      profileId: input.writerProfileId,
-      model: input.writerModel,
-      prompt,
-      maxTokens: WRITER_MAX_TOKENS,
-      signal: input.signal,
-    });
+    let response: Awaited<ReturnType<typeof createJsonCompletion>>;
+    try {
+      response = await createJsonCompletion({
+        client: input.writerClient,
+        role: "feedbackReview",
+        profileId: input.writerProfileId,
+        model: input.writerModel,
+        prompt,
+        maxTokens: WRITER_MAX_TOKENS,
+        signal: input.signal,
+      });
+    } catch (error) {
+      if (input.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+      if (!blockedDraft) throw error;
+      failure = error;
+      break;
+    }
     usage = mergeUsage(usage, response.usage);
     try {
+      const parsed = parseJsonObject(response.content, "受限 Writer");
       const compiled = compileRestrictedComposition({
         strategy,
         writerInput,
-        writerOutput: parseJsonObject(response.content, "受限 Writer"),
+        writerOutput: parsed,
         forbiddenStudentNames: input.forbiddenStudentNames,
       });
       return {
+        kind: "validated" as const,
         ...compiled,
+        blocker: null,
         composition: normalizeCompositionDates(compiled.composition, input.referenceDate),
         trace: {
           model: input.writerModel,
@@ -822,7 +874,42 @@ export async function writeRestrictedFeedback(input: RestrictedFeedbackGeneratio
       };
     } catch (error) {
       failure = error;
+      try {
+        const parsed = parseJsonObject(response.content, "受限 Writer");
+        const candidate = restrictedWriterDraftCandidateSchema.safeParse(parsed);
+        if (candidate.success) {
+          const composition = normalizeCompositionDates(
+            blockedRestrictedWriterComposition(strategy, candidate.data.draftFeedback),
+            input.referenceDate,
+          );
+          if (composition.draftFeedback.trim()) {
+            blockedDraft = {
+              composition,
+              message: restrictedWriterFailureMessage(error),
+            };
+          }
+        }
+      } catch {
+        // 只保留合法 JSON 中通过窄 schema 的正文；不从任意原始响应猜测或截取草稿。
+      }
     }
+  }
+  if (blockedDraft) {
+    return {
+      kind: "blocked_draft" as const,
+      output: null,
+      composition: blockedDraft.composition,
+      blocker: {
+        code: RESTRICTED_WRITER_OUTPUT_INVALID_CODE as typeof RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
+        message: blockedDraft.message,
+      },
+      trace: {
+        model: input.writerModel,
+        attempts: 2,
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        usage,
+      },
+    };
   }
   throw failure;
 }
@@ -866,11 +953,25 @@ export async function generateRestrictedFeedback(input: RestrictedFeedbackGenera
     await input.onCheckpoint?.(checkpoint);
   }
   const written = await writeRestrictedFeedback(input, checkpoint);
+  if (written.kind === "blocked_draft") {
+    return {
+      kind: "blocked_draft",
+      strategy: checkpoint.strategy,
+      writerInput: checkpoint.writerInput,
+      writerOutput: null,
+      composition: written.composition,
+      blocker: written.blocker,
+      planner,
+      writer: written.trace,
+    };
+  }
   return {
+    kind: "validated",
     strategy: checkpoint.strategy,
     writerInput: checkpoint.writerInput,
     writerOutput: written.output,
     composition: written.composition,
+    blocker: null,
     planner,
     writer: written.trace,
   };

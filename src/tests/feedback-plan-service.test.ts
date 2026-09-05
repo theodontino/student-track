@@ -23,7 +23,9 @@ vi.mock("@/services/restricted-feedback-generation-service", async (importOrigin
     evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
   }) => {
     const generated = await generationMocks.generate(input);
+    if (generated?.kind === "blocked_draft") return generated;
     return {
+      kind: "validated" as const,
       strategy: {
         version: 1,
         mainFocus: "测试反馈",
@@ -52,13 +54,14 @@ vi.mock("@/services/restricted-feedback-generation-service", async (importOrigin
         stableRules: ["测试边界"],
       },
       writerOutput: { version: 1, modules: [], coverage: [], parentAction: null, draftFeedback: generated.composition.draftFeedback },
+      blocker: null,
       composition: generated.composition,
       planner: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 }, reusedCheckpoint: false },
       writer: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } },
     };
   },
 }));
-import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, cloneFeedbackPlanDraft, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, listFeedbackPlans, listTeacherTasks, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, removeFeedbackAttachment, renameFeedbackPlan, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, retryFeedbackPlanGeneration, retryFeedbackPlanGenerationWithFree, saveFeedbackPlanAs, startFeedbackPlanGeneration, toFeedbackPlanDetail, unarchiveFeedbackPlan, updateFeedbackPlanDraft } from "@/services/feedback-plan-service";
+import { addFeedbackAttachment, approveFeedbackPlanItems, archiveFeedbackPlan, cloneFeedbackPlanDraft, continueFeedbackPlanGeneration, createFeedbackPlan, createPreferenceCandidate, createTeacherTask, deleteFeedbackPlan, forceStopFeedbackPlanGeneration, generateFeedbackPlanItems, getFeedbackPlan, invalidateFeedbackPlans, isFeedbackPlanGenerationRunning, listFeedbackPlans, listTeacherTasks, patchFeedbackPlanItem, pauseFeedbackPlanGeneration, reconcileInterruptedFeedbackPlanGeneration, removeFeedbackAttachment, renameFeedbackPlan, resolvePreferenceCandidate, retainStaleFeedbackPlanItems, retryFeedbackPlanGeneration, retryFeedbackPlanGenerationWithFree, saveFeedbackPlanAs, startFeedbackPlanGeneration, toFeedbackPlanDetail, unarchiveFeedbackPlan, updateFeedbackPlanDraft, updateTeacherTaskStatus } from "@/services/feedback-plan-service";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
 
 const suffix = "PLAN-SERVICE";
@@ -68,6 +71,62 @@ const studentNumber = `TEST-${suffix}`;
 const sessionCode = `TEST-${suffix}`;
 const rangeSessionCodes = [`TEST-${suffix}-1`, `TEST-${suffix}-2`, `TEST-${suffix}-3`, `TEST-${suffix}-4`];
 const attachmentRoots: string[] = [];
+
+function queueControlComposition(evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> }) {
+  const evidence = evidenceBundle.teachingEvidence[0] ?? { id: "synthetic-evidence", content: "固定课堂事实" };
+  const composition = {
+    version: 1 as const,
+    closureType: "positive_recognition" as const,
+    needParentAction: false,
+    parentAction: null,
+    modules: [
+      { key: "observed_moment", content: evidence.content, evidenceRefs: [evidence.id], status: "included" as const, reason: "调度测试" },
+      { key: "teacher_interpretation", content: "已完成本轮练习", evidenceRefs: [evidence.id], status: "included" as const, reason: "调度测试" },
+    ],
+    evidenceCoverage: [{ evidenceId: evidence.id, statement: evidence.content }],
+    draftFeedback: `${evidence.content}，已完成本轮练习。`,
+  };
+  return { draftComposition: composition, composition };
+}
+
+async function createQueueControlPlan(studentCount: number) {
+  const semester = await prisma.semester.create({
+    data: { name: `${semesterName}-QUEUE`, startDate: "2099-01-01", endDate: "2099-12-31" },
+  });
+  const classRecord = await prisma.class.create({
+    data: { semesterId: semester.id, code: `${classCode}-QUEUE`, name: "生成调度测试班" },
+  });
+  const students = await Promise.all(Array.from({ length: studentCount }, (_, index) => prisma.student.create({
+    data: {
+      name: `调度学生${index + 1}`,
+      studentId: `${studentNumber}-QUEUE-${index + 1}`,
+      gender: index % 2 ? "女" : "男",
+      enrollments: { create: { semesterId: semester.id, classId: classRecord.id } },
+    },
+  })));
+  const session = await prisma.classSession.create({
+    data: { code: `${sessionCode}-QUEUE`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id },
+  });
+  await Promise.all(students.map((student) => prisma.event.create({
+    data: {
+      studentId: student.id,
+      sessionId: session.id,
+      type: "课堂表现",
+      description: `${student.name}完成固定课堂练习`,
+      rawText: "固定调度测试",
+    },
+  })));
+  const plan = await createFeedbackPlan({
+    type: "event_micro",
+    outputRequirement: "测试队列生成",
+    semesterId: semester.id,
+    classId: classRecord.id,
+    sessionId: session.id,
+    rangeEndSessionId: session.id,
+    studentIds: students.map((student) => student.id),
+  });
+  return { plan, students };
+}
 
 afterEach(async () => {
   generationMocks.generate.mockReset();
@@ -675,6 +734,118 @@ describe("feedback plan service", () => {
     expect(JSON.parse(generation.inputSnapshot ?? "{}")).toMatchObject({ generationApproach: "free" });
   });
 
+  it("retains an invalid restricted Writer draft as blocked review until the teacher edits it", async () => {
+    const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "受限草稿阻断测试班" } });
+    const student = await prisma.student.create({ data: { name: "受限草稿学生", studentId: studentNumber, gender: "女", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
+    const session = await prisma.classSession.create({ data: { code: sessionCode, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
+    await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "课堂独立完成了基础题", rawText: "合成测试" } });
+    const plan = await createFeedbackPlan({
+      type: "event_micro",
+      outputRequirement: "测试事件反馈",
+      generationApproach: "restricted",
+      semesterId: semester.id,
+      classId: classRecord.id,
+      sessionId: session.id,
+      studentIds: [student.id],
+    });
+    const blockedText = "模型草稿：课堂独立完成了基础题。";
+    generationMocks.generate.mockResolvedValue({
+      kind: "blocked_draft",
+      strategy: {
+        version: 1,
+        mainFocus: "说明课堂表现",
+        closureType: "positive_recognition",
+        points: [],
+        contextOnly: [],
+        omit: [],
+        communicationIntent: "说明已确认表现",
+        needParentAction: false,
+        parentAction: null,
+        unresolved: [],
+      },
+      writerInput: {
+        version: 1,
+        studentName: student.name,
+        recipient: "parent",
+        plan: { type: "event_micro", style: "gentle", length: "standard", closureType: "positive_recognition", communicationIntent: "说明已确认表现" },
+        disclosures: [],
+        parentAction: null,
+        stableRules: ["只使用已披露内容"],
+      },
+      writerOutput: null,
+      composition: {
+        version: 1,
+        closureType: "positive_recognition",
+        needParentAction: false,
+        parentAction: null,
+        modules: [],
+        evidenceCoverage: [],
+        draftFeedback: blockedText,
+      },
+      blocker: { code: "restricted_writer_output_invalid", message: "受限 Writer 草稿未通过程序核验：覆盖声明缺失" },
+      planner: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 }, reusedCheckpoint: false },
+      writer: { model: "test-feedback-model", attempts: 2, durationMs: 2, usage: { inputTokens: 2, outputTokens: 2, reasoningTokens: 0, totalTokens: 4 } },
+    });
+
+    await generateFeedbackPlanItems({ planId: plan.id });
+    let item = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: plan.items[0]!.id } });
+    const audit = JSON.parse(item.auditSnapshot) as { status: string; items: Array<{ code: string; severity: string }> };
+    const execution = JSON.parse(item.generationExecutionSnapshot) as { attempts: Array<{ status: string; stage?: string; generationRecordId?: string }> };
+    expect(item).toMatchObject({
+      status: "needs_review",
+      reviewMode: "model",
+      finalText: blockedText,
+      selectedGenerationId: null,
+      generationError: null,
+    });
+    expect(audit).toMatchObject({ status: "blocked", items: expect.arrayContaining([expect.objectContaining({ code: "restricted_writer_output_invalid", severity: "blocked" })]) });
+    expect(execution.attempts.at(-1)).toMatchObject({ status: "failed", stage: "deterministic_check" });
+    expect(execution.attempts.at(-1)).not.toHaveProperty("generationRecordId");
+    await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: item.id } })).resolves.toBe(0);
+    await expect(approveFeedbackPlanItems({
+      planId: plan.id,
+      itemIds: [item.id],
+      expectedHashes: { [item.id]: item.finalTextHash! },
+    })).rejects.toThrow("受限 Writer 草稿未通过程序核验");
+
+    const task = await createTeacherTask({
+      planItemId: item.id,
+      action: "下次课复核基础题",
+      dueType: "date",
+      dueDate: "2099-01-02",
+    });
+    await updateTeacherTaskStatus(task.id, "completed");
+    item = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(JSON.parse(item.auditSnapshot).items).toContainEqual(expect.objectContaining({ code: "restricted_writer_output_invalid" }));
+
+    item = await patchFeedbackPlanItem(item.id, {
+      finalText: blockedText,
+      reviewMode: "teacher_edited",
+      expectedItemRevision: item.itemRevision,
+    });
+    expect(JSON.parse(item.auditSnapshot).items).toContainEqual(expect.objectContaining({ code: "restricted_writer_output_invalid" }));
+    await expect(approveFeedbackPlanItems({
+      planId: plan.id,
+      itemIds: [item.id],
+      expectedHashes: { [item.id]: item.finalTextHash! },
+    })).rejects.toThrow("受限 Writer 草稿未通过程序核验");
+
+    item = await patchFeedbackPlanItem(item.id, {
+      finalText: "教师已核对并改写：课堂独立完成了基础题。",
+      reviewMode: "teacher_edited",
+      expectedItemRevision: item.itemRevision,
+    });
+    expect(item.reviewMode).toBe("teacher_edited");
+    expect(JSON.parse(item.auditSnapshot).items).not.toContainEqual(expect.objectContaining({ code: "restricted_writer_output_invalid" }));
+    await expect(approveFeedbackPlanItems({
+      planId: plan.id,
+      itemIds: [item.id],
+      expectedHashes: { [item.id]: item.finalTextHash! },
+    })).resolves.toMatchObject({ status: "approved" });
+    await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: item.id } })).resolves.toBe(0);
+  });
+
   it("can set, clear, and protect a student-specific plan configuration", async () => {
     const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
     const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "独立计划修改测试班" } });
@@ -1187,6 +1358,340 @@ describe("feedback plan service", () => {
     expect(continued?.generationRunStartedAt).toBeNull();
     expect(continued?.items.every((item) => item.generationCompletedAt instanceof Date)).toBe(true);
     expect(generationMocks.generate).toHaveBeenCalledWith(expect.objectContaining({ planType: "event_micro" }));
+  });
+
+  it("reconciles a lost generation run completely and only once", async () => {
+    const { plan } = await createQueueControlPlan(2);
+    const startedAt = new Date(Date.now() - 1_000);
+    const runningSnapshot = {
+      version: 1 as const,
+      requestedApproach: "restricted" as const,
+      nextApproach: "restricted" as const,
+      attempts: [{
+        attempt: 1,
+        trigger: "initial" as const,
+        actualApproach: "restricted" as const,
+        stage: "writer" as const,
+        status: "running" as const,
+        startedAt: startedAt.toISOString(),
+      }],
+    };
+    const initialRevision = plan.items[0]!.itemRevision;
+    await prisma.feedbackPlanItem.update({
+      where: { id: plan.items[0]!.id },
+      data: {
+        status: "generating",
+        generationStartedAt: startedAt,
+        generationExecutionSnapshot: JSON.stringify(runningSnapshot),
+      },
+    });
+    await prisma.feedbackPlanItem.update({
+      where: { id: plan.items[1]!.id },
+      data: { status: "queued" },
+    });
+    await prisma.feedbackPlan.update({
+      where: { id: plan.id },
+      data: {
+        status: "generating",
+        generationStartedAt: startedAt,
+        generationRunStartedAt: startedAt,
+        generationElapsedMs: 250,
+      },
+    });
+
+    await expect(reconcileInterruptedFeedbackPlanGeneration(plan.id)).resolves.toBe(2);
+    const reconciled = await getFeedbackPlan(plan.id);
+    expect(reconciled).toMatchObject({
+      status: "generation_failed",
+      generationRunStartedAt: null,
+    });
+    expect(reconciled?.generationCompletedAt).toBeInstanceOf(Date);
+    expect(reconciled?.generationElapsedMs).toBeGreaterThanOrEqual(250);
+    expect(reconciled?.items.map((item) => item.status)).toEqual(["generation_failed", "generation_failed"]);
+    expect(reconciled?.items[0]?.itemRevision).toBe(initialRevision + 1);
+    expect(JSON.parse(reconciled!.items[0]!.generationExecutionSnapshot).attempts[0]).toMatchObject({
+      stage: "writer",
+      status: "interrupted",
+      error: { code: "cancelled", kind: "aborted", retryable: true },
+    });
+
+    const settledPlanRevision = reconciled!.planRevision;
+    const settledCompletedAt = reconciled!.generationCompletedAt;
+    await expect(reconcileInterruptedFeedbackPlanGeneration(plan.id)).resolves.toBe(0);
+    const unchanged = await getFeedbackPlan(plan.id);
+    expect(unchanged?.planRevision).toBe(settledPlanRevision);
+    expect(unchanged?.generationCompletedAt).toEqual(settledCompletedAt);
+  });
+
+  it("rejects retry while another item in the same plan is still running", async () => {
+    const { plan } = await createQueueControlPlan(2);
+    const failedItem = plan.items[0]!;
+    const activeItem = plan.items[1]!;
+    await prisma.feedbackPlanItem.update({
+      where: { id: failedItem.id },
+      data: { status: "generation_failed", generationError: "固定失败" },
+    });
+    let releaseGeneration: (() => void) | undefined;
+    const generationGate = new Promise<void>((resolve) => { releaseGeneration = resolve; });
+    generationMocks.generate.mockImplementation(async (input: {
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      await generationGate;
+      return queueControlComposition(input.evidenceBundle);
+    });
+
+    try {
+      await startFeedbackPlanGeneration({ planId: plan.id, itemIds: [activeItem.id] });
+      await vi.waitFor(async () => {
+        expect((await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: activeItem.id } })).status).toBe("generating");
+      });
+      await expect(retryFeedbackPlanGeneration({ planId: plan.id, itemIds: [failedItem.id] }))
+        .rejects.toThrow("仍有反馈正在生成");
+      await expect(prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: failedItem.id } }))
+        .resolves.toMatchObject({ status: "generation_failed", generationError: "固定失败" });
+    } finally {
+      releaseGeneration?.();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+    }
+  });
+
+  it("force-stops the whole run and fences a late generation result", async () => {
+    const { plan } = await createQueueControlPlan(1);
+    const item = plan.items[0]!;
+    let releaseGeneration: (() => void) | undefined;
+    const generationGate = new Promise<void>((resolve) => { releaseGeneration = resolve; });
+    generationMocks.generate.mockImplementation(async (input: {
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      await generationGate;
+      return queueControlComposition(input.evidenceBundle);
+    });
+
+    try {
+      await startFeedbackPlanGeneration({ planId: plan.id });
+      await vi.waitFor(async () => {
+        const generating = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: item.id } });
+        expect(generating.status).toBe("generating");
+        expect(JSON.parse(generating.generationExecutionSnapshot).attempts.at(-1)?.status).toBe("running");
+      });
+
+      await expect(forceStopFeedbackPlanGeneration(plan.id)).resolves.toMatchObject({
+        accepted: true,
+        status: "generation_failed",
+        interrupted: 1,
+      });
+      const stoppedItem = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: item.id } });
+      const stoppedRevision = stoppedItem.itemRevision;
+      expect(stoppedItem).toMatchObject({
+        status: "generation_failed",
+        finalText: null,
+        selectedGenerationId: null,
+        generationError: "已由教师强制终止，可重试",
+      });
+      expect(JSON.parse(stoppedItem.generationExecutionSnapshot).attempts.at(-1)).toMatchObject({
+        status: "interrupted",
+        error: { code: "cancelled", kind: "aborted", retryable: true },
+      });
+
+      releaseGeneration?.();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+      const afterLateResult = await getFeedbackPlan(plan.id);
+      expect(afterLateResult).toMatchObject({ status: "generation_failed", generationRunStartedAt: null });
+      expect(afterLateResult?.items[0]).toMatchObject({
+        status: "generation_failed",
+        itemRevision: stoppedRevision,
+        finalText: null,
+        selectedGenerationId: null,
+      });
+      await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: item.id } })).resolves.toBe(0);
+      await expect(retryFeedbackPlanGeneration(
+        { planId: plan.id },
+        prisma,
+        { startJob: false },
+      )).resolves.toMatchObject({ accepted: true, status: "queued", retried: 1 });
+    } finally {
+      releaseGeneration?.();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+    }
+  });
+
+  it("lets the final completed item win when force-stop read an active snapshot first", async () => {
+    const { plan } = await createQueueControlPlan(1);
+    let releaseGeneration: (() => void) | undefined;
+    const generationGate = new Promise<void>((resolve) => { releaseGeneration = resolve; });
+    generationMocks.generate.mockImplementation(async (input: {
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      await generationGate;
+      return queueControlComposition(input.evidenceBundle);
+    });
+
+    let reportActiveRead: (() => void) | undefined;
+    const activeRead = new Promise<void>((resolve) => { reportActiveRead = resolve; });
+    let continueForceStop: (() => void) | undefined;
+    const forceStopGate = new Promise<void>((resolve) => { continueForceStop = resolve; });
+    let intercepted = false;
+    const forceStopDb = {
+      feedbackPlan: {
+        findUnique: async (args: Parameters<typeof prisma.feedbackPlan.findUnique>[0]) => {
+          const result = await prisma.feedbackPlan.findUnique(args);
+          if (!intercepted) {
+            intercepted = true;
+            reportActiveRead?.();
+            await forceStopGate;
+          }
+          return result;
+        },
+        updateMany: prisma.feedbackPlan.updateMany.bind(prisma.feedbackPlan),
+      },
+      $transaction: prisma.$transaction.bind(prisma),
+    } as unknown as PrismaClient;
+
+    try {
+      await startFeedbackPlanGeneration({ planId: plan.id });
+      await vi.waitFor(async () => {
+        expect((await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: plan.items[0]!.id } })).status).toBe("generating");
+      });
+      const stopping = forceStopFeedbackPlanGeneration(plan.id, forceStopDb);
+      await activeRead;
+      releaseGeneration?.();
+      await vi.waitFor(async () => {
+        expect((await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id } })).status).toBe("in_review");
+        expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false);
+      }, { timeout: 5_000 });
+      continueForceStop?.();
+
+      await expect(stopping).resolves.toMatchObject({
+        accepted: true,
+        status: "in_review",
+        interrupted: 0,
+      });
+      await expect(prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id } }))
+        .resolves.toMatchObject({ status: "in_review" });
+      await expect(prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: plan.items[0]!.id } }))
+        .resolves.toMatchObject({ status: "needs_review" });
+    } finally {
+      releaseGeneration?.();
+      continueForceStop?.();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+    }
+  });
+
+  it("re-reads a pause request after a stale completion close loses its CAS", async () => {
+    const { plan } = await createQueueControlPlan(1);
+    generationMocks.generate.mockImplementation(async (input: {
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => queueControlComposition(input.evidenceBundle));
+
+    let reportCompletionClose: (() => void) | undefined;
+    const completionCloseReady = new Promise<void>((resolve) => { reportCompletionClose = resolve; });
+    let releaseCompletionClose: (() => void) | undefined;
+    const completionCloseGate = new Promise<void>((resolve) => { releaseCompletionClose = resolve; });
+    let interceptedCompletionClose = false;
+    const schedulerFeedbackPlan = new Proxy(prisma.feedbackPlan, {
+      get(target, property) {
+        if (property === "updateMany") {
+          return async (args: Parameters<typeof prisma.feedbackPlan.updateMany>[0]) => {
+            const statusFilter = args.where?.status;
+            const expectedStatuses = typeof statusFilter === "object" && statusFilter && "in" in statusFilter
+              ? statusFilter.in
+              : null;
+            const closesCompletedRun = args.data.generationCompletedAt !== undefined
+              && args.data.generationCompletedAt !== null
+              && Array.isArray(expectedStatuses)
+              && expectedStatuses.includes("queued")
+              && expectedStatuses.includes("generating");
+            if (closesCompletedRun && !interceptedCompletionClose) {
+              interceptedCompletionClose = true;
+              reportCompletionClose?.();
+              await completionCloseGate;
+            }
+            return prisma.feedbackPlan.updateMany(args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const schedulerDb = new Proxy(prisma, {
+      get(target, property) {
+        if (property === "feedbackPlan") return schedulerFeedbackPlan;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as PrismaClient;
+
+    try {
+      await startFeedbackPlanGeneration({ planId: plan.id }, schedulerDb);
+      await completionCloseReady;
+      await expect(prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: plan.items[0]!.id } }))
+        .resolves.toMatchObject({ status: "needs_review" });
+
+      await expect(pauseFeedbackPlanGeneration(plan.id)).resolves.toMatchObject({
+        accepted: true,
+        status: "pause_requested",
+      });
+      await expect(prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id } }))
+        .resolves.toMatchObject({ status: "pause_requested" });
+      releaseCompletionClose?.();
+
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+      await expect(prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id } }))
+        .resolves.toMatchObject({ status: "paused", generationCompletedAt: null, generationRunStartedAt: null });
+      await expect(prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: plan.items[0]!.id } }))
+        .resolves.toMatchObject({ status: "needs_review" });
+    } finally {
+      releaseCompletionClose?.();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+    }
+  });
+
+  it("keeps the plan handle until every force-stopped active item settles", async () => {
+    const { plan } = await createQueueControlPlan(2);
+    const releases: Array<() => void> = [];
+    let completed = 0;
+    generationMocks.generate.mockImplementation(async (input: {
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      completed += 1;
+      return queueControlComposition(input.evidenceBundle);
+    });
+
+    try {
+      await startFeedbackPlanGeneration({ planId: plan.id });
+      await vi.waitFor(() => expect(releases).toHaveLength(2));
+      await vi.waitFor(async () => {
+        const active = await prisma.feedbackPlanItem.count({ where: { planId: plan.id, status: "generating" } });
+        expect(active).toBe(2);
+      });
+      await expect(forceStopFeedbackPlanGeneration(plan.id)).resolves.toMatchObject({
+        accepted: true,
+        status: "generation_failed",
+        interrupted: 2,
+      });
+      expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(true);
+
+      releases[0]!();
+      await vi.waitFor(() => expect(completed).toBe(1));
+      expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(true);
+      await expect(retryFeedbackPlanGeneration(
+        { planId: plan.id },
+        prisma,
+        { startJob: false },
+      )).rejects.toThrow("仍有反馈正在生成");
+
+      releases[1]!();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+      await expect(retryFeedbackPlanGeneration(
+        { planId: plan.id },
+        prisma,
+        { startJob: false },
+      )).resolves.toMatchObject({ accepted: true, status: "queued", retried: 2 });
+    } finally {
+      for (const release of releases) release();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false), { timeout: 5_000 });
+    }
   });
 
   it("refuses to overwrite an existing reviewable result", async () => {

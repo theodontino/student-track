@@ -120,6 +120,20 @@ function buildWriterInput(currentStrategy = strategy(), overrides: {
   });
 }
 
+function checkpoint(currentStrategy = strategy()): RestrictedFeedbackCheckpointV1 {
+  return {
+    version: 1,
+    strategy: currentStrategy,
+    writerInput: buildWriterInput(currentStrategy),
+    plannerTrace: {
+      model: "planner-model",
+      attempts: 1,
+      durationMs: 1,
+      usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: null, totalTokens: 2 },
+    },
+  };
+}
+
 function validate(currentStrategy: FeedbackStrategyV1, overrides: {
   outputRequirement?: string;
   planType?: "class_update" | "event_micro";
@@ -412,5 +426,65 @@ describe("restricted feedback generation", () => {
       ...checkpoint.plannerTrace,
       reusedCheckpoint: true,
     });
+    expect(result.kind).toBe("validated");
+  });
+
+  it("两次协议校验失败时保留最后一份可解析正文，并继续隔离受限输入", async () => {
+    const planner = clientWith();
+    const writer = clientWith(
+      { ...writerOutput(), coverage: [], draftFeedback: "第一版：课堂独立完成了基础题。" },
+      { ...writerOutput(), coverage: [], draftFeedback: "第二版：课堂独立完成了基础题。" },
+    );
+
+    const result = await generateRestrictedFeedback({
+      ...generationInput,
+      plannerClient: planner.client,
+      writerClient: writer.client,
+      checkpoint: checkpoint(),
+    });
+
+    expect(result).toMatchObject({
+      kind: "blocked_draft",
+      writerOutput: null,
+      composition: { draftFeedback: "第二版：课堂独立完成了基础题。", modules: [], evidenceCoverage: [] },
+      blocker: { code: "restricted_writer_output_invalid" },
+      writer: { attempts: 2 },
+    });
+    const retryPrompt = writer.create.mock.calls[1]![0].messages[0].content as string;
+    expect(retryPrompt).not.toContain("communication-secret");
+    expect(retryPrompt).not.toContain("只供老师判断");
+    expect(retryPrompt).not.toContain(generationInput.outputRequirement);
+    expect(retryPrompt).not.toContain("Planner 自由改写");
+  });
+
+  it("修复请求失败时仍保留上一轮安全候选，但不从非法 JSON 猜正文", async () => {
+    const firstCreate = vi.fn()
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: JSON.stringify({ ...writerOutput(), coverage: [], draftFeedback: "可保留：课堂独立完成了基础题。" }) } }],
+        usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+      })
+      .mockRejectedValueOnce(new Error("repair unavailable"));
+    const firstResult = await generateRestrictedFeedback({
+      ...generationInput,
+      plannerClient: clientWith().client,
+      writerClient: { chat: { completions: { create: firstCreate } } } as any,
+      checkpoint: checkpoint(),
+    });
+    expect(firstResult).toMatchObject({
+      kind: "blocked_draft",
+      composition: { draftFeedback: "可保留：课堂独立完成了基础题。" },
+    });
+
+    const invalidCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "not valid json with draftFeedback" } }],
+      usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+    });
+    await expect(generateRestrictedFeedback({
+      ...generationInput,
+      plannerClient: clientWith().client,
+      writerClient: { chat: { completions: { create: invalidCreate } } } as any,
+      checkpoint: checkpoint(),
+    })).rejects.toThrow("未返回合法 JSON");
+    expect(invalidCreate).toHaveBeenCalledTimes(2);
   });
 });

@@ -41,6 +41,7 @@ import {
   FeedbackPlanCreateSchema,
   FeedbackPlanItemPatchSchema,
   FeedbackPlanRenameSchema,
+  RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
   isHardFeedbackAuditIssue,
   normalizeFeedbackGenerationPreferences,
   sanitizeFeedbackComposition,
@@ -66,7 +67,7 @@ import type { LessonFeedbackMaterial, StudentAssessmentEvidence } from "@/lib/fe
 import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
 import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
 import { feedbackPlanActionBucket, feedbackPlanItemStatusCounts } from "@/lib/feedback-plan-summary";
-import { createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
+import { blockAuditForRestrictedWriter, createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
 import { generateFreeFeedbackPlanComposition } from "@/services/feedback-generation-service";
 import {
@@ -84,6 +85,13 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
 
 function json(value: unknown) {
   return JSON.stringify(value);
+}
+
+function restrictedWriterBlockerFromAuditSnapshot(value: string | null | undefined) {
+  const parsed = FeedbackAuditSnapshotSchema.safeParse(parseJson(value, null));
+  return parsed.success
+    ? parsed.data.items.find((issue) => issue.code === RESTRICTED_WRITER_OUTPUT_INVALID_CODE) ?? null
+    : null;
 }
 
 function feedbackPlanDraftFingerprint(input: {
@@ -139,17 +147,46 @@ function beginFeedbackGenerationExecution(
       ? "explicit_fallback" as const
       : "retry" as const;
   const attempt = (attempts.at(-1)?.attempt ?? 0) + 1;
+  const stage = actualApproach === "free"
+    ? "free" as const
+    : snapshot.restrictedCheckpoint
+      ? "writer" as const
+      : "planner" as const;
   const next: FeedbackGenerationExecutionSnapshotV1 = {
     ...snapshot,
     attempts: [...attempts, {
       attempt,
       trigger,
       actualApproach,
+      stage,
       status: "running",
       startedAt: timestamp,
     }],
   };
   return { snapshot: next, attempt, actualApproach };
+}
+
+function generationErrorKind(error: unknown): "schema" | "timeout" | "connection" | "aborted" | "service" {
+  if ((error instanceof DOMException && error.name === "AbortError")
+    || (error instanceof ApiError && error.code === "cancelled")) return "aborted";
+  if (error instanceof ApiError && error.code === "llm_schema_invalid") return "schema";
+  const summary = error instanceof Error ? `${error.name} ${error.message}` : String(error ?? "");
+  if (/timeout|timed out|ETIMEDOUT|APIConnectionTimeout/i.test(summary)) return "timeout";
+  if (/fetch failed|connection|ECONN|ENOTFOUND|EAI_AGAIN|socket/i.test(summary)) return "connection";
+  return "service";
+}
+
+function updateFeedbackGenerationExecutionStage(
+  snapshot: FeedbackGenerationExecutionSnapshotV1,
+  attemptNumber: number,
+  stage: "planner" | "writer" | "free" | "deterministic_check",
+) {
+  return {
+    ...snapshot,
+    attempts: snapshot.attempts.map((attempt) => attempt.attempt === attemptNumber && attempt.status === "running"
+      ? { ...attempt, stage }
+      : attempt),
+  } satisfies FeedbackGenerationExecutionSnapshotV1;
 }
 
 function completeFeedbackGenerationExecution(input: {
@@ -171,6 +208,7 @@ function completeFeedbackGenerationExecution(input: {
             code: input.error instanceof ApiError ? input.error.code : "llm_service_error",
             message: messageForGenerationError(input.error).slice(0, 500),
             retryable: input.error instanceof ApiError ? input.error.retryable : true,
+            kind: generationErrorKind(input.error),
           },
         } : {}),
         ...(input.generationRecordId ? { generationRecordId: input.generationRecordId } : {}),
@@ -340,7 +378,7 @@ function persistedAssessmentEvidence(snapshot: string): FeedbackEvidenceBundle["
   return parsed.success ? sanitizeFeedbackEvidenceBundle(parsed.data).assessmentEvidence : [];
 }
 
-function derivePlanStatus(items: Array<{ status: string }>) {
+export function derivePlanStatus(items: Array<{ status: string }>) {
   if (!items.length) return "draft";
   if (items.some((item) => item.status === "stale")) return "stale";
   if (items.some((item) => item.status === "generating")) return "generating";
@@ -396,24 +434,35 @@ function generationTiming(plan: {
   };
 }
 
-async function closeGenerationClock(planId: string, completed: boolean, db: FeedbackPlanDb) {
+async function closeGenerationClock(
+  planId: string,
+  completed: boolean,
+  db: FeedbackPlanDb,
+  options: { status?: string; incrementPlanRevision?: boolean; expectedStatuses?: string[] } = {},
+) {
   const now = new Date();
   const plan = await db.feedbackPlan.findUnique({
     where: { id: planId },
     select: { generationElapsedMs: true, generationRunStartedAt: true },
   });
-  if (!plan) return;
+  if (!plan) return 0;
   const elapsedMs = plan.generationElapsedMs + (
     plan.generationRunStartedAt ? Math.max(0, now.getTime() - plan.generationRunStartedAt.getTime()) : 0
   );
-  await db.feedbackPlan.update({
-    where: { id: planId },
+  const updated = await db.feedbackPlan.updateMany({
+    where: {
+      id: planId,
+      ...(options.expectedStatuses ? { status: { in: options.expectedStatuses } } : {}),
+    },
     data: {
       generationElapsedMs: elapsedMs,
       generationRunStartedAt: null,
       ...(completed ? { generationCompletedAt: now } : {}),
+      ...(options.status ? { status: options.status } : {}),
+      ...(options.incrementPlanRevision ? { planRevision: { increment: 1 } } : {}),
     },
   });
+  return updated.count;
 }
 
 function messageForGenerationError(error: unknown) {
@@ -1505,7 +1554,7 @@ const FEEDBACK_PLAN_GENERATED_STATUSES = new Set([
   "exported",
 ]);
 
-function feedbackPlanItemHasGeneratedResult(item: {
+export function feedbackPlanItemHasGeneratedResult(item: {
   status: string;
   finalText: string | null;
   selectedGenerationId: string | null;
@@ -1891,14 +1940,21 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
   const nextComposition = FeedbackCompositionPlanSchema.parse({ ...composition, evidenceCoverage, draftFeedback: finalText });
   const taskIds = auditTaskIdsForBundle(bundle, item.tasks);
   const identity = auditIdentityForPlanItem(item.plan, item);
-  const audit = createAuditSnapshot(
+  const recalculatedAudit = createAuditSnapshot(
     nextComposition,
     bundle,
     taskIds,
     identity,
     { generationPreferences: effectiveConfig.generationPreferences },
   );
-  const reviewMode = patch.reviewMode ?? (patch.finalText !== undefined ? "teacher_edited" : item.reviewMode);
+  const previousWriterBlocker = restrictedWriterBlockerFromAuditSnapshot(item.auditSnapshot);
+  const finalTextChanged = patch.finalText !== undefined && sha256(finalText) !== item.finalTextHash;
+  const audit = previousWriterBlocker && !finalTextChanged
+    ? blockAuditForRestrictedWriter(recalculatedAudit, previousWriterBlocker.message)
+    : recalculatedAudit;
+  const reviewMode = previousWriterBlocker
+    ? finalTextChanged ? "teacher_edited" : item.reviewMode
+    : patch.reviewMode ?? (patch.finalText !== undefined ? "teacher_edited" : item.reviewMode);
   const status = audit.status === "blocked" ? "needs_review" : "needs_review";
 
   return db.feedbackPlanItem.update({
@@ -2027,13 +2083,17 @@ export async function createTeacherTask(input: {
     const composition = parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, item.finalText ?? "");
     const taskIds = auditTaskIdsForBundle(bundle, item.tasks);
     taskIds.add(task.id);
-    const audit = createAuditSnapshot(
+    const baseAudit = createAuditSnapshot(
       composition,
       bundle,
       taskIds,
       auditIdentityForPlanItem(item.plan, item),
       { generationPreferences: effectiveConfig.generationPreferences },
     );
+    const previousWriterBlocker = restrictedWriterBlockerFromAuditSnapshot(item.auditSnapshot);
+    const audit = previousWriterBlocker
+      ? blockAuditForRestrictedWriter(baseAudit, previousWriterBlocker.message)
+      : baseAudit;
     await tx.feedbackPlanItem.update({
       where: { id: item.id },
       data: { auditSnapshot: json(audit), status: audit.status === "blocked" ? "needs_review" : "needs_review", itemRevision: { increment: 1 } },
@@ -2073,7 +2133,13 @@ export async function approveFeedbackPlanItems(input: { planId: string; itemIds?
         auditIdentityForPlanItem(plan, item),
         { generationPreferences: effectiveConfig.generationPreferences },
       );
-      const hardBlocked = recalculatedAudit.items.filter((issue) => isHardFeedbackAuditIssue(issue.code));
+      const savedWriterBlockers = Array.isArray(audit?.items)
+        ? audit.items.filter((issue) => issue.code === RESTRICTED_WRITER_OUTPUT_INVALID_CODE)
+        : [];
+      const hardBlocked = [
+        ...recalculatedAudit.items.filter((issue) => isHardFeedbackAuditIssue(issue.code)),
+        ...savedWriterBlockers,
+      ];
       if (!item.finalText?.trim() || !item.finalTextHash || !audit || audit.textHash !== item.finalTextHash || recalculatedAudit.textHash !== item.finalTextHash || hardBlocked.length > 0) {
         const blocked = hardBlocked
           .map((issue) => issue.message);
@@ -2121,13 +2187,17 @@ export async function updateTeacherTaskStatus(id: string, status: "pending" | "c
       const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
       const composition = parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, item.finalText ?? "");
       const currentTasks = item.tasks.map((entry) => entry.id === task.id ? { ...entry, status } : entry);
-      const audit = createAuditSnapshot(
+      const baseAudit = createAuditSnapshot(
         composition,
         bundle,
         auditTaskIdsForBundle(bundle, currentTasks),
         auditIdentityForPlanItem(item.plan, item),
         { generationPreferences: effectiveConfig.generationPreferences },
       );
+      const previousWriterBlocker = restrictedWriterBlockerFromAuditSnapshot(item.auditSnapshot);
+      const audit = previousWriterBlocker
+        ? blockAuditForRestrictedWriter(baseAudit, previousWriterBlocker.message)
+        : baseAudit;
       await tx.feedbackPlanItem.update({
         where: { id: item.id },
         data: { auditSnapshot: json(audit), status: "needs_review", itemRevision: { increment: 1 } },
@@ -2694,7 +2764,7 @@ export async function generateFeedbackPlanItems(input: {
           storedApproach,
         );
         const started = await db.feedbackPlanItem.updateMany({
-          where: { id: item.id, status: "generating" },
+          where: { id: item.id, status: "generating", itemRevision: item.itemRevision },
           data: {
             generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(begunExecution.snapshot),
           },
@@ -2753,11 +2823,11 @@ export async function generateFeedbackPlanItems(input: {
             checkpoint: checkpoint.success ? checkpoint.data : null,
             onCheckpoint: async (nextCheckpoint) => {
               const nextSnapshot: FeedbackGenerationExecutionSnapshotV1 = {
-                ...execution.snapshot,
+                ...updateFeedbackGenerationExecutionStage(execution.snapshot, execution.attempt, "writer"),
                 restrictedCheckpoint: nextCheckpoint,
               };
               const saved = await db.feedbackPlanItem.updateMany({
-                where: { id: item.id, status: "generating" },
+                where: { id: item.id, status: "generating", itemRevision: item.itemRevision },
                 data: {
                   generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(nextSnapshot),
                 },
@@ -2789,86 +2859,112 @@ export async function generateFeedbackPlanItems(input: {
           composition = generated.composition;
           draftComposition = generated.draftComposition;
         }
-        const audit = createAuditSnapshot(
+        const blockedRestrictedGeneration = restrictedGeneration?.kind === "blocked_draft"
+          ? restrictedGeneration
+          : null;
+        const successfulRestrictedGeneration = restrictedGeneration?.kind === "validated"
+          ? restrictedGeneration
+          : null;
+        const baseAudit = createAuditSnapshot(
           composition,
           bundle,
           generationTaskIds,
           identity,
           { enforceParentAudience: true, generationPreferences: effectiveConfig.generationPreferences },
         );
+        const audit = blockedRestrictedGeneration
+          ? blockAuditForRestrictedWriter(baseAudit, blockedRestrictedGeneration.blocker.message)
+          : baseAudit;
+        if (blockedRestrictedGeneration) {
+          execution.snapshot = updateFeedbackGenerationExecutionStage(
+            execution.snapshot,
+            execution.attempt,
+            "deterministic_check",
+          );
+        }
         const generationCompletedAt = new Date();
         const updated = await db.$transaction(async (tx) => {
-          const generation = await recordSuccessfulGeneration({
-            taskType: "feedback",
-            stage: actualApproach === "restricted"
-              ? "plan-restricted"
-              : "plan-free",
-            semesterId: plan.semesterId,
-            classId: plan.classId,
-            sessionId: plan.sessionId,
-            studentId: item.studentId,
-            feedbackPlanItemId: item.id,
-            sourceRefs: item.studentId ? [{ type: "student", id: item.studentId }] : [],
-            promptVersion: actualApproach === "restricted"
-              ? "feedback-plan-v3-restricted"
-              : "feedback-plan-v3-free",
-            modelRole: actualApproach === "restricted"
-              ? "feedbackReview"
-              : "feedbackDraft",
-            inputRevision: String(plan.planRevision),
-            variantKey: execution ? `feedback-plan-item:${item.id}:attempt:${execution.attempt}` : null,
-            inputSnapshot: restrictedGeneration ? {
-              generationApproach: "restricted",
-              requestedApproach: execution?.snapshot.requestedApproach,
-              strategy: restrictedGeneration.strategy,
-              writerInput: restrictedGeneration.writerInput,
-              generationConfig: effectiveConfig,
-              generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
-              planner: restrictedGeneration.planner,
-              writer: restrictedGeneration.writer,
-            } : {
-              evidenceBundle: bundle,
-              draftComposition,
-              generationApproach: actualApproach,
-              generationConfig: effectiveConfig,
-              generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
-            },
-            outputSnapshot: {
-              composition,
-              audit,
-              generationApproach: actualApproach,
-              ...(restrictedGeneration ? {
-                planner: restrictedGeneration.planner,
-                writer: restrictedGeneration.writer,
-              } : {}),
-            },
-            finalText: composition.draftFeedback,
-          }, tx);
-          const succeededExecutionSnapshot = execution
+          const generation = blockedRestrictedGeneration
+            ? null
+            : await recordSuccessfulGeneration({
+                taskType: "feedback",
+                stage: actualApproach === "restricted"
+                  ? "plan-restricted"
+                  : "plan-free",
+                semesterId: plan.semesterId,
+                classId: plan.classId,
+                sessionId: plan.sessionId,
+                studentId: item.studentId,
+                feedbackPlanItemId: item.id,
+                sourceRefs: item.studentId ? [{ type: "student", id: item.studentId }] : [],
+                promptVersion: actualApproach === "restricted"
+                  ? "feedback-plan-v3-restricted"
+                  : "feedback-plan-v3-free",
+                modelRole: actualApproach === "restricted"
+                  ? "feedbackReview"
+                  : "feedbackDraft",
+                inputRevision: String(plan.planRevision),
+                variantKey: execution ? `feedback-plan-item:${item.id}:attempt:${execution.attempt}` : null,
+                inputSnapshot: successfulRestrictedGeneration ? {
+                  generationApproach: "restricted",
+                  requestedApproach: execution?.snapshot.requestedApproach,
+                  strategy: successfulRestrictedGeneration.strategy,
+                  writerInput: successfulRestrictedGeneration.writerInput,
+                  generationConfig: effectiveConfig,
+                  generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
+                  planner: successfulRestrictedGeneration.planner,
+                  writer: successfulRestrictedGeneration.writer,
+                } : {
+                  evidenceBundle: bundle,
+                  draftComposition,
+                  generationApproach: actualApproach,
+                  generationConfig: effectiveConfig,
+                  generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
+                },
+                outputSnapshot: {
+                  composition,
+                  audit,
+                  generationApproach: actualApproach,
+                  ...(successfulRestrictedGeneration ? {
+                    planner: successfulRestrictedGeneration.planner,
+                    writer: successfulRestrictedGeneration.writer,
+                  } : {}),
+                },
+                finalText: composition.draftFeedback,
+              }, tx);
+          const completedExecutionSnapshot = execution
             ? completeFeedbackGenerationExecution({
               snapshot: execution.snapshot,
               attempt: execution.attempt,
-              status: "succeeded",
+              status: blockedRestrictedGeneration ? "failed" : "succeeded",
               completedAt: generationCompletedAt,
-              generationRecordId: generation.id,
+              ...(blockedRestrictedGeneration ? {
+                error: new ApiError(
+                  blockedRestrictedGeneration.blocker.message,
+                  502,
+                  "llm_schema_invalid",
+                  true,
+                ),
+              } : {}),
+              ...(generation ? { generationRecordId: generation.id } : {}),
             })
             : null;
           const writeResult = await tx.feedbackPlanItem.updateMany({
-            where: { id: item.id, status: "generating" },
+            where: { id: item.id, status: "generating", itemRevision: item.itemRevision },
             data: {
               evidenceSnapshot: json(bundle),
               compositionSnapshot: json(composition),
               auditSnapshot: json(audit),
               finalText: composition.draftFeedback,
               finalTextHash: sha256(composition.draftFeedback),
-              selectedGenerationId: generation.id,
+              selectedGenerationId: generation?.id ?? null,
               status: "needs_review",
               reviewMode: "model",
               generationError: null,
               generationCompletedAt,
               generationDurationMs: Math.max(0, generationCompletedAt.getTime() - startedAtByItem.get(item.id)!.getTime()),
-              ...(succeededExecutionSnapshot ? {
-                generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(succeededExecutionSnapshot),
+              ...(completedExecutionSnapshot ? {
+                generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(completedExecutionSnapshot),
               } : {}),
               itemRevision: { increment: 1 },
             },
@@ -2878,10 +2974,10 @@ export async function generateFeedbackPlanItems(input: {
           }
           const persisted = await tx.feedbackPlanItem.findUnique({ where: { id: item.id } });
           if (!persisted) throw new Error("生成后的反馈条目无法读取");
-          return { persisted, succeededExecutionSnapshot };
+          return { persisted, completedExecutionSnapshot };
         });
-        if (execution && updated.succeededExecutionSnapshot) {
-          execution.snapshot = updated.succeededExecutionSnapshot;
+        if (execution && updated.completedExecutionSnapshot) {
+          execution.snapshot = updated.completedExecutionSnapshot;
         }
         results.push(updated.persisted);
         await input.onProgress?.({ type: "item", itemId: updated.persisted.id, status: updated.persisted.status, message: itemName });
@@ -2901,7 +2997,7 @@ export async function generateFeedbackPlanItems(input: {
             });
           }
           await db.feedbackPlanItem.updateMany({
-            where: { id: item.id, status: "generating" },
+            where: { id: item.id, status: "generating", itemRevision: item.itemRevision },
             data: {
               status: "generation_failed",
               generationError: messageForGenerationError(error),
@@ -2912,6 +3008,7 @@ export async function generateFeedbackPlanItems(input: {
               ...(execution ? {
                 generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(execution.snapshot),
               } : {}),
+              itemRevision: { increment: 1 },
             },
           });
         }
@@ -2922,10 +3019,23 @@ export async function generateFeedbackPlanItems(input: {
     }
     const currentItems = await db.feedbackPlanItem.findMany({ where: { planId: plan.id }, select: { status: true } });
     const currentPlan = await db.feedbackPlan.findUnique({ where: { id: plan.id }, select: { status: true } });
-    await db.feedbackPlan.update({ where: { id: plan.id }, data: { status: currentPlan?.status === "pause_requested" ? "pause_requested" : derivePlanStatus(currentItems), planRevision: { increment: 1 } } });
+    await db.feedbackPlan.update({
+      where: { id: plan.id },
+      data: {
+        status: currentPlan?.status === "pause_requested"
+          ? "pause_requested"
+          : input.preclaimed && !input.signal?.aborted
+            ? "generating"
+            : derivePlanStatus(currentItems),
+        planRevision: { increment: 1 },
+      },
+    });
     await input.onProgress?.({ type: "status", message: failures.length ? `生成完成：成功 ${results.length} 条，失败 ${failures.length} 条` : `生成完成：${results.length} 条` });
     return results;
   } catch (error) {
+    const terminalError = input.signal?.aborted
+      ? new ApiError("已由教师强制终止，可重试", 409, "cancelled", true)
+      : error;
     await db.$transaction(async (tx) => {
       for (const item of selected) {
         const original = originalStates.get(item.id);
@@ -2940,14 +3050,14 @@ export async function generateFeedbackPlanItems(input: {
             attempt: execution.attempt,
             status: "interrupted",
             completedAt: generationCompletedAt,
-            error,
+            error: terminalError,
           });
         }
         await tx.feedbackPlanItem.updateMany({
-          where: { id: item.id, status: "generating" },
+          where: { id: item.id, status: "generating", itemRevision: item.itemRevision },
           data: {
             status: "generation_failed",
-            generationError: messageForGenerationError(error),
+            generationError: messageForGenerationError(terminalError),
             generationCompletedAt,
             generationDurationMs: Math.max(0, generationCompletedAt.getTime() - startedAtByItem.get(item.id)!.getTime()),
             approvedAt: original.approvedAt,
@@ -2955,6 +3065,7 @@ export async function generateFeedbackPlanItems(input: {
             ...(execution ? {
               generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(execution.snapshot),
             } : {}),
+            itemRevision: { increment: 1 },
           },
         });
       }
@@ -2962,91 +3073,271 @@ export async function generateFeedbackPlanItems(input: {
       const currentPlan = await tx.feedbackPlan.findUnique({ where: { id: plan.id }, select: { status: true } });
       await tx.feedbackPlan.update({
         where: { id: plan.id },
-        data: { status: currentPlan?.status === "pause_requested" ? "pause_requested" : derivePlanStatus(currentItems) },
+        data: {
+          status: currentPlan?.status === "pause_requested"
+            ? "pause_requested"
+            : input.preclaimed && !input.signal?.aborted
+              ? "generating"
+              : derivePlanStatus(currentItems),
+        },
       });
     }).catch(() => undefined);
-    throw error;
+    throw terminalError;
   }
 }
 
 // 生成器只在当前 Node 进程内持有执行句柄，真正的进度和条目状态全部写入
 // FeedbackPlan/FeedbackPlanItem。这样页面刷新、断线或请求超时都不会丢失已完成结果；
 // 进程重启后由 continue/retry 把没有执行器的 generating 条目重新入队。
-const feedbackGenerationJobs = new Map<string, Promise<void>>();
+type FeedbackGenerationJobHandle = {
+  runId: string;
+  controller: AbortController;
+  promise: Promise<void>;
+};
+
+const feedbackGenerationJobs = new Map<string, FeedbackGenerationJobHandle>();
 const MAX_FEEDBACK_CONCURRENCY = 2;
+
+type FeedbackGenerationPermitWaiter = {
+  signal?: AbortSignal;
+  resolve: (release: (() => void) | null) => void;
+  onAbort?: () => void;
+};
+
+type FeedbackGenerationPermitPool = {
+  active: number;
+  waiters: FeedbackGenerationPermitWaiter[];
+};
+
+const feedbackGenerationPermitPools = new Map<string, FeedbackGenerationPermitPool>();
+
+function feedbackGenerationPermitScope(planId: string, batchId: string | null) {
+  return batchId ? `batch:${batchId}` : `plan:${planId}`;
+}
+
+function releaseFeedbackGenerationPermit(scope: string) {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const pool = feedbackGenerationPermitPools.get(scope);
+    if (!pool) return;
+    pool.active = Math.max(0, pool.active - 1);
+    while (pool.waiters.length) {
+      const waiter = pool.waiters.shift()!;
+      waiter.signal?.removeEventListener("abort", waiter.onAbort!);
+      if (waiter.signal?.aborted) {
+        waiter.resolve(null);
+        continue;
+      }
+      pool.active += 1;
+      waiter.resolve(releaseFeedbackGenerationPermit(scope));
+      return;
+    }
+    if (pool.active === 0) feedbackGenerationPermitPools.delete(scope);
+  };
+}
+
+function acquireFeedbackGenerationPermit(scope: string, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.resolve<(() => void) | null>(null);
+  const pool = feedbackGenerationPermitPools.get(scope) ?? { active: 0, waiters: [] };
+  feedbackGenerationPermitPools.set(scope, pool);
+  if (pool.active < MAX_FEEDBACK_CONCURRENCY) {
+    pool.active += 1;
+    return Promise.resolve<(() => void) | null>(releaseFeedbackGenerationPermit(scope));
+  }
+  return new Promise<(() => void) | null>((resolve) => {
+    const waiter: FeedbackGenerationPermitWaiter = { signal, resolve };
+    waiter.onAbort = () => {
+      const index = pool.waiters.indexOf(waiter);
+      if (index >= 0) pool.waiters.splice(index, 1);
+      signal?.removeEventListener("abort", waiter.onAbort!);
+      resolve(null);
+      if (pool.active === 0 && pool.waiters.length === 0) feedbackGenerationPermitPools.delete(scope);
+    };
+    pool.waiters.push(waiter);
+    signal?.addEventListener("abort", waiter.onAbort, { once: true });
+  });
+}
 
 export function isFeedbackPlanGenerationRunning(planId: string) {
   return feedbackGenerationJobs.has(planId);
 }
 
-async function claimQueuedFeedbackPlanItem(planId: string, db: PrismaClient) {
+async function claimQueuedFeedbackPlanItem(
+  planId: string,
+  batchId: string | null,
+  db: PrismaClient,
+  signal?: AbortSignal,
+) {
+  if (signal?.aborted) return null;
   const candidate = await db.feedbackPlanItem.findFirst({
     where: { planId, status: "queued" },
     orderBy: { createdAt: "asc" },
-    select: { id: true },
+    select: { id: true, itemRevision: true },
   });
-  if (!candidate) return null;
+  if (!candidate || signal?.aborted) return null;
   const claimed = await db.feedbackPlanItem.updateMany({
-    where: { id: candidate.id, planId, status: "queued" },
-    data: { status: "generating", generationError: null, generationStartedAt: new Date(), generationCompletedAt: null, generationDurationMs: null },
+    where: {
+      id: candidate.id,
+      planId,
+      status: "queued",
+      itemRevision: candidate.itemRevision,
+      plan: {
+        status: { in: ["queued", "generating"] },
+        batchId,
+        ...(batchId ? {
+          batch: {
+            is: {
+              id: batchId,
+              archivedAt: null,
+              status: "running",
+            },
+          },
+        } : {}),
+      },
+    },
+    data: {
+      status: "generating",
+      generationError: null,
+      generationStartedAt: new Date(),
+      generationCompletedAt: null,
+      generationDurationMs: null,
+      itemRevision: { increment: 1 },
+    },
   });
   return claimed.count === 1 ? candidate.id : null;
 }
 
-async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prisma) {
+async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prisma, signal?: AbortSignal) {
   const active = new Map<string, Promise<unknown>>();
   while (true) {
+    if (signal?.aborted) return;
     const plan = await db.feedbackPlan.findUnique({
       where: { id: planId },
-      select: { status: true, generationApproach: true, items: { select: { status: true } } },
+      select: {
+        status: true,
+        batchId: true,
+        generationApproach: true,
+        items: { select: { status: true } },
+        batch: {
+          select: {
+            status: true,
+            plans: {
+              where: { id: { not: planId } },
+              select: {
+                status: true,
+                items: { select: { status: true } },
+              },
+            },
+          },
+        },
+      },
     });
     if (!plan) return;
     assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
+    if (!["queued", "generating", "pause_requested"].includes(plan.status)) return;
 
-    if (plan.status !== "pause_requested") {
-      while (active.size < MAX_FEEDBACK_CONCURRENCY) {
-        const itemId = await claimQueuedFeedbackPlanItem(planId, db);
-        if (!itemId) break;
-        const task = generateFeedbackPlanItems({ planId, itemIds: [itemId], preclaimed: true }, db)
+    const parentAllowsClaims = !plan.batchId || plan.batch?.status === "running";
+    if (plan.status !== "pause_requested" && parentAllowsClaims && !signal?.aborted) {
+      const hasRunnableSibling = plan.batch?.plans.some((sibling) => (
+        sibling.status !== "generation_failed"
+        && sibling.items.some((item) => ["evidence_ready", "queued", "generating"].includes(item.status))
+      )) ?? false;
+      const localConcurrency = plan.batchId && hasRunnableSibling ? 1 : MAX_FEEDBACK_CONCURRENCY;
+      while (active.size < localConcurrency) {
+        if (signal?.aborted) break;
+        const releasePermit = await acquireFeedbackGenerationPermit(
+          feedbackGenerationPermitScope(planId, plan.batchId),
+          signal,
+        );
+        if (!releasePermit) break;
+        let itemId: string | null;
+        try {
+          itemId = await claimQueuedFeedbackPlanItem(planId, plan.batchId, db, signal);
+        } catch (error) {
+          releasePermit();
+          throw error;
+        }
+        if (!itemId) {
+          releasePermit();
+          break;
+        }
+        const task = generateFeedbackPlanItems({ planId, itemIds: [itemId], preclaimed: true, signal }, db)
           .catch(() => undefined)
-          .finally(() => { active.delete(itemId); });
+          .finally(() => {
+            active.delete(itemId);
+            releasePermit();
+          });
         active.set(itemId, task);
       }
     }
 
     if (active.size > 0) {
       await Promise.race(active.values());
+      if (signal?.aborted) {
+        await Promise.allSettled([...active.values()]);
+        return;
+      }
       continue;
     }
+    if (signal?.aborted) return;
 
     const latest = await db.feedbackPlan.findUnique({
       where: { id: planId },
-      select: { status: true, items: { select: { status: true } } },
+      select: {
+        status: true,
+        batchId: true,
+        batch: { select: { status: true } },
+        items: { select: { status: true } },
+      },
     });
     if (!latest) return;
     const hasQueued = latest.items.some((item) => item.status === "queued");
-    if (latest.status === "pause_requested") {
-      await db.feedbackPlan.update({ where: { id: planId }, data: { status: "paused", planRevision: { increment: 1 } } });
-      await closeGenerationClock(planId, false, db);
-      return;
+    const hasUnownedGenerating = latest.items.some((item) => item.status === "generating");
+    const parentIsPausing = Boolean(
+      latest.batchId && ["pause_requested", "paused"].includes(latest.batch?.status ?? ""),
+    );
+    if (latest.status === "pause_requested" || parentIsPausing) {
+      const closed = await closeGenerationClock(planId, false, db, {
+        status: "paused",
+        incrementPlanRevision: true,
+        expectedStatuses: parentIsPausing
+          ? ["queued", "generating", "pause_requested"]
+          : ["pause_requested"],
+      });
+      if (closed) return;
+      continue;
     }
     if (hasQueued) continue;
-    await db.feedbackPlan.update({
-      where: { id: planId },
-      data: { status: derivePlanStatus(latest.items), planRevision: { increment: 1 } },
+    if (hasUnownedGenerating) {
+      await settleInterruptedFeedbackPlanItems({
+        planId,
+        message: "生成执行上下文已丢失，本条已收口，可重试",
+        includeQueued: false,
+      }, db);
+      return;
+    }
+    const closed = await closeGenerationClock(planId, true, db, {
+      status: derivePlanStatus(latest.items),
+      incrementPlanRevision: true,
+      expectedStatuses: ["queued", "generating"],
     });
-    await closeGenerationClock(planId, true, db);
-    return;
+    if (closed) return;
   }
 }
 
 function startFeedbackGenerationJob(planId: string, db: PrismaClient = prisma): Promise<void> {
   const existing = feedbackGenerationJobs.get(planId);
-  if (existing) return existing;
-  const job = runFeedbackGenerationJob(planId, db).finally(() => feedbackGenerationJobs.delete(planId));
-  feedbackGenerationJobs.set(planId, job);
-  void job.catch(() => undefined);
-  return job;
+  if (existing) return existing.promise;
+  const controller = new AbortController();
+  const runId = randomUUID();
+  const promise = runFeedbackGenerationJob(planId, db, controller.signal).finally(() => {
+    if (feedbackGenerationJobs.get(planId)?.runId === runId) feedbackGenerationJobs.delete(planId);
+  });
+  feedbackGenerationJobs.set(planId, { runId, controller, promise });
+  void promise.catch(() => undefined);
+  return promise;
 }
 
 async function prepareQueuedGenerationEvidence(input: {
@@ -3189,7 +3480,8 @@ export async function startFeedbackPlanGeneration(input: {
   assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
   generationApproach?: FeedbackGenerationApproach;
   expectedPlanRevision?: number;
-}, db: PrismaClient = prisma, options: { allowBatchStart?: boolean } = {}) {
+}, db: PrismaClient = prisma, options: { allowBatchStart?: boolean; expectedBatchRevision?: number } = {}) {
+  await reconcileInterruptedFeedbackPlanGeneration(input.planId, db);
   const plan = await db.feedbackPlan.findUnique({
     where: { id: input.planId },
     select: {
@@ -3225,12 +3517,16 @@ export async function startFeedbackPlanGeneration(input: {
   if (feedbackGenerationJobs.has(input.planId) && ["queued", "generating", "pause_requested"].includes(plan.status)) {
     return { accepted: true, status: plan.status };
   }
+  if (["queued", "generating", "pause_requested"].includes(plan.status)) {
+    throw new ApiError("反馈生成已在队列中；请继续当前生成，不要重复启动", 409, "conflict", false);
+  }
   const preparedPlanRevision = await prepareQueuedGenerationEvidence(input, db);
   const queued = await db.$transaction(async (tx) => {
     const current = await tx.feedbackPlan.findUnique({
       where: { id: input.planId },
       select: {
         id: true,
+        batchId: true,
         archivedAt: true,
         planRevision: true,
         generationApproach: true,
@@ -3265,6 +3561,23 @@ export async function startFeedbackPlanGeneration(input: {
     }
     if (!selected.length) {
       throw new ApiError("没有尚未生成的反馈条目；修正内容请建立另一份计划", 409, "conflict", false);
+    }
+    if (current.batchId && options.allowBatchStart) {
+      if (options.expectedBatchRevision === undefined) {
+        throw new ApiError("班级组生成缺少调度版本，请刷新后重试", 409, "conflict", true);
+      }
+      const parentClaim = await tx.feedbackPlanBatch.updateMany({
+        where: {
+          id: current.batchId,
+          archivedAt: null,
+          status: "running",
+          planRevision: options.expectedBatchRevision,
+        },
+        data: { planRevision: { increment: 1 } },
+      });
+      if (parentClaim.count !== 1) {
+        throw new ApiError("班级组状态已经变化，本班未启动", 409, "conflict", true);
+      }
     }
     const generationRunStartedAt = new Date();
     const firstStart = !current.generationStartedAt;
@@ -3320,19 +3633,169 @@ export async function pauseFeedbackPlanGeneration(
   if (!["queued", "generating", "pause_requested"].includes(plan.status)) {
     throw new ApiError("当前反馈计划不能暂停", 409, "conflict", false);
   }
-  if (!feedbackGenerationJobs.has(planId)) {
-    await db.feedbackPlan.update({ where: { id: planId }, data: { status: "paused" } });
-    await closeGenerationClock(planId, false, db);
-    return { accepted: true, status: "paused" };
+  const handle = feedbackGenerationJobs.get(planId);
+  if (!handle) {
+    const reconciled = await reconcileInterruptedFeedbackPlanGeneration(planId, db);
+    if (reconciled > 0) {
+      const failed = await db.feedbackPlan.findUnique({ where: { id: planId }, select: { status: true } });
+      return { accepted: true, status: failed?.status ?? "generation_failed" };
+    }
+    const paused = await closeGenerationClock(planId, false, db, {
+      status: "paused",
+      incrementPlanRevision: true,
+      expectedStatuses: ["queued", "generating", "pause_requested"],
+    });
+    if (paused) return { accepted: true, status: "paused" };
+    const current = await db.feedbackPlan.findUnique({ where: { id: planId }, select: { status: true } });
+    if (!current) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+    return { accepted: true, status: current.status };
   }
-  await db.feedbackPlan.update({ where: { id: planId }, data: { status: "pause_requested" } });
-  return { accepted: true, status: "pause_requested" };
+  const requested = await db.feedbackPlan.updateMany({
+    where: { id: planId, archivedAt: null, status: { in: ["queued", "generating", "pause_requested"] } },
+    data: { status: "pause_requested" },
+  });
+  if (requested.count) return { accepted: true, status: "pause_requested" };
+  const current = await db.feedbackPlan.findUnique({ where: { id: planId }, select: { status: true } });
+  if (!current) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  return { accepted: true, status: current.status };
+}
+
+async function settleInterruptedFeedbackPlanItems(input: {
+  planId: string;
+  message: string;
+  includeQueued: boolean;
+}, db: PrismaClient) {
+  const completedAt = new Date();
+  const interruption = new ApiError(input.message, 409, "cancelled", true);
+  return db.$transaction(async (tx) => {
+    const plan = await tx.feedbackPlan.findUnique({
+      where: { id: input.planId },
+      select: {
+        generationElapsedMs: true,
+        generationRunStartedAt: true,
+        items: {
+          where: { status: { in: input.includeQueued ? ["queued", "generating"] : ["generating"] } },
+          select: {
+            id: true,
+            status: true,
+            generationStartedAt: true,
+            generationExecutionSnapshot: true,
+          },
+        },
+      },
+    });
+    if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+
+    let interrupted = 0;
+    for (const item of plan.items) {
+      let execution = parseFeedbackGenerationExecutionSnapshot(item.generationExecutionSnapshot);
+      if (execution) {
+        for (const attempt of execution.attempts.filter((entry) => entry.status === "running")) {
+          execution = completeFeedbackGenerationExecution({
+            snapshot: execution,
+            attempt: attempt.attempt,
+            status: "interrupted",
+            completedAt,
+            error: interruption,
+          });
+        }
+      }
+      const updated = await tx.feedbackPlanItem.updateMany({
+        where: { id: item.id, planId: input.planId, status: item.status },
+        data: {
+          status: "generation_failed",
+          generationError: input.message,
+          generationCompletedAt: completedAt,
+          generationDurationMs: item.generationStartedAt
+            ? Math.max(0, completedAt.getTime() - item.generationStartedAt.getTime())
+            : null,
+          ...(execution ? { generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(execution) } : {}),
+          itemRevision: { increment: 1 },
+        },
+      });
+      interrupted += updated.count;
+    }
+
+    const currentItems = await tx.feedbackPlanItem.findMany({
+      where: { planId: input.planId },
+      select: { status: true },
+    });
+    const elapsedMs = plan.generationElapsedMs + (plan.generationRunStartedAt
+      ? Math.max(0, completedAt.getTime() - plan.generationRunStartedAt.getTime())
+      : 0);
+    await tx.feedbackPlan.update({
+      where: { id: input.planId },
+      data: {
+        status: derivePlanStatus(currentItems),
+        generationElapsedMs: elapsedMs,
+        generationRunStartedAt: null,
+        generationCompletedAt: completedAt,
+        planRevision: { increment: 1 },
+      },
+    });
+    return interrupted;
+  });
+}
+
+export async function reconcileInterruptedFeedbackPlanGeneration(planId: string, db: PrismaClient = prisma) {
+  if (feedbackGenerationJobs.has(planId)) return 0;
+  const orphaned = await db.feedbackPlanItem.count({
+    where: { planId, status: { in: ["queued", "generating"] } },
+  });
+  if (!orphaned) return 0;
+  return settleInterruptedFeedbackPlanItems({
+    planId,
+    message: "生成服务曾中断，本条已收口，可重试",
+    includeQueued: true,
+  }, db);
+}
+
+export async function forceStopFeedbackPlanGeneration(
+  planId: string,
+  db: PrismaClient = prisma,
+  options: { allowBatchControl?: boolean } = {},
+) {
+  const plan = await db.feedbackPlan.findUnique({
+    where: { id: planId },
+    select: {
+      id: true,
+      archivedAt: true,
+      batchId: true,
+      status: true,
+      items: { select: { status: true } },
+    },
+  });
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
+  if (plan.batchId && !options.allowBatchControl) {
+    throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中终止", 409, "conflict", false);
+  }
+  const hasActiveItems = plan.items.some((item) => ["queued", "generating"].includes(item.status));
+  const handle = feedbackGenerationJobs.get(planId);
+  if (!hasActiveItems && !handle) throw new ApiError("当前反馈计划没有正在运行的生成", 409, "conflict", false);
+
+  await db.feedbackPlan.updateMany({
+    where: { id: planId, archivedAt: null },
+    data: { status: "pause_requested", planRevision: { increment: 1 } },
+  });
+  handle?.controller.abort(new DOMException("教师已强制终止反馈生成", "AbortError"));
+  const interrupted = await settleInterruptedFeedbackPlanItems({
+    planId,
+    message: "已由教师强制终止，可重试",
+    includeQueued: true,
+  }, db);
+  const settled = await db.feedbackPlan.findUnique({
+    where: { id: planId },
+    select: { status: true },
+  });
+  if (!settled) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  return { accepted: true, status: settled.status, interrupted };
 }
 
 export async function continueFeedbackPlanGeneration(
   planId: string,
   db: PrismaClient = prisma,
-  options: { allowBatchControl?: boolean } = {},
+  options: { allowBatchControl?: boolean; expectedBatchRevision?: number } = {},
 ) {
   const plan = await db.feedbackPlan.findUnique({
     where: { id: planId },
@@ -3344,26 +3807,50 @@ export async function continueFeedbackPlanGeneration(
   if (plan.batchId && !options.allowBatchControl) {
     throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中继续", 409, "conflict", false);
   }
-  if (!feedbackGenerationJobs.has(planId)) {
-    await db.feedbackPlanItem.updateMany({ where: { planId, status: "generating" }, data: { status: "queued", generationError: null } });
-  }
-  const queued = await db.feedbackPlanItem.count({ where: { planId, status: "queued" } });
-  if (!queued && !feedbackGenerationJobs.has(planId)) {
-    throw new ApiError("当前没有等待继续生成的反馈条目", 409, "conflict", false);
-  }
+  const hasRunningJob = feedbackGenerationJobs.has(planId);
   const generationRunStartedAt = new Date();
-  await db.feedbackPlan.update({
-    where: { id: planId },
-    data: {
-      status: "queued",
-      generationStartedAt: plan.generationStartedAt ?? generationRunStartedAt,
-      generationRunStartedAt,
-      generationCompletedAt: null,
-    },
+  const queued = await db.$transaction(async (tx) => {
+    if (plan.batchId && options.allowBatchControl) {
+      if (options.expectedBatchRevision === undefined) {
+        throw new ApiError("班级组生成缺少调度版本，请刷新后重试", 409, "conflict", true);
+      }
+      const parentClaim = await tx.feedbackPlanBatch.updateMany({
+        where: {
+          id: plan.batchId,
+          archivedAt: null,
+          status: "running",
+          planRevision: options.expectedBatchRevision,
+        },
+        data: { planRevision: { increment: 1 } },
+      });
+      if (parentClaim.count !== 1) {
+        throw new ApiError("班级组状态已经变化，本班未继续", 409, "conflict", true);
+      }
+    }
+    if (!hasRunningJob) {
+      await tx.feedbackPlanItem.updateMany({
+        where: { planId, status: "generating" },
+        data: { status: "queued", generationError: null, itemRevision: { increment: 1 } },
+      });
+    }
+    const queuedCount = await tx.feedbackPlanItem.count({ where: { planId, status: "queued" } });
+    if (!queuedCount && !hasRunningJob) {
+      throw new ApiError("当前没有等待继续生成的反馈条目", 409, "conflict", false);
+    }
+    await tx.feedbackPlan.update({
+      where: { id: planId },
+      data: {
+        status: "queued",
+        generationStartedAt: plan.generationStartedAt ?? generationRunStartedAt,
+        generationRunStartedAt,
+        generationCompletedAt: null,
+      },
+    });
+    return queuedCount;
   });
   const existing = feedbackGenerationJobs.get(planId);
   if (existing) {
-    void existing
+    void existing.promise
       .catch(() => undefined)
       .then(() => startFeedbackGenerationJob(planId, db))
       .catch(() => undefined);
@@ -3376,17 +3863,31 @@ export async function continueFeedbackPlanGeneration(
 export async function retryFeedbackPlanGeneration(
   input: { planId: string; itemIds?: string[] },
   db: PrismaClient = prisma,
-  options: { allowBatchControl?: boolean } = {},
+  options: { allowBatchControl?: boolean; startJob?: boolean } = {},
 ) {
+  await reconcileInterruptedFeedbackPlanGeneration(input.planId, db);
   const plan = await db.feedbackPlan.findUnique({
     where: { id: input.planId },
-    select: { id: true, archivedAt: true, generationApproach: true, batchId: true },
+    select: {
+      id: true,
+      archivedAt: true,
+      generationApproach: true,
+      batchId: true,
+      status: true,
+      generationStartedAt: true,
+      items: { select: { status: true } },
+    },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
   assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {
     throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中重试", 409, "conflict", false);
+  }
+  if (feedbackGenerationJobs.has(input.planId)
+    || ["queued", "generating", "pause_requested"].includes(plan.status)
+    || plan.items.some((item) => ["queued", "generating"].includes(item.status))) {
+    throw new ApiError("仍有反馈正在生成，请先等待完成或强制终止", 409, "conflict", false);
   }
   const where = input.itemIds?.length
     ? { planId: input.planId, id: { in: [...new Set(input.itemIds)] }, status: "generation_failed" }
@@ -3422,15 +3923,15 @@ export async function retryFeedbackPlanGeneration(
       throw new ApiError("失败反馈已被其他操作更新，请刷新后重试", 409, "conflict", false);
     }
     if (retried.count) {
-      const generationStartedAt = new Date();
+      const generationRunStartedAt = new Date();
       await tx.feedbackPlan.update({
         where: { id: input.planId },
         data: {
           status: "queued",
-          generationStartedAt,
+          generationStartedAt: plan.generationStartedAt ?? generationRunStartedAt,
           generationCompletedAt: null,
-          generationElapsedMs: 0,
-          generationRunStartedAt: generationStartedAt,
+          ...(!plan.generationStartedAt ? { generationElapsedMs: 0 } : {}),
+          generationRunStartedAt,
           planRevision: { increment: 1 },
         },
       });
@@ -3444,7 +3945,7 @@ export async function retryFeedbackPlanGeneration(
     });
     return { status, retried: 0, restored: restored.count };
   });
-  if (result.retried) void startFeedbackGenerationJob(input.planId, db).catch(() => undefined);
+  if (result.retried && options.startJob !== false) void startFeedbackGenerationJob(input.planId, db).catch(() => undefined);
   return { accepted: true, ...result };
 }
 
@@ -3457,6 +3958,7 @@ export async function retryFeedbackPlanGenerationWithFree(
     startJob?: boolean;
   } = {},
 ) {
+  await reconcileInterruptedFeedbackPlanGeneration(input.planId, db);
   const plan = await db.feedbackPlan.findUnique({
     where: { id: input.planId },
     select: {
@@ -3465,6 +3967,7 @@ export async function retryFeedbackPlanGenerationWithFree(
       batchId: true,
       generationApproach: true,
       generationStartedAt: true,
+      status: true,
       items: {
         select: {
           id: true,
@@ -3483,6 +3986,11 @@ export async function retryFeedbackPlanGenerationWithFree(
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {
     throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中切换生成方式", 409, "conflict", false);
+  }
+  if (feedbackGenerationJobs.has(input.planId)
+    || ["queued", "generating", "pause_requested"].includes(plan.status)
+    || plan.items.some((item) => ["queued", "generating"].includes(item.status))) {
+    throw new ApiError("仍有反馈正在生成，请先等待完成或强制终止", 409, "conflict", false);
   }
   if (normalizeStoredFeedbackGenerationApproach(plan.generationApproach) !== "restricted") {
     throw new ApiError("只有受限反馈计划的失败或未开始条目可以改用自由反馈", 409, "conflict", false);
