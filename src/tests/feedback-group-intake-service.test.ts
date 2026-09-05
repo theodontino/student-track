@@ -22,7 +22,7 @@ import {
   getSessionGroupProgress,
   linkGroupLessonSession,
 } from "@/services/group-lesson-service";
-import { archiveFeedbackPlan, createFeedbackPlan } from "@/services/feedback-plan-service";
+import { createFeedbackPlan } from "@/services/feedback-plan-service";
 import {
   STEP_CLASSROOM_HEADER,
   STEP_INTERPRETATION_PROMPT,
@@ -281,7 +281,7 @@ describe("feedback group intake service", () => {
     ]));
   });
 
-  it("reuses a group run after its linked plan is archived but still rejects a live plan", async () => {
+  it("reuses a group run without consulting or rewriting its historical plan pointer", async () => {
     const prepared = await createFeedbackGroupIntake({ groupLessonId, files: [], db: prisma });
     const run = prepared.runs.find((item) => item.sessionCode === sessionCodes[0])!;
     const plan = await createFeedbackPlan({
@@ -302,10 +302,9 @@ describe("feedback group intake service", () => {
       db: prisma,
     };
     try {
-      await expect(createFeedbackGroupIntake(retryInput)).rejects.toMatchObject({ status: 409 });
-      await archiveFeedbackPlan(plan.id, prisma);
       const retried = await createFeedbackGroupIntake(retryInput);
       expect(retried.runs).toContainEqual(expect.objectContaining({ id: run.id, planId: null }));
+      expect((await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: run.id } })).planId).toBe(plan.id);
     } finally {
       await prisma.feedbackIntakeRun.update({ where: { id: run.id }, data: { planId: null } });
       await prisma.feedbackPlan.deleteMany({ where: { id: plan.id } });

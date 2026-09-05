@@ -217,19 +217,13 @@ export async function createFeedbackGroupIntake(
   if (reusedRunIds.length) {
     const suppliedRuns = await db.feedbackIntakeRun.findMany({
       where: { id: { in: reusedRunIds } },
-      select: { id: true, sessionCode: true, planId: true },
+      select: { id: true, sessionCode: true },
     });
-    const suppliedPlanIds = [...new Set(suppliedRuns.flatMap((run) => run.planId ? [run.planId] : []))];
-    const livePlanIds = new Set((await db.feedbackPlan.findMany({
-      where: { id: { in: suppliedPlanIds }, archivedAt: null },
-      select: { id: true },
-    })).map((plan) => plan.id));
     const suppliedRunById = new Map(suppliedRuns.map((run) => [run.id, run]));
     for (const [sessionCode, runId] of Object.entries(runIds ?? {})) {
       const run = suppliedRunById.get(runId);
       if (!run) throw new ServiceError("反馈材料运行不存在", 404);
       if (run.sessionCode !== sessionCode) throw new ServiceError("不能把材料运行复用到另一课次", 409);
-      if (run.planId && livePlanIds.has(run.planId)) throw new ServiceError("这轮材料已经关联反馈计划，请重新开始一轮材料", 409);
     }
   }
 
@@ -435,7 +429,6 @@ export async function createFeedbackGroupIntake(
       const existing = await getFeedbackIntakeRun(runId, db);
       if (!existing) throw new ServiceError("反馈材料运行不存在", 404);
       if (existing.sessionCode !== context.sessionCode) throw new ServiceError("不能把材料运行复用到另一课次", 409);
-      if (existing.planId) throw new ServiceError("这轮材料已经关联反馈计划，请重新开始一轮材料", 409);
       return { run: existing };
     }
     return createOrGetFeedbackIntakeRun({
