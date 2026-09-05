@@ -16,6 +16,7 @@ import {
 } from "@/features/feedback/FeedbackPlanPanel";
 import {
   defaultFeedbackQueueFilter,
+  feedbackBatchGenerationIsActive,
   feedbackQueueCategory,
   resolveFeedbackQueueTarget,
   feedbackStudioInitialPlanTarget,
@@ -676,6 +677,17 @@ describe("feedback task group workspace state", () => {
     expect(shouldRefreshFeedbackTaskBatch("paused")).toBe(true);
     expect(shouldRefreshFeedbackTaskBatch("failed")).toBe(true);
     expect(shouldRefreshFeedbackTaskBatch("archived")).toBe(false);
+  });
+
+  it("treats a safely paused batch as inactive even when child queues remain", () => {
+    expect(feedbackBatchGenerationIsActive({
+      status: "paused",
+      plans: [{ status: "paused", items: [{ status: "queued" }] }],
+    })).toBe(false);
+    expect(feedbackBatchGenerationIsActive({
+      status: "running",
+      plans: [{ status: "generating", items: [{ status: "generating" }] }],
+    })).toBe(true);
   });
 
   it("rejects feedback data from a previous class or session while context switches", () => {

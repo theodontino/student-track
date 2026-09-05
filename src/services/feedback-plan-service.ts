@@ -378,7 +378,7 @@ function persistedAssessmentEvidence(snapshot: string): FeedbackEvidenceBundle["
   return parsed.success ? sanitizeFeedbackEvidenceBundle(parsed.data).assessmentEvidence : [];
 }
 
-function derivePlanStatus(items: Array<{ status: string }>) {
+export function derivePlanStatus(items: Array<{ status: string }>) {
   if (!items.length) return "draft";
   if (items.some((item) => item.status === "stale")) return "stale";
   if (items.some((item) => item.status === "generating")) return "generating";
@@ -1554,7 +1554,7 @@ const FEEDBACK_PLAN_GENERATED_STATUSES = new Set([
   "exported",
 ]);
 
-function feedbackPlanItemHasGeneratedResult(item: {
+export function feedbackPlanItemHasGeneratedResult(item: {
   status: string;
   finalText: string | null;
   selectedGenerationId: string | null;
@@ -3098,11 +3098,78 @@ type FeedbackGenerationJobHandle = {
 const feedbackGenerationJobs = new Map<string, FeedbackGenerationJobHandle>();
 const MAX_FEEDBACK_CONCURRENCY = 2;
 
+type FeedbackGenerationPermitWaiter = {
+  signal?: AbortSignal;
+  resolve: (release: (() => void) | null) => void;
+  onAbort?: () => void;
+};
+
+type FeedbackGenerationPermitPool = {
+  active: number;
+  waiters: FeedbackGenerationPermitWaiter[];
+};
+
+const feedbackGenerationPermitPools = new Map<string, FeedbackGenerationPermitPool>();
+
+function feedbackGenerationPermitScope(planId: string, batchId: string | null) {
+  return batchId ? `batch:${batchId}` : `plan:${planId}`;
+}
+
+function releaseFeedbackGenerationPermit(scope: string) {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const pool = feedbackGenerationPermitPools.get(scope);
+    if (!pool) return;
+    pool.active = Math.max(0, pool.active - 1);
+    while (pool.waiters.length) {
+      const waiter = pool.waiters.shift()!;
+      waiter.signal?.removeEventListener("abort", waiter.onAbort!);
+      if (waiter.signal?.aborted) {
+        waiter.resolve(null);
+        continue;
+      }
+      pool.active += 1;
+      waiter.resolve(releaseFeedbackGenerationPermit(scope));
+      return;
+    }
+    if (pool.active === 0) feedbackGenerationPermitPools.delete(scope);
+  };
+}
+
+function acquireFeedbackGenerationPermit(scope: string, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.resolve<(() => void) | null>(null);
+  const pool = feedbackGenerationPermitPools.get(scope) ?? { active: 0, waiters: [] };
+  feedbackGenerationPermitPools.set(scope, pool);
+  if (pool.active < MAX_FEEDBACK_CONCURRENCY) {
+    pool.active += 1;
+    return Promise.resolve<(() => void) | null>(releaseFeedbackGenerationPermit(scope));
+  }
+  return new Promise<(() => void) | null>((resolve) => {
+    const waiter: FeedbackGenerationPermitWaiter = { signal, resolve };
+    waiter.onAbort = () => {
+      const index = pool.waiters.indexOf(waiter);
+      if (index >= 0) pool.waiters.splice(index, 1);
+      signal?.removeEventListener("abort", waiter.onAbort!);
+      resolve(null);
+      if (pool.active === 0 && pool.waiters.length === 0) feedbackGenerationPermitPools.delete(scope);
+    };
+    pool.waiters.push(waiter);
+    signal?.addEventListener("abort", waiter.onAbort, { once: true });
+  });
+}
+
 export function isFeedbackPlanGenerationRunning(planId: string) {
   return feedbackGenerationJobs.has(planId);
 }
 
-async function claimQueuedFeedbackPlanItem(planId: string, db: PrismaClient, signal?: AbortSignal) {
+async function claimQueuedFeedbackPlanItem(
+  planId: string,
+  batchId: string | null,
+  db: PrismaClient,
+  signal?: AbortSignal,
+) {
   if (signal?.aborted) return null;
   const candidate = await db.feedbackPlanItem.findFirst({
     where: { planId, status: "queued" },
@@ -3116,7 +3183,19 @@ async function claimQueuedFeedbackPlanItem(planId: string, db: PrismaClient, sig
       planId,
       status: "queued",
       itemRevision: candidate.itemRevision,
-      plan: { status: { in: ["queued", "generating"] } },
+      plan: {
+        status: { in: ["queued", "generating"] },
+        batchId,
+        ...(batchId ? {
+          batch: {
+            is: {
+              id: batchId,
+              archivedAt: null,
+              status: "running",
+            },
+          },
+        } : {}),
+      },
     },
     data: {
       status: "generating",
@@ -3136,20 +3215,60 @@ async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prism
     if (signal?.aborted) return;
     const plan = await db.feedbackPlan.findUnique({
       where: { id: planId },
-      select: { status: true, generationApproach: true, items: { select: { status: true } } },
+      select: {
+        status: true,
+        batchId: true,
+        generationApproach: true,
+        items: { select: { status: true } },
+        batch: {
+          select: {
+            status: true,
+            plans: {
+              where: { id: { not: planId } },
+              select: {
+                status: true,
+                items: { select: { status: true } },
+              },
+            },
+          },
+        },
+      },
     });
     if (!plan) return;
     assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
     if (!["queued", "generating", "pause_requested"].includes(plan.status)) return;
 
-    if (plan.status !== "pause_requested" && !signal?.aborted) {
-      while (active.size < MAX_FEEDBACK_CONCURRENCY) {
+    const parentAllowsClaims = !plan.batchId || plan.batch?.status === "running";
+    if (plan.status !== "pause_requested" && parentAllowsClaims && !signal?.aborted) {
+      const hasRunnableSibling = plan.batch?.plans.some((sibling) => (
+        sibling.status !== "generation_failed"
+        && sibling.items.some((item) => ["evidence_ready", "queued", "generating"].includes(item.status))
+      )) ?? false;
+      const localConcurrency = plan.batchId && hasRunnableSibling ? 1 : MAX_FEEDBACK_CONCURRENCY;
+      while (active.size < localConcurrency) {
         if (signal?.aborted) break;
-        const itemId = await claimQueuedFeedbackPlanItem(planId, db, signal);
-        if (!itemId) break;
+        const releasePermit = await acquireFeedbackGenerationPermit(
+          feedbackGenerationPermitScope(planId, plan.batchId),
+          signal,
+        );
+        if (!releasePermit) break;
+        let itemId: string | null;
+        try {
+          itemId = await claimQueuedFeedbackPlanItem(planId, plan.batchId, db, signal);
+        } catch (error) {
+          releasePermit();
+          throw error;
+        }
+        if (!itemId) {
+          releasePermit();
+          break;
+        }
         const task = generateFeedbackPlanItems({ planId, itemIds: [itemId], preclaimed: true, signal }, db)
           .catch(() => undefined)
-          .finally(() => { active.delete(itemId); });
+          .finally(() => {
+            active.delete(itemId);
+            releasePermit();
+          });
         active.set(itemId, task);
       }
     }
@@ -3166,16 +3285,26 @@ async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prism
 
     const latest = await db.feedbackPlan.findUnique({
       where: { id: planId },
-      select: { status: true, items: { select: { status: true } } },
+      select: {
+        status: true,
+        batchId: true,
+        batch: { select: { status: true } },
+        items: { select: { status: true } },
+      },
     });
     if (!latest) return;
     const hasQueued = latest.items.some((item) => item.status === "queued");
     const hasUnownedGenerating = latest.items.some((item) => item.status === "generating");
-    if (latest.status === "pause_requested") {
+    const parentIsPausing = Boolean(
+      latest.batchId && ["pause_requested", "paused"].includes(latest.batch?.status ?? ""),
+    );
+    if (latest.status === "pause_requested" || parentIsPausing) {
       const closed = await closeGenerationClock(planId, false, db, {
         status: "paused",
         incrementPlanRevision: true,
-        expectedStatuses: ["pause_requested"],
+        expectedStatuses: parentIsPausing
+          ? ["queued", "generating", "pause_requested"]
+          : ["pause_requested"],
       });
       if (closed) return;
       continue;
@@ -3442,7 +3571,6 @@ export async function startFeedbackPlanGeneration(input: {
           id: current.batchId,
           archivedAt: null,
           status: "running",
-          currentPlanId: current.id,
           planRevision: options.expectedBatchRevision,
         },
         data: { planRevision: { increment: 1 } },
@@ -3691,7 +3819,6 @@ export async function continueFeedbackPlanGeneration(
           id: plan.batchId,
           archivedAt: null,
           status: "running",
-          currentPlanId: planId,
           planRevision: options.expectedBatchRevision,
         },
         data: { planRevision: { increment: 1 } },

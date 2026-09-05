@@ -39,12 +39,13 @@ import {
   continueFeedbackPlanGeneration,
   cloneFeedbackPlanDraft,
   createFeedbackPlan,
+  derivePlanStatus,
   feedbackPlanHasGenerationTrace,
+  feedbackPlanItemHasGeneratedResult,
   forceStopFeedbackPlanGeneration,
   isFeedbackPlanGenerationRunning,
   pauseFeedbackPlanGeneration,
   reconcileInterruptedFeedbackPlanGeneration,
-  retryFeedbackPlanGeneration,
   startFeedbackPlanGeneration,
   updateFeedbackPlanDraft,
 } from "@/services/feedback-plan-service";
@@ -666,50 +667,110 @@ export async function saveFeedbackPlanBatchAs(
 const batchJobs = new Map<string, Promise<void>>();
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+type BatchGenerationPlanState = {
+  id: string;
+  status: string;
+  batchOrder: number | null;
+  generationApproach: string;
+  generationStartedAt: Date | null;
+  items: Array<{ status: string }>;
+};
+
+const BATCH_GENERATED_ITEM_STATUSES = new Set(["needs_review", "approved", "exported"]);
+
+function batchPlanGenerationFinished(plan: BatchGenerationPlanState) {
+  return plan.items.length > 0 && plan.items.every((item) => BATCH_GENERATED_ITEM_STATUSES.has(item.status));
+}
+
+function batchPlanGenerationFailed(plan: BatchGenerationPlanState) {
+  return plan.status === "generation_failed"
+    || plan.items.some((item) => item.status === "generation_failed");
+}
+
+function batchPlanHasRunnableItems(plan: BatchGenerationPlanState) {
+  return plan.items.some((item) => ["evidence_ready", "queued", "generating"].includes(item.status));
+}
+
+function batchPlanGenerationActive(plan: BatchGenerationPlanState) {
+  if (isFeedbackPlanGenerationRunning(plan.id)) return true;
+  if (plan.items.some((item) => item.status === "generating")) return true;
+  if (plan.status === "paused") return false;
+  return ["queued", "generating", "pause_requested"].includes(plan.status)
+    && plan.items.some((item) => item.status === "queued");
+}
+
+function batchPlanNeedsInitialStart(plan: BatchGenerationPlanState) {
+  return !plan.generationStartedAt
+    && plan.items.some((item) => item.status === "evidence_ready");
+}
+
 async function runBatchJob(batchId: string, db: PrismaClient = prisma) {
   while (true) {
     const batch = await db.feedbackPlanBatch.findUnique({
       where: { id: batchId },
-      include: { plans: { orderBy: { batchOrder: "asc" }, include: { items: { select: { status: true } } } } },
+      include: {
+        plans: {
+          orderBy: { batchOrder: "asc" },
+          select: {
+            id: true,
+            status: true,
+            batchOrder: true,
+            generationApproach: true,
+            generationStartedAt: true,
+            items: { select: { status: true } },
+          },
+        },
+      },
     });
     if (!batch) return;
     if (batch.archivedAt || ["archived", "completed", "failed", "paused"].includes(batch.status)) return;
-    const current = batch.plans.find((plan) => plan.id === batch.currentPlanId)
-      ?? batch.plans.find((plan) => plan.items.some((item) => !["needs_review", "approved", "exported"].includes(item.status)));
-    if (!current) {
-      const completed = await db.feedbackPlanBatch.updateMany({
-        where: { id: batchId, status: { in: ["queued", "running"] }, planRevision: batch.planRevision },
-        data: { status: "completed", currentPlanId: null, failedPlanId: null, planRevision: { increment: 1 } },
-      });
-      if (completed.count) return;
-      continue;
-    }
+
+    const unfinishedPlans = batch.plans.filter((plan) => !batchPlanGenerationFinished(plan));
+    const representativePlan = unfinishedPlans.find((plan) => plan.id === batch.currentPlanId)
+      ?? unfinishedPlans[0]
+      ?? batch.plans[0];
+
     if (batch.status === "pause_requested") {
-      if (["queued", "generating", "pause_requested"].includes(current.status)) {
+      for (const plan of batch.plans.filter(batchPlanGenerationActive)) {
         try {
-          await pauseFeedbackPlanGeneration(current.id, db, { allowBatchControl: true });
+          await pauseFeedbackPlanGeneration(plan.id, db, { allowBatchControl: true });
         } catch (error) {
           if (!(error instanceof ApiError && error.status === 409)) throw error;
         }
       }
-      const refreshed = await db.feedbackPlan.findUnique({
-        where: { id: current.id },
-        select: { status: true, items: { select: { status: true } } },
+      const refreshed = await db.feedbackPlanBatch.findUnique({
+        where: { id: batchId },
+        select: {
+          status: true,
+          planRevision: true,
+          currentPlanId: true,
+          plans: {
+            orderBy: { batchOrder: "asc" },
+            select: {
+              id: true,
+              status: true,
+              batchOrder: true,
+              generationApproach: true,
+              generationStartedAt: true,
+              items: { select: { status: true } },
+            },
+          },
+        },
       });
-      const childIsActive = Boolean(refreshed && (
-        ["queued", "generating", "pause_requested"].includes(refreshed.status)
-        || refreshed.items.some((item) => item.status === "generating")
-        || isFeedbackPlanGenerationRunning(current.id)
-      ));
-      if (refreshed && !childIsActive) {
-        const childFailed = refreshed.status === "generation_failed"
-          || refreshed.items.some((item) => item.status === "generation_failed");
+      if (!refreshed) return;
+      if (refreshed.status !== "pause_requested") continue;
+      const activePlans = refreshed.plans.filter(batchPlanGenerationActive);
+      if (!activePlans.length) {
+        const failedPlan = refreshed.plans.find(batchPlanGenerationFailed);
+        const currentPlanId = failedPlan?.id
+          ?? refreshed.plans.find((plan) => !batchPlanGenerationFinished(plan))?.id
+          ?? refreshed.currentPlanId;
         const paused = await db.feedbackPlanBatch.updateMany({
-          where: { id: batchId, status: "pause_requested" },
+          where: { id: batchId, status: "pause_requested", planRevision: refreshed.planRevision },
           data: {
-            status: childFailed ? "failed" : "paused",
-            currentPlanId: current.id,
-            failedPlanId: childFailed ? current.id : null,
+            status: failedPlan ? "failed" : "paused",
+            currentPlanId,
+            failedPlanId: failedPlan?.id ?? null,
             planRevision: { increment: 1 },
           },
         });
@@ -720,37 +781,10 @@ async function runBatchJob(batchId: string, db: PrismaClient = prisma) {
     }
 
     assertLegacyBatchGenerationAvailable(batch.generationApproach);
-    assertLegacyBatchGenerationAvailable(current.generationApproach);
-
-    const childHasActiveItems = current.items.some((item) => ["queued", "generating"].includes(item.status));
-    if (!childHasActiveItems && current.items.some((item) => item.status === "generation_failed")) {
-      const failed = await db.feedbackPlanBatch.updateMany({
-        where: { id: batchId, status: { in: ["queued", "running"] }, planRevision: batch.planRevision },
-        data: { status: "failed", currentPlanId: current.id, failedPlanId: current.id, planRevision: { increment: 1 } },
-      });
-      if (failed.count) return;
-      continue;
-    }
-    const finished = current.items.every((item) => ["needs_review", "approved", "exported"].includes(item.status));
-    if (finished) {
-      const next = batch.plans.find((plan) => (plan.batchOrder ?? 0) > (current.batchOrder ?? 0));
-      if (!next) {
-        const completed = await db.feedbackPlanBatch.updateMany({
-          where: { id: batchId, status: { in: ["queued", "running"] }, planRevision: batch.planRevision },
-          data: { status: "completed", currentPlanId: null, failedPlanId: null, planRevision: { increment: 1 } },
-        });
-        if (completed.count) return;
-        continue;
-      }
-      await db.feedbackPlanBatch.updateMany({
-        where: { id: batchId, status: { in: ["queued", "running"] }, planRevision: batch.planRevision },
-        data: { currentPlanId: next.id, planRevision: { increment: 1 } },
-      });
-      continue;
-    }
+    for (const plan of batch.plans) assertLegacyBatchGenerationAvailable(plan.generationApproach);
 
     let childStartBatchRevision = batch.planRevision;
-    if (batch.status !== "running" || batch.currentPlanId !== current.id || batch.failedPlanId !== null) {
+    if (batch.status !== "running" || batch.failedPlanId !== null || batch.currentPlanId !== representativePlan?.id) {
       const claimed = await db.feedbackPlanBatch.updateMany({
         where: {
           id: batchId,
@@ -758,30 +792,88 @@ async function runBatchJob(batchId: string, db: PrismaClient = prisma) {
           status: { in: ["queued", "running"] },
           planRevision: batch.planRevision,
         },
-        data: { status: "running", currentPlanId: current.id, failedPlanId: null, planRevision: { increment: 1 } },
+        data: {
+          status: "running",
+          currentPlanId: representativePlan?.id ?? null,
+          failedPlanId: null,
+          planRevision: { increment: 1 },
+        },
       });
       if (!claimed.count) continue;
       childStartBatchRevision += 1;
     }
-    if (current.status === "paused") {
-      await continueFeedbackPlanGeneration(current.id, db, {
-        allowBatchControl: true,
-        expectedBatchRevision: childStartBatchRevision,
-      });
-    } else if (["queued", "generating", "pause_requested"].includes(current.status)) {
-      if (!isFeedbackPlanGenerationRunning(current.id)) {
-        await continueFeedbackPlanGeneration(current.id, db, {
-          allowBatchControl: true,
-          expectedBatchRevision: childStartBatchRevision,
-        });
+
+    let startedOrContinued = false;
+    let reloadRequired = false;
+    for (const plan of batch.plans) {
+      if (batchPlanGenerationFinished(plan)) continue;
+      if (isFeedbackPlanGenerationRunning(plan.id)) continue;
+      if (batchPlanGenerationFailed(plan) && !batchPlanHasRunnableItems(plan)) continue;
+      try {
+        if (batchPlanNeedsInitialStart(plan)) {
+          await startFeedbackPlanGeneration(
+            { planId: plan.id },
+            db,
+            { allowBatchStart: true, expectedBatchRevision: childStartBatchRevision },
+          );
+        } else if (
+          plan.status === "paused"
+          || ["queued", "generating", "pause_requested"].includes(plan.status)
+          || batchPlanHasRunnableItems(plan)
+        ) {
+          await continueFeedbackPlanGeneration(plan.id, db, {
+            allowBatchControl: true,
+            expectedBatchRevision: childStartBatchRevision,
+          });
+        } else {
+          continue;
+        }
+        childStartBatchRevision += 1;
+        startedOrContinued = true;
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 409)) throw error;
+        reloadRequired = true;
+        break;
       }
-    } else {
-      await startFeedbackPlanGeneration(
-        { planId: current.id },
-        db,
-        { allowBatchStart: true, expectedBatchRevision: childStartBatchRevision },
-      );
     }
+    if (startedOrContinued || reloadRequired) {
+      await wait(150);
+      continue;
+    }
+
+    if (batch.plans.some((plan) => (
+      batchPlanGenerationActive(plan)
+      || batchPlanNeedsInitialStart(plan)
+      || batchPlanHasRunnableItems(plan)
+    ))) {
+      await wait(150);
+      continue;
+    }
+
+    const failedPlan = batch.plans.find(batchPlanGenerationFailed);
+    if (failedPlan) {
+      const failed = await db.feedbackPlanBatch.updateMany({
+        where: { id: batchId, status: "running", planRevision: childStartBatchRevision },
+        data: {
+          status: "failed",
+          currentPlanId: failedPlan.id,
+          failedPlanId: failedPlan.id,
+          planRevision: { increment: 1 },
+        },
+      });
+      if (failed.count) return;
+      continue;
+    }
+
+    if (batch.plans.every(batchPlanGenerationFinished)) {
+      const completed = await db.feedbackPlanBatch.updateMany({
+        where: { id: batchId, status: "running", planRevision: childStartBatchRevision },
+        data: { status: "completed", currentPlanId: null, failedPlanId: null, planRevision: { increment: 1 } },
+      });
+      if (completed.count) return;
+      continue;
+    }
+
     await wait(150);
   }
 }
@@ -797,6 +889,7 @@ function startBatchJob(batchId: string, db: PrismaClient = prisma) {
       select: {
         status: true,
         archivedAt: true,
+        planRevision: true,
         currentPlanId: true,
         plans: { select: { id: true, status: true, items: { select: { status: true } } } },
       },
@@ -811,23 +904,33 @@ function startBatchJob(batchId: string, db: PrismaClient = prisma) {
     ));
     if (activePlan) {
       const paused = await db.feedbackPlanBatch.updateMany({
-        where: { id: batchId, status: { in: ["queued", "running", "pause_requested"] } },
+        where: {
+          id: batchId,
+          archivedAt: null,
+          status: batch.status,
+          planRevision: batch.planRevision,
+        },
         data: { status: "pause_requested", currentPlanId: activePlan.id, planRevision: { increment: 1 } },
       }).catch(() => ({ count: 0 }));
       if (paused.count) void startBatchJob(batchId, db);
       return;
     }
-    const currentPlan = batch.plans.find((plan) => plan.id === batch.currentPlanId);
-    const currentFailed = Boolean(currentPlan && (
-      currentPlan.status === "generation_failed"
-      || currentPlan.items.some((item) => item.status === "generation_failed")
+    const failedPlan = batch.plans.find((plan) => (
+      plan.status === "generation_failed"
+      || plan.items.some((item) => item.status === "generation_failed")
     ));
     const settlingPause = batch.status === "pause_requested";
     await db.feedbackPlanBatch.updateMany({
-      where: { id: batchId, status: { in: ["queued", "running", "pause_requested"] } },
+      where: {
+        id: batchId,
+        archivedAt: null,
+        status: batch.status,
+        planRevision: batch.planRevision,
+      },
       data: {
-        status: settlingPause && !currentFailed ? "paused" : "failed",
-        failedPlanId: currentFailed ? currentPlan?.id ?? null : null,
+        status: settlingPause && !failedPlan ? "paused" : "failed",
+        currentPlanId: failedPlan?.id ?? batch.currentPlanId,
+        failedPlanId: failedPlan?.id ?? null,
         planRevision: { increment: 1 },
       },
     }).catch(() => undefined);
@@ -914,15 +1017,40 @@ export async function pauseFeedbackPlanBatch(batchId: string, db: PrismaClient =
 export async function continueFeedbackPlanBatch(batchId: string, db: PrismaClient = prisma) {
   const batch = await db.feedbackPlanBatch.findUnique({
     where: { id: batchId },
-    select: { status: true, archivedAt: true, generationApproach: true, plans: { select: { generationApproach: true } } },
+    select: {
+      status: true,
+      archivedAt: true,
+      planRevision: true,
+      generationApproach: true,
+      plans: { select: { generationApproach: true } },
+    },
   });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
   assertLegacyBatchGenerationAvailable(batch.generationApproach);
   for (const plan of batch.plans) assertLegacyBatchGenerationAvailable(plan.generationApproach);
   if (batch.archivedAt || batch.status === "archived") throw new ApiError("已归档反馈批次不能继续", 409, "conflict", false);
-  if (!["paused", "queued", "running", "pause_requested"].includes(batch.status)) throw new ApiError("当前批次不能继续", 409, "conflict", false);
-  await db.feedbackPlanBatch.update({ where: { id: batchId }, data: { status: "queued", planRevision: { increment: 1 } } });
-  void startBatchJob(batchId, db);
+  if (batch.status !== "paused") throw new ApiError("批次尚未安全暂停，当前不能继续", 409, "conflict", false);
+  const continued = await db.feedbackPlanBatch.updateMany({
+    where: {
+      id: batchId,
+      archivedAt: null,
+      status: batch.status,
+      planRevision: batch.planRevision,
+    },
+    data: { status: "queued", planRevision: { increment: 1 } },
+  });
+  if (continued.count !== 1) {
+    throw new ApiError("班级组状态已经变化，请刷新后重试", 409, "conflict", true);
+  }
+  const existing = batchJobs.get(batchId);
+  if (existing) {
+    void existing
+      .catch(() => undefined)
+      .then(() => startBatchJob(batchId, db))
+      .catch(() => undefined);
+  } else {
+    void startBatchJob(batchId, db);
+  }
   return { accepted: true, status: "queued" };
 }
 
@@ -1026,22 +1154,135 @@ export async function forceStopFeedbackPlanBatch(batchId: string, db: PrismaClie
 export async function retryFeedbackPlanBatch(batchId: string, db: PrismaClient = prisma) {
   const batch = await db.feedbackPlanBatch.findUnique({
     where: { id: batchId },
-    select: { failedPlanId: true, archivedAt: true, status: true, generationApproach: true },
+    select: {
+      archivedAt: true,
+      status: true,
+      generationApproach: true,
+      plans: {
+        orderBy: { batchOrder: "asc" },
+        select: {
+          id: true,
+          status: true,
+          planRevision: true,
+          generationStartedAt: true,
+          items: {
+            select: {
+              id: true,
+              status: true,
+              finalText: true,
+              selectedGenerationId: true,
+              approvedAt: true,
+              exportedAt: true,
+            },
+          },
+        },
+      },
+      planRevision: true,
+    },
   });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
   assertLegacyBatchGenerationAvailable(batch.generationApproach);
-  if (batch.archivedAt || batch.status !== "failed" || !batch.failedPlanId) throw new ApiError("当前批次没有可重试的失败班级", 409, "conflict", false);
-  if (batchJobs.has(batchId) || isFeedbackPlanGenerationRunning(batch.failedPlanId)) {
+  const failedPlans = batch.plans.filter((plan) => (
+    plan.status === "generation_failed"
+    || plan.items.some((item) => item.status === "generation_failed")
+  ));
+  if (batch.archivedAt || batch.status !== "failed" || !failedPlans.length) {
+    throw new ApiError("当前批次没有可重试的失败条目", 409, "conflict", false);
+  }
+  if (batchJobs.has(batchId) || batch.plans.some((plan) => isFeedbackPlanGenerationRunning(plan.id))) {
     throw new ApiError("仍有班级正在生成，请先等待完成或强制终止", 409, "conflict", false);
   }
-  await retryFeedbackPlanGeneration(
-    { planId: batch.failedPlanId },
-    db,
-    { allowBatchControl: true, startJob: false },
-  );
-  await db.feedbackPlanBatch.update({ where: { id: batchId }, data: { status: "running", currentPlanId: batch.failedPlanId, failedPlanId: null, planRevision: { increment: 1 } } });
+  if (batch.plans.some((plan) => (
+    ["queued", "generating", "pause_requested"].includes(plan.status)
+    || plan.items.some((item) => ["queued", "generating"].includes(item.status))
+  ))) {
+    throw new ApiError("仍有反馈正在收口，请先等待完成或强制终止", 409, "conflict", false);
+  }
+
+  const retried = await db.$transaction(async (tx) => {
+    let retriedItems = 0;
+    let restoredItems = 0;
+    let firstQueuedPlanId: string | null = null;
+    const generationRunStartedAt = new Date();
+
+    for (const plan of failedPlans) {
+      const candidates = plan.items.filter((item) => item.status === "generation_failed");
+      const restoredIds = candidates.filter(feedbackPlanItemHasGeneratedResult).map((item) => item.id);
+      const retryableIds = candidates.filter((item) => !feedbackPlanItemHasGeneratedResult(item)).map((item) => item.id);
+      const restored = restoredIds.length
+        ? await tx.feedbackPlanItem.updateMany({
+            where: { id: { in: restoredIds }, planId: plan.id, status: "generation_failed" },
+            data: { status: "needs_review", generationError: null, itemRevision: { increment: 1 } },
+          })
+        : { count: 0 };
+      const queued = retryableIds.length
+        ? await tx.feedbackPlanItem.updateMany({
+            where: { id: { in: retryableIds }, planId: plan.id, status: "generation_failed" },
+            data: {
+              status: "queued",
+              generationError: null,
+              generationStartedAt: null,
+              generationCompletedAt: null,
+              generationDurationMs: null,
+              itemRevision: { increment: 1 },
+            },
+          })
+        : { count: 0 };
+      if (restored.count !== restoredIds.length || queued.count !== retryableIds.length) {
+        throw new ApiError("失败反馈已被其他操作更新，请刷新后重试", 409, "conflict", false);
+      }
+
+      const currentItems = await tx.feedbackPlanItem.findMany({
+        where: { planId: plan.id },
+        select: { status: true },
+      });
+      const updatedPlan = await tx.feedbackPlan.updateMany({
+        where: {
+          id: plan.id,
+          archivedAt: null,
+          status: plan.status,
+          planRevision: plan.planRevision,
+        },
+        data: {
+          status: derivePlanStatus(currentItems),
+          ...(queued.count ? {
+            generationStartedAt: plan.generationStartedAt ?? generationRunStartedAt,
+            generationCompletedAt: null,
+            ...(!plan.generationStartedAt ? { generationElapsedMs: 0 } : {}),
+            generationRunStartedAt,
+          } : {}),
+          planRevision: { increment: 1 },
+        },
+      });
+      if (updatedPlan.count !== 1) {
+        throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+      }
+      if (queued.count && !firstQueuedPlanId) firstQueuedPlanId = plan.id;
+      retriedItems += queued.count;
+      restoredItems += restored.count;
+    }
+
+    const updatedBatch = await tx.feedbackPlanBatch.updateMany({
+      where: {
+        id: batchId,
+        archivedAt: null,
+        status: "failed",
+        planRevision: batch.planRevision,
+      },
+      data: {
+        status: "queued",
+        currentPlanId: firstQueuedPlanId ?? failedPlans[0]!.id,
+        failedPlanId: null,
+        planRevision: { increment: 1 },
+      },
+    });
+    if (updatedBatch.count !== 1) {
+      throw new ApiError("班级组状态已经变化，请刷新后重试", 409, "conflict", true);
+    }
+    return { retriedItems, restoredItems };
+  });
   void startBatchJob(batchId, db);
-  return { accepted: true, status: "running" };
+  return { accepted: true, status: "queued", retriedPlans: failedPlans.length, ...retried };
 }
 
 export async function retryFeedbackPlanBatchWithFree(batchId: string, db: PrismaClient = prisma) {
@@ -1081,27 +1322,48 @@ export async function retryFeedbackPlanBatchWithFree(batchId: string, db: Prisma
     throw new ApiError("仍有班级正在生成，请先等待完成或强制终止", 409, "conflict", false);
   }
   for (const plan of batch.plans) await reconcileInterruptedFeedbackPlanGeneration(plan.id, db);
-  const refreshedPlans = await db.feedbackPlan.findMany({
-    where: { batchId: batch.id },
-    orderBy: { batchOrder: "asc" },
+  const refreshedBatch = await db.feedbackPlanBatch.findUnique({
+    where: { id: batch.id },
     select: {
-      id: true,
+      archivedAt: true,
+      status: true,
+      planRevision: true,
+      failedPlanId: true,
       generationApproach: true,
-      generationStartedAt: true,
-      items: {
+      plans: {
+        orderBy: { batchOrder: "asc" },
         select: {
           id: true,
           status: true,
-          finalText: true,
-          selectedGenerationId: true,
-          approvedAt: true,
-          exportedAt: true,
-          generationExecutionSnapshot: true,
+          archivedAt: true,
+          planRevision: true,
+          generationApproach: true,
+          generationStartedAt: true,
+          items: {
+            select: {
+              id: true,
+              status: true,
+              itemRevision: true,
+              finalText: true,
+              selectedGenerationId: true,
+              approvedAt: true,
+              exportedAt: true,
+              generationExecutionSnapshot: true,
+            },
+          },
         },
       },
     },
   });
-  const candidatePlans = refreshedPlans.flatMap((plan) => {
+  if (!refreshedBatch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+  assertLegacyBatchGenerationAvailable(refreshedBatch.generationApproach);
+  if (refreshedBatch.archivedAt || refreshedBatch.status !== "failed") {
+    throw new ApiError("班级组状态已经变化，请刷新后重试", 409, "conflict", true);
+  }
+  if (normalizeStoredFeedbackGenerationApproach(refreshedBatch.generationApproach) !== "restricted") {
+    throw new ApiError("只有受限反馈批次可以改用自由反馈", 409, "conflict", false);
+  }
+  const candidatePlans = refreshedBatch.plans.flatMap((plan) => {
     if (normalizeStoredFeedbackGenerationApproach(plan.generationApproach) !== "restricted") return [];
     const items = plan.items.flatMap((item) => {
       if (!["generation_failed", "evidence_ready", "queued"].includes(item.status)) return [];
@@ -1127,7 +1389,12 @@ export async function retryFeedbackPlanBatchWithFree(batchId: string, db: Prisma
       for (const { item, snapshot } of items) {
         const nextStatus = item.status === "generation_failed" ? "queued" : item.status;
         const updated = await tx.feedbackPlanItem.updateMany({
-          where: { id: item.id, planId: plan.id, status: item.status },
+          where: {
+            id: item.id,
+            planId: plan.id,
+            status: item.status,
+            itemRevision: item.itemRevision,
+          },
           data: {
             status: nextStatus,
             generationError: null,
@@ -1149,8 +1416,13 @@ export async function retryFeedbackPlanBatchWithFree(batchId: string, db: Prisma
         if (nextStatus === "queued") queued += 1;
       }
       const runStartedAt = new Date();
-      await tx.feedbackPlan.update({
-        where: { id: plan.id },
+      const updatedPlan = await tx.feedbackPlan.updateMany({
+        where: {
+          id: plan.id,
+          archivedAt: null,
+          status: plan.status,
+          planRevision: plan.planRevision,
+        },
         data: {
           ...(queued ? {
             status: "queued",
@@ -1161,11 +1433,19 @@ export async function retryFeedbackPlanBatchWithFree(batchId: string, db: Prisma
           planRevision: { increment: 1 },
         },
       });
+      if (updatedPlan.count !== 1) {
+        throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
+      }
       if (queued && !firstQueuedPlanId) firstQueuedPlanId = plan.id;
     }
-    const currentPlanId = batch.failedPlanId ?? firstQueuedPlanId ?? candidatePlans[0]!.plan.id;
-    await tx.feedbackPlanBatch.update({
-      where: { id: batch.id },
+    const currentPlanId = refreshedBatch.failedPlanId ?? firstQueuedPlanId ?? candidatePlans[0]!.plan.id;
+    const updatedBatch = await tx.feedbackPlanBatch.updateMany({
+      where: {
+        id: batch.id,
+        archivedAt: null,
+        status: "failed",
+        planRevision: refreshedBatch.planRevision,
+      },
       data: {
         status: "queued",
         currentPlanId,
@@ -1173,6 +1453,9 @@ export async function retryFeedbackPlanBatchWithFree(batchId: string, db: Prisma
         planRevision: { increment: 1 },
       },
     });
+    if (updatedBatch.count !== 1) {
+      throw new ApiError("班级组状态已经变化，请刷新后重试", 409, "conflict", true);
+    }
     return { changed: changedItems, currentPlanId };
   });
   void startBatchJob(batch.id, db);

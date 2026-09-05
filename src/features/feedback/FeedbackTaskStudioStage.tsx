@@ -57,6 +57,15 @@ export function shouldRefreshFeedbackTaskBatch(status: string) {
   return status !== "archived";
 }
 
+export function feedbackBatchGenerationIsActive(batch: {
+  status: string;
+  plans: Array<NonNullable<Parameters<typeof feedbackPlanGenerationIsActive>[0]>>;
+} | null) {
+  if (!batch || ["paused", "failed", "completed", "archived"].includes(batch.status)) return false;
+  return ["queued", "running", "pause_requested"].includes(batch.status)
+    || batch.plans.some((plan) => feedbackPlanGenerationIsActive(plan));
+}
+
 export function feedbackStudioPlanTarget(plan: QueuePlan): FeedbackStudioPlanTarget {
   return {
     id: plan.id,
@@ -214,10 +223,7 @@ export function FeedbackTaskStudioStage(props: Props) {
   }, { action: 0, review: 0, done: 0, all: 0 });
   const queueReady = batchId ? batch?.id === batchId : singlePlan?.id === planId;
   const batchLegacyReadonly = (batch as (FeedbackBatchClient & { legacyReadonly?: boolean }) | null)?.legacyReadonly === true;
-  const batchGenerationActive = Boolean(batch && (
-    ["queued", "running", "pause_requested"].includes(batch.status)
-    || batch.plans.some((plan) => feedbackPlanGenerationIsActive(plan))
-  ));
+  const batchGenerationActive = feedbackBatchGenerationIsActive(batch);
 
   useEffect(() => {
     if (!queueReady) return;
@@ -293,7 +299,7 @@ export function FeedbackTaskStudioStage(props: Props) {
     try {
       await requestJson(`/api/report/feedback-plan-batches/${encodeURIComponent(batchId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
       await loadPlans();
-      setNotice(action === "pause" ? "已请求安全暂停整个班级组。" : action === "continue" ? "班级组生成已继续。" : action === "force_stop" ? "已强制终止当前班级组生成；已完成结果保持不变。" : action === "retry_with_free" ? "失败和尚未开始的条目正改用自由反馈。" : "正在重试当前失败班级。");
+      setNotice(action === "pause" ? "已请求安全暂停整个班级组。" : action === "continue" ? "班级组生成已继续。" : action === "force_stop" ? "已强制终止当前班级组生成；已完成结果保持不变。" : action === "retry_with_free" ? "失败和尚未开始的条目正改用自由反馈。" : "正在重试全部失败条目。");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "班级组操作失败"); }
     finally { setBusy(false); }
   }
@@ -316,7 +322,7 @@ export function FeedbackTaskStudioStage(props: Props) {
       : plans.filter((plan) => (classFilter === "all" || plan.class.id === classFilter) && plan.items.some((item) => feedbackQueueMatches({ item, plan }, filter, classFilter))).map((plan) => <section key={plan.id}><header><div><strong>{plan.class.name ?? plan.class.code}</strong><small>{feedbackStudioConfiguredApproachLabel(plan as QueuePlan & { legacyReadonly?: boolean })} · 生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></div>{plan.progress.failed > 0 && <Badge tone="danger">失败 {plan.progress.failed}</Badge>}</header><div>{plan.items.filter((item) => feedbackQueueMatches({ item, plan }, filter, classFilter)).map((item) => { const active = target.planId === plan.id && target.itemId === item.id; const attempts = item.generationExecution?.attempts ?? []; const actualApproach = attempts[attempts.length - 1]?.actualApproach; const currentStage = feedbackPlanItemCurrentStageLabel(item); return <button type="button" key={`${plan.id}:${item.id}`} aria-current={active ? "true" : undefined} className={active ? "is-active" : ""} onClick={() => selectItem(plan, item)}><span><strong>{item.student?.name ?? (item.studentId ? "学生信息待加载" : "班级公共反馈")}</strong><small>{item.student?.studentId ?? (item.studentId ? "身份待加载" : "公共条目")} · {plan.class.name ?? plan.class.code} · {currentStage ?? (actualApproach ? `${feedbackGenerationApproachLabel(actualApproach)}实际执行` : "尚未执行")}</small></span><Badge tone={feedbackQueueCategory(item.status) === "done" ? "success" : item.status === "generation_failed" || item.status === "stale" ? "danger" : "warning"}>{itemStatusLabels[item.status] ?? item.status}</Badge></button>; })}</div></section>)}</nav>
   </>;
   return <div className={styles.studioStage}>
-    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成、批准和导出分别记录，失败项留在队列中重试。{batch ? `计划方式：${feedbackStudioConfiguredApproachLabel(batch as FeedbackBatchClient & { legacyReadonly?: boolean })}` : ""}</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}{batchGenerationActive && <Button variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch?.status === "pause_requested"}>{batch?.status === "pause_requested" ? "正在安全暂停…" : "暂停整批"}</Button>}{batchGenerationActive && <Button variant="danger" onClick={() => void batchAction("force_stop")} disabled={busy}>强制终止整批</Button>}{batch?.status === "paused" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续整批</Button>}{batch?.status === "failed" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("retry")} disabled={busy || batchGenerationActive}>重试失败班级</Button>}{batch?.status === "failed" && !batchLegacyReadonly && batch.generationApproach === "restricted" && <Button variant="secondary" onClick={() => void batchAction("retry_with_free")} disabled={busy || batchGenerationActive}>改用自由反馈</Button>}<Button variant="ghost" onClick={props.onNewTask}>归档当前计划并新建</Button></div></header>
+    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成、批准和导出分别记录，失败项留在队列中重试。{batch ? `跨班按学生共享 2 个生成槽位；计划方式：${feedbackStudioConfiguredApproachLabel(batch as FeedbackBatchClient & { legacyReadonly?: boolean })}` : ""}</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}{batchGenerationActive && <Button variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch?.status === "pause_requested"}>{batch?.status === "pause_requested" ? "正在安全暂停…" : "暂停整批"}</Button>}{batchGenerationActive && <Button variant="danger" onClick={() => void batchAction("force_stop")} disabled={busy}>强制终止整批</Button>}{batch?.status === "paused" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续整批</Button>}{batch?.status === "failed" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("retry")} disabled={busy || batchGenerationActive}>重试失败条目</Button>}{batch?.status === "failed" && !batchLegacyReadonly && batch.generationApproach === "restricted" && <Button variant="secondary" onClick={() => void batchAction("retry_with_free")} disabled={busy || batchGenerationActive}>改用自由反馈</Button>}<Button variant="ghost" onClick={props.onNewTask}>归档当前计划并新建</Button></div></header>
     {batchLegacyReadonly && <StatusBanner tone="warning">旧生成方式已退役，当前班级组只读保留历史生成状态。已有正文仍可编辑、批准和导出；如需重新生成，请另存为并选择受限反馈或自由反馈。</StatusBanner>}
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}{notice && <StatusBanner tone="success">{notice}</StatusBanner>}
     <button ref={queueTriggerRef} type="button" className="feedback-queue-mobile-trigger" aria-haspopup="dialog" aria-expanded={queueOpen} onClick={() => setQueueOpen(true)}>{activeQueueEntry ? `${activeQueueEntry.item.student?.name ?? "反馈队列"} · ${itemStatusLabels[activeQueueEntry.item.status] ?? "选择条目"} · ${filteredQueue.findIndex(({ item, plan }) => item.id === target.itemId && plan.id === target.planId) + 1}/${filteredQueue.length}` : "当前筛选下没有学生任务"}</button>
