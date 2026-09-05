@@ -8,6 +8,7 @@ import {
   archiveFeedbackPlanBatch,
   cloneFeedbackPlanBatchDraft,
   continueFeedbackPlanBatch,
+  forceStopFeedbackPlanBatch,
   getFeedbackPlanBatch,
   pauseFeedbackPlanBatch,
   renameFeedbackPlanBatch,
@@ -64,6 +65,7 @@ export async function POST(request: NextRequest, context: Context) {
     if (input.action === "start") return NextResponse.json(await startFeedbackPlanBatch(id, undefined, input.expectedPlanRevision, input.generationApproach), { status: 202 });
     if (input.action === "pause") return NextResponse.json(await pauseFeedbackPlanBatch(id), { status: 202 });
     if (input.action === "continue") return NextResponse.json(await continueFeedbackPlanBatch(id), { status: 202 });
+    if (input.action === "force_stop") return NextResponse.json(await forceStopFeedbackPlanBatch(id), { status: 202 });
     if (input.action === "retry") return NextResponse.json(await retryFeedbackPlanBatch(id), { status: 202 });
     if (input.action === "retry_with_free") return NextResponse.json(await retryFeedbackPlanBatchWithFree(id), { status: 202 });
     if (input.action === "archive") return NextResponse.json(await archiveFeedbackPlanBatch(id));
@@ -82,6 +84,7 @@ export async function POST(request: NextRequest, context: Context) {
       const batch = await saveFeedbackPlanBatchAs({ batchId: id, displayName: input.displayName, patch: patch.data });
       return NextResponse.json({ batch }, { status: 201 });
     }
+    if (input.action !== "export") throw new ApiError("反馈批次操作无效", 400, "invalid_request", false);
     const buffer = await buildFeedbackPlanBatchExportWorkbook(prisma, id, input.mode, { allowRepeat: input.allowRepeat === true });
     return new Response(buffer, {
       headers: {

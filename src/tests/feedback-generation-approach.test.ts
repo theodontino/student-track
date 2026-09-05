@@ -8,7 +8,7 @@ import {
   serializeFeedbackGenerationExecutionSnapshot,
 } from "@/lib/feedback-generation-approach";
 import { FeedbackPlanCreateSchema, defaultFeedbackGenerationPreferences } from "@/lib/feedback-plan";
-import { FeedbackPlanBatchCreateSchema } from "@/lib/feedback-plan-batch";
+import { FeedbackPlanBatchActionSchema, FeedbackPlanBatchCreateSchema } from "@/lib/feedback-plan-batch";
 import { prisma } from "@/lib/prisma";
 import {
   cloneFeedbackPlanBatchDraft,
@@ -79,7 +79,7 @@ describe("feedback generation approach", () => {
     expect(feedbackGenerationApproachForDerivedPlan("restricted", "free")).toBe("free");
   });
 
-  it("round-trips a versioned execution snapshot and treats historical empty JSON as absent", () => {
+  it("keeps historical execution attempts readable while round-tripping new stage and error kind metadata", () => {
     const snapshot = createFeedbackGenerationExecutionSnapshot("restricted");
     snapshot.attempts.push({
       attempt: 1,
@@ -98,8 +98,32 @@ describe("feedback generation approach", () => {
     };
 
     expect(parseFeedbackGenerationExecutionSnapshot("{}")).toBeNull();
-    expect(parseFeedbackGenerationExecutionSnapshot(serializeFeedbackGenerationExecutionSnapshot(snapshot)))
-      .toEqual(snapshot);
+    const historical = parseFeedbackGenerationExecutionSnapshot(JSON.stringify(snapshot));
+    expect(historical).toEqual(snapshot);
+    expect(historical?.attempts[0]).not.toHaveProperty("stage");
+    expect(historical?.attempts[0]?.error).not.toHaveProperty("kind");
+
+    historical!.attempts.push({
+      attempt: 2,
+      trigger: "retry",
+      actualApproach: "restricted",
+      stage: "writer",
+      status: "failed",
+      startedAt: "2099-01-01T08:02:00.000Z",
+      completedAt: "2099-01-01T08:02:01.000Z",
+      error: {
+        code: "writer_timeout",
+        message: "合成超时",
+        retryable: true,
+        kind: "timeout",
+      },
+    });
+    expect(parseFeedbackGenerationExecutionSnapshot(serializeFeedbackGenerationExecutionSnapshot(historical!)))
+      .toEqual(historical);
+  });
+
+  it("accepts force stop as a batch generation action", () => {
+    expect(FeedbackPlanBatchActionSchema.parse({ action: "force_stop" })).toEqual({ action: "force_stop" });
   });
 
   it("persists the approach through create, save, save-as and batch child creation", async () => {

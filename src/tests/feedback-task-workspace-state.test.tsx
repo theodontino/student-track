@@ -3,7 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { includeIndependentFeedbackStudent, TaskConfirmationStage } from "@/features/feedback/TaskConfirmationStage";
 import { TaskPreparationStage } from "@/features/feedback/TaskPreparationStage";
 import {
+  feedbackGenerationStageLabel,
+  feedbackPlanAuditIssueGuidance,
+  feedbackPlanGenerationIsActive,
   feedbackPlanItemActualApproach,
+  feedbackPlanItemCurrentStageLabel,
   feedbackPlanItemShouldAutoSave,
   feedbackPlanItemShowsApproval,
   feedbackPlanConfiguredApproachLabel,
@@ -87,6 +91,14 @@ function groupDraft() {
 }
 
 describe("feedback task group workspace state", () => {
+  it("explains that an invalid restricted Writer draft is retained but blocked", () => {
+    expect(feedbackPlanAuditIssueGuidance("restricted_writer_output_invalid")).toMatchObject({
+      title: "草稿未通过程序核验",
+      impact: expect.stringContaining("不能批准、导出或生成企微草稿"),
+      action: expect.stringContaining("实际修改正文"),
+    });
+  });
+
   it("treats only an explicit legacy identity as retired and hides repeat approval", () => {
     expect(feedbackPlanUsesRetiredLegacyGeneration({ generationApproach: null, legacyReadonly: true })).toBe(true);
     expect(feedbackPlanUsesRetiredLegacyGeneration({ generationApproach: null })).toBe(false);
@@ -496,6 +508,41 @@ describe("feedback task group workspace state", () => {
       },
     })).toBe("free");
     expect(feedbackPlanItemActualApproach({ generationExecution: null })).toBeNull();
+  });
+
+  it("shows the server-reported active generation stage in Chinese", () => {
+    expect(feedbackGenerationStageLabel("planner")).toBe("Planner 规划");
+    expect(feedbackGenerationStageLabel("writer")).toBe("Writer 撰写");
+    expect(feedbackGenerationStageLabel("free")).toBe("自由生成");
+    expect(feedbackPlanItemCurrentStageLabel({
+      generationExecution: {
+        attempts: [{ actualApproach: "restricted", status: "running", stage: "writer" }],
+      },
+    })).toBe("Writer 撰写中");
+    expect(feedbackPlanItemCurrentStageLabel({
+      generationExecution: {
+        attempts: [{ actualApproach: "restricted", status: "succeeded", stage: "writer" }],
+      },
+    })).toBeNull();
+  });
+
+  it("keeps generation controls active while either the plan or an item is running", () => {
+    expect(feedbackPlanGenerationIsActive({ status: "generating", items: [] })).toBe(true);
+    expect(feedbackPlanGenerationIsActive({
+      status: "generation_failed",
+      items: [{ status: "generation_failed" }, { status: "generating" }],
+    })).toBe(true);
+    expect(feedbackPlanGenerationIsActive({
+      status: "generation_failed",
+      items: [{
+        status: "generation_failed",
+        generationExecution: { attempts: [{ status: "running" }] },
+      }],
+    })).toBe(true);
+    expect(feedbackPlanGenerationIsActive({
+      status: "generation_failed",
+      items: [{ status: "generation_failed" }],
+    })).toBe(false);
   });
 
   it("excludes already planned classes from the confirmation page", () => {

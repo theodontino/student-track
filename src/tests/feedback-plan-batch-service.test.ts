@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as XLSX from "xlsx";
 import { createHash } from "node:crypto";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 const generationMocks = vi.hoisted(() => ({ generate: vi.fn() }));
@@ -28,6 +29,7 @@ import {
   archiveFeedbackPlanBatch,
   continueFeedbackPlanBatch,
   createFeedbackPlanBatch,
+  forceStopFeedbackPlanBatch,
   getFeedbackPlanBatch,
   pauseFeedbackPlanBatch,
   renameFeedbackPlanBatch,
@@ -41,6 +43,7 @@ import {
 import {
   continueFeedbackPlanGeneration,
   createFeedbackPlan,
+  isFeedbackPlanGenerationRunning,
   pauseFeedbackPlanGeneration,
   retryFeedbackPlanGeneration,
 } from "@/services/feedback-plan-service";
@@ -772,6 +775,88 @@ describe("feedback plan batch service", () => {
     expect(callOrder).toEqual([studentIds[0], studentIds[0], studentIds[1]]);
   });
 
+  it("keeps a partially failed class running until active items settle, then force-stops without starting the next class", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-FORCE-STOP`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "合成批次强制终止",
+      plans: [{
+        classId: classIds[0]!,
+        sessionId: sessionIds[0]!,
+        studentIds: [studentIds[0]!, scopeStudentIds[0]!],
+      }, {
+        classId: classIds[1]!,
+        sessionId: sessionIds[1]!,
+        studentIds: [studentIds[1]!],
+      }],
+    });
+    const activeItem = batch.plans[0]!.items.find((item) => item.studentId === scopeStudentIds[0])!;
+    let releaseActive: (() => void) | undefined;
+    const activeGate = new Promise<void>((resolve) => { releaseActive = resolve; });
+    generationMocks.generate.mockImplementation(async (input: {
+      studentName: string;
+      evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      if (input.studentName === "合成学生1") throw new Error("synthetic first-item failure");
+      if (input.studentName === "范围学生1") await activeGate;
+      const evidence = input.evidenceBundle.teachingEvidence[0] ?? { id: "synthetic-evidence", content: "固定课堂事实" };
+      const composition = {
+        version: 1 as const,
+        closureType: "positive_recognition" as const,
+        needParentAction: false,
+        parentAction: null,
+        modules: [{ key: "observed_moment", content: evidence.content, evidenceRefs: [evidence.id], status: "included" as const, reason: "批次强停测试" }],
+        evidenceCoverage: [{ evidenceId: evidence.id, statement: evidence.content }],
+        draftFeedback: evidence.content,
+      };
+      return { draftComposition: composition, composition };
+    });
+
+    try {
+      await startFeedbackPlanBatch(batch.id);
+      await vi.waitFor(async () => {
+        const running = await getFeedbackPlanBatch(batch.id);
+        expect(running?.plans[0]?.progress).toMatchObject({ failed: 1, running: 1 });
+      }, { timeout: 5_000, interval: 50 });
+      const beforeStop = await getFeedbackPlanBatch(batch.id);
+      expect(beforeStop).toMatchObject({ status: "running", failedPlanId: null });
+      expect(beforeStop?.plans[1]?.progress.generated).toBe(0);
+
+      await expect(forceStopFeedbackPlanBatch(batch.id)).resolves.toMatchObject({
+        accepted: true,
+        status: "pause_requested",
+        interrupted: 1,
+      });
+      const stopped = await getFeedbackPlanBatch(batch.id);
+      expect(stopped).toMatchObject({
+        status: "pause_requested",
+        currentPlanId: batch.plans[0]!.id,
+        failedPlanId: null,
+      });
+      expect(stopped?.plans[0]?.progress).toMatchObject({ failed: 2, running: 0, queued: 0 });
+      expect(stopped?.plans[1]?.progress.generated).toBe(0);
+
+      releaseActive?.();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(batch.plans[0]!.id)).toBe(false), { timeout: 5_000 });
+      await vi.waitFor(async () => {
+        const afterLateResult = await getFeedbackPlanBatch(batch.id);
+        expect(afterLateResult).toMatchObject({
+          status: "failed",
+          currentPlanId: batch.plans[0]!.id,
+          failedPlanId: batch.plans[0]!.id,
+        });
+      }, { timeout: 5_000, interval: 50 });
+      const afterLateResult = await getFeedbackPlanBatch(batch.id);
+      expect(afterLateResult?.plans[0]?.progress).toMatchObject({ failed: 2, running: 0, queued: 0 });
+      expect(afterLateResult?.plans[1]?.progress.generated).toBe(0);
+      await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: activeItem.id } })).resolves.toBe(0);
+    } finally {
+      releaseActive?.();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(batch.plans[0]!.id)).toBe(false), { timeout: 5_000 });
+    }
+  });
+
   it("switches only failed and not-started batch items to free generation", async () => {
     const batch = await createFeedbackPlanBatch({
       requestKey: `${marker}-FREE-FALLBACK`,
@@ -935,6 +1020,250 @@ describe("feedback plan batch service", () => {
     await continueFeedbackPlanBatch(batch.id);
     await vi.waitFor(async () => expect((await getFeedbackPlanBatch(batch.id))?.status).toBe("completed"), { timeout: 5000, interval: 50 });
     expect(callOrder).toEqual([studentIds[0], studentIds[1]]);
+  });
+
+  it("keeps the batch paused when child completion wins the pause race", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-PAUSE-COMPLETION-WINS`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "合成暂停完成竞态",
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!],
+      })),
+    });
+    const callOrder: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    generationMocks.generate.mockImplementation(async (input: {
+      evidenceBundle: { studentId: string | null; teachingEvidence: Array<{ id: string; content: string }> };
+    }) => {
+      callOrder.push(input.evidenceBundle.studentId ?? "");
+      if (callOrder.length === 1) await firstGate;
+      const evidence = input.evidenceBundle.teachingEvidence[0] ?? { id: "fallback", content: "已确认课堂事实" };
+      const composition = {
+        version: 1 as const,
+        closureType: "positive_recognition" as const,
+        needParentAction: false,
+        parentAction: null,
+        modules: [{ key: "observed_moment", content: evidence.content, evidenceRefs: [evidence.id], status: "included" as const, reason: "暂停竞态测试" }],
+        evidenceCoverage: [{ evidenceId: evidence.id, statement: evidence.content }],
+        draftFeedback: evidence.content,
+      };
+      return { draftComposition: composition, composition };
+    });
+
+    try {
+      await startFeedbackPlanBatch(batch.id);
+      await vi.waitFor(async () => {
+        expect((await getFeedbackPlanBatch(batch.id))?.plans[0]?.progress.running).toBe(1);
+      }, { timeout: 5_000, interval: 50 });
+
+      await expect(pauseFeedbackPlanBatch(batch.id)).resolves.toMatchObject({
+        accepted: true,
+        status: "pause_requested",
+      });
+      releaseFirst?.();
+
+      await vi.waitFor(async () => {
+        const paused = await getFeedbackPlanBatch(batch.id);
+        expect(paused).toMatchObject({
+          status: "paused",
+          currentPlanId: batch.plans[0]!.id,
+          failedPlanId: null,
+        });
+        expect(paused?.plans[0]?.progress).toMatchObject({ generated: 1, running: 0 });
+        expect(paused?.plans[1]?.progress.generated).toBe(0);
+      }, { timeout: 5_000, interval: 50 });
+      expect(callOrder).toEqual([studentIds[0]]);
+    } finally {
+      releaseFirst?.();
+      await vi.waitFor(() => {
+        expect(isFeedbackPlanGenerationRunning(batch.plans[0]!.id)).toBe(false);
+      }, { timeout: 5_000, interval: 50 });
+    }
+  });
+
+  it("fences a child start when force-stop wins after the coordinator claim", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-FORCE-STOP-CLAIM-HANDSHAKE`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "合成父批次版本握手竞态",
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!],
+      })),
+    });
+    generationMocks.generate.mockReset();
+    generationMocks.generate.mockRejectedValue(new Error("父批次强停后不应启动子计划"));
+
+    let reportCoordinatorClaim: (() => void) | undefined;
+    const coordinatorClaimed = new Promise<void>((resolve) => { reportCoordinatorClaim = resolve; });
+    let releaseCoordinatorClaim: (() => void) | undefined;
+    const coordinatorClaimGate = new Promise<void>((resolve) => { releaseCoordinatorClaim = resolve; });
+    let reportChildTransactionSettled: (() => void) | undefined;
+    const childTransactionSettled = new Promise<void>((resolve) => { reportChildTransactionSettled = resolve; });
+    let reportCoordinatorCatchRead: (() => void) | undefined;
+    const coordinatorCatchRead = new Promise<void>((resolve) => { reportCoordinatorCatchRead = resolve; });
+    let coordinatorClaimPersisted = false;
+    let childTransactionFinished = false;
+    let childTransactionError: unknown;
+    const schedulerFeedbackPlanBatch = new Proxy(prisma.feedbackPlanBatch, {
+      get(target, property) {
+        if (property === "updateMany") {
+          return async (args: Parameters<typeof prisma.feedbackPlanBatch.updateMany>[0]) => {
+            const updated = await prisma.feedbackPlanBatch.updateMany(args);
+            const claimsCurrentPlan = args.data.status === "running"
+              && typeof args.data.currentPlanId === "string";
+            if (claimsCurrentPlan && !coordinatorClaimPersisted) {
+              coordinatorClaimPersisted = true;
+              reportCoordinatorClaim?.();
+              await coordinatorClaimGate;
+            }
+            return updated;
+          };
+        }
+        if (property === "findUnique") {
+          return async (args: Parameters<typeof prisma.feedbackPlanBatch.findUnique>[0]) => {
+            const result = await prisma.feedbackPlanBatch.findUnique(args);
+            if (childTransactionFinished) reportCoordinatorCatchRead?.();
+            return result;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const schedulerDb = new Proxy(prisma, {
+      get(target, property) {
+        if (property === "feedbackPlanBatch") return schedulerFeedbackPlanBatch;
+        if (property === "$transaction") {
+          return async (operation: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
+            try {
+              return await prisma.$transaction(operation);
+            } catch (error) {
+              childTransactionError = error;
+              throw error;
+            } finally {
+              if (coordinatorClaimPersisted) {
+                childTransactionFinished = true;
+                reportChildTransactionSettled?.();
+              }
+            }
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as PrismaClient;
+
+    try {
+      await startFeedbackPlanBatch(batch.id, schedulerDb);
+      await coordinatorClaimed;
+      const claimed = await prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } });
+      expect(claimed).toMatchObject({
+        status: "running",
+        currentPlanId: batch.plans[0]!.id,
+        failedPlanId: null,
+      });
+      await expect(prisma.feedbackPlanItem.count({
+        where: { plan: { batchId: batch.id }, status: { in: ["queued", "generating"] } },
+      })).resolves.toBe(0);
+
+      await expect(forceStopFeedbackPlanBatch(batch.id)).resolves.toMatchObject({
+        accepted: true,
+        status: "paused",
+        interrupted: 0,
+      });
+      const stopped = await prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } });
+      expect(stopped).toMatchObject({
+        status: "paused",
+        currentPlanId: batch.plans[0]!.id,
+        failedPlanId: null,
+      });
+      expect(stopped.planRevision).toBeGreaterThan(claimed.planRevision);
+
+      releaseCoordinatorClaim?.();
+      await childTransactionSettled;
+      expect(childTransactionError).toMatchObject({
+        status: 409,
+        message: "班级组状态已经变化，本班未启动",
+      });
+      await coordinatorCatchRead;
+      await vi.waitFor(async () => {
+        const finalBatch = await getFeedbackPlanBatch(batch.id);
+        expect(finalBatch).toMatchObject({
+          status: "paused",
+          currentPlanId: batch.plans[0]!.id,
+          failedPlanId: null,
+        });
+        expect(finalBatch?.plans[0]?.progress).toMatchObject({ queued: 0, running: 0, generated: 0 });
+        expect(finalBatch?.plans[1]?.progress).toMatchObject({ queued: 0, running: 0, generated: 0 });
+      }, { timeout: 5_000, interval: 50 });
+      expect(generationMocks.generate).not.toHaveBeenCalled();
+      await expect(prisma.feedbackPlanItem.count({
+        where: { plan: { batchId: batch.id }, status: { in: ["queued", "generating"] } },
+      })).resolves.toBe(0);
+    } finally {
+      releaseCoordinatorClaim?.();
+    }
+  });
+
+  it("settles an orphaned generating child to failed after a safe batch pause", async () => {
+    const batch = await createFeedbackPlanBatch({
+      requestKey: `${marker}-PAUSE-ORPHANED-GENERATION`,
+      semesterId,
+      type: "event_micro",
+      outputRequirement: "合成无本地执行器暂停",
+      plans: classIds.map((classId, index) => ({
+        classId,
+        sessionId: sessionIds[index],
+        studentIds: [studentIds[index]!],
+      })),
+    });
+    const child = batch.plans[0]!;
+    const item = child.items[0]!;
+    const startedAt = new Date(Date.now() - 1_000);
+    await prisma.feedbackPlanBatch.update({
+      where: { id: batch.id },
+      data: { status: "running", currentPlanId: child.id, failedPlanId: null },
+    });
+    await prisma.feedbackPlan.update({
+      where: { id: child.id },
+      data: {
+        status: "generating",
+        generationStartedAt: startedAt,
+        generationRunStartedAt: startedAt,
+      },
+    });
+    await prisma.feedbackPlanItem.update({
+      where: { id: item.id },
+      data: { status: "generating", generationStartedAt: startedAt },
+    });
+    expect(isFeedbackPlanGenerationRunning(child.id)).toBe(false);
+
+    await expect(pauseFeedbackPlanBatch(batch.id)).resolves.toMatchObject({
+      accepted: true,
+      status: "pause_requested",
+    });
+    await vi.waitFor(async () => {
+      const settled = await getFeedbackPlanBatch(batch.id);
+      expect(settled).toMatchObject({
+        status: "failed",
+        currentPlanId: child.id,
+        failedPlanId: child.id,
+      });
+      expect(settled?.plans[0]?.progress.running).toBe(0);
+      await expect(prisma.feedbackPlanItem.count({
+        where: { plan: { batchId: batch.id }, status: "generating" },
+      })).resolves.toBe(0);
+    }, { timeout: 5_000, interval: 50 });
+    expect(isFeedbackPlanGenerationRunning(child.id)).toBe(false);
+    expect((await getFeedbackPlanBatch(batch.id))?.plans[1]?.progress.generated).toBe(0);
   });
 
   it("exports approved student items across classes once, including a prior single-plan export", async () => {

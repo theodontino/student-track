@@ -19,6 +19,7 @@ import {
   cloneFeedbackPlanDraft,
   createTeacherTask,
   deleteFeedbackPlan,
+  forceStopFeedbackPlanGeneration,
   getFeedbackPlan,
   patchFeedbackPlanItem,
   pauseFeedbackPlanGeneration,
@@ -175,6 +176,9 @@ export async function POST(request: NextRequest, context: Context) {
     }
     if (body.action === "continue_generation") {
       return NextResponse.json(await continueFeedbackPlanGeneration(id), { status: 202 });
+    }
+    if (body.action === "force_stop_generation") {
+      return NextResponse.json(await forceStopFeedbackPlanGeneration(id), { status: 202 });
     }
     if (body.action === "retry_generation") {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
