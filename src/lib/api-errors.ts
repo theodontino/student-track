@@ -10,6 +10,7 @@ export const API_ERROR_CODES = [
   "cancelled",
   "forbidden_origin",
   "feature_unavailable",
+  "legacy_generation_retired",
   "internal_error",
 ] as const;
 

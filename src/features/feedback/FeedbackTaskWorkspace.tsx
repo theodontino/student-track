@@ -125,7 +125,6 @@ export function refreshFeedbackStudentSelections(
 
 export function feedbackGroupIntakeScope(
   entries: FeedbackTaskClassDraft[],
-  runs: Record<string, Pick<FeedbackIntakeRunClient, "planId"> | undefined>,
   plannedSessionCodes: Iterable<string> = [],
 ) {
   const planned = new Set(plannedSessionCodes);
@@ -135,9 +134,7 @@ export function feedbackGroupIntakeScope(
   return {
     sessionCodes: selectedEntries.map((item) => item.sessionCode),
     runIds: Object.fromEntries(selectedEntries.flatMap((item) => (
-      // A linked run can seed another plan, but adding new material must start
-      // an independent intake run so the historical fact snapshot stays frozen.
-      item.runId && !runs[item.runId]?.planId ? [[item.sessionCode, item.runId]] : []
+      item.runId ? [[item.sessionCode, item.runId]] : []
     ))),
   };
 }
@@ -230,13 +227,11 @@ export function releaseArchivedFeedbackTaskReferences(
   plannedSessionCodes: string[],
   archived: ArchivedFeedbackTaskReference,
 ) {
-  const archivedPlanIds = new Set(archived.planIds);
   const archivedSessionCodes = new Set(archived.sessionCodes);
   return {
-    runs: Object.fromEntries(Object.entries(runs).map(([runId, run]) => [
-      runId,
-      run.planId && archivedPlanIds.has(run.planId) ? { ...run, planId: null } : run,
-    ])),
+    // FeedbackIntakeRun.planId is historical compatibility data only. Plan
+    // archival changes the local planning ledger, not that legacy pointer.
+    runs,
     plannedSessionCodes: plannedSessionCodes.filter((sessionCode) => !archivedSessionCodes.has(sessionCode)),
   };
 }
@@ -1185,7 +1180,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       setError("课次上下文正在切换，请等当前班级和课次加载完成后再投料。");
       return;
     }
-    const groupScope = state.draft.mode === "group" ? feedbackGroupIntakeScope(groupEntriesRef.current, runs, state.draft.plannedSessionCodes) : null;
+    const groupScope = state.draft.mode === "group" ? feedbackGroupIntakeScope(groupEntriesRef.current, state.draft.plannedSessionCodes) : null;
     if (groupScope && !groupScope.sessionCodes.length) {
       setError("请先重新纳入至少一个班级，再整理共同课材料。");
       return;
@@ -1210,7 +1205,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
         acceptGroupIntake(payload);
       } else {
         form.set("sessionCode", entry.sessionCode);
-        if (entry.runId && !runs[entry.runId]?.planId) form.set("runId", entry.runId);
+        if (entry.runId) form.set("runId", entry.runId);
         const response = await fetch("/api/feedback/intake/upload", { method: "POST", body: form });
         const payload = await response.json().catch(() => null) as ({ run?: FeedbackIntakeRunClient; error?: string }) | null;
         if (!response.ok || !payload?.run) throw new Error(payload?.error || "导入材料失败");
@@ -1233,7 +1228,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       setError("课次上下文正在切换，请等当前班级和课次加载完成后再扫描。");
       return;
     }
-    const groupScope = state.draft.mode === "group" ? feedbackGroupIntakeScope(groupEntriesRef.current, runs, state.draft.plannedSessionCodes) : null;
+    const groupScope = state.draft.mode === "group" ? feedbackGroupIntakeScope(groupEntriesRef.current, state.draft.plannedSessionCodes) : null;
     if (groupScope && !groupScope.sessionCodes.length) {
       setError("请先重新纳入至少一个班级，再扫描共同课材料。");
       return;
@@ -1254,7 +1249,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       } else {
         const result = await requestJson<{ run: FeedbackIntakeRunClient }>("/api/feedback/intake/scan", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionCode: entry.sessionCode, ...(entry.runId && !runs[entry.runId]?.planId ? { runId: entry.runId } : {}), ...(useExistingFacts ? { useExistingFacts: true } : {}) }),
+          body: JSON.stringify({ sessionCode: entry.sessionCode, ...(entry.runId ? { runId: entry.runId } : {}), ...(useExistingFacts ? { useExistingFacts: true } : {}) }),
         });
         if (!operationScopeIsCurrent(startedScopeToken)) {
           setNotice("原班级的材料已经扫描；当前页面未被旧结果覆盖，返回原班级即可继续。");
@@ -1376,7 +1371,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       if (selectedEntries.some((item) => !item.runId || !runs[item.runId])) {
         setNotice("没有新文件，正在按已录入事实准备本轮核对…");
         if (state.draft.mode === "group") {
-          const scope = feedbackGroupIntakeScope(groupEntriesRef.current, runs, state.draft.plannedSessionCodes);
+          const scope = feedbackGroupIntakeScope(groupEntriesRef.current, state.draft.plannedSessionCodes);
           const result = await requestJson<FeedbackGroupIntakeUploadResponse>("/api/feedback/intake/group-scan", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1408,7 +1403,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               sessionCode: selectedEntry.sessionCode,
-              ...(selectedEntry.runId && !runs[selectedEntry.runId]?.planId ? { runId: selectedEntry.runId } : {}),
+              ...(selectedEntry.runId ? { runId: selectedEntry.runId } : {}),
               useExistingFacts: true,
             }),
           });

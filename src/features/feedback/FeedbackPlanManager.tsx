@@ -2,25 +2,35 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Badge, Button, StatusBanner } from "@/components/ui";
+import { Badge, Button, Drawer, StatusBanner } from "@/components/ui";
 import { requestJson } from "@/lib/api-client";
 import { feedbackGenerationApproachLabel, type FeedbackGenerationApproach } from "@/lib/feedback-generation-approach";
+import { feedbackPlanActionBucket as deriveFeedbackPlanActionBucket, type FeedbackPlanActionBucket } from "@/lib/feedback-plan-summary";
 import styles from "./feedback-plan-manager.module.css";
 
 export type FeedbackPlanSummary = {
   id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; batchId?: string | null;
+  updatedAt?: string; actionBucket?: FeedbackPlanActionBucket; legacyReadonly?: boolean;
   generationApproach?: FeedbackGenerationApproach | null; generationApproachLabel?: string;
   session?: { code: string } | null; rangeEndSession?: { code: string } | null;
   class?: { id: string; code: string; name?: string | null } | null;
   semester?: { id: string; name: string } | null;
-  itemStatusCounts: { total: number; queued: number; running: number; completed: number; failed: number };
+  itemStatusCounts: {
+    total: number; queued: number; running: number; completed: number; failed: number;
+    evidenceReady?: number; paused?: number; needsReview?: number; approved?: number; exported?: number; stale?: number;
+  };
 };
 
 export type FeedbackPlanBatchSummary = {
   id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; semester?: { id: string; name: string } | null;
+  updatedAt?: string; actionBucket?: FeedbackPlanActionBucket; legacyReadonly?: boolean;
   generationApproach?: FeedbackGenerationApproach | null; generationApproachLabel?: string;
   plans: Array<{ id: string; class: { id: string; code: string; name?: string | null }; session?: { code: string } | null; rangeEndSession?: { code: string } | null }>;
   progress: { total: number; generated: number; approved: number; exported: number; failed: number; completedClasses: number; totalClasses: number };
+  itemStatusCounts?: {
+    total: number; evidenceReady: number; queued: number; running: number; paused: number; failed: number;
+    needsReview: number; approved: number; exported: number; stale: number; completed: number;
+  };
 };
 
 export type FeedbackPlanTaskRow = { kind: "plan"; id: string; plan: FeedbackPlanSummary } | { kind: "batch"; id: string; batch: FeedbackPlanBatchSummary };
@@ -45,6 +55,7 @@ const runningBatchStatuses = new Set(["queued", "running", "pause_requested"]);
 
 export type FeedbackPlanDisplayState = "saved" | "active" | "completed";
 const displayStateLabels: Record<FeedbackPlanDisplayState, string> = { saved: "已保存", active: "活动中", completed: "已完成" };
+const actionBucketLabels: Record<FeedbackPlanActionBucket, string> = { generating: "正在生成", needs_continue: "需要继续", completed: "最近完成" };
 
 export function feedbackPlanDisplayState(plan: FeedbackPlanSummary): FeedbackPlanDisplayState {
   const progress = plan.itemStatusCounts;
@@ -90,8 +101,72 @@ export function feedbackPlanManagerStatusText(
 
 export function feedbackPlanTaskGenerationApproachLabel(task: FeedbackPlanTaskRow) {
   const record = task.kind === "batch" ? task.batch : task.plan;
-  return record.generationApproachLabel?.trim()
-    || feedbackGenerationApproachLabel(record.generationApproach);
+  if (record.legacyReadonly === true) return record.generationApproachLabel?.trim() || feedbackGenerationApproachLabel(null);
+  if (record.generationApproach) return record.generationApproachLabel?.trim() || feedbackGenerationApproachLabel(record.generationApproach);
+  return "生成方式未标注";
+}
+
+export function feedbackPlanTaskIsCurrent(task: FeedbackPlanTaskRow, currentPlanId?: string, currentBatchId?: string) {
+  if (task.kind === "batch") {
+    return task.id === currentBatchId || (!currentBatchId && Boolean(currentPlanId) && task.batch.plans.some((plan) => plan.id === currentPlanId));
+  }
+  return !currentBatchId && task.id === currentPlanId;
+}
+
+export function feedbackPlanTaskActionBucket(task: FeedbackPlanTaskRow): FeedbackPlanActionBucket {
+  const record = task.kind === "batch" ? task.batch : task.plan;
+  if (record.actionBucket === "generating" || record.actionBucket === "needs_continue" || record.actionBucket === "completed") return record.actionBucket;
+  if (task.kind === "batch") {
+    const counts = task.batch.itemStatusCounts;
+    if (counts) return deriveFeedbackPlanActionBucket(task.batch.status, counts, "batch");
+    if (["paused", "failed"].includes(task.batch.status)) return "needs_continue";
+    if (runningBatchStatuses.has(task.batch.status)) return "generating";
+    if (!counts && task.batch.progress.total > 0 && (task.batch.progress.approved === task.batch.progress.total || task.batch.progress.exported === task.batch.progress.total)) return "completed";
+    return "needs_continue";
+  }
+  const counts = task.plan.itemStatusCounts;
+  return deriveFeedbackPlanActionBucket(task.plan.status, {
+    total: counts.total,
+    evidenceReady: counts.evidenceReady ?? 0,
+    queued: counts.queued,
+    running: counts.running,
+    paused: counts.paused ?? 0,
+    failed: counts.failed,
+    needsReview: counts.needsReview ?? 0,
+    approved: counts.approved ?? (task.plan.status === "approved" ? counts.total : 0),
+    exported: counts.exported ?? (task.plan.status === "exported" ? counts.total : 0),
+    stale: counts.stale ?? 0,
+    completed: counts.completed,
+  });
+}
+
+export function groupFeedbackPlanTasks(tasks: FeedbackPlanTaskRow[], currentPlanId?: string, currentBatchId?: string) {
+  const batchChildIds = new Set(tasks.flatMap((task) => task.kind === "batch" ? task.batch.plans.map((plan) => plan.id) : []));
+  const uniqueTasks = tasks.filter((task) => task.kind === "batch" || !batchChildIds.has(task.id));
+  const current = uniqueTasks.find((task) => feedbackPlanTaskIsCurrent(task, currentPlanId, currentBatchId)) ?? null;
+  const sorted = uniqueTasks
+    .filter((task) => task !== current)
+    .sort((left, right) => {
+      const leftUpdated = left.kind === "batch" ? left.batch.updatedAt : left.plan.updatedAt;
+      const rightUpdated = right.kind === "batch" ? right.batch.updatedAt : right.plan.updatedAt;
+      return (rightUpdated ? Date.parse(rightUpdated) : 0) - (leftUpdated ? Date.parse(leftUpdated) : 0);
+    });
+  return {
+    current,
+    generating: sorted.filter((task) => feedbackPlanTaskActionBucket(task) === "generating"),
+    needsContinue: sorted.filter((task) => feedbackPlanTaskActionBucket(task) === "needs_continue"),
+    completed: sorted.filter((task) => feedbackPlanTaskActionBucket(task) === "completed").slice(0, 5),
+  };
+}
+
+export function feedbackPlanTaskPrimaryActionLabel(task: FeedbackPlanTaskRow) {
+  const record = task.kind === "batch" ? task.batch : task.plan;
+  if (record.legacyReadonly === true) return "复核已有正文";
+  const bucket = feedbackPlanTaskActionBucket(task);
+  if (bucket === "generating") return "查看生成";
+  if (bucket === "completed") return "查看结果";
+  if (["draft", "ready", "evidence_ready"].includes(record.status)) return "继续规划";
+  return "继续复核";
 }
 
 function typeLabel(type: string) {
@@ -146,7 +221,7 @@ async function waitUntilStopped(kind: "plan" | "batch", id: string, running: Set
   throw new Error("计划仍在停止中，请稍后再归档");
 }
 
-export default function FeedbackPlanManager({ currentPlanId, currentBatchId, refreshKey = 0, onOpen, onArchived }: {
+export default function FeedbackPlanManager({ semesterId, currentPlanId, currentBatchId, refreshKey = 0, onOpen, onArchived }: {
   semesterId?: string;
   currentPlanId?: string;
   currentBatchId?: string;
@@ -160,6 +235,9 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, ref
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [nameSearch, setNameSearch] = useState("");
+  const [classSearch, setClassSearch] = useState("");
   const loadSequence = useRef(0);
 
   const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -170,6 +248,7 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, ref
     }
     try {
       const query = new URLSearchParams({ archived: "false" });
+      if (semesterId) query.set("semesterId", semesterId);
       const [planResult, batchResult] = await Promise.all([
         requestJson<{ plans: FeedbackPlanSummary[] }>(`/api/report/feedback-plans?${query}`),
         requestJson<{ batches: FeedbackPlanBatchSummary[] }>(`/api/report/feedback-plan-batches?${query}`),
@@ -182,7 +261,7 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, ref
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, []);
+  }, [semesterId]);
 
   useEffect(() => { void load(); }, [currentBatchId, currentPlanId, load, refreshKey]);
 
@@ -193,20 +272,15 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, ref
       ...plans.filter((plan) => !plan.batchId && !childIds.has(plan.id)).map((plan) => ({ kind: "plan" as const, id: plan.id, plan })),
     ];
   }, [batches, plans]);
-  const groups = useMemo(() => {
-    const bySemester = new Map<string, { name: string; tasks: FeedbackPlanTaskRow[] }>();
-    for (const task of tasks) {
-      const semester = task.kind === "batch" ? task.batch.semester : task.plan.semester;
-      const key = semester?.id ?? "unknown";
-      const group = bySemester.get(key) ?? { name: semester?.name ?? "未命名学期", tasks: [] };
-      group.tasks.push(task);
-      bySemester.set(key, group);
-    }
-    return [...bySemester.values()];
-  }, [tasks]);
-  const currentTask = tasks.find((task) => task.kind === "batch" ? task.id === currentBatchId : !currentBatchId && task.id === currentPlanId);
+  const semesterTasks = useMemo(() => tasks.filter((task) => {
+    if (!semesterId) return true;
+    const taskSemesterId = task.kind === "batch" ? task.batch.semester?.id : task.plan.semester?.id;
+    return !taskSemesterId || taskSemesterId === semesterId;
+  }), [semesterId, tasks]);
+  const groupedTasks = useMemo(() => groupFeedbackPlanTasks(semesterTasks, currentPlanId, currentBatchId), [currentBatchId, currentPlanId, semesterTasks]);
+  const currentTask = groupedTasks.current;
   const currentState = currentTask ? (currentTask.kind === "batch" ? feedbackPlanBatchDisplayState(currentTask.batch) : feedbackPlanDisplayState(currentTask.plan)) : null;
-  const shouldPollTasks = shouldPollFeedbackPlanTasks(tasks);
+  const shouldPollTasks = shouldPollFeedbackPlanTasks(semesterTasks);
 
   useEffect(() => {
     if (!shouldPollTasks || loading) return;
@@ -246,35 +320,105 @@ export default function FeedbackPlanManager({ currentPlanId, currentBatchId, ref
             : [],
       });
       setNotice("反馈计划已归档；现在可以使用相同材料建立另一份计划。");
+      setDrawerOpen(false);
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "归档反馈计划失败"); }
     finally { setBusyId(""); }
   }
 
+  function taskTitle(task: FeedbackPlanTaskRow) {
+    return task.kind === "batch"
+      ? task.batch.displayName ?? `班级组反馈 · ${task.batch.plans.length} 个班级`
+      : task.plan.displayName ?? typeLabel(task.plan.type);
+  }
+
+  function taskClassText(task: FeedbackPlanTaskRow) {
+    if (task.kind === "batch") return task.batch.plans.map((plan) => plan.class.name ?? plan.class.code).join("、") || "班级组";
+    return task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级";
+  }
+
+  function taskSessionText(task: FeedbackPlanTaskRow) {
+    if (task.kind === "batch") {
+      const codes = [...new Set(task.batch.plans.map((plan) => plan.session?.code ?? plan.rangeEndSession?.code).filter(Boolean))];
+      return codes.join("、") || "课次待确认";
+    }
+    return task.plan.session?.code ?? task.plan.rangeEndSession?.code ?? "课次待确认";
+  }
+
+  function taskDescription(task: FeedbackPlanTaskRow) {
+    if (task.kind === "batch") {
+      const counts = task.batch.itemStatusCounts;
+      const awaitingReview = counts?.needsReview ?? Math.max(0, task.batch.progress.generated - task.batch.progress.approved);
+      const approved = counts?.approved ?? Math.max(0, task.batch.progress.approved - task.batch.progress.exported);
+      const exported = counts?.exported ?? task.batch.progress.exported;
+      return `${typeLabel(task.batch.type)} · ${feedbackPlanTaskGenerationApproachLabel(task)} · 生成 ${task.batch.progress.generated}/${task.batch.progress.total} · 待复核 ${awaitingReview} · 已批准 ${approved} · 已导出 ${exported}`;
+    }
+    const counts = task.plan.itemStatusCounts;
+    return `${typeLabel(task.plan.type)} · ${feedbackPlanTaskGenerationApproachLabel(task)} · 生成 ${counts.completed}/${counts.total} · 排队/生成 ${counts.queued + counts.running} · 失败 ${counts.failed} · 待复核 ${counts.needsReview ?? Math.max(0, counts.completed - (counts.approved ?? 0) - (counts.exported ?? 0))} · 已批准 ${counts.approved ?? 0} · 已导出 ${counts.exported ?? 0}`;
+  }
+
+  function openTask(task: FeedbackPlanTaskRow) {
+    const target = task.kind === "batch" ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
+    setDrawerOpen(false);
+    onOpen?.(target);
+  }
+
+  function renderTask(task: FeedbackPlanTaskRow, pinned = false) {
+    const isBatch = task.kind === "batch";
+    const record = isBatch ? task.batch : task.plan;
+    const displayState = isBatch ? feedbackPlanBatchDisplayState(task.batch) : feedbackPlanDisplayState(task.plan);
+    const openTarget = isBatch ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
+    const isLegacy = record.legacyReadonly === true;
+    return <article key={`${task.kind}:${task.id}`} className={`${styles.row} ${pinned ? styles.current : ""}`}>
+      <div className={styles.meta}>
+        <div className={styles.title}><strong>{taskTitle(task)}</strong><Badge tone={displayState === "completed" ? "success" : displayState === "active" ? "warning" : "info"}>{displayStateLabels[displayState]}</Badge>{isBatch && <Badge tone="neutral">班级组</Badge>}{isLegacy && <Badge tone="warning">旧生成只读</Badge>}</div>
+        <span>{taskClassText(task)} · {taskSessionText(task)}</span>
+        <small>{taskDescription(task)}</small>
+      </div>
+      <div className={styles.actions}>{onOpen
+        ? <Button uiSize="sm" onClick={() => openTask(task)} disabled={Boolean(busyId)}>{pinned ? feedbackPlanTaskPrimaryActionLabel(task) : "打开"}</Button>
+        : <Link className="ui-button ui-button--primary ui-button--sm" href={taskHref(openTarget)} onClick={() => setDrawerOpen(false)}>{pinned ? feedbackPlanTaskPrimaryActionLabel(task) : "打开"}</Link>}
+        <Button uiSize="sm" variant="ghost" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button>
+      </div>
+    </article>;
+  }
+
+  const normalizedNameSearch = nameSearch.trim().toLocaleLowerCase("zh-CN");
+  const normalizedClassSearch = classSearch.trim().toLocaleLowerCase("zh-CN");
+  const matchesSearch = (task: FeedbackPlanTaskRow) => (
+    (!normalizedNameSearch || taskTitle(task).toLocaleLowerCase("zh-CN").includes(normalizedNameSearch))
+    && (!normalizedClassSearch || taskClassText(task).toLocaleLowerCase("zh-CN").includes(normalizedClassSearch))
+  );
+  const searchedGroups = groupFeedbackPlanTasks(semesterTasks.filter(matchesSearch), currentPlanId, currentBatchId);
+  const visibleGenerating = searchedGroups.generating;
+  const visibleNeedsContinue = searchedGroups.needsContinue;
+  const visibleCompleted = searchedGroups.completed;
+  const currentTarget = currentTask ? (currentTask.kind === "batch" ? batchOpenTarget(currentTask.batch) : planOpenTarget(currentTask.plan)) : null;
+  const currentRecord = currentTask ? (currentTask.kind === "batch" ? currentTask.batch : currentTask.plan) : null;
+
   return <section className={styles.panel} aria-label="反馈计划选择器">
-    <header className={styles.header}>
-      <div><strong>反馈计划</strong><span>{loading ? "正在读取…" : feedbackPlanManagerStatusText(tasks, currentState)}</span></div>
-      <Button uiSize="sm" variant="ghost" onClick={() => void load()} disabled={loading || Boolean(busyId)}>刷新</Button>
-    </header>
+    <div className={styles.currentBar}>
+      <div className={styles.currentSummary}>
+        <span className={styles.eyebrow}>当前计划</span>
+        {currentTask ? <><div className={styles.currentTitle}><strong>{taskTitle(currentTask)}</strong><Badge tone={currentState === "completed" ? "success" : currentState === "active" ? "warning" : "info"}>{currentState ? displayStateLabels[currentState] : "当前"}</Badge>{currentTask.kind === "batch" && <Badge tone="neutral">班级组</Badge>}{currentRecord?.legacyReadonly === true && <Badge tone="warning">旧生成只读</Badge>}</div><span>{taskClassText(currentTask)} · {taskSessionText(currentTask)} · {feedbackPlanTaskGenerationApproachLabel(currentTask)}</span><small>{taskDescription(currentTask)}</small></> : <><strong>尚未选择计划</strong><span>{loading ? "正在读取当前学期计划…" : feedbackPlanManagerStatusText(semesterTasks, null)}</span></>}
+      </div>
+      <div className={styles.currentActions}>{currentTask && currentTarget && (onOpen
+        ? <Button onClick={() => onOpen(currentTarget)} disabled={Boolean(busyId)}>{feedbackPlanTaskPrimaryActionLabel(currentTask)}</Button>
+        : <Link className="ui-button ui-button--primary" href={taskHref(currentTarget)}>{feedbackPlanTaskPrimaryActionLabel(currentTask)}</Link>)}<Button variant="secondary" onClick={() => setDrawerOpen(true)} disabled={loading}>{currentTask ? "切换计划" : "选择计划"}</Button></div>
+    </div>
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}
     {notice && <StatusBanner tone="success">{notice}</StatusBanner>}
-    {!loading && tasks.length === 0 ? <p className={styles.empty}>尚未建立反馈计划。历史计划可在<Link href="/history?archived=true">反馈历史</Link>中查看。</p> : <div className={styles.list}>
-      {groups.map((group) => <section className={styles.group} key={group.name}><h3>{group.name}</h3>{group.tasks.map((task) => {
-        const isBatch = task.kind === "batch";
-        const displayState = isBatch ? feedbackPlanBatchDisplayState(task.batch) : feedbackPlanDisplayState(task.plan);
-        const isCurrent = isBatch ? task.id === currentBatchId : !currentBatchId && task.id === currentPlanId;
-        const openTarget = isBatch ? batchOpenTarget(task.batch) : planOpenTarget(task.plan);
-        const href = taskHref(openTarget);
-        const title = isBatch ? task.batch.displayName ?? `班级组反馈 · ${task.batch.plans.length} 个班级` : task.plan.displayName ?? typeLabel(task.plan.type);
-        const generationApproach = feedbackPlanTaskGenerationApproachLabel(task);
-        const description = isBatch
-          ? `${typeLabel(task.batch.type)} · ${generationApproach} · ${task.batch.progress.completedClasses}/${task.batch.progress.totalClasses} 班生成完成 · ${task.batch.progress.approved} 条已批准`
-          : `${typeLabel(task.plan.type)} · ${generationApproach} · ${task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级"} · ${task.plan.itemStatusCounts.completed}/${task.plan.itemStatusCounts.total} 条生成完成`;
-        return <article key={`${task.kind}:${task.id}`} className={`${styles.row} ${isCurrent ? styles.current : ""}`}>
-          <div className={styles.meta}><div className={styles.title}><strong>{title}</strong><Badge tone={displayState === "completed" ? "success" : displayState === "active" ? "warning" : "info"}>{displayStateLabels[displayState]}</Badge>{isCurrent && <Badge tone="info">当前打开</Badge>}</div><span>{description} · 批准、导出进度分别保留</span></div>
-          <div className={styles.actions}>{onOpen ? <Button uiSize="sm" variant="ghost" onClick={() => onOpen(openTarget)} disabled={Boolean(busyId)}>打开</Button> : <Link className="ui-button ui-button--ghost ui-button--sm" href={href}>打开</Link>}<Button uiSize="sm" variant="secondary" onClick={() => void archiveTask(task)} disabled={Boolean(busyId)}>{busyId === task.id ? "归档中…" : "归档"}</Button></div>
-        </article>;
-      })}</section>)}
-    </div>}
+    <Drawer open={drawerOpen} title="切换反馈计划" onClose={() => setDrawerOpen(false)} size="wide">
+      <div className={styles.drawerBody}>
+        <div className={styles.searches}><label>计划名称<input type="search" value={nameSearch} onChange={(event) => setNameSearch(event.target.value)} placeholder="搜索计划名称" /></label><label>班级<input type="search" value={classSearch} onChange={(event) => setClassSearch(event.target.value)} placeholder="搜索班级" /></label></div>
+        <div className={styles.drawerMeta}><span>默认仅显示当前学期；班级组始终只占一行。</span><Button uiSize="sm" variant="ghost" onClick={() => void load()} disabled={loading || Boolean(busyId)}>刷新</Button></div>
+        {currentTask && <section className={styles.group}><h3>当前计划</h3>{renderTask(currentTask, true)}</section>}
+        {visibleGenerating.length > 0 && <section className={styles.group}><h3>{actionBucketLabels.generating} · {visibleGenerating.length}</h3>{visibleGenerating.map((task) => renderTask(task))}</section>}
+        {visibleNeedsContinue.length > 0 && <section className={styles.group}><h3>{actionBucketLabels.needs_continue} · {visibleNeedsContinue.length}</h3>{visibleNeedsContinue.map((task) => renderTask(task))}</section>}
+        {visibleCompleted.length > 0 && <details className={styles.completedGroup}><summary>{actionBucketLabels.completed} · {visibleCompleted.length}<span>最近 5 项</span></summary><div>{visibleCompleted.map((task) => renderTask(task))}</div></details>}
+        {!loading && !currentTask && visibleGenerating.length === 0 && visibleNeedsContinue.length === 0 && visibleCompleted.length === 0 && <p className={styles.empty}>当前筛选下没有反馈计划。</p>}
+        <Link className={styles.historyLink} href={`/history?${new URLSearchParams(semesterId ? { semesterId } : {}).toString()}`} onClick={() => setDrawerOpen(false)}>查看完整反馈历史</Link>
+      </div>
+    </Drawer>
   </section>;
 }

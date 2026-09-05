@@ -24,7 +24,6 @@
 | `/api/feedback/intake/upload` | `POST` |
 | `/api/feedback/script-library` | `GET`, `POST` |
 | `/api/feedback/script-library/template` | `GET` |
-| `/api/feedback/tasks` | `POST` |
 | `/api/group-lessons/[id]/common-material` | `PUT` |
 | `/api/group-lessons/[id]/confirm` | `POST` |
 | `/api/group-lessons/[id]` | `DELETE`, `POST`, `PUT` |

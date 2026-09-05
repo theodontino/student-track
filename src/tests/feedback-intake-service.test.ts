@@ -3,7 +3,6 @@ import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
 import { STEP_CLASSROOM_HEADER, STEP_INTERPRETATION_PROMPT, STEP_PROMPT_VERSION } from "@/services/step-classroom-import-service";
 import { prisma } from "@/lib/prisma";
-import { archiveFeedbackPlan } from "@/services/feedback-plan-service";
 import {
   classifyFeedbackIntakeFile,
   createOrGetFeedbackIntakeRun,
@@ -293,7 +292,7 @@ describe("feedback intake file preparation", () => {
     await prisma.feedbackIntakeRun.delete({ where: { id: first.run.id } });
   });
 
-  it("lets the same material run be scanned again after its plan is archived", async () => {
+  it("reuses the same material run without consulting its historical plan pointer", async () => {
     const input = { sessionCode: "2026070801", files: [stepFile()], db: prisma };
     const prepared = await createOrGetFeedbackIntakeRun(input);
     await resolveFeedbackIntakeRun(prepared.run.id, { action: "confirm", decisions: [] }, prisma);
@@ -304,10 +303,9 @@ describe("feedback intake file preparation", () => {
     if (!("plan" in created) || !created.plan) throw new Error("合成反馈计划创建失败");
 
     try {
-      await expect(createOrGetFeedbackIntakeRun({ ...input, runId: prepared.run.id })).rejects.toThrow("已经关联");
-      await archiveFeedbackPlan(created.plan.id, prisma);
       const retried = await createOrGetFeedbackIntakeRun({ ...input, runId: prepared.run.id });
       expect(retried).toMatchObject({ duplicate: true, run: { id: prepared.run.id, planId: null, status: "applied" } });
+      expect((await prisma.feedbackIntakeRun.findUniqueOrThrow({ where: { id: prepared.run.id } })).planId).toBeNull();
     } finally {
       await prisma.feedbackIntakeRun.deleteMany({ where: { id: prepared.run.id } });
       await prisma.feedbackPlan.deleteMany({ where: { id: created.plan.id } });

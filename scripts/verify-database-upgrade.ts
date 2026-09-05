@@ -534,6 +534,180 @@ async function verifySynthetic1210FeedbackUpgrade(projectRoot: string, temporary
   await assertNewSchema(databasePath);
 }
 
+async function seedSyntheticBeta3FeedbackDatabase(databasePath: string) {
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
+  try {
+    await client.executeMultiple(`
+      INSERT INTO "Semester" ("id", "name", "startDate", "endDate")
+      VALUES ('semester-beta3', '固定 beta.3 学期', '2026-07-01', '2026-12-31');
+      INSERT INTO "Class" ("id", "semesterId", "code", "name")
+      VALUES
+        ('class-beta3', 'semester-beta3', 'BETA3-01', '固定 beta.3 一班'),
+        ('class-beta3-2', 'semester-beta3', 'BETA3-02', '固定 beta.3 二班');
+      INSERT INTO "ClassSession" ("id", "code", "semesterId", "semesterNumber", "date", "classId")
+      VALUES ('session-beta3', '2026090401', 'semester-beta3', 1, '2026-09-04', 'class-beta3');
+
+      INSERT INTO "FeedbackPlanBatch" (
+        "id", "requestKey", "semesterId", "type", "outputRequirement",
+        "generationApproach", "status", "updatedAt"
+      ) VALUES
+        ('batch-beta3-clean', 'request-beta3-clean', 'semester-beta3', 'event_micro', '干净批次', 'restricted', 'ready', '2026-09-04T00:00:00.000Z'),
+        ('batch-beta3-mixed', 'request-beta3-mixed', 'semester-beta3', 'event_micro', '有痕迹批次', 'free', 'ready', '2026-09-04T00:00:00.000Z'),
+        ('batch-beta3-export', 'request-beta3-export', 'semester-beta3', 'event_micro', '已有导出批次', 'restricted', 'ready', '2026-09-04T00:00:00.000Z');
+
+      INSERT INTO "FeedbackPlan" (
+        "id", "type", "outputRequirement", "status", "semesterId", "classId",
+        "inputFingerprint", "generationApproach", "updatedAt", "batchId", "batchOrder"
+      ) VALUES
+        ('plan-beta3-clean', 'event_micro', '干净独立计划', 'ready', 'semester-beta3', 'class-beta3', 'fp-clean', 'legacy', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-batch-clean-1', 'event_micro', '干净批次计划一', 'ready', 'semester-beta3', 'class-beta3', 'fp-batch-clean-1', 'restricted', '2026-09-04T00:00:00.000Z', 'batch-beta3-clean', 1),
+        ('plan-beta3-batch-clean-2', 'event_micro', '干净批次计划二', 'ready', 'semester-beta3', 'class-beta3-2', 'fp-batch-clean-2', 'restricted', '2026-09-04T00:00:00.000Z', 'batch-beta3-clean', 2),
+        ('plan-beta3-mixed-clean', 'event_micro', '混合批次干净计划', 'ready', 'semester-beta3', 'class-beta3', 'fp-mixed-clean', 'free', '2026-09-04T00:00:00.000Z', 'batch-beta3-mixed', 1),
+        ('plan-beta3-mixed-traced', 'event_micro', '混合批次有痕迹计划', 'ready', 'semester-beta3', 'class-beta3-2', 'fp-mixed-traced', 'free', '2026-09-04T00:00:00.000Z', 'batch-beta3-mixed', 2),
+        ('plan-beta3-export-child', 'event_micro', '导出批次干净计划', 'ready', 'semester-beta3', 'class-beta3', 'fp-export-child', 'restricted', '2026-09-04T00:00:00.000Z', 'batch-beta3-export', 1),
+        ('plan-beta3-generation', 'event_micro', '已有生成记录', 'ready', 'semester-beta3', 'class-beta3', 'fp-generation', 'restricted', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-text', 'event_micro', '已有正文', 'ready', 'semester-beta3', 'class-beta3', 'fp-text', 'free', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-approved', 'event_micro', '已有批准', 'ready', 'semester-beta3', 'class-beta3', 'fp-approved', 'legacy', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-export', 'event_micro', '已有导出', 'ready', 'semester-beta3', 'class-beta3', 'fp-export', 'legacy', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-started', 'event_micro', '已有启动时间', 'ready', 'semester-beta3', 'class-beta3', 'fp-started', 'restricted', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-empty-snapshot', 'event_micro', '空执行快照', 'ready', 'semester-beta3', 'class-beta3', 'fp-empty-snapshot', 'restricted', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-malformed', 'event_micro', '畸形执行快照', 'ready', 'semester-beta3', 'class-beta3', 'fp-malformed', 'restricted', '2026-09-04T00:00:00.000Z', NULL, NULL),
+        ('plan-beta3-empty', 'event_micro', '零条目计划', 'ready', 'semester-beta3', 'class-beta3', 'fp-empty', 'restricted', '2026-09-04T00:00:00.000Z', NULL, NULL);
+
+      UPDATE "FeedbackPlan" SET "generationStartedAt" = '2026-09-04T00:01:00.000Z'
+      WHERE "id" = 'plan-beta3-started';
+
+      INSERT INTO "FeedbackPlanItem" (
+        "id", "planId", "status", "evidenceSnapshot", "updatedAt"
+      ) VALUES
+        ('item-beta3-clean', 'plan-beta3-clean', 'evidence_ready', '{"fact":"clean"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-batch-clean-1', 'plan-beta3-batch-clean-1', 'evidence_ready', '{"fact":"batch-1"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-batch-clean-2', 'plan-beta3-batch-clean-2', 'evidence_ready', '{"fact":"batch-2"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-mixed-clean', 'plan-beta3-mixed-clean', 'evidence_ready', '{"fact":"mixed-clean"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-mixed-traced', 'plan-beta3-mixed-traced', 'evidence_ready', '{"fact":"mixed-traced"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-export-child', 'plan-beta3-export-child', 'evidence_ready', '{"fact":"export-child"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-generation', 'plan-beta3-generation', 'evidence_ready', '{"fact":"generation"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-text', 'plan-beta3-text', 'evidence_ready', '{"fact":"text"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-approved', 'plan-beta3-approved', 'evidence_ready', '{"fact":"approved"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-export', 'plan-beta3-export', 'evidence_ready', '{"fact":"export"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-started', 'plan-beta3-started', 'evidence_ready', '{"fact":"started"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-empty-snapshot', 'plan-beta3-empty-snapshot', 'evidence_ready', '{"fact":"empty-snapshot"}', '2026-09-04T00:00:00.000Z'),
+        ('item-beta3-malformed', 'plan-beta3-malformed', 'evidence_ready', '{"fact":"malformed"}', '2026-09-04T00:00:00.000Z');
+
+      UPDATE "FeedbackPlanItem"
+      SET "generationExecutionSnapshot" = '{"version":1,"attempts":[]}'
+      WHERE "id" = 'item-beta3-mixed-traced';
+      UPDATE "FeedbackPlanItem"
+      SET "finalText" = '必须保留的历史正文', "finalTextHash" = 'fixed-text-hash'
+      WHERE "id" = 'item-beta3-text';
+      UPDATE "FeedbackPlanItem"
+      SET "approvedAt" = '2026-09-04T00:02:00.000Z'
+      WHERE "id" = 'item-beta3-approved';
+      UPDATE "FeedbackPlanItem"
+      SET "generationExecutionSnapshot" = ''
+      WHERE "id" = 'item-beta3-empty-snapshot';
+      UPDATE "FeedbackPlanItem"
+      SET "generationExecutionSnapshot" = '{"version":'
+      WHERE "id" = 'item-beta3-malformed';
+
+      INSERT INTO "GenerationRecord" (
+        "id", "taskType", "stage", "sourceFingerprint", "promptVersion", "modelName",
+        "feedbackPlanItemId", "updatedAt"
+      ) VALUES (
+        'generation-beta3', 'feedback', 'plan-restricted', 'fixed-generation-fingerprint',
+        'feedback-plan-v3-restricted', 'fixed-model', 'item-beta3-generation', '2026-09-04T00:03:00.000Z'
+      );
+      INSERT INTO "FeedbackExportRun" (
+        "id", "planId", "mode", "itemManifest", "manifestHash"
+      ) VALUES (
+        'export-beta3', 'plan-beta3-export', 'approved_only', '[{"itemId":"item-beta3-export"}]', 'fixed-export-hash'
+      );
+      INSERT INTO "FeedbackPlanBatchExportRun" (
+        "id", "batchId", "mode", "itemManifest", "manifestHash", "workbookSha256"
+      ) VALUES (
+        'batch-export-beta3', 'batch-beta3-export', 'approved_only',
+        '[{"itemId":"item-beta3-export-child"}]', 'fixed-batch-export-hash', 'fixed-workbook-hash'
+      );
+      INSERT INTO "FeedbackIntakeRun" (
+        "id", "sessionCode", "sourceFingerprint", "sourceManifest", "status",
+        "appliedSummary", "issues", "planId", "updatedAt"
+      ) VALUES (
+        'intake-beta3', '2026090401', 'fixed-beta3-intake-fingerprint',
+        '[{"name":"fixed.xlsx"}]', 'applied', '{"applied":true}', '[]',
+        'plan-beta3-text', '2026-09-04T00:04:00.000Z'
+      );
+    `);
+  } finally {
+    client.close();
+  }
+}
+
+async function beta3PreservedColumns(databasePath: string) {
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
+  try {
+    const tables = [
+      "FeedbackPlan",
+      "FeedbackPlanItem",
+      "FeedbackPlanBatch",
+      "GenerationRecord",
+      "FeedbackExportRun",
+      "FeedbackPlanBatchExportRun",
+      "FeedbackIntakeRun",
+    ];
+    const result: Record<string, string[]> = {};
+    for (const table of tables) {
+      const info = await client.execute(`PRAGMA table_info(${quoteIdentifier(table)})`);
+      result[table] = info.rows
+        .map((row) => String(row.name))
+        .filter((column) => !((table === "FeedbackPlan" || table === "FeedbackPlanBatch") && column === "status"));
+    }
+    return result;
+  } finally {
+    client.close();
+  }
+}
+
+async function verifySyntheticBeta3FeedbackUpgrade(projectRoot: string, temporaryDirectory: string) {
+  const databasePath = path.join(temporaryDirectory, "synthetic-1.3.0-beta.3-feedback.db");
+  const names = await migrationNames(projectRoot);
+  const currentMigration = "20260905100000_retire_legacy_feedback_generation";
+  if (!names.includes(currentMigration)) throw new Error("找不到 1.3.0-beta.4 旧生成退役迁移");
+  await applyMigrationFiles(projectRoot, databasePath, names.filter((name) => name < currentMigration));
+  await seedSyntheticBeta3FeedbackDatabase(databasePath);
+  const preservedColumns = await beta3PreservedColumns(databasePath);
+  const before = await inspect(databasePath, preservedColumns);
+  await applyMigrationFiles(projectRoot, databasePath, names.filter((name) => name >= currentMigration));
+  const after = await inspect(databasePath, preservedColumns);
+  assertPreserved(before, after, "固定 1.3.0-beta.3 反馈库（状态列除外）");
+
+  const client = createClient({ url: sqliteFileUrl(databasePath) });
+  try {
+    const plans = await client.execute(`SELECT id, status FROM FeedbackPlan WHERE id LIKE 'plan-beta3-%'`);
+    const planStatuses = new Map(plans.rows.map((row) => [String(row.id), String(row.status)]));
+    const expectedDraftPlans = new Set([
+      "plan-beta3-clean",
+      "plan-beta3-batch-clean-1",
+      "plan-beta3-batch-clean-2",
+      "plan-beta3-mixed-clean",
+      "plan-beta3-export-child",
+    ]);
+    for (const [id, status] of planStatuses) {
+      const expected = expectedDraftPlans.has(id) ? "draft" : "ready";
+      if (status !== expected) throw new Error(`固定 beta.3 计划 ${id} 状态应为 ${expected}，实际为 ${status}`);
+    }
+    const batches = await client.execute(`SELECT id, status FROM FeedbackPlanBatch WHERE id LIKE 'batch-beta3-%'`);
+    const batchStatuses = new Map(batches.rows.map((row) => [String(row.id), String(row.status)]));
+    if (batchStatuses.get("batch-beta3-clean") !== "draft") throw new Error("全体子计划无痕迹的 beta.3 批次未回到 draft");
+    if (batchStatuses.get("batch-beta3-mixed") !== "ready") throw new Error("含生成痕迹子计划的 beta.3 批次被误改");
+    if (batchStatuses.get("batch-beta3-export") !== "ready") throw new Error("含导出记录的 beta.3 批次被误改");
+    const intakeRun = await client.execute(`SELECT planId FROM FeedbackIntakeRun WHERE id = 'intake-beta3'`);
+    if (String(intakeRun.rows[0]?.planId) !== "plan-beta3-text") throw new Error("beta.3 IntakeRun 历史 planId 未原值保留");
+  } finally {
+    client.close();
+  }
+  await assertNewSchema(databasePath);
+}
+
 async function verifyUpgrade(temporaryDirectory: string) {
   const projectRoot = process.cwd();
   const liveDatabase = resolveDatabasePath(process.env.DATABASE_URL ?? "file:./dev.db");
@@ -562,9 +736,10 @@ async function verifyUpgrade(temporaryDirectory: string) {
   await verifySyntheticUpgrade(projectRoot, temporaryDirectory);
   await verifySynthetic129FeedbackUpgrade(projectRoot, temporaryDirectory);
   await verifySynthetic1210FeedbackUpgrade(projectRoot, temporaryDirectory);
+  await verifySyntheticBeta3FeedbackUpgrade(projectRoot, temporaryDirectory);
   console.log(verifiedLiveCopy
-    ? "数据库升级验证通过：全新迁移链、固定合成旧库、固定 1.2.9/1.2.10 反馈库和真实库副本均通过完整性检查；旧反馈计划、批次、V1 快照、状态及其他业务证据未丢失。"
-    : "数据库升级验证通过：全新迁移链、固定合成旧库和固定 1.2.9/1.2.10 反馈库通过完整性检查；未发现真实数据库，已跳过副本验证。");
+    ? "数据库升级验证通过：全新迁移链、固定合成旧库、固定 1.2.9/1.2.10/beta.3 反馈库和真实库副本均通过完整性检查；beta.3 仅把可证明未启动的 ready 计划安全改为 draft。"
+    : "数据库升级验证通过：全新迁移链、固定合成旧库和固定 1.2.9/1.2.10/beta.3 反馈库通过完整性检查；未发现真实数据库，已跳过副本验证。");
 }
 
 function checkedWorkerDirectory(value: string) {

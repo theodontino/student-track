@@ -13,7 +13,7 @@ vi.mock("@/lib/llm", async (importOriginal) => ({
 }));
 vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/feedback-generation-service")>(),
-  generateFeedbackPlanComposition: generationMocks.generate,
+  generateFreeFeedbackPlanComposition: generationMocks.generate,
 }));
 vi.mock("@/services/restricted-feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/restricted-feedback-generation-service")>(),
@@ -180,13 +180,12 @@ describe("feedback plan service", () => {
     const saved = await updateFeedbackPlanDraft(created.id, {
       displayName: "周末复盘",
       outputRequirement: "突出本课已经确认的进步",
-      generationMode: "fast",
       studentIds: [students[0]!.id],
       generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
       studentOverrides: [],
       expectedPlanRevision: created.planRevision,
     });
-    expect(saved).toMatchObject({ displayName: "周末复盘", outputRequirement: "突出本课已经确认的进步", generationMode: "fast" });
+    expect(saved).toMatchObject({ displayName: "周末复盘", outputRequirement: "突出本课已经确认的进步", generationMode: "standard" });
     expect(saved.items).toHaveLength(1);
     expect(saved.items[0]?.id).toBe(retainedItem.id);
     expect(JSON.parse(saved.inputSnapshot)).toMatchObject({
@@ -208,7 +207,6 @@ describe("feedback plan service", () => {
       displayName: "周末复盘修订版",
       patch: {
         outputRequirement: "新计划采用页面修订要求",
-        generationMode: "standard",
         studentIds: [students[1]!.id],
         generationPreferences: { closureType: "positive_recognition", length: "detailed", tone: "professional", moduleKeys: ["observed_moment"] },
         studentOverrides: [],
@@ -354,14 +352,13 @@ describe("feedback plan service", () => {
       basedOnPlanId: source.id,
       type: "event_micro",
       outputRequirement: "突出本课已经确认的进步",
-      generationMode: "fast",
       semesterId: semester.id,
       classId: classRecord.id,
       sessionId: session.id,
       studentIds: [student.id],
       generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
     });
-    expect(revision).toMatchObject({ displayName: "按当前事实修正版", basedOnPlanId: source.id, status: "draft", generationMode: "fast" });
+    expect(revision).toMatchObject({ displayName: "按当前事实修正版", basedOnPlanId: source.id, status: "draft", generationMode: "standard" });
     expect(revision.items[0]?.evidenceSnapshot).toContain("录入后新增的当前事实");
     expect((await getFeedbackPlan(source.id))?.inputSnapshot).toBe(sourceSnapshot);
     expect(source.items[0]?.evidenceSnapshot).not.toContain("录入后新增的当前事实");
@@ -642,10 +639,8 @@ describe("feedback plan service", () => {
     expect(JSON.parse(queued.generationExecutionSnapshot)).not.toHaveProperty("restrictedCheckpoint");
 
     generationMocks.generate.mockImplementation(async (input: {
-      generationMode?: string;
       evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
     }) => {
-      expect(input.generationMode).toBe("fast");
       const fact = input.evidenceBundle.teachingEvidence[0]!;
       const composition = {
         version: 1 as const,
@@ -1157,14 +1152,14 @@ describe("feedback plan service", () => {
       return compositionFor(evidenceBundle);
     });
 
-    await startFeedbackPlanGeneration({ planId: plan.id, generationMode: "fast" });
+    await startFeedbackPlanGeneration({ planId: plan.id });
     await vi.waitFor(() => expect(started).toBe(2));
     expect(maximumActive).toBe(2);
     await expect(pauseFeedbackPlanGeneration(plan.id)).resolves.toMatchObject({ status: "pause_requested" });
     while (releases.length) releases.shift()!();
     await vi.waitFor(async () => expect((await getFeedbackPlan(plan.id))?.status).toBe("paused"));
     const paused = await getFeedbackPlan(plan.id);
-    expect(paused?.generationMode).toBe("fast");
+    expect(paused?.generationMode).toBe("standard");
     expect(paused?.generationStartedAt).toBeInstanceOf(Date);
     expect(paused?.generationRunStartedAt).toBeNull();
     expect(paused?.generationElapsedMs).toBeGreaterThanOrEqual(0);

@@ -847,7 +847,7 @@ async function confirmedMaterialForSession(
   return parsed.success ? parsed.data : null;
 }
 
-function view(run: { id: string; sessionCode: string; status: string; sourceFingerprint: string; sourceManifest: string; appliedSummary: string; issues: string; planId: string | null; createdAt: Date; updatedAt: Date }): FeedbackIntakeRunView {
+function view(run: { id: string; sessionCode: string; status: string; sourceFingerprint: string; sourceManifest: string; appliedSummary: string; issues: string; createdAt: Date; updatedAt: Date }): FeedbackIntakeRunView {
   return {
     id: run.id,
     sessionCode: run.sessionCode,
@@ -856,22 +856,12 @@ function view(run: { id: string; sessionCode: string; status: string; sourceFing
     sourceManifest: parseJson(run.sourceManifest, []),
     appliedSummary: parseJson(run.appliedSummary, {}),
     issues: parseJson(run.issues, []),
-    planId: run.planId,
+    // Compatibility field only. Plan lineage lives in plan snapshots/history;
+    // the retained database column is no longer a production pointer.
+    planId: null,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };
-}
-
-async function viewWithLivePlan(
-  run: Parameters<typeof view>[0],
-  db: FeedbackIntakeDb,
-): Promise<FeedbackIntakeRunView> {
-  if (!run.planId) return view(run);
-  const livePlan = await db.feedbackPlan.findFirst({
-    where: { id: run.planId, archivedAt: null },
-    select: { id: true },
-  });
-  return view(livePlan ? run : { ...run, planId: null });
 }
 
 export async function getFeedbackIntakeRun(id: string, db: PrismaClient = prisma) {
@@ -880,7 +870,7 @@ export async function getFeedbackIntakeRun(id: string, db: PrismaClient = prisma
     const session = await db.classSession.findUnique({ where: { code: run.sessionCode }, select: { id: true } });
     if (session) await assertSessionAvailable(session.id, db);
   }
-  return run ? viewWithLivePlan(run, db) : null;
+  return run ? view(run) : null;
 }
 
 export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string; files: IntakeFile[]; runId?: string; db?: PrismaClient }) {
@@ -888,20 +878,16 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
   const targetSession = await db.classSession.findUnique({ where: { code: input.sessionCode }, select: { id: true } });
   if (!targetSession) throw new Error("反馈材料目标课次不存在");
   await assertSessionAvailable(targetSession.id, db);
-  const storedPreviousRun = input.runId ? await db.feedbackIntakeRun.findUnique({ where: { id: input.runId } }) : null;
-  const previousRun = storedPreviousRun
-    ? { ...storedPreviousRun, planId: (await viewWithLivePlan(storedPreviousRun, db)).planId }
-    : null;
+  const previousRun = input.runId ? await db.feedbackIntakeRun.findUnique({ where: { id: input.runId } }) : null;
   if (input.runId && !previousRun) throw new Error("反馈材料运行不存在");
   if (previousRun && previousRun.sessionCode !== input.sessionCode) throw new Error("不能把材料追加到另一课次");
-  if (previousRun?.planId) throw new Error("这轮材料已经关联 FeedbackPlan，请重新开始一轮材料");
   const previousSnapshot = previousRun ? parseJson<IntakeSnapshot>(previousRun.appliedSummary, {}) : undefined;
   const inspection = await inspectFeedbackIntakeInternal(input, previousRun ? { sourceManifest: parseJson(previousRun.sourceManifest, []), snapshot: previousSnapshot ?? {} } : undefined);
   if (previousRun) {
     // Inbox scans can present the same files again. If no source changed, keep
     // the teacher's confirmation, decisions and saved scope exactly as-is.
     if (inspection.sourceFingerprint === previousRun.sourceFingerprint) {
-      return { run: await viewWithLivePlan(previousRun, db), inspection, duplicate: true };
+      return { run: view(previousRun), inspection, duplicate: true };
     }
     // A browser can restore an older empty/partial run while another tab (or a
     // previous scan) has already persisted the same complete source batch. The
@@ -911,7 +897,7 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
       where: { sourceFingerprint: inspection.sourceFingerprint, id: { not: previousRun.id } },
       orderBy: { updatedAt: "desc" },
     });
-    if (canonical) return { run: await viewWithLivePlan(canonical, db), inspection, duplicate: true };
+    if (canonical) return { run: view(canonical), inspection, duplicate: true };
     try {
       const updated = await db.feedbackIntakeRun.update({
         where: { id: previousRun.id },
@@ -923,19 +909,19 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
           appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
         },
       });
-      return { run: await viewWithLivePlan(updated, db), inspection, duplicate: false };
+      return { run: view(updated), inspection, duplicate: false };
     } catch (error) {
       const isFingerprintConflict = error instanceof Error
         && error.message.includes("Unique constraint failed on the fields: (`sourceFingerprint`)");
       if (isFingerprintConflict) {
         const canonical = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
-        if (canonical) return { run: await viewWithLivePlan(canonical, db), inspection, duplicate: true };
+        if (canonical) return { run: view(canonical), inspection, duplicate: true };
       }
       throw error;
     }
   }
   const existing = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
-  if (existing) return { run: await viewWithLivePlan(existing, db), inspection, duplicate: true };
+  if (existing) return { run: view(existing), inspection, duplicate: true };
   try {
     const run = await db.feedbackIntakeRun.create({
       data: {
@@ -947,7 +933,7 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
         appliedSummary: JSON.stringify({ ...inspection.summary, parsedResult: inspection.parsedResult, assessmentEvidence: inspection.assessmentEvidence, sourceFacts: inspection.sourceFacts, decisions: [], applied: false }),
       },
     });
-    return { run: await viewWithLivePlan(run, db), inspection, duplicate: false };
+    return { run: view(run), inspection, duplicate: false };
   } catch (error) {
     // Two scans may pass the read-before-create check concurrently. Treat a
     // Prisma unique conflict as the same idempotent duplicate case.
@@ -955,7 +941,7 @@ export async function createOrGetFeedbackIntakeRun(input: { sessionCode: string;
       && error.message.includes("Unique constraint failed on the fields: (`sourceFingerprint`)");
     if (isFingerprintConflict) {
       const canonical = await db.feedbackIntakeRun.findUnique({ where: { sourceFingerprint: inspection.sourceFingerprint } });
-      if (canonical) return { run: await viewWithLivePlan(canonical, db), inspection, duplicate: true };
+      if (canonical) return { run: view(canonical), inspection, duplicate: true };
     }
     throw error;
   }
@@ -1146,7 +1132,6 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
     ...(input.plan?.basedOnPlanId ? { basedOnPlanId: input.plan.basedOnPlanId } : {}),
     type: input.plan?.type ?? "event_micro",
     outputRequirement: input.plan?.outputRequirement ?? "为每名入选学生生成一条可复核的家长反馈",
-    ...(input.plan?.generationMode ? { generationMode: input.plan.generationMode } : {}),
     ...(input.plan?.generationApproach ? { generationApproach: input.plan.generationApproach } : {}),
     semesterId: session.semesterId,
     classId: session.classId,
@@ -1161,20 +1146,7 @@ export async function resolveFeedbackIntakeRun(id: string, input: { action: "app
     ...(Object.keys(snapshot.assessmentEvidence ?? {}).length ? { assessmentEvidence: snapshot.assessmentEvidence } : {}),
   } as FeedbackPlanCreateInput;
   const createPlanInTransaction = async (tx: FeedbackIntakeDb) => {
-    const current = await tx.feedbackIntakeRun.findUniqueOrThrow({ where: { id } });
-    const currentPlan = current.planId
-      ? await tx.feedbackPlan.findUnique({ where: { id: current.planId }, select: { archivedAt: true } })
-      : null;
     const plan = await createFeedbackPlan(planInput, tx, { withinTransaction: true });
-    // planId remains a legacy convenience pointer. Every new plan records this
-    // run in its own V2 snapshot, so an existing pointer never owns the facts.
-    await tx.feedbackIntakeRun.update({
-      where: { id },
-      data: {
-        status: "applied",
-        ...(!current.planId || currentPlan?.archivedAt ? { planId: plan.id } : {}),
-      },
-    });
     return { planId: plan.id };
   };
   const result = isPrismaClientDb(db)

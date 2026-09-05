@@ -47,7 +47,7 @@ ZIP artifact；它同样保留 14 天，且不是既有 prerelease 的正式附�
 
 ```powershell
 $installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.3/Install-StudentTrackCore.ps1" -OutFile $installer
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.4/Install-StudentTrackCore.ps1" -OutFile $installer
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 ```
 
@@ -147,7 +147,7 @@ STUDENT_TRACK_RUNTIME_ROOT="$HOME/Library/Application Support/Student Track" npm
 
 新计划默认选择“受限反馈”，也可选择“自由反馈”。受限反馈先使用分析模型形成可披露策略，再由程序把允许的内容整理给成稿与审核模型；后者不会收到完整证据包、原始沟通或未披露内容。自由反馈只使用分析模型，直接根据当前对象的冻结、已确认材料成稿。两种方式都执行最终程序核验，教师仍需检查、修改和批准。
 
-生成方式会随计划草稿保存，首次生成后冻结；整份计划要改方式必须“另存为”新计划。受限反馈失败后的普通重试仍使用受限方式；只有教师明确确认“改用自由反馈”后，失败条目以及同批尚未开始的条目才改用自由方式；已成功结果不会重写。历史计划显示“旧生成方式”，并继续按原模式读取和运行。
+生成方式会随计划草稿保存，首次生成后冻结；整份计划要改方式必须“另存为”新计划。受限反馈失败后的普通重试仍使用受限方式；只有教师明确确认“改用自由反馈”后，失败条目以及同批尚未开始的条目才改用自由方式；已成功结果不会重写。历史计划显示“旧生成方式”，保留已有正文的编辑、复核、批准与导出，但开始、继续、重试和批次执行统一返回 `409 legacy_generation_retired`。需要重新生成时，使用“另存为”并明确选择受限或自由反馈。
 
 反馈计划开始生成后，目标条目先进入 `queued`，后台最多并发处理 2 条。教师可以暂停、继续或
 单独重试失败条目；暂停只阻止领取新条目，已在运行的最多 2 条完成后计划进入 `paused`。
@@ -334,9 +334,9 @@ Student Track 调用本地转写时默认使用纯转写模式，不输出说话
 不能作为学生个人表现证据。个人条目保存本课事实、个人测评/练习证据、沟通偏好和最近 5 次 A/B/C/D 评价摘要。
 原始 PDF 不落盘。
 
-导出页每张反馈卡先展示程序核验，并按错误位置、影响和处理建议解释告警；随后展示学生档案复用的
-历史趋势、本课事实、模型建议、家庭偏好、当日任务摘要和可编辑正文。出门测详情独立折叠，结构、
-任务和附件折叠在高级区域。正文约 800ms 防抖自动保存，同时保留手动保存；
+生成工作室顶部使用紧凑的当前计划栏；切换计划时在 Drawer 中按当前计划、正在生成、需要继续和最近完成分组，默认只读取当前学期，并支持按计划名称或班级搜索。批次只显示一个业务条目，最近完成默认折叠，完整记录从反馈历史打开。
+
+每张学生反馈卡按当前状态、教师最终正文、计划内容、学生事实、学生趋势和高级选项排列。核验通过时只显示一行结果，有问题时在问题附近给出影响、处理建议和可执行的教师任务入口；计划级 Excel、企微 JSON、归档等操作统一放在计划工具栏。正文约 800ms 防抖自动保存，同时保留手动保存；
 没有新修改时按钮显示“已保存”并禁用。已批准或已导出的条目只读，教师最终文本优先于模型原始输出。
 默认完整导出会在存在未批准条目时阻断；需要先处理阻断项，或显式选择“仅导出已批准项”。部分导出
 会写入 `FeedbackExportRun`，后续补导时以条目 ID 和最终文本哈希提示已导出内容。
@@ -360,7 +360,7 @@ Windows Core 对应 `%LOCALAPPDATA%\Student Track\feedback-inbox\`。也可以�
 
 三步导航在计划执行期间始终可用，当前视图由 `view=intake|plan|studio` 恢复。打开已有计划后，“录入”显示冻结的事实、材料来源、异常处理和确认时间，“规划”显示冻结的范围与配置；它们不是修改事实或回退运行状态的入口。“继续录入事实”建立独立录入，若要采用新增事实，需从录入页明确按当前事实建立新计划。普通“修正计划”则沿用原计划冻结事实。浏览器关闭前若草稿仍有未保存修改会提示。
 
-活动计划工具显示全部未归档 Plan/Batch，并优先展示名称。归档批次会在事务中同时归档子计划；相同 IntakeRun 可以成为多份计划的来源，因此归档不再是创建修订计划的前置条件。1.2.9 的 `/api/feedback/tasks` 创建并立即启动入口只作兼容，新工作台直接使用 Plan/Batch 的创建、草稿保存和启动接口。
+当前计划栏与切换抽屉显示未归档 Plan/Batch，并优先展示名称；活动计划工具继续作为高级管理入口。归档批次会在事务中同时归档子计划；相同 IntakeRun 可以成为多份计划的来源，因此归档不再是创建修订计划的前置条件。旧 `/api/feedback/tasks` 创建并立即启动入口及其任务编排服务已经删除；工作台只使用正式 Plan/Batch 的创建、草稿保存和启动接口。
 
 ## 班级组共同进度（1.2.9，取代 Beta 4 自动规则）
 
@@ -437,6 +437,8 @@ Student Track 不管理或删除 LM Studio 自身日志。LM Studio 的开发日
 1.3.0-beta.2 不新增 Schema 或 migration，Core 与 Full 共用上述数据库。升级仍执行 `npx prisma migrate deploy` 以确认数据库已追平；Windows 准备脚本会在既有数据库迁移前自动创建并校验备份。
 
 升级到 1.3.0-beta.3 后运行 `npx prisma migrate deploy`。本次迁移为 `FeedbackPlan` 和 `FeedbackPlanBatch` 增加 `generationApproach`，为 `FeedbackPlanItem` 增加 `generationExecutionSnapshot`。历史计划的方式默认为内部 `legacy`，新计划显式写入 `restricted` 或 `free`；Core 与 Full 使用同一 Schema 和 migration。
+
+升级到 1.3.0-beta.4 后运行 `npx prisma migrate deploy`。本次不删除字段或重建表，只把可以同时证明从未进入生成阶段、没有 GenerationRecord、执行快照、正文、批准或导出痕迹的历史顶层 `ready` Plan 改为 `draft`；Batch 只有在全部子 Plan 都满足时才同步改为 `draft`。`FeedbackIntakeRun.planId`、历史 `generationMode`、稳定 ID、正文、批准、导出和生成记录均保留原值。升级既有数据库前仍须先备份并校验。
 
 ## 发布与封档
 

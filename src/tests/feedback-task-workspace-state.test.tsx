@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { includeIndependentFeedbackStudent, TaskConfirmationStage } from "@/features/feedback/TaskConfirmationStage";
 import { TaskPreparationStage } from "@/features/feedback/TaskPreparationStage";
-import { feedbackPlanItemActualApproach, syncFeedbackItemDrafts } from "@/features/feedback/FeedbackPlanPanel";
+import {
+  feedbackPlanItemActualApproach,
+  feedbackPlanItemShouldAutoSave,
+  feedbackPlanItemShowsApproval,
+  feedbackPlanConfiguredApproachLabel,
+  feedbackPlanUsesRetiredLegacyGeneration,
+  syncFeedbackItemDrafts,
+} from "@/features/feedback/FeedbackPlanPanel";
 import {
   defaultFeedbackQueueFilter,
   feedbackQueueCategory,
@@ -78,6 +85,25 @@ function groupDraft() {
 }
 
 describe("feedback task group workspace state", () => {
+  it("treats only an explicit legacy identity as retired and hides repeat approval", () => {
+    expect(feedbackPlanUsesRetiredLegacyGeneration({ generationApproach: null, legacyReadonly: true })).toBe(true);
+    expect(feedbackPlanUsesRetiredLegacyGeneration({ generationApproach: null })).toBe(false);
+    expect(feedbackPlanItemShowsApproval("needs_review")).toBe(true);
+    expect(feedbackPlanItemShowsApproval("approved")).toBe(false);
+    expect(feedbackPlanItemShowsApproval("exported")).toBe(false);
+    expect(feedbackPlanConfiguredApproachLabel({ generationApproach: null, legacyReadonly: true })).toBe("旧生成方式");
+    expect(feedbackPlanConfiguredApproachLabel({ generationApproach: null })).toBe("生成方式未标注");
+  });
+
+  it("auto-saves editable dirty text while preserving locked and concurrent states", () => {
+    const draft = { text: "教师更新后的正文", revision: 4 };
+    expect(feedbackPlanItemShouldAutoSave({ status: "needs_review", finalText: "旧正文", studentId: "student-a", student: { id: "student-a" } }, draft, false, false)).toBe(true);
+    expect(feedbackPlanItemShouldAutoSave({ status: "stale", finalText: "旧正文" }, draft, false, false)).toBe(true);
+    expect(feedbackPlanItemShouldAutoSave({ status: "approved", finalText: "旧正文" }, draft, false, false)).toBe(false);
+    expect(feedbackPlanItemShouldAutoSave({ status: "needs_review", finalText: "旧正文" }, draft, true, false)).toBe(false);
+    expect(feedbackPlanItemShouldAutoSave({ status: "needs_review", finalText: "旧正文" }, draft, false, true)).toBe(false);
+  });
+
   it("keeps feedback queue categories mutually exclusive", () => {
     expect(feedbackQueueCategory("needs_review")).toBe("review");
     expect(feedbackQueueCategory("approved")).toBe("done");
@@ -274,14 +300,14 @@ describe("feedback task group workspace state", () => {
     ]);
     expect(followUp?.classOverrides).toEqual([{ sessionCode: "session-b", outputRequirement: "二班要求" }]);
     expect(followUp?.studentOverrides.map((item) => item.studentId)).toEqual(["student-c"]);
-    expect(feedbackGroupIntakeScope(followUp!.entries, {
-      "run-a": { planId: "plan-a" },
-      "run-b": { planId: null },
-    }, followUp!.plannedSessionCodes)).toEqual({ sessionCodes: ["session-b"], runIds: { "session-b": "run-b" } });
+    expect(feedbackGroupIntakeScope(followUp!.entries, followUp!.plannedSessionCodes)).toEqual({
+      sessionCodes: ["session-b"],
+      runIds: { "session-b": "run-b" },
+    });
     expect(createFeedbackTaskFollowUpDraft(followUp!, ["session-b"])).toBeNull();
   });
 
-  it("releases an archived plan from both the run view and the local planned ledger", () => {
+  it("releases an archived plan only from the local planned ledger", () => {
     const released = releaseArchivedFeedbackTaskReferences({
       "run-a": { ...run(entries[0], "applied"), planId: "plan-a" },
       "run-b": { ...run(entries[1], "applied"), planId: "plan-b" },
@@ -291,7 +317,7 @@ describe("feedback task group workspace state", () => {
       planIds: ["plan-a"],
       sessionCodes: ["session-a"],
     });
-    expect(released.runs["run-a"]?.planId).toBeNull();
+    expect(released.runs["run-a"]?.planId).toBe("plan-a");
     expect(released.runs["run-b"]?.planId).toBe("plan-b");
     expect(released.plannedSessionCodes).toEqual(["session-b"]);
   });

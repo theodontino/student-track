@@ -84,7 +84,7 @@ interface Plan {
   outputRequirement: string;
   status: string;
   archivedAt?: string | null;
-  generationMode?: "standard" | "fast";
+  legacyReadonly?: boolean;
   generationApproach?: FeedbackGenerationApproach | null;
   generationApproachLabel?: string;
   generationStartedAt?: string | null;
@@ -101,6 +101,22 @@ interface Plan {
 }
 
 export type FeedbackItemDraft = { text: string; revision: number };
+
+export function feedbackPlanItemShouldAutoSave(
+  item: { status: string; finalText?: string | null; studentId?: string | null; student?: unknown | null },
+  draft: FeedbackItemDraft | undefined,
+  saving: boolean,
+  archived: boolean,
+) {
+  return Boolean(
+    draft
+    && draft.text !== (item.finalText ?? "")
+    && !saving
+    && !archived
+    && (!item.studentId || item.student)
+    && !["approved", "exported", "generating", "queued", "pause_requested"].includes(item.status),
+  );
+}
 
 export function syncFeedbackItemDrafts(
   current: Record<string, FeedbackItemDraft>,
@@ -248,15 +264,39 @@ export function feedbackPlanItemActualApproach(item: {
 function generationApproachDescription(approach: FeedbackGenerationApproach | null | undefined) {
   if (approach === "restricted") return "先规划可披露内容，再由写作模型只依据受限输入成稿。";
   if (approach === "free") return "单阶段直接根据当前对象已冻结、已确认的材料成稿。";
-  return "这是 beta.2 及更早计划，将继续按原来的生成方式运行。";
+  return "旧生成方式已退役，历史配置只读；已有正文仍可复核、批准和导出。需要继续生成时，请另存为并明确选择受限反馈或自由反馈。";
+}
+
+export function feedbackPlanUsesRetiredLegacyGeneration(plan: { generationApproach?: FeedbackGenerationApproach | null; legacyReadonly?: boolean }) {
+  return plan.legacyReadonly === true;
+}
+
+export function feedbackPlanConfiguredApproachLabel(plan: {
+  generationApproach?: FeedbackGenerationApproach | null;
+  generationApproachLabel?: string;
+  legacyReadonly?: boolean;
+}) {
+  if (plan.legacyReadonly === true) return plan.generationApproachLabel?.trim() || feedbackGenerationApproachLabel(null);
+  if (plan.generationApproach) return plan.generationApproachLabel?.trim() || feedbackGenerationApproachLabel(plan.generationApproach);
+  return "生成方式未标注";
+}
+
+function configuredGenerationApproachDescription(plan: Plan) {
+  if (plan.legacyReadonly === true) return generationApproachDescription(null);
+  if (plan.generationApproach) return generationApproachDescription(plan.generationApproach);
+  return "生成方式未标注，请刷新计划后再继续生成。已有正文仍可复核。";
+}
+
+export function feedbackPlanItemShowsApproval(status: string) {
+  return !["approved", "exported"].includes(status);
 }
 
 function itemGenerationSummary(plan: Plan, item: PlanItem) {
   const actual = feedbackPlanItemActualApproach(item);
   if (actual) return `${feedbackGenerationApproachLabel(actual)} · 实际执行`;
-  return !plan.generationApproach
-    ? feedbackGenerationApproachLabel(null)
-    : `${feedbackGenerationApproachLabel(plan.generationApproach)} · 尚未执行`;
+  if (plan.legacyReadonly === true) return feedbackGenerationApproachLabel(null);
+  if (!plan.generationApproach) return "生成方式未标注";
+  return `${feedbackGenerationApproachLabel(plan.generationApproach)} · 尚未执行`;
 }
 
 const generationLengthLabels: Record<string, string> = {
@@ -403,6 +443,17 @@ function canRegenerate(item: PlanItem) {
   return item.status === "evidence_ready";
 }
 
+async function persistFeedbackItemDraft(planId: string, item: PlanItem, draft: FeedbackItemDraft) {
+  const response = await fetch(`/api/report/feedback-plans/${planId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "item", itemId: item.id, patch: { finalText: draft.text, reviewMode: "teacher_edited", expectedItemRevision: draft.revision } }),
+  });
+  const payload = await response.json() as ApiFailurePayload & { item?: PlanItem };
+  if (!response.ok) throw new Error(apiFailureMessage(payload, "保存反馈失败"));
+  if (!payload.item) throw new Error("保存反馈成功，但返回结果不完整");
+  return payload.item;
+}
+
 const generatedPlanStatuses = new Set([
   "queued", "generating", "pause_requested", "paused", "generation_failed",
   "in_review", "partially_approved", "approved", "partially_exported", "exported",
@@ -458,6 +509,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   const [studioFilter, setStudioFilter] = useState<"action" | "review" | "done" | "all">("action");
   const [studioItemId, setStudioItemId] = useState("");
   const candidateDefaultsKey = useRef("");
+  const autoSaveAttempts = useRef<Record<string, string>>({});
   const llmWorkspace = useLLMConfiguration();
   const capabilities = getProductCapabilities();
 
@@ -749,6 +801,10 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   }
 
   async function generatePlan(plan: Plan) {
+    if (feedbackPlanUsesRetiredLegacyGeneration(plan)) {
+      setError("旧生成方式已退役，不能启动新的模型调用。已有正文仍可复核、批准和导出；如需重新生成，请另存为受限反馈或自由反馈计划。");
+      return;
+    }
     if (planHasGenerationTrace(plan)) {
       setError("本计划已经启动过生成，内容和生成设置已冻结。请回到“规划”建立修正计划；失败条目请使用重试。");
       return;
@@ -822,6 +878,12 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     candidateDefaultsKey.current = "";
   }
 
+  function openPlanRevision() {
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "plan");
+    window.location.assign(`${url.pathname}?${url.searchParams.toString()}${url.hash}`);
+  }
+
   async function resolvePreferenceCandidate(item: PlanItem, candidateId: string, decision: "confirmed" | "rejected") {
     if (!item.studentId) return;
     setBusy(true); setError("");
@@ -838,18 +900,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     finally { setBusy(false); }
   }
 
-  async function persistItemDraft(planId: string, item: PlanItem, draft: { text: string; revision: number }) {
-    const response = await fetch(`/api/report/feedback-plans/${planId}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "item", itemId: item.id, patch: { finalText: draft.text, reviewMode: "teacher_edited", expectedItemRevision: draft.revision } }),
-    });
-    const payload = await response.json() as ApiFailurePayload & { item?: PlanItem };
-    if (!response.ok) throw new Error(apiFailureMessage(payload, "保存反馈失败"));
-    if (!payload.item) throw new Error("保存反馈成功，但返回结果不完整");
-    return payload.item;
-  }
-
-  async function saveItem(item: PlanItem) {
+  const saveItem = useCallback(async (item: PlanItem) => {
     if (!activePlan) return;
     const draft = drafts[item.id];
     if (!draft) return;
@@ -857,7 +908,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     setSavingItemIds((current) => [...new Set([...current, item.id])]);
     setError("");
     try {
-      const savedItem = await persistItemDraft(planId, item, draft);
+      const savedItem = await persistFeedbackItemDraft(planId, item, draft);
       setActivePlan((current) => current?.id === planId
         ? {
           ...current,
@@ -877,7 +928,25 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
       });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "保存反馈失败"); }
     finally { setSavingItemIds((current) => current.filter((id) => id !== item.id)); }
-  }
+  }, [activePlan, drafts]);
+
+  useEffect(() => {
+    if (!activePlan || busy || activePlan.archivedAt) return;
+    const saving = new Set(savingItemIds);
+    const dirtyItems = activePlan.items.filter((item) => {
+      const draft = drafts[item.id];
+      const attemptKey = draft ? `${draft.revision}\u0000${draft.text}` : "";
+      return feedbackPlanItemShouldAutoSave(item, draft, saving.has(item.id), Boolean(activePlan.archivedAt))
+        && autoSaveAttempts.current[item.id] !== attemptKey;
+    });
+    if (!dirtyItems.length) return;
+    const timer = window.setTimeout(() => dirtyItems.forEach((item) => {
+      const draft = drafts[item.id];
+      if (draft) autoSaveAttempts.current[item.id] = `${draft.revision}\u0000${draft.text}`;
+      void saveItem(item);
+    }), 800);
+    return () => window.clearTimeout(timer);
+  }, [activePlan, busy, drafts, saveItem, savingItemIds]);
 
   function openIndependentItem(item: PlanItem) {
     if (!item.studentId || !item.student) return;
@@ -922,6 +991,10 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   }
 
   async function continuePlan(plan: Plan) {
+    if (feedbackPlanUsesRetiredLegacyGeneration(plan)) {
+      setError("旧生成方式已退役，不能继续生成。请另存为受限反馈或自由反馈计划；原计划正文和历史记录保持不变。");
+      return;
+    }
     setBusy(true); setError("");
     try {
       const response = await fetch(`/api/report/feedback-plans/${plan.id}`, {
@@ -937,6 +1010,10 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   }
 
   async function retryPlan(plan: Plan, explicitItemIds?: string[]) {
+    if (feedbackPlanUsesRetiredLegacyGeneration(plan)) {
+      setError("旧生成方式已退役，不能重试生成。请另存为受限反馈或自由反馈计划；已有正文仍可继续复核。");
+      return;
+    }
     const failedIds = explicitItemIds ?? plan.items.filter((item) => item.status === "generation_failed").map((item) => item.id);
     if (!failedIds.length) return;
     setBusy(true); setError("");
@@ -1187,7 +1264,8 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     : isExport
       ? studioMode ? "一次只聚焦一名学生；左侧切换对象，右侧完成生成、证据复核、正文编辑、独立设置与批准。" : "只把已批准的教师最终文本写入 Excel；未批准条目不会进入导出。"
       : "默认展示学生、历史趋势、证据摘要、模型建议、家庭偏好和可编辑正文；其余内容在高级区域。";
-  const canGenerate = Boolean(activePlan && !planHasGenerationTrace(activePlan) && activePlan.items.some((item) => selectedItemIds.includes(item.id) && canRegenerate(item)));
+  const legacyGenerationRetired = Boolean(activePlan && feedbackPlanUsesRetiredLegacyGeneration(activePlan));
+  const canGenerate = Boolean(activePlan && !legacyGenerationRetired && !planHasGenerationTrace(activePlan) && activePlan.items.some((item) => selectedItemIds.includes(item.id) && canRegenerate(item)));
   const staleTextCount = activePlan?.items.filter((item) => item.status === "stale" && item.finalText?.trim()).length ?? 0;
   const allItemsApproved = Boolean(activePlan?.items.length && activePlan.items.every((item) => ["approved", "exported"].includes(item.status)));
   const archivedReadOnly = Boolean(activePlan?.archivedAt);
@@ -1226,18 +1304,21 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
       {activePlan && !archivedReadOnly && activePlan.status === "draft" && <Button uiSize="sm" variant="ghost" onClick={() => void deletePlan(activePlan)} disabled={busy}>删除草稿</Button>}
     </div>
     : activePlan ? <div className="feedback-plan-header-actions">
-      {!batchMode && (isGenerate || studioMode) && ["queued", "generating", "pause_requested"].includes(activePlan.status) && <Button uiSize="sm" variant="secondary" onClick={() => void pausePlan(activePlan)} disabled={busy || archivedReadOnly || activePlan.status === "pause_requested"}>{activePlan.status === "pause_requested" ? "正在安全暂停…" : "暂停生成"}</Button>}
-      {!batchMode && (isGenerate || studioMode) && activePlan.status === "paused" && <Button uiSize="sm" variant="secondary" onClick={() => void continuePlan(activePlan)} disabled={busy || archivedReadOnly}>继续生成</Button>}
-      {!batchMode && isGenerate && activePlan.status === "generation_failed" && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly}>重试失败条目</Button>}
-      {isExport && staleTextCount > 0 && <Button uiSize="sm" variant="secondary" onClick={() => void retainStaleText(activePlan)} disabled={busy || archivedReadOnly}>保留现有正文（{staleTextCount}）</Button>}
-      {isExport && <>
-        {studioMode && !batchMode && activePlan.items.some((item) => item.status === "generation_failed") && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly || !llmReady}>重试全部失败项</Button>}
-        <Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || archivedReadOnly || selectedItemIds.length === 0}>批准所选可通过项</Button>
+      <div className="feedback-plan-current-actions" aria-label="当前计划操作">
+        {!batchMode && (isGenerate || studioMode) && ["queued", "generating", "pause_requested"].includes(activePlan.status) && <Button uiSize="sm" variant="secondary" onClick={() => void pausePlan(activePlan)} disabled={busy || archivedReadOnly || activePlan.status === "pause_requested"}>{activePlan.status === "pause_requested" ? "正在安全暂停…" : "暂停生成"}</Button>}
+        {!batchMode && (isGenerate || studioMode) && activePlan.status === "paused" && !legacyGenerationRetired && <Button uiSize="sm" variant="secondary" onClick={() => void continuePlan(activePlan)} disabled={busy || archivedReadOnly}>继续生成</Button>}
+        {!batchMode && isGenerate && activePlan.status === "generation_failed" && !legacyGenerationRetired && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly}>重试失败条目</Button>}
+        {legacyGenerationRetired && (isGenerate || studioMode) && !["queued", "generating", "pause_requested"].includes(activePlan.status) && <Button uiSize="sm" variant="secondary" onClick={openPlanRevision} disabled={busy}>另存为受限/自由计划</Button>}
+        {isExport && staleTextCount > 0 && <Button uiSize="sm" variant="secondary" onClick={() => void retainStaleText(activePlan)} disabled={busy || archivedReadOnly}>保留现有正文（{staleTextCount}）</Button>}
+        {isExport && !legacyGenerationRetired && studioMode && !batchMode && activePlan.items.some((item) => item.status === "generation_failed") && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan)} disabled={busy || archivedReadOnly || !llmReady}>重试全部失败项</Button>}
+        {isExport && !allItemsApproved && <Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || archivedReadOnly || selectedItemIds.length === 0}>批准所选可通过项</Button>}
+      </div>
+      {isExport && <div className="feedback-plan-tool-actions" role="toolbar" aria-label="计划工具栏">
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button>
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button>
         {capabilities.wecomDraftExport && <Button uiSize="sm" variant="secondary" onClick={() => void exportWeComDrafts(activePlan)} disabled={busy || !activePlan.items.some((item) => item.studentId && ["approved", "exported"].includes(item.status) && item.finalText?.trim())}>导出企微草稿 JSON</Button>}
         {!archivedReadOnly && <Button uiSize="sm" variant="ghost" onClick={() => void archivePlan(activePlan)} disabled={busy}>归档计划</Button>}
-      </>}
+      </div>}
     </div> : null;
 
   return <Section title={title} description={description} className="feedback-plan-panel" actions={sectionActions}>
@@ -1249,8 +1330,8 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     {!isReview && !activePlan && (planLoading || !plansLoaded) && <StatusBanner tone="info">正在读取反馈计划…</StatusBanner>}
     {!isReview && !activePlan && !planLoading && plansLoaded && !requestedPlanId && <StatusBanner tone="warning"><span>当前课次还没有可恢复的反馈计划，请先回到“复核”步骤创建计划。</span><Button uiSize="sm" variant="secondary" onClick={() => workspace.setActiveStep("review")}>返回复核</Button></StatusBanner>}
     {repeatExportRequest && activePlan?.id === repeatExportRequest.planId && <StatusBanner tone="warning"><span>相同文本已经导出过。只有确实需要重新下载时才继续。</span><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, repeatExportRequest.mode, true)} disabled={busy}>确认重复导出</Button><Button uiSize="sm" variant="ghost" onClick={() => setRepeatExportRequest(null)} disabled={busy}>取消</Button></StatusBanner>}
-    {studioMode && !llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>当前没有可用的 LLM API Key 或模型。已有正文仍可编辑；生成和重试暂时锁定。</span><Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
-    {studioMode && activePlan && <details className="feedback-plan-studio-models"><summary>模型角色与生成设置</summary><LLMRoleAssignmentsPanel workspace={llmWorkspace} showWecom={false} /></details>}
+    {studioMode && !legacyGenerationRetired && !llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>当前没有可用的 LLM API Key 或模型。已有正文仍可编辑；生成和重试暂时锁定。</span><Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
+    {studioMode && activePlan && !legacyGenerationRetired && <details className="feedback-plan-studio-models"><summary>模型角色与生成设置</summary><LLMRoleAssignmentsPanel workspace={llmWorkspace} showWecom={false} /></details>}
     {studioMode && activePlan && studioGenerationCounts && ["queued", "generating", "pause_requested", "paused", "generation_failed"].includes(activePlan.status) && <div className="feedback-plan-studio-generation" role="status" aria-label="反馈生成进度">
       <div><span className={`feedback-plan-studio-generation__signal is-${activePlan.status}`} aria-hidden="true" /><span><strong>{planStatusLabel(activePlan.status)}</strong><small>{activePlan.status === "pause_requested" ? "正在等待当前生成中的条目安全结束" : activePlan.status === "paused" ? "队列已停止，不会启动新的学生" : "生成进度会自动保存，离开页面也不会丢失"}</small></span></div>
       <progress max={activePlan.items.length || 1} value={studioGenerationCounts.completed + studioGenerationCounts.failed}>{studioGenerationCounts.completed + studioGenerationCounts.failed}/{activePlan.items.length}</progress>
@@ -1285,23 +1366,24 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
       </fieldset>}
       {(type === "stage_trend" || type === "course_end") && <fieldset className="feedback-plan-range"><legend>{type === "stage_trend" ? "阶段范围" : "学期范围"}</legend><p>{type === "stage_trend" ? "首次默认最近四次已完成课次，后续从上一份已批准阶段反馈之后开始。" : "默认覆盖当前学期截至当前课次的全部范围。"}</p><div className="feedback-plan-form-grid"><label><span>起始课次</span><select aria-label="反馈计划起始课次" value={rangeStartSessionId} onChange={(event) => setRangeStartSessionId(event.target.value)}><option value="">自动</option>{rangeSessions.map((session) => <option key={session.id} value={session.id}>{session.code} · {session.date} · 第{session.semesterNumber}次</option>)}</select></label><label><span>截止课次</span><select aria-label="反馈计划截止课次" value={rangeEndSessionId} onChange={(event) => setRangeEndSessionId(event.target.value)}>{rangeSessions.map((session) => <option key={session.id} value={session.id}>{session.code} · {session.date} · 第{session.semesterNumber}次</option>)}</select></label></div></fieldset>}
     </div>}
-    {isReview && activePlan && <div className="feedback-plan-existing" role="status"><strong>已恢复反馈计划：{activePlan.displayName?.trim() || typeLabels[activePlan.type]}</strong><span>{typeLabels[activePlan.type]} · {feedbackGenerationApproachLabel(activePlan.generationApproach)} · {planStatusLabel(activePlan.status)} · {activePlan.items.length} 条目 · {activePlan.outputRequirement}</span><p>当前计划的课次、课程材料、生成方式和证据快照已固定；点击上方“生成反馈”继续处理，生成中的计划请切换到“生成”查看队列。</p></div>}
-    {isReview && plans.length > 0 && <div className="feedback-plan-history"><div><strong>计划历史</strong><span>可按名称恢复最近 8 个计划</span></div><div className="feedback-plan-history-list">{plans.slice(0, 8).map((plan) => <Button key={plan.id} uiSize="sm" variant={activePlan?.id === plan.id ? "secondary" : "ghost"} onClick={() => void openPlan(plan.id)}>{plan.displayName?.trim() || typeLabels[plan.type]} · {feedbackGenerationApproachLabel(plan.generationApproach)} · {planStatusLabel(plan.status)} · {plan.items.length}条</Button>)}</div></div>}
+    {isReview && activePlan && <div className="feedback-plan-existing" role="status"><strong>已恢复反馈计划：{activePlan.displayName?.trim() || typeLabels[activePlan.type]}</strong><span>{typeLabels[activePlan.type]} · {feedbackPlanConfiguredApproachLabel(activePlan)} · {planStatusLabel(activePlan.status)} · {activePlan.items.length} 条目 · {activePlan.outputRequirement}</span><p>{feedbackPlanUsesRetiredLegacyGeneration(activePlan) ? "旧生成方式已经退役；历史配置只读，已有正文仍可复核、批准和导出。需要继续生成时请另存为受限反馈或自由反馈计划。" : "当前计划的课次、课程材料、生成方式和证据快照已固定；点击上方“生成反馈”继续处理，生成中的计划请切换到“生成”查看队列。"}</p></div>}
+    {isReview && plans.length > 0 && <div className="feedback-plan-history"><div><strong>计划历史</strong><span>可按名称恢复最近 8 个计划</span></div><div className="feedback-plan-history-list">{plans.slice(0, 8).map((plan) => <Button key={plan.id} uiSize="sm" variant={activePlan?.id === plan.id ? "secondary" : "ghost"} onClick={() => void openPlan(plan.id)}>{plan.displayName?.trim() || typeLabels[plan.type]} · {feedbackPlanConfiguredApproachLabel(plan)} · {planStatusLabel(plan.status)} · {plan.items.length}条</Button>)}</div></div>}
     {isGenerate && activePlan && <div className="feedback-plan-generation" role="status">
       <div className="feedback-plan-generation__summary">
         <div><strong>{typeLabels[activePlan.type]}</strong><span>{planStatusLabel(activePlan.status)} · 最多同时生成 2 条</span></div>
         <Badge tone={activePlan.status === "generation_failed" ? "danger" : activePlan.status === "paused" ? "neutral" : "info"}>{planStatusLabel(activePlan.status)}</Badge>
       </div>
       <LLMRoleAssignmentsPanel workspace={llmWorkspace} showWecom={false} />
-      {activePlan.status === "draft" && <div className="feedback-generation-mode-picker">
-        <div><strong>{feedbackGenerationApproachLabel(activePlan.generationApproach)}</strong><span>{generationApproachDescription(activePlan.generationApproach)} 生成方式将在首次启动后冻结。</span></div>
+      {activePlan.status === "draft" && !legacyGenerationRetired && <div className="feedback-generation-mode-picker">
+        <div><strong>{feedbackPlanConfiguredApproachLabel(activePlan)}</strong><span>{configuredGenerationApproachDescription(activePlan)} 生成方式将在首次启动后冻结。</span></div>
         <div><Button onClick={() => void generatePlan(activePlan)} disabled={busy || archivedReadOnly || !canGenerate}>开始生成反馈</Button><span>完成后进入教师编辑与批准；程序核验始终执行。</span></div>
       </div>}
+      {activePlan.status === "draft" && legacyGenerationRetired && <StatusBanner tone="warning"><span>{generationApproachDescription(null)}</span><Button uiSize="sm" variant="secondary" onClick={openPlanRevision}>另存为新计划</Button></StatusBanner>}
       <div className="feedback-generation-timing" aria-label="生成计时">
         <div><span>总耗时</span><strong>{activePlan.generationTiming?.startedAt ? formatDuration(activePlan.generationTiming.elapsedMs) : "—"}</strong></div>
         <div><span>{activePlan.type === "class_update" ? "平均每条" : "平均每生"}</span><strong>{formatDuration(activePlan.generationTiming?.averageItemMs)}</strong></div>
         <div><span>生成速度</span><strong>{activePlan.generationTiming?.itemsPerMinute === null || activePlan.generationTiming?.itemsPerMinute === undefined ? "—" : `${activePlan.generationTiming.itemsPerMinute} ${activePlan.type === "class_update" ? "条" : "生"}/分钟`}</strong></div>
-        <div><span>计划生成方式</span><strong>{feedbackGenerationApproachLabel(activePlan.generationApproach)}</strong></div>
+        <div><span>计划生成方式</span><strong>{feedbackPlanConfiguredApproachLabel(activePlan)}</strong></div>
       </div>
       <div className="feedback-plan-generation__counts"><span>已完成 {activePlan.generationProgress?.completed ?? 0}/{activePlan.generationProgress?.total ?? activePlan.items.length}</span><span>排队 {activePlan.generationProgress?.queued ?? 0}</span><span>进行中 {activePlan.generationProgress?.running ?? 0}</span><span>失败 {activePlan.generationProgress?.failed ?? activePlan.items.filter((item) => item.status === "generation_failed").length}</span></div>
       <progress max={activePlan.generationProgress?.total || activePlan.items.length || 1} value={activePlan.generationProgress?.completed ?? 0} />
@@ -1370,7 +1452,8 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
         scoreC: metric.scoreC,
         scoreD: metric.scoreD,
       }));
-      const evidenceSummary = (evidence.teachingEvidence || []).slice(0, 3);
+      const teachingEvidence = evidence.teachingEvidence || [];
+      const evidenceSummary = teachingEvidence.slice(0, 4);
       const taskSummary = item.tasks?.[0]?.action || followup?.content || "暂无当日任务";
       const itemSaving = savingItemIds.includes(item.id);
       const itemDirty = draft.text !== (item.finalText ?? "");
@@ -1392,116 +1475,78 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
       const auditPending = pendingAuditMessage(item.status);
       const nextStudioItem = activePlan.items.find((candidate) => candidate.id !== item.id && studioMatches(candidate, "action"))
         ?? activePlan.items.find((candidate) => candidate.id !== item.id && studioMatches(candidate, "review"));
+      const taskIssueIndex = auditIssues.findIndex((issue: { code: string }) => ["followup_without_task", "promise_without_task"].includes(issue.code));
+      const queuePosition = activePlan.items.findIndex((candidate) => candidate.id === item.id) + 1;
+      const generationAttempts = item.generationExecution?.attempts ?? [];
       return <article key={item.id} className={`feedback-plan-item ${studioMode ? "feedback-plan-item--studio" : ""}`}>
-        <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 版本 {item.itemRevision}</small></span></label><div className="feedback-plan-item__badges"><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge><Badge tone="neutral">{itemGenerationSummary(activePlan, item)}</Badge>{item.generationConfig && <Badge tone="info">独立计划</Badge>}</div></header>
-        {studioMode && <div className="feedback-plan-studio-item-actions">
-          {item.status === "generation_failed" && !batchMode && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlan(activePlan, [item.id])} disabled={busy || archivedReadOnly || !llmReady}>重试当前学生</Button>}
-          {item.status === "generation_failed" && !batchMode && activePlan.generationApproach === "restricted" && feedbackPlanItemActualApproach(item) !== "free" && <Button uiSize="sm" variant="secondary" onClick={() => void retryPlanWithFree(activePlan, [item.id])} disabled={busy || archivedReadOnly || !llmReady}>改用自由反馈</Button>}
-          {item.studentId && item.student && <Button uiSize="sm" variant="secondary" onClick={() => openIndependentItem(item)} disabled={busy || generationConfigImmutable}>{item.generationConfig ? "调整独立设置" : "学生独立设置"}</Button>}
-          <Button uiSize="sm" onClick={() => void approvePlan(activePlan, [item.id])} disabled={busy || itemDirty || itemImmutable || !item.finalText?.trim() || auditStatus(item) === "blocked"}>批准当前反馈</Button>
-          {(onNextItem || nextStudioItem) && <Button uiSize="sm" variant="ghost" onClick={() => onNextItem ? onNextItem(item.id) : nextStudioItem && setStudioItemId(nextStudioItem.id)}>下一条需处理</Button>}
-        </div>}
-        <section className="feedback-plan-audit-panel" aria-label={`${itemLabel}程序核验结果`}>
-          <header><div><strong>程序核验</strong><span>先处理这里，再核对证据和正文 · 初稿覆盖 {initialDraftCoveredEvidenceIds.size}/{requiredEvidenceIds.size} · 成稿保留 {coveredEvidenceIds.size}/{requiredEvidenceIds.size}</span></div><Badge tone={auditPending ? "warning" : blockedIssues.length ? "danger" : auditIssues.length ? "warning" : "success"}>{auditPending ? "尚未完成核验" : auditStatusLabel(auditStatus(item))}</Badge></header>
-          <p className="feedback-plan-audit-mode">{auditPending ? "本条尚无有效的最终核验结果。" : `${itemGenerationSummary(activePlan, item)}；以下结果来自最终的程序规则核验。`}</p>
-          {auditPending
-            ? <StatusBanner tone="warning"><div className="feedback-plan-audit-success"><strong>暂不能判断是否通过</strong><span>{auditPending}</span></div></StatusBanner>
-            : auditIssues.length === 0
-            ? <StatusBanner tone="success"><div className="feedback-plan-audit-success"><strong>程序核验通过</strong><span>没有发现会阻断批准或需要教师确认的规则问题；仍请教师核对教学判断和最终措辞。</span></div></StatusBanner>
-            : auditIssues.map((issue: AuditIssue, index: number) => {
-              const guidance = describeAuditIssue(issue);
-              const hardBlocked = isHardFeedbackAuditIssue(issue.code);
-              return <StatusBanner key={`${issue.code}-${index}`} tone={hardBlocked ? "danger" : "warning"}><div className="feedback-plan-audit-issue"><div><strong>{guidance.area}：{guidance.title}</strong><Badge tone={hardBlocked ? "danger" : "warning"}>{hardBlocked ? "阻断批准" : "需确认"}</Badge></div><p><b>检测结果：</b>{issue.message}</p>{issue.excerpt && <p><b>检测片段：</b>{issue.excerpt}</p>}<p><b>影响：</b>{guidance.impact}</p><p><b>处理建议：</b>{guidance.action}</p><small>核验代码：{issue.code}</small></div></StatusBanner>;
-            })}
+        <section className="feedback-plan-current-status" data-workspace-section="current_status" aria-label={`${itemLabel}当前状态`}>
+          <header className="feedback-plan-item__heading"><label className="feedback-plan-item-select"><input type="checkbox" aria-label={`选择${itemLabel}反馈`} checked={selectedItemIds.includes(item.id)} disabled={itemImmutable} onChange={(event) => setSelectedItemIds((ids) => event.target.checked ? [...new Set([...ids, item.id])] : ids.filter((id) => id !== item.id))} /><span><strong>{itemLabel}</strong><small>{item.student?.studentId || (item.studentId ? "学生关系缺失" : "班级条目")} · 队列 {queuePosition}/{activePlan.items.length} · 版本 {item.itemRevision}</small></span></label><div className="feedback-plan-item__badges"><Badge tone={blockedIssues.length || item.status === "stale" || (item.studentId && !item.student) ? "danger" : item.status === "approved" || item.status === "exported" ? "success" : "warning"}>{planStatusLabel(item.status)}</Badge><Badge tone="neutral">配置：{feedbackPlanConfiguredApproachLabel(activePlan)}</Badge><Badge tone="neutral">{itemGenerationSummary(activePlan, item)}</Badge>{item.generationConfig && <Badge tone="info">独立计划</Badge>}</div></header>
+          {studioMode && <div className="feedback-plan-studio-item-actions">
+            {legacyGenerationRetired && ["evidence_ready", "paused", "generation_failed"].includes(item.status) && <Button uiSize="sm" variant="secondary" onClick={openPlanRevision} disabled={busy}>另存为受限/自由计划</Button>}
+            {!legacyGenerationRetired && item.status === "generation_failed" && !batchMode && <Button uiSize="sm" onClick={() => void retryPlan(activePlan, [item.id])} disabled={busy || archivedReadOnly || !llmReady}>重试当前学生</Button>}
+            {!legacyGenerationRetired && item.status === "generation_failed" && !batchMode && activePlan.generationApproach === "restricted" && feedbackPlanItemActualApproach(item) !== "free" && <Button uiSize="sm" variant="ghost" onClick={() => void retryPlanWithFree(activePlan, [item.id])} disabled={busy || archivedReadOnly || !llmReady}>明确改用自由反馈</Button>}
+            {feedbackPlanItemShowsApproval(item.status) && <Button uiSize="sm" onClick={() => void approvePlan(activePlan, [item.id])} disabled={busy || itemDirty || itemImmutable || !item.finalText?.trim() || auditStatus(item) === "blocked"}>批准当前反馈</Button>}
+            {(onNextItem || nextStudioItem) && <Button uiSize="sm" variant="ghost" onClick={() => onNextItem ? onNextItem(item.id) : nextStudioItem && setStudioItemId(nextStudioItem.id)}>下一名学生</Button>}
+          </div>}
+          <section className="feedback-plan-audit-panel" aria-label={`${itemLabel}程序核验结果`}>
+            <header><div><strong>程序核验</strong><span>初稿覆盖 {initialDraftCoveredEvidenceIds.size}/{requiredEvidenceIds.size} · 成稿保留 {coveredEvidenceIds.size}/{requiredEvidenceIds.size}</span></div><Badge tone={auditPending ? "warning" : blockedIssues.length ? "danger" : auditIssues.length ? "warning" : "success"}>{auditPending ? "尚未完成核验" : auditStatusLabel(auditStatus(item))}</Badge></header>
+            {auditPending
+              ? <StatusBanner tone="warning"><div className="feedback-plan-audit-success"><strong>暂不能判断是否通过</strong><span>{auditPending}</span></div></StatusBanner>
+              : auditIssues.length === 0
+              ? <StatusBanner tone="success"><div className="feedback-plan-audit-success"><strong>程序核验通过</strong><span>仍请教师核对教学判断和最终措辞。</span></div></StatusBanner>
+              : auditIssues.map((issue: AuditIssue, index: number) => {
+                const guidance = describeAuditIssue(issue);
+                const hardBlocked = isHardFeedbackAuditIssue(issue.code);
+                return <StatusBanner key={`${issue.code}-${index}`} tone={hardBlocked ? "danger" : "warning"}><div className="feedback-plan-audit-issue"><div><strong>{guidance.area}：{guidance.title}</strong><Badge tone={hardBlocked ? "danger" : "warning"}>{hardBlocked ? "阻断批准" : "需确认"}</Badge></div><p><b>检测结果：</b>{issue.message}</p>{issue.excerpt && <p><b>检测片段：</b>{issue.excerpt}</p>}<p><b>影响：</b>{guidance.impact}</p><p><b>处理建议：</b>{guidance.action}</p>{feedbackPlanItemShowsApproval(item.status) && index === taskIssueIndex && <div className="feedback-plan-task-form"><input aria-label={`${itemLabel}教师任务`} value={taskDraft.action} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, action: event.target.value } }))} /><select aria-label={`${itemLabel}任务截止方式`} value={taskDraft.dueType} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueType: event.target.value as TaskDraft["dueType"] } }))}><option value="session" disabled={futureSessions.length === 0}>按课次</option><option value="date">按日期</option></select>{taskDraft.dueType === "session" ? <select aria-label={`${itemLabel}教师任务截止课次`} value={taskDraft.dueSessionId} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueSessionId: event.target.value } }))}>{futureSessions.map((session) => <option key={session.id} value={session.id}>{session.date} · {session.code}</option>)}</select> : <input aria-label={`${itemLabel}任务截止日期`} type="date" value={taskDraft.dueDate} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueDate: event.target.value } }))} />}<Button uiSize="sm" variant="secondary" onClick={() => void createTask(activePlan, item)} disabled={busy || itemImmutable || !taskDraft.action.trim() || (taskDraft.dueType === "date" && !taskDraft.dueDate)}>批准并创建教师任务</Button></div>}</div></StatusBanner>;
+              })}
+          </section>
+          {item.studentId && !item.student && <StatusBanner tone="danger">学生身份没有加载完整，已禁止把该条目当作班级公共反馈。请刷新计划后重试。</StatusBanner>}
+          {item.status === "stale" && <StatusBanner tone="warning">来源信息已更新，但当前正文仍然保留。你可以直接修改并保存或点击顶部“保留现有正文”；需要换用最新事实或生成设置时，请回到“规划”建立另一份计划。</StatusBanner>}
         </section>
-        {item.studentId && !item.student && <StatusBanner tone="danger">学生身份没有加载完整，已禁止把该条目当作班级公共反馈。请刷新计划后重试。</StatusBanner>}
-        {item.status === "stale" && <StatusBanner tone="warning">来源信息已更新，但当前正文仍然保留。你可以直接修改并保存或点击顶部“保留现有正文”；需要换用最新事实或生成设置时，请回到“规划”建立另一份计划。</StatusBanner>}
-        <div className="feedback-plan-review-grid">
-          <aside className="feedback-plan-context-column" aria-label={`${itemLabel}反馈依据`}>
-            <section className="feedback-plan-fact-card">
-              <div className="feedback-plan-card-label"><strong>本课事实</strong><span>已确认，可作为正文依据</span></div>
-              <div className="feedback-plan-fact-list">
-                {evidenceSummary.length
-                  ? evidenceSummary.map((entry: { id?: string; content: string }, index: number) => <p key={entry.id ?? index}>{entry.content}</p>)
-                  : <p className="is-empty">暂无已确认课堂证据</p>}
-              </div>
-            </section>
-            {studentTrendMetrics.length > 0 && <div className="feedback-plan-student-trend" aria-label={`${itemLabel}最近课堂评价趋势`}><StudentTrendChart metrics={studentTrendMetrics} compact title="最近课堂评价" /><p>学期均值 A{history?.semesterAverage?.A ?? "—"} · B{history?.semesterAverage?.B ?? "—"} · C{history?.semesterAverage?.C ?? "—"} · D{history?.semesterAverage?.D ?? "—"}</p></div>}
-            <section className="feedback-plan-compact-card">
-              <strong>家庭沟通偏好</strong>
-              <p>{activePreferenceItems.length ? activePreferenceItems.map(([label, value]) => `${label} ${value}`).join(" · ") : "未设置"}</p>
-            </section>
-            <section className="feedback-plan-compact-card">
-              <strong>当日任务</strong>
-              <p>{taskSummary}</p>
-            </section>
-          </aside>
-          <div className="feedback-plan-writing-column">
-            {initialDraftText && <section className="feedback-plan-model-suggestion"><div className="feedback-plan-card-label"><strong>模型建议（仅供参考）</strong><span>请对照左侧事实判断</span></div><p>{initialDraftText}</p></section>}
-            <section className="feedback-plan-final-editor">
-              <div className="feedback-plan-card-label"><strong>教师最终正文</strong><span>批准与导出以此处为准</span></div>
-              <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={5} value={draft.text} onChange={(event) => { const text = event.target.value; setDrafts((current) => ({ ...current, [item.id]: { ...draft, text } })); }} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · {itemSaving ? "保存中" : itemDirty ? "有未保存修改" : "已保存"}</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemSaving || itemImmutable || Boolean(item.studentId && !item.student) || !itemDirty}>{itemSaving ? "保存中…" : !itemDirty ? "已保存" : item.status === "stale" ? "保留当前正文并复核" : "保存修改"}</Button></div></div>
-            </section>
+
+        <section className="feedback-plan-workspace-section feedback-plan-final-editor" data-workspace-section="teacher_final_text" aria-label={`${itemLabel}教师最终正文`}>
+          <div className="feedback-plan-card-label"><strong>教师最终正文</strong><span>首屏主要工作区 · 批准与导出唯一权威</span></div>
+          <div className="feedback-plan-editor"><Textarea aria-label={`${itemLabel}反馈计划文本`} rows={10} value={draft.text} onChange={(event) => { const text = event.target.value; setDrafts((current) => ({ ...current, [item.id]: { ...draft, text } })); }} disabled={busy || itemImmutable || Boolean(item.studentId && !item.student)} /><div className="feedback-plan-editor__actions"><span>{draft.text.length} 个字符 · {itemSaving ? "保存中" : itemDirty ? "等待约 800ms 自动保存" : "已保存"}</span><Button uiSize="sm" onClick={() => void saveItem(item)} disabled={busy || itemSaving || itemImmutable || Boolean(item.studentId && !item.student) || !itemDirty}>{itemSaving ? "保存中…" : !itemDirty ? "已保存" : item.status === "stale" ? "保留当前正文并复核" : "立即保存"}</Button></div></div>
+        </section>
+
+        <section className="feedback-plan-workspace-section feedback-plan-plan-content" data-workspace-section="plan_content" aria-label={`${itemLabel}计划内容`}>
+          <div className="feedback-plan-card-label"><strong>计划内容</strong><span>生成开始后的冻结边界不变</span></div>
+          <div className="feedback-plan-generation-preferences feedback-plan-generation-preferences--readonly">
+            <strong>{item.generationConfig ? "学生独立计划" : generationPreferences ? "沿用公共计划" : legacyGenerationRetired ? "旧生成配置（只读）" : "计划配置"}</strong>
+            <span>反馈类型：{typeLabels[item.generationConfig?.type ?? activePlan.type]}</span>
+            <span>生成方式：{feedbackPlanConfiguredApproachLabel(activePlan)}</span>
+            <span>总体要求：{item.generationConfig?.outputRequirement || activePlan.outputRequirement}</span>
+            {effectiveGenerationPreferences ? <><span>结尾：{closureLabels[effectiveGenerationPreferences.closureType] || effectiveGenerationPreferences.closureType}</span><span>详略：{generationPreferenceLabel(effectiveGenerationPreferences.length, generationLengthLabels)} · 语气：{generationPreferenceLabel(effectiveGenerationPreferences.tone, generationToneLabels)}</span><span>模块：{effectiveGenerationPreferences.moduleKeys.length ? effectiveGenerationPreferences.moduleKeys.map((key) => moduleLabels[key] || key).join("、") : "未预选，按当前类型自然组织"}</span></> : <span>{configuredGenerationApproachDescription(activePlan)}</span>}
+            {item.studentId && item.student && !legacyGenerationRetired && <Button uiSize="sm" variant="secondary" onClick={() => openIndependentItem(item)} disabled={busy || generationConfigImmutable} title={generationConfigImmutable ? "已编辑、批准或正在处理的条目不能覆盖计划配置" : undefined}>{item.generationConfig ? "调整独立计划" : "设置独立计划"}</Button>}
           </div>
-        </div>
-        {assessmentEvidence.length > 0 && <details className="feedback-plan-assessment-detail"><summary><span><strong>出门测详情</strong><small>{assessmentEvidence.length} 条已确认测评证据</small></span><Badge tone="neutral">默认折叠</Badge></summary><div>{assessmentEvidence.map((entry: { id?: string; content: string }, index: number) => <p key={entry.id ?? index}>{entry.content}</p>)}</div></details>}
-        {pendingPreferenceCandidate && <details className="feedback-plan-preference" open><summary>发现新的家庭沟通偏好，等待确认</summary><div className="feedback-plan-preference__candidate"><p>待确认：长度 {preferenceLabel(pendingPreference.length)} · 形式 {preferenceLabel(pendingPreference.deliveryChannel)} · 电话 {preferenceLabel(pendingPreference.phoneContact)} · 频率 {preferenceLabel(pendingPreference.frequency)}</p><div><Button uiSize="sm" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "confirmed")} disabled={busy || archivedReadOnly}>确认并用于反馈</Button><Button uiSize="sm" variant="ghost" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "rejected")} disabled={busy || archivedReadOnly}>不是偏好</Button></div></div></details>}
-        <details className="feedback-plan-advanced">
-          <summary><span><strong>高级选项</strong><small>计划结构、任务与附件</small></span><span className="feedback-plan-advanced__hint">按需展开</span></summary>
-          <div className="feedback-plan-item__controls">
-            <div className="feedback-plan-generation-preferences feedback-plan-generation-preferences--readonly">
-              {item.generationConfig
-                ? <>
-                  <strong>学生独立计划</strong>
-                  <span>反馈类型：{typeLabels[item.generationConfig.type]}</span>
-                  <span>特殊处理：{item.generationConfig.outputRequirement}</span>
-                  <span>结尾：{closureLabels[item.generationConfig.generationPreferences.closureType] || item.generationConfig.generationPreferences.closureType}</span>
-                  <span>详略：{generationPreferenceLabel(item.generationConfig.generationPreferences.length, generationLengthLabels)} · 语气：{generationPreferenceLabel(item.generationConfig.generationPreferences.tone, generationToneLabels)}</span>
-                  <span>模块：{item.generationConfig.generationPreferences.moduleKeys.length ? item.generationConfig.generationPreferences.moduleKeys.map((key) => moduleLabels[key] || key).join("、") : "未预选，按当前类型自然组织"}</span>
-                  <small>本条不遵循公共计划的模块和要求；课次、证据与导出仍属于当前批次。</small>
-                </>
-                : generationPreferences
-                ? <>
-                  <strong>沿用公共计划</strong>
-                  <span>结尾：{closureLabels[effectiveGenerationPreferences?.closureType ?? ""] || effectiveGenerationPreferences?.closureType}</span>
-                  <span>详略：{generationPreferenceLabel(effectiveGenerationPreferences?.length, generationLengthLabels)} · 语气：{generationPreferenceLabel(effectiveGenerationPreferences?.tone, generationToneLabels)}</span>
-                  <span>模块：{effectiveGenerationPreferences?.moduleKeys.length ? effectiveGenerationPreferences.moduleKeys.map((key) => moduleLabels[key] || key).join("、") : "未预选，按当前类型自然组织"}</span>
-                  <small>公共结构已随计划快照固定；当前导出只使用已审核正文。</small>
-                </>
-                : <>
-                  <strong>旧计划兼容模式</strong>
-                  <span>该计划创建时未保存生成结构偏好，仍按当前反馈类型的完整允许目录审核。</span>
-                  <small>当前导出只使用已审核正文。</small>
-                </>}
-              {item.studentId && item.student && <Button uiSize="sm" variant="secondary" onClick={() => openIndependentItem(item)} disabled={busy || generationConfigImmutable} title={generationConfigImmutable ? "已编辑、批准或正在处理的条目不能覆盖计划配置" : undefined}>{item.generationConfig ? "调整独立计划" : "设置独立计划"}</Button>}
-            </div>
+        </section>
+
+        <section className="feedback-plan-workspace-section feedback-plan-student-facts" data-workspace-section="student_facts" aria-label={`${itemLabel}学生事实`}>
+          <div className="feedback-plan-card-label"><strong>学生事实</strong><span>确定性事实与模型建议分开</span></div>
+          <div className="feedback-plan-facts-grid">
+            <section className="feedback-plan-fact-card"><div className="feedback-plan-card-label"><strong>已确认课堂事实</strong><span>{teachingEvidence.length} 条</span></div><div className="feedback-plan-fact-list">{evidenceSummary.length ? evidenceSummary.map((entry: { id?: string; content: string }, index: number) => <p key={entry.id ?? index}>{entry.content}</p>) : <p className="is-empty">暂无已确认课堂证据</p>}</div></section>
+            <section className="feedback-plan-fact-card"><div className="feedback-plan-card-label"><strong>测评摘要</strong><span>{assessmentEvidence.length} 条</span></div><div className="feedback-plan-fact-list">{assessmentEvidence.length ? assessmentEvidence.slice(0, 4).map((entry: { id?: string; content: string }, index: number) => <p key={entry.id ?? index}>{entry.content}</p>) : <p className="is-empty">暂无已确认测评证据</p>}</div></section>
+            <section className="feedback-plan-compact-card"><strong>沟通偏好</strong><p>{activePreferenceItems.length ? activePreferenceItems.map(([label, value]) => `${label} ${value}`).join(" · ") : "未设置"}</p></section>
+            <section className="feedback-plan-compact-card"><strong>教师任务</strong><p>{taskSummary}</p></section>
+          </div>
+          {pendingPreferenceCandidate && <details className="feedback-plan-preference" open><summary>发现新的家庭沟通偏好，等待确认</summary><div className="feedback-plan-preference__candidate"><p>待确认：长度 {preferenceLabel(pendingPreference.length)} · 形式 {preferenceLabel(pendingPreference.deliveryChannel)} · 电话 {preferenceLabel(pendingPreference.phoneContact)} · 频率 {preferenceLabel(pendingPreference.frequency)}</p><div><Button uiSize="sm" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "confirmed")} disabled={busy || archivedReadOnly}>确认并用于反馈</Button><Button uiSize="sm" variant="ghost" onClick={() => void resolvePreferenceCandidate(item, pendingPreferenceCandidate.id, "rejected")} disabled={busy || archivedReadOnly}>不是偏好</Button></div></div></details>}
+        </section>
+
+        <section className="feedback-plan-workspace-section feedback-plan-student-trends" data-workspace-section="student_trends" aria-label={`${itemLabel}学生趋势`}>
+          <div className="feedback-plan-card-label"><strong>学生趋势</strong><span>本学期最近 {studentTrendMetrics.length} 个有效样本；缺失值不按 0 处理</span></div>
+          {studentTrendMetrics.length > 0 ? <div className="feedback-plan-student-trend"><StudentTrendChart metrics={studentTrendMetrics} compact title="最近课堂评价" /><p>时间范围：{studentTrendMetrics.at(-1)?.date ?? "—"} 至 {studentTrendMetrics[0]?.date ?? "—"} · 学期均值 A{history?.semesterAverage?.A ?? "—"} · B{history?.semesterAverage?.B ?? "—"} · C{history?.semesterAverage?.C ?? "—"} · D{history?.semesterAverage?.D ?? "—"}</p></div> : <p className="feedback-plan-section-empty">当前没有足够的有效课堂评价样本，暂不绘制趋势。</p>}
+        </section>
+
+        <details className="feedback-plan-advanced" data-workspace-section="advanced">
+          <summary><span><strong>高级选项</strong><small>详细证据、生成轨迹、模型初稿、任务历史与附件</small></span><span className="feedback-plan-advanced__hint">按需展开</span></summary>
+          <div className="feedback-plan-advanced__body">
+            {initialDraftText && <section className="feedback-plan-model-suggestion"><div className="feedback-plan-card-label"><strong>模型初稿（只读）</strong><span>仅供与教师最终正文比较</span></div><p>{initialDraftText}</p></section>}
+            {(teachingEvidence.length > evidenceSummary.length || assessmentEvidence.length > 0) && <section className="feedback-plan-diagnostic-card"><strong>详细证据</strong>{teachingEvidence.map((entry: { id?: string; content: string }, index: number) => <p key={`teaching-${entry.id ?? index}`}>{entry.content}</p>)}{assessmentEvidence.map((entry: { id?: string; content: string }, index: number) => <p key={`assessment-${entry.id ?? index}`}>测评：{entry.content}</p>)}</section>}
+            <section className="feedback-plan-diagnostic-card"><strong>生成轨迹</strong><p>{legacyGenerationRetired ? "旧生成方式已退役，历史轨迹只读。" : `${itemGenerationSummary(activePlan, item)}；请求方式 ${item.generationExecution?.requestedApproach ? feedbackGenerationApproachLabel(item.generationExecution.requestedApproach) : feedbackPlanConfiguredApproachLabel(activePlan)}。`}</p>{generationAttempts.length ? generationAttempts.map((attempt, index) => <p key={`${attempt.actualApproach}-${index}`}>第 {index + 1} 次：{feedbackGenerationApproachLabel(attempt.actualApproach)} · {attempt.status}</p>) : <p>尚无执行尝试。</p>}</section>
+            {auditIssues.length > 0 && <section className="feedback-plan-diagnostic-card"><strong>技术核验码</strong><p>{auditIssues.map((issue: AuditIssue) => issue.code).join(" · ")}</p></section>}
             {item.tasks?.map((task) => <p className="feedback-plan-task" key={task.id}>教师任务：{task.action} · {task.status}</p>)}
-            {item.attachments?.map((attachment) => (
-              <div className={`feedback-plan-attachment ${attachment.status === "missing" ? "is-missing" : ""}`} key={attachment.id}>
-                <span>发送附件：{attachment.displayName} · {attachment.sizeBytes}B · {attachment.status === "missing" ? "文件缺失，不能导出" : attachment.status}</span>
-                <Button uiSize="sm" variant="ghost" onClick={() => void removeAttachment(activePlan, attachment.id)} disabled={busy || itemImmutable}>移除</Button>
-              </div>
-            ))}
-            <div className="feedback-plan-item__footer">
-              {auditIssues.some((issue: { code: string }) => ["followup_without_task", "promise_without_task"].includes(issue.code)) && (
-                <div className="feedback-plan-task-form">
-                  <input aria-label={`${itemLabel}教师任务`} value={taskDraft.action} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, action: event.target.value } }))} />
-                  <select aria-label={`${itemLabel}任务截止方式`} value={taskDraft.dueType} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueType: event.target.value as TaskDraft["dueType"] } }))}>
-                    <option value="session" disabled={futureSessions.length === 0}>按课次</option>
-                    <option value="date">按日期</option>
-                  </select>
-                  {taskDraft.dueType === "session" ? (
-                    <select aria-label={`${itemLabel}教师任务截止课次`} value={taskDraft.dueSessionId} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueSessionId: event.target.value } }))}>
-                      {futureSessions.map((session) => <option key={session.id} value={session.id}>{session.date} · {session.code}</option>)}
-                    </select>
-                  ) : (
-                    <input aria-label={`${itemLabel}任务截止日期`} type="date" value={taskDraft.dueDate} disabled={itemImmutable} onChange={(event) => setTaskDrafts((current) => ({ ...current, [item.id]: { ...taskDraft, dueDate: event.target.value } }))} />
-                  )}
-                  <Button uiSize="sm" variant="secondary" onClick={() => void createTask(activePlan, item)} disabled={busy || itemImmutable || !taskDraft.action.trim() || (taskDraft.dueType === "date" && !taskDraft.dueDate)}>批准并创建教师任务</Button>
-                </div>
-              )}
-              {isExport && <label className="feedback-plan-attachment-picker">标记发送附件<input type="file" onChange={(event) => void uploadAttachment(activePlan, item, event.target.files?.[0])} disabled={busy || item.status === "stale" || itemImmutable} /></label>}
-            </div>
+            {item.attachments?.map((attachment) => <div className={`feedback-plan-attachment ${attachment.status === "missing" ? "is-missing" : ""}`} key={attachment.id}><span>发送附件：{attachment.displayName} · {attachment.sizeBytes}B · {attachment.status === "missing" ? "文件缺失，不能导出" : attachment.status}</span><Button uiSize="sm" variant="ghost" onClick={() => void removeAttachment(activePlan, attachment.id)} disabled={busy || itemImmutable}>移除</Button></div>)}
+            {isExport && <label className="feedback-plan-attachment-picker">标记发送附件<input type="file" onChange={(event) => void uploadAttachment(activePlan, item, event.target.files?.[0])} disabled={busy || item.status === "stale" || itemImmutable} /></label>}
           </div>
         </details>
       </article>;

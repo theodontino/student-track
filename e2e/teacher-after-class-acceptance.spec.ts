@@ -101,7 +101,7 @@ test.describe("教师纯页面课后验收", () => {
     });
 
     await test.step("规划：设置默认计划并在刷新后留在第二步", async () => {
-      await page.getByLabel("生成方式").selectOption("fast");
+      await page.getByLabel("生成方式").selectOption("free");
       await page.getByLabel("详略").selectOption("detailed");
       await page.getByLabel("语气").selectOption("professional");
       await page.getByLabel("总体要求").first().fill(outputRequirement);
@@ -115,7 +115,7 @@ test.describe("教师纯页面课后验收", () => {
       await page.reload();
       await expect(page.getByRole("navigation", { name: "反馈计划阶段" })).toContainText("规划");
       await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
-      await expect(page.getByLabel("生成方式")).toHaveValue("fast");
+      await expect(page.getByLabel("生成方式")).toHaveValue("free");
       await expect(page.getByLabel("总体要求").first()).toHaveValue(outputRequirement);
     });
 
@@ -130,7 +130,7 @@ test.describe("教师纯页面课后验收", () => {
 
       await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
       await expect(page).toHaveURL(/view=intake/);
-      await expect(page.getByText(/本计划事实已冻结/, { exact: true })).toBeVisible();
+      await expect(page.getByLabel(/反馈生成 · 事实已冻结/)).toBeVisible();
       await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
       await expect(page).toHaveURL(/view=plan/);
       await expect(page.getByText("计划总览 · 源计划已冻结", { exact: true })).toBeVisible();
@@ -143,15 +143,20 @@ test.describe("教师纯页面课后验收", () => {
     await test.step("逐学生复核：未保存时不批准，保存正文并加入附件", async () => {
       for (const [index, student] of students.entries()) {
         await page.getByRole("button", { name: new RegExp(`^${student.name}`) }).click();
-        const editor = page.getByLabel(`${student.name}反馈计划文本`);
+        const editorSection = page.getByLabel(`${student.name}教师最终正文`);
+        const editor = editorSection.getByLabel(`${student.name}反馈计划文本`);
         await expect(editor).toBeEnabled({ timeout: 60_000 });
         const teacherText = `${student.name}家长您好，孩子本讲能够参与摩尔质量与气体摩尔体积的课堂任务，请继续按课堂步骤复盘。`;
         teacherTexts.set(student.name, teacherText);
+        const saved = page.waitForResponse((response) => (
+          new URL(response.url()).pathname === `/api/report/feedback-plans/${planId}`
+          && response.request().method() === "PATCH"
+        ));
         await editor.fill(teacherText);
-        await expect(page.getByText("有未保存修改")).toBeVisible();
-        await expect(page.getByRole("button", { name: "批准当前反馈" })).toBeDisabled();
-        await page.getByRole("button", { name: "保存修改" }).click();
-        await expect(page.getByText(/已保存/).last()).toBeVisible();
+        await expect(editorSection.getByRole("button", { name: "立即保存" })).toBeEnabled({ timeout: 500 });
+        await expect(page.getByRole("button", { name: "批准当前反馈" })).toBeDisabled({ timeout: 500 });
+        expect((await saved).ok()).toBeTruthy();
+        await expect(editorSection.getByRole("button", { name: "已保存", exact: true })).toBeDisabled();
 
         if (index === 0) {
           await page.getByText("高级选项", { exact: true }).click();
