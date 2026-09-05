@@ -18,15 +18,9 @@ npm run dev
 
 #### 给教师的新 Windows 电脑：钉钉离线完整包（推荐）
 
-Windows Core 没有 MSI/EXE。发布者应先确认目标完整提交已经通过 Windows Core CI，再以该提交 SHA 运行
-GitHub Actions 的 **Build Windows Core offline package**。下载其中的
-`StudentTrackCore-Windows-x64-<版本>.zip` 后，核对包内 `BUILD-INFO.json` 的 `sourceCommit`，再作为钉钉附件发送。
-该包只由受控 Windows 构建环境生成；不要从 macOS 复制 `node_modules` 或自行拼装文件。这个临时构建产物不会自动追加
-到既有 tag 或 prerelease；发布者必须按其实际提交和验收状态说明交付边界。
+Windows Core 没有 MSI/EXE。正式 GitHub Release 的 Windows Core ZIP 必须来自当前版本 release evidence 记录的 `PRODUCT_VERIFIED_SHA` 对应成功 L3 `CI policy` run。`Publish verified release assets` 会先确认 `v<版本>` tag 最终解析到同一产品验证提交，再下载该 run 生成并验收过的 `student-track-core-windows-x64-<SHA>` artifact，将其中的 `StudentTrackCore-Windows-x64-<版本>.zip` 发布到对应 Release；已有同名资产必须先核对 GitHub SHA-256 digest，一致才保留，不一致则失败并拒绝覆盖。
 
-在这套手动工作流尚未合入默认分支之前，可从目标 PR 的成功 `windows-core` 检查下载同样经过构建和离线验收的
-ZIP artifact；它同样保留 14 天，且不是既有 prerelease 的正式附件。合入默认分支后，才可以使用手动工作流按完整提交 SHA
-重新构建交付包。
+GitHub Actions 的 **Build Windows Core offline package** 继续保留给临时、定向或版本外交付：它只接受完整提交 SHA，并在受控 Windows 环境重新构建和验收离线包。该手动产物不是既有 Release 的默认权威附件；若要作为正式版本分发，必须单独记录来源、验证 SHA 和交付边界。不要从 macOS 复制 `node_modules` 或自行拼装 Windows 包。
 
 教师保存并解压 ZIP，进入 `StudentTrackCore` 文件夹后双击 `Install-StudentTrackCoreOffline.cmd`。安装器会把程序和
 便携 Node 24/npm 11 复制到 `%LOCALAPPDATA%\Student Track\`，在本地执行已随包携带的 Prisma migration，并创建桌面
@@ -95,10 +89,9 @@ FunASR 等转写工具，也不会探测、启动或调用仅供 macOS Full 使�
 
 ### macOS Full 离线安装与卸载
 
-macOS Full 离线 ZIP 必须在与目标机器相同架构的受控 Mac 上生成。发布者先确认目标完整提交已经通过 macOS Full CI，
-再以该提交 SHA 运行 GitHub Actions 的 **Build macOS Full offline bundle**。产物名称为
-`StudentTrackFull-macOS-<arm64|x64>-<版本>.zip`，包内 `BUILD-INFO.json` 记录源码提交、Node 版本和架构。
-Apple Silicon 与 Intel 的 Node、原生依赖和生产构建不能混用。
+正式 GitHub Release 的 macOS Full ZIP 同样必须来自 release evidence 记录的 `PRODUCT_VERIFIED_SHA` 对应成功 L3 `CI policy` run。`Publish verified release assets` 在确认 tag 与该 SHA 一致后，发布该 run 已生成并通过安装、回环启动、写入、重启读取、卸载保留数据和重装读取验证的 `StudentTrackFull-macOS-<arm64|x64>-<版本>.zip`；不会在发布阶段重新构建产品包。
+
+GitHub Actions 的 **Build macOS Full offline bundle** 保留给临时或定向构建，只接受完整提交 SHA，并要求在与目标机器相同架构的受控 Mac 上生成。包内 `BUILD-INFO.json` 记录源码提交、Node 版本和架构；Apple Silicon 与 Intel 的 Node、原生依赖和生产构建不能混用。手动 workflow 产物不自动替代既有 Release 附件，除非其来源和验证状态被单独记录。
 
 教师解压后双击 `Install-StudentTrackFullOffline.command`。安装器把程序和便携 Node 复制到
 `~/Library/Application Support/Student Track/`，离线执行 Prisma migration，并在运行目录和桌面创建启动、卸载入口。
@@ -118,9 +111,7 @@ STUDENT_TRACK_EDITION=full npm run build
 STUDENT_TRACK_EDITION=full ./scripts/macos/Build-StudentTrackFullOfflineBundle.sh --output /path/to/empty-output
 ```
 
-正式交付优先使用手动 workflow 生成和验证，不从开发中的脏工作区拼装 ZIP。当前离线验收会在隔离 HOME 中执行安装、
-数据库迁移、回环启动、写入、重启读取、卸载保留数据、重新安装和再次读取。仓库建立 Developer ID 签名与 Apple 公证前，
-该步骤只称为离线 bundle，不称为 `.app` packaging。
+当前离线验收会在隔离 HOME 中执行安装、数据库迁移、回环启动、写入、重启读取、卸载保留数据、重新安装和再次读取。仓库建立 Developer ID 签名与 Apple 公证前，该步骤只称为离线 bundle，不称为 `.app` packaging。
 
 ### 运行目录
 
@@ -482,7 +473,9 @@ git push origin vX.Y.Z
 gh release create vX.Y.Z --verify-tag --generate-notes --title "Student Track vX.Y.Z"
 ```
 
-封档完成后至少保留：可校验的数据库备份、干净工作区、通过的迁移状态、最新生成文档、发布提交、版本标签和可访问的 GitHub Release。
+GitHub Release 发布后，`Publish verified release assets` 自动以当前版本 release evidence 的 `PRODUCT_VERIFIED_SHA` 作为唯一产品身份，校验 tag 指向后从该提交成功的 L3 `CI policy` run 提取 Windows Core / macOS Full 已验证 artifact，并发布 Windows bootstrap、Windows Core ZIP 和 macOS Full ZIP。发布阶段不重新构建产品；同名资产已存在时必须比较 SHA-256 digest，一致则幂等保留，不一致则失败并拒绝覆盖。最终封档前确认该分发 workflow 成功、Release 上所需资产均为 `uploaded` 且有 digest，再把 run 与 digest 记录回 release evidence。
+
+封档完成后至少保留：可校验的数据库备份、干净工作区、通过的迁移状态、最新生成文档、发布提交、版本标签、可访问的 GitHub Release、成功的分发 workflow 以及 release evidence 中可追溯的资产 digest。
 
 ## 后续接手开发
 
