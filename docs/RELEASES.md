@@ -6,7 +6,7 @@
 
 | 组件 | 版本 | 当前关系 |
 |---|---:|---|
-| Student Track | 1.3.0-beta.3 | Core / Full 共用同一业务数据与 Prisma Schema；当前预发布包含受限/自由反馈生成、可选课程材料、内置文字型 PDF 解析，以及 Windows Core 与 macOS Full 离线安装和保留数据卸载。 |
+| Student Track | 1.3.0-beta.4 | Core / Full 共用同一业务数据与 Prisma Schema；当前预发布收束课后计划切换与逐学生复核，停止 legacy 生成执行并保留其历史正文、批准、导出和稳定 ID。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 当前正式 WCG；与 ST 通过 `protocol-st-wcg` 管理的 handoff、receipt、已批准草稿包和只读花名册目录契约协作，并保持 no-send 边界。 |
 
 Student Track 与 WCG 的业务交付以本地文件为主；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。
@@ -16,7 +16,7 @@ Student Track 与 WCG 的业务交付以本地文件为主；唯一在线耦合�
 ## 当前联合验证边界
 
 - **Student Track Core**：继续阻断全部录音转写与企微/WCG Full 集成；不得因为构建在 Windows 上而意外开放 Full 能力。
-- **Student Track Full**：保持 WCG handoff、教师批准和 no-send 草稿边界；受限 Writer 只读取服务端披露输入，历史计划继续按兼容值处理。
+- **Student Track Full**：保持 WCG handoff、教师批准和 no-send 草稿边界；受限 Writer 只读取服务端披露输入，legacy 历史计划只读其生成记录且不再继续调用模型。
 - **离线交付**：Windows Core 与 macOS Full 安装包不携带教学数据；卸载保留数据库和运行目录。macOS ZIP 在签名与公证完成前不称为 `.app` 正式安装包。
 - **WCG**：联合验证聚焦 handoff 谱系、已批准反馈草稿不发送填入、会话定位、输入框安全复核和协议兼容性；WCG 自身 SwiftUI / FastAPI / Accessibility 内部接口不属于 ST 协议快照。
 
