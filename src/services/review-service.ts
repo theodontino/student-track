@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
-import { normalizeDimensionScore, SCORE_RULES } from "@/config/rules";
+import { normalizeDimensionScore, normalizeScoreA, SCORE_RULES } from "@/config/rules";
 import { normalizeAttentionSignalCandidates } from "@/lib/attention-labels";
 import { parseFeedbackCommunicationSummary } from "@/lib/feedback-communication";
 import {
@@ -41,9 +41,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeOptionalScore(value: unknown): number | null {
+function normalizeOptionalScore(value: unknown, dimension: "A" | "B" | "C"): number | null {
   if (value === null || value === undefined) return null;
-  const score = normalizeDimensionScore(value);
+  const score = dimension === "A" ? normalizeScoreA(value) : normalizeDimensionScore(value);
   if (score === null) throw new ServiceError("评分必须是有效数字", 400);
   return score;
 }
@@ -109,9 +109,9 @@ function normalizeStudent(value: unknown): ParsedStudent {
     name: value.name.trim(),
     ...(typeof value.studentId === "string" && value.studentId.trim() ? { studentId: value.studentId.trim() } : {}),
     scores: {
-      A: normalizeOptionalScore(value.scores.A),
-      B: normalizeOptionalScore(value.scores.B),
-      C: normalizeOptionalScore(value.scores.C),
+      A: normalizeOptionalScore(value.scores.A, "A"),
+      B: normalizeOptionalScore(value.scores.B, "B"),
+      C: normalizeOptionalScore(value.scores.C, "C"),
     },
     events,
     communication,
@@ -134,6 +134,28 @@ function isStepDraft(rawText: string, parsedData: ParseResult): boolean {
   } catch {
     return false;
   }
+}
+
+function isFeedbackIntakeDraft(rawText: string): boolean {
+  try {
+    const source = JSON.parse(rawText) as unknown;
+    return isRecord(source)
+      && typeof source.stepSessionId === "string"
+      && source.stepSessionId.startsWith("feedback-intake:");
+  } catch {
+    return false;
+  }
+}
+
+function resolvePartialScores(
+  incoming: ParsedStudent["scores"],
+  existing?: { scoreA: number; scoreB: number; scoreC: number } | null,
+) {
+  return {
+    scoreA: incoming.A ?? existing?.scoreA ?? SCORE_RULES.default,
+    scoreB: incoming.B ?? existing?.scoreB ?? SCORE_RULES.default,
+    scoreC: incoming.C ?? existing?.scoreC ?? SCORE_RULES.default,
+  };
 }
 
 function normalizeParsedData(value: unknown): ParseResult {
@@ -219,14 +241,13 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
       throw new ServiceError("WCC 草案必须先绑定学生和课次才能确认", 409);
     }
 
-    let source: unknown = input.edits;
-    if (source === undefined) {
-      try {
-        source = JSON.parse(draft.parsedResult);
-      } catch {
-        throw new ServiceError("草稿内容已损坏，无法确认", 422);
-      }
+    let storedSource: unknown;
+    try {
+      storedSource = JSON.parse(draft.parsedResult);
+    } catch {
+      throw new ServiceError("草稿内容已损坏，无法确认", 422);
     }
+    const source: unknown = input.edits ?? storedSource;
     const sourceRecord = isRecord(source) ? source : {};
     const wccSource = isRecord(sourceRecord.wccSource) ? sourceRecord.wccSource : {};
     const wccPreferenceCandidate = isWccDraft
@@ -234,6 +255,7 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
       : null;
     let parsedData = normalizeParsedData(source);
     const stepDraft = isStepDraft(draft.rawText, parsedData);
+    const feedbackIntakeDraft = stepDraft && isFeedbackIntakeDraft(draft.rawText);
     if (stepDraft && parsedData.students.some((student) => !student.studentId)) {
       throw new ServiceError("STEP 草案缺少学号绑定，不能按姓名猜测学生", 409);
     }
@@ -247,7 +269,7 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
     }
 
     let stepRestrictedByAssistantRoster = false;
-    if (stepDraft && session) {
+    if (stepDraft && !feedbackIntakeDraft && session) {
       const assistantRosterDraft = await tx.draftRecord.findFirst({
         where: {
           id: { not: draft.id },
@@ -373,7 +395,7 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
     const warnings: string[] = [];
     if (stepRestrictedByAssistantRoster) warnings.push("本课次已有助教表；STEP 仅写入教师观察，未改动评分和考勤");
     const affectedStudentIds: string[] = [];
-    const logs: Array<{ studentId: string; studentName: string; scores: ParsedStudent["scores"] }> = [];
+    const logs: Array<{ studentId: string; studentName: string; scores: { A: number; B: number; C: number } }> = [];
     let confirmedCommunicationId: string | null = null;
 
     for (const parsedStudent of parsedData.students) {
@@ -398,21 +420,18 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
       const student = matches[0];
       affectedStudentIds.push(student.id);
       const hasScores = Object.values(parsedStudent.scores).some((score) => score !== null);
-
       await addHighConfidenceAttentionLabels(tx, student.id, parsedStudent.attentionSignals ?? []);
 
       if (hasScores) {
-        const scoreA = parsedStudent.scores.A ?? SCORE_RULES.default;
-        const scoreB = parsedStudent.scores.B ?? SCORE_RULES.default;
-        const scoreC = parsedStudent.scores.C ?? SCORE_RULES.default;
         if (session) {
           const existing = await tx.sessionMetric.findUnique({
             where: { studentId_sessionId: { studentId: student.id, sessionId: session.id } },
           });
+          const resolved = resolvePartialScores(parsedStudent.scores, existing);
           const metricChanged = !existing
-            || existing.scoreA !== scoreA
-            || existing.scoreB !== scoreB
-            || existing.scoreC !== scoreC;
+            || existing.scoreA !== resolved.scoreA
+            || existing.scoreB !== resolved.scoreB
+            || existing.scoreC !== resolved.scoreC;
           if (existing && metricChanged) await archiveMetricBeforeUpdate(existing.id, "update", tx);
           if (metricChanged) await tx.sessionMetric.upsert({
             where: { studentId_sessionId: { studentId: student.id, sessionId: session.id } },
@@ -420,39 +439,57 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
               studentId: student.id,
               date: session.date,
               sessionId: session.id,
-              scoreA,
-              scoreB,
-              scoreC,
+              ...resolved,
               operator: "nlReview",
             },
-            update: { scoreA, scoreB, scoreC },
+            update: resolved,
           });
+          if (metricChanged) {
+            logs.push({
+              studentId: student.id,
+              studentName: student.name,
+              scores: { A: resolved.scoreA, B: resolved.scoreB, C: resolved.scoreC },
+            });
+          }
         } else {
           const existing = await tx.sessionMetric.findFirst({
             where: { studentId: student.id, date: today, sessionId: null },
             orderBy: { createdAt: "desc" },
           });
+          const resolved = resolvePartialScores(parsedStudent.scores, existing);
           if (existing) {
-            await archiveMetricBeforeUpdate(existing.id, "update", tx);
-            await tx.sessionMetric.update({
-              where: { id: existing.id },
-              data: { scoreA, scoreB, scoreC },
-            });
+            const metricChanged = existing.scoreA !== resolved.scoreA
+              || existing.scoreB !== resolved.scoreB
+              || existing.scoreC !== resolved.scoreC;
+            if (metricChanged) {
+              await archiveMetricBeforeUpdate(existing.id, "update", tx);
+              await tx.sessionMetric.update({
+                where: { id: existing.id },
+                data: resolved,
+              });
+              logs.push({
+                studentId: student.id,
+                studentName: student.name,
+                scores: { A: resolved.scoreA, B: resolved.scoreB, C: resolved.scoreC },
+              });
+            }
           } else {
             await tx.sessionMetric.create({
               data: {
                 studentId: student.id,
                 date: today,
                 sessionId: null,
-                scoreA,
-                scoreB,
-                scoreC,
+                ...resolved,
                 operator: "nlReview",
               },
             });
+            logs.push({
+              studentId: student.id,
+              studentName: student.name,
+              scores: { A: resolved.scoreA, B: resolved.scoreB, C: resolved.scoreC },
+            });
           }
         }
-        logs.push({ studentId: student.id, studentName: student.name, scores: parsedStudent.scores });
       }
 
       if (session && typeof parsedStudent.present === "boolean") {

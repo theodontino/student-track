@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.3.0-beta.5",
+    title: "课堂材料导入与冲突确认修复",
+    changes: [
+      "STEP 课堂报告兼容现有 V1 与 V2 导出；文件、文件夹和拖拽入口统一分批上传，大批量 PDF 不再因单次请求过大或共享缓冲区失效而无法读取。",
+      "文字型出门测唯一匹配学生后，将正确率除以 20 并保留一位小数写入 A；既有 A 分与新的硬事实不一致时，由教师明确选择。",
+      "材料详情把来源、考勤、观察和评分策略收进统一操作模块，同类安全策略可以一键批量选择；学生身份与多份 PDF 仍逐项核对。",
+      "录入页直接解释 A 学习与测验、B 精神与纪律、C 课后任务和 D 考勤，已有 B/C/D 与评分历史继续保留。",
+    ],
+  },
+  {
     version: "1.3.0-beta.4",
     title: "课后工作台收束与旧生成退役",
     changes: [

@@ -116,7 +116,7 @@ model SessionMetric {
   id        String   @id @default(cuid())
   studentId String
   date      String   // YYYY-MM-DD，冗余字段（sessionId 可空时仍需直接绑定日期）
-  scoreA    Int      // 0-5
+  scoreA    Float    // 0-5，允许一位小数
   scoreB    Int      // 0-5
   scoreC    Int      // 0-5
   scoreD    Int      @default(3) // 0-5，考勤自动计算
@@ -136,7 +136,7 @@ model SessionMetricHistory {
   metricId    String   // 原 SessionMetric.id
   studentId   String
   date        String
-  scoreA      Int
+  scoreA      Float
   scoreB      Int
   scoreC      Int
   scoreD      Int

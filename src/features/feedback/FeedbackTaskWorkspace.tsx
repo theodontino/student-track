@@ -10,7 +10,7 @@ import { requestJson } from "@/lib/api-client";
 import { lessonMaterialHasContent, parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type { FeedbackScriptLibraryResponse } from "@/lib/feedback-script-library";
 import type { FeedbackIntakeDecision } from "@/services/feedback-intake-service";
-import { isBlockingFeedbackIntakeIssue, isSourceScopedBoundaryIssue } from "@/lib/feedback-intake-rules";
+import { isBlockingFeedbackIntakeIssue } from "@/lib/feedback-intake-rules";
 import FeedbackPlanManager, { type ArchivedFeedbackTaskReference, type FeedbackTaskOpenTarget } from "./FeedbackPlanManager";
 import { TaskPreparationStage, type GroupMaterialSummary } from "./TaskPreparationStage";
 import { TaskConfirmationStage } from "./TaskConfirmationStage";
@@ -19,9 +19,11 @@ import { FeedbackTaskDocumentStage } from "./FeedbackTaskDocumentStage";
 import type { FeedbackContextStudent } from "./context-types";
 import type { FeedbackContextResponse } from "./types";
 import {
+  dismissFeedbackGroupUnassignedSource,
   dismissFeedbackGroupUnassignedSourcesForSelectedClasses,
   scopeFeedbackGroupUnassignedSources,
 } from "./feedback-group-unassigned";
+import { selectedMaterialIssueDecision } from "./material-issue-actions";
 import type {
   FeedbackGroupIntakeSourceSummary,
   FeedbackGroupIntakeUnassigned,
@@ -59,11 +61,30 @@ import styles from "./unified-feedback-workspace.module.css";
 
 function errorMessage(reason: unknown) { return reason instanceof Error ? reason.message : "操作失败"; }
 
+export const FEEDBACK_INTAKE_UPLOAD_BATCH_BYTES = 80 * 1024 * 1024;
+
+export function splitFeedbackIntakeUploadBatches<T extends { size: number }>(
+  files: T[],
+  maxBytes = FEEDBACK_INTAKE_UPLOAD_BATCH_BYTES,
+) {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 0;
+  for (const file of files) {
+    if (current.length > 0 && currentBytes + file.size > maxBytes) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(file);
+    currentBytes += file.size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
 function selectedFeedbackIntakeDecision(issue: FeedbackIntakeRunClient["issues"][number], decisions: FeedbackIntakeDecision[]) {
-  return decisions.find((decision) => decision.issueId === issue.id)
-    ?? decisions.find((decision) => issue.sourceName && decision.sourceName === issue.sourceName && (
-      decision.action === "ignore_source" || (decision.action === "accept_source" && isSourceScopedBoundaryIssue(issue))
-    ));
+  return selectedMaterialIssueDecision(issue, decisions);
 }
 
 type ActiveRosterStudent = { id: string; classId: string };
@@ -258,8 +279,14 @@ export function feedbackIntakeConfirmationOutcome(
   targets: FeedbackTaskClassDraft[],
   settled: PromiseSettledResult<{ result: FeedbackIntakeRunClient }>[],
 ) {
+  const fulfilled = settled.flatMap((result) => result.status === "fulfilled" ? [result.value.result] : []);
   return {
-    completed: settled.flatMap((result) => result.status === "fulfilled" ? [result.value.result] : []),
+    completed: fulfilled.filter((run) => run.status === "applied"),
+    needsReview: fulfilled.filter((run) => run.status !== "applied"),
+    reviewEntries: targets.filter((_, index) => {
+      const result = settled[index];
+      return result?.status === "fulfilled" && result.value.result.status !== "applied";
+    }),
     failedEntries: targets.filter((_, index) => settled[index]?.status === "rejected"),
   };
 }
@@ -299,6 +326,21 @@ export function mergeGroupUnassignedSources(
     merged.set(key, source);
   }
   return [...merged.values()];
+}
+
+export function accumulateFeedbackGroupUnassigned(input: {
+  sources: FeedbackGroupIntakeUnassigned[];
+  persistedActionableCount: number;
+  incoming: FeedbackGroupIntakeUnassigned[];
+  routedFileNames: Set<string>;
+}) {
+  const sources = mergeGroupUnassignedSources(input.sources, input.incoming, input.routedFileNames);
+  const previouslyKnownActionable = input.sources.filter(isActionableUnassignedSource).length;
+  const restoredUnknownActionable = Math.max(0, input.persistedActionableCount - previouslyKnownActionable);
+  return {
+    sources,
+    persistedActionableCount: restoredUnknownActionable + sources.filter(isActionableUnassignedSource).length,
+  };
 }
 
 export function mergeLoadedGroupRosterEntries(
@@ -1073,7 +1115,13 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     setNotice(result.run.issues.some(isBlockingFeedbackIntakeIssue) ? "材料已整理；进入下一阶段只处理真正阻断归属的问题。" : "材料已整理，等待教师确认。 ");
   }
 
-  function acceptGroupIntake(result: FeedbackGroupIntakeUploadResponse) {
+  function acceptGroupIntake(
+    result: FeedbackGroupIntakeUploadResponse,
+    unassignedBaseline = {
+      sources: unassignedSources,
+      persistedActionableCount: state.draft.unassignedSourceCount,
+    },
+  ) {
     rebuildingRestoredSourceSummaries.current = false;
     const nextRuns = Object.fromEntries(result.runs.map((run) => [run.id, run]));
     setRuns((current) => ({ ...current, ...nextRuns }));
@@ -1123,17 +1171,18 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
         if (typeof source.name === "string" && source.name) routedFileNames.add(source.name);
       }
     }
-    const mergedUnassigned = mergeGroupUnassignedSources(unassignedSources, result.unassigned, routedFileNames);
-    const previouslyKnownActionable = unassignedSources.filter(isActionableUnassignedSource).length;
-    const restoredUnknownActionable = Math.max(0, state.draft.unassignedSourceCount - previouslyKnownActionable);
-    const nextActionableCount = restoredUnknownActionable + mergedUnassigned.filter(isActionableUnassignedSource).length;
+    const nextUnassigned = accumulateFeedbackGroupUnassigned({
+      ...unassignedBaseline,
+      incoming: result.unassigned,
+      routedFileNames,
+    });
     const selectedClassIds = entries
       .filter((item) => item.selected && !plannedSessionCodes.has(item.sessionCode))
       .map((item) => item.classId);
     const currentRoundUnassignedCount = scopeFeedbackGroupUnassignedSources({
-      sources: mergedUnassigned,
+      sources: nextUnassigned.sources,
       selectedClassIds,
-      persistedActionableCount: nextActionableCount,
+      persistedActionableCount: nextUnassigned.persistedActionableCount,
     }).actionableCount;
     groupEntriesRef.current = entries;
     dispatch({
@@ -1141,18 +1190,19 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       patch: {
         entries,
         activeSessionCode: entries.some((item) => item.sessionCode === state.draft.activeSessionCode) ? state.draft.activeSessionCode : entries[0]?.sessionCode ?? "",
-        unassignedSourceCount: nextActionableCount,
-        unassignedSources: mergedUnassigned,
+        unassignedSourceCount: nextUnassigned.persistedActionableCount,
+        unassignedSources: nextUnassigned.sources,
       },
     });
     setSourceSummaries(result.sourceSummaries);
-    setUnassignedSources(mergedUnassigned);
+    setUnassignedSources(nextUnassigned.sources);
     taskUrl({ intakeRunId: "" });
     const actionableUnassigned = result.unassigned.filter(isActionableUnassignedSource).length;
     const skippedSourceCount = result.unassigned.length - actionableUnassigned;
     const needsReview = currentRoundUnassignedCount > 0 || result.runs.some((run) => run.issues.some(isBlockingFeedbackIntakeIssue));
     const skipped = skippedSourceCount ? `另有 ${skippedSourceCount} 个不属于当前共同课或无需处理的文件已跳过。` : "";
     setNotice(`${needsReview ? "共同课材料已按各班花名册拆分；进入下一阶段处理阻断异常。" : `共同课材料已一次拆分到 ${result.classes.length} 个班，等待教师确认。`}${skipped}`);
+    return nextUnassigned;
   }
 
   function ignoreUnassignedSources() {
@@ -1174,6 +1224,20 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     setNotice(`已明确本轮不采用这些未归属材料；如果它们仍在收件箱，下次扫描时还会再次提示。${preserved}`);
   }
 
+  function ignoreUnassignedSource(source: Pick<FeedbackGroupIntakeUnassigned, "fileName" | "kind">) {
+    const dismissed = dismissFeedbackGroupUnassignedSource({
+      sources: unassignedSources,
+      persistedActionableCount: state.draft.unassignedSourceCount,
+      ...source,
+    });
+    setUnassignedSources(dismissed.sources);
+    dispatch({ type: "draft", patch: {
+      unassignedSourceCount: dismissed.persistedActionableCount,
+      unassignedSources: dismissed.sources,
+    } });
+    setNotice(`已明确本轮不采用 ${source.fileName}；重新投料或再次扫描时仍会重新核对。`);
+  }
+
   async function uploadFiles(files: File[]) {
     if (!entry || !files.length) return;
     if (contextActionBlocked) {
@@ -1186,37 +1250,52 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       return;
     }
     const startedScopeToken = operationScopeTokenRef.current;
-    setBusy(true); setError(""); setNotice("正在整理材料…");
+    const batches = splitFeedbackIntakeUploadBatches(files);
+    setBusy(true); setError(""); setNotice(batches.length > 1 ? `材料较大，正在分批整理（1/${batches.length}）…` : "正在整理材料…");
     try {
-      const form = new FormData();
-      form.set("displayNames", JSON.stringify(files.map((file) => file.webkitRelativePath || file.name)));
-      for (const file of files) form.append("files", file);
-      if (state.draft.mode === "group") {
-        form.set("groupLessonId", state.draft.groupLessonId);
-        form.set("sessionCodes", JSON.stringify(groupScope!.sessionCodes));
-        if (Object.keys(groupScope!.runIds).length) form.set("runIds", JSON.stringify(groupScope!.runIds));
-        const response = await fetch("/api/feedback/intake/group-upload", { method: "POST", body: form });
-        const payload = await response.json().catch(() => null) as (FeedbackGroupIntakeUploadResponse & { error?: string }) | null;
-        if (!response.ok || !payload?.runs || !payload.classes) throw new Error(payload?.error || "导入共同课材料失败");
-        if (!operationScopeIsCurrent(startedScopeToken)) {
-          setNotice("原范围的共同课材料已经整理；当前页面未被旧结果覆盖，返回原范围即可继续。");
-          return;
+      let currentRunIds = { ...(groupScope?.runIds ?? {}) };
+      let currentRunId = entry.runId;
+      let currentUnassigned = {
+        sources: unassignedSources,
+        persistedActionableCount: state.draft.unassignedSourceCount,
+      };
+      for (const [index, batch] of batches.entries()) {
+        if (batches.length > 1) setNotice(`材料较大，正在分批整理（${index + 1}/${batches.length}）…`);
+        const form = new FormData();
+        form.set("displayNames", JSON.stringify(batch.map((file) => file.webkitRelativePath || file.name)));
+        for (const file of batch) form.append("files", file);
+        if (state.draft.mode === "group") {
+          form.set("groupLessonId", state.draft.groupLessonId);
+          form.set("sessionCodes", JSON.stringify(groupScope!.sessionCodes));
+          if (Object.keys(currentRunIds).length) form.set("runIds", JSON.stringify(currentRunIds));
+          const response = await fetch("/api/feedback/intake/group-upload", { method: "POST", body: form });
+          const payload = await response.json().catch(() => null) as (FeedbackGroupIntakeUploadResponse & { error?: string }) | null;
+          if (!response.ok || !payload?.runs || !payload.classes) throw new Error(payload?.error || "导入共同课材料失败");
+          if (!operationScopeIsCurrent(startedScopeToken)) {
+            setNotice("原范围的共同课材料已经整理；当前页面未被旧结果覆盖，返回原范围即可继续。");
+            return;
+          }
+          currentRunIds = Object.fromEntries(payload.classes.map((item) => [item.sessionCode, item.runId]));
+          currentUnassigned = acceptGroupIntake(payload, currentUnassigned);
+        } else {
+          form.set("sessionCode", entry.sessionCode);
+          if (currentRunId) form.set("runId", currentRunId);
+          const response = await fetch("/api/feedback/intake/upload", { method: "POST", body: form });
+          const payload = await response.json().catch(() => null) as ({ run?: FeedbackIntakeRunClient; error?: string }) | null;
+          if (!response.ok || !payload?.run) throw new Error(payload?.error || "导入材料失败");
+          if (!operationScopeIsCurrent(startedScopeToken)) {
+            setNotice("原班级的材料已经整理；当前页面未被旧结果覆盖，返回原班级即可继续。");
+            return;
+          }
+          currentRunId = payload.run.id;
+          acceptRun({ run: payload.run });
         }
-        acceptGroupIntake(payload);
-      } else {
-        form.set("sessionCode", entry.sessionCode);
-        if (entry.runId) form.set("runId", entry.runId);
-        const response = await fetch("/api/feedback/intake/upload", { method: "POST", body: form });
-        const payload = await response.json().catch(() => null) as ({ run?: FeedbackIntakeRunClient; error?: string }) | null;
-        if (!response.ok || !payload?.run) throw new Error(payload?.error || "导入材料失败");
-        if (!operationScopeIsCurrent(startedScopeToken)) {
-          setNotice("原班级的材料已经整理；当前页面未被旧结果覆盖，返回原班级即可继续。");
-          return;
-        }
-        acceptRun({ run: payload.run });
       }
     } catch (reason) {
-      if (operationScopeIsCurrent(startedScopeToken)) setError(errorMessage(reason));
+      if (operationScopeIsCurrent(startedScopeToken)) {
+        setError(errorMessage(reason));
+        setNotice("");
+      }
       else setNotice("原范围的材料操作已结束；当前页面没有被旧结果覆盖，返回原范围可查看或重试。");
     }
     finally { setBusy(false); }
@@ -1449,12 +1528,12 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "confirm", decisions: effectiveDecisions[item.runId] ?? [] }),
       })));
-      const { completed, failedEntries } = feedbackIntakeConfirmationOutcome(targets, settled);
+      const { completed, needsReview, reviewEntries, failedEntries } = feedbackIntakeConfirmationOutcome(targets, settled);
       if (!operationScopeIsCurrent(startedScopeToken)) {
         setNotice("原范围的课堂事实确认已经结束；当前页面未被旧结果覆盖，返回原范围即可继续。");
         return;
       }
-      const confirmedRuns = Object.assign({}, effectiveRuns, ...completed.map((run) => ({ [run.id]: run })));
+      const confirmedRuns = Object.assign({}, effectiveRuns, ...[...completed, ...needsReview].map((run) => ({ [run.id]: run })));
       setRuns(confirmedRuns);
       const recommendationRefreshFailures = await refreshAppliedFeedbackContexts(
         [...alreadyAppliedEntries, ...completed.flatMap((run) => {
@@ -1472,7 +1551,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       const recommendationNotice = recommendationRefreshFailures
         ? ` ${recommendationRefreshFailures} 个班的推荐范围未能刷新，已写入的课堂事实不受影响；可在规划页手动选择，或返回录入后再次确认。`
         : "";
-      const remainingEntries = [...blockedEntries, ...failedEntries];
+      const remainingEntries = [...blockedEntries, ...reviewEntries, ...failedEntries];
       if (remainingEntries.length) {
         const failures = failedEntries.map((item) => {
           const index = targets.indexOf(item);
@@ -1481,9 +1560,13 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
           return `${item.className}：${reason}`;
         });
         const pending = blockedEntries.length ? `${blockedEntries.map((item) => item.className).join("、")}仍需核对` : "";
+        const appeared = reviewEntries.length ? `${reviewEntries.map((item) => item.className).join("、")}出现了需继续核对的新冲突` : "";
         const failed = failures.length ? failures.join("；") : "";
-        setError(`共同录入还有班级未完成。${[pending, failed].filter(Boolean).join("；")}`);
-        setNotice(`已有 ${alreadyAppliedEntries.length + completed.length} 个班分别写入事实；未完成班级可继续处理和重试，也可明确暂不纳入本轮后先规划已准备班级。${recommendationNotice}`);
+        const remainingReason = [pending, appeared, failed].filter(Boolean).join("；");
+        setError(state.draft.mode === "group" ? `共同录入还有班级未完成。${remainingReason}` : remainingReason || "当前班级仍需继续核对材料冲突。");
+        setNotice(state.draft.mode === "group"
+          ? `已有 ${alreadyAppliedEntries.length + completed.length} 个班分别写入事实；未完成班级可继续处理和重试，也可明确暂不纳入本轮后先规划已准备班级。${recommendationNotice}`
+          : `新的冲突已显示在材料详情中；完成选择后再次确认即可。${recommendationNotice}`);
         return;
       }
       if (state.draft.revisionSource && !revisionDisplayName.trim()) {
@@ -2060,7 +2143,10 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
     scopeLabel: `${selectedEntries.length} 个班 · ${selectedActiveStudentCount} 名学生`,
     issueCount: unresolvedBlockingCount + actionableUnassignedCount,
     issues: actionableUnassignedSources.length
-      ? actionableUnassignedSources.map((item) => ({ message: `${item.fileName}：${item.reason}` }))
+      ? actionableUnassignedSources.map((item) => ({
+          message: `${item.fileName}：${item.reason}`,
+          unassignedSource: { fileName: item.fileName, kind: item.kind },
+        }))
       : actionableUnassignedCount
         ? [{ message: `上次保存的录入草稿还有 ${actionableUnassignedCount} 份未归属材料；可以重新投料，或明确本轮不采用。` }]
         : [],
@@ -2078,17 +2164,24 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
           runId: run.id,
           className: item.className,
           sourceName: issue.sourceName,
+          sourceId: issue.sourceId,
           candidates: issue.candidates,
           stage: issue.stage,
           rowNumber: issue.rowNumber,
           reportedStudent: issue.reportedStudent,
           rosterHint: issue.rosterHint,
+          scoreConflict: issue.scoreConflict,
+          assessmentDuplicate: issue.assessmentDuplicate,
+          attendanceConflict: issue.attendanceConflict,
           decision: selectedFeedbackIntakeDecision(issue, decisions[run.id] ?? []),
         }));
       });
       const sourceIssues = [...runIssues, ...actionableUnassignedSources
         .filter((item) => item.kind === kind)
-        .map((item) => ({ message: `${item.fileName}：${item.reason}` }))];
+        .map((item) => ({
+          message: `${item.fileName}：${item.reason}`,
+          unassignedSource: { fileName: item.fileName, kind: item.kind },
+        }))];
       const unresolvedIssueCount = runIssues.filter((issue) => !issue.decision).length + sourceIssues.length - runIssues.length;
       const status = feedbackGroupMaterialSourceStatus({
         summaryStatus: summary?.status,
@@ -2151,7 +2244,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       })}</div>}</section>}
       <nav className={styles.taskRail} aria-label="反馈计划阶段"><button type="button" className={state.stage === "prepare" ? styles.activeRail : ""} disabled={busy} onClick={() => void showTaskStage("prepare")}><span>1</span><strong>录入</strong><small>{hasPlanDocument ? "查看采用的材料与事实" : state.draft.mode === "group" ? "共同投料、逐班核验" : "材料可选、事实确认"}</small></button><button type="button" className={state.stage === "confirm" ? styles.activeRail : ""} disabled={busy || (!hasPlanDocument && (!allSelectedRunsApplied || contextActionBlocked))} onClick={() => void showTaskStage("confirm")}><span>2</span><strong>规划</strong><small>{hasPlanDocument ? "查看或修正计划" : state.draft.mode === "group" ? "多班范围与例外" : "学生范围与反馈要求"}</small></button><button type="button" className={state.stage === "studio" ? styles.activeRail : ""} disabled={busy || !hasPlanDocument} onClick={() => void showTaskStage("studio")}><span>3</span><strong>生成</strong><small>{state.draft.mode === "group" || state.batchId ? "按班进度与局部重试" : "生成、复核与批准"}</small></button></nav>
       {hasPlanDocument && state.stage !== "studio" && <FeedbackTaskDocumentStage view={state.stage === "prepare" ? "intake" : "plan"} planId={state.planId} batchId={state.batchId} onPlan={() => void showTaskStage("confirm")} onStudio={() => void showTaskStage("studio")} onSaveHandlerChange={setDocumentSaveHandler} onDocumentResolved={resolveLoadedDocument} onTaskChanged={openChangedTask} onPlanChanged={refreshPlanManager} onContinueIntake={continueIndependentIntake} />}
-      {!hasPlanDocument && entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} studentTotal={state.draft.mode === "group" ? selectedEntries.reduce((total, item) => total + (studentsBySession[item.sessionCode]?.length ?? item.studentIds.length), 0) : studentsBySession[entry.sessionCode]?.length ?? entry.studentIds.length} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} confirmDisabled={feedbackIntakeConfirmationDisabled({ contextActionBlocked, selectedEntryCount: selectedEntries.length, actionableUnassignedCount, mode: state.draft.mode, unresolvedBlockingCount })} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} sessionMaterial={commonMaterialAction === "session" ? context.data?.sessionCommonMaterial?.material ?? null : null} decisions={currentRun ? decisions[currentRun.id] ?? [] : []} materialSummary={groupMaterialSummary} manualFactsHref={manualFactsHref} semesterMaterialsHref={semesterMaterialsHref} onIgnoreUnassigned={state.draft.mode === "group" && actionableUnassignedCount ? ignoreUnassignedSources : undefined} onDecision={updateDecision} onCommonMaterialChoice={selectCommonMaterial} onSaveSessionMaterial={commonMaterialAction === "session" ? saveSessionCommonMaterial : undefined} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onUseExistingFacts={() => void scanInbox(true)} onContinue={() => void confirmMaterialsAndContinue()} />}
+      {!hasPlanDocument && entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} studentTotal={state.draft.mode === "group" ? selectedEntries.reduce((total, item) => total + (studentsBySession[item.sessionCode]?.length ?? item.studentIds.length), 0) : studentsBySession[entry.sessionCode]?.length ?? entry.studentIds.length} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} confirmDisabled={feedbackIntakeConfirmationDisabled({ contextActionBlocked, selectedEntryCount: selectedEntries.length, actionableUnassignedCount, mode: state.draft.mode, unresolvedBlockingCount })} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} sessionMaterial={commonMaterialAction === "session" ? context.data?.sessionCommonMaterial?.material ?? null : null} decisions={currentRun ? decisions[currentRun.id] ?? [] : []} materialSummary={groupMaterialSummary} manualFactsHref={manualFactsHref} semesterMaterialsHref={semesterMaterialsHref} onIgnoreUnassigned={state.draft.mode === "group" && actionableUnassignedCount ? ignoreUnassignedSources : undefined} onIgnoreUnassignedSource={state.draft.mode === "group" ? ignoreUnassignedSource : undefined} onDecision={updateDecision} onCommonMaterialChoice={selectCommonMaterial} onSaveSessionMaterial={commonMaterialAction === "session" ? saveSessionCommonMaterial : undefined} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onUseExistingFacts={() => void scanInbox(true)} onContinue={() => void confirmMaterialsAndContinue()} />}
       {!hasPlanDocument && entry && state.stage === "confirm" && <TaskConfirmationStage draft={state.draft} plannedSessionCodes={[...plannedSessionCodes]} studentsBySession={studentsBySession} scopeSummary={state.draft.mode === "group" ? `${group?.name ?? "共同课"} · 第 ${groupLesson?.sequence ?? "-"} 讲 · ${selectedEntries.map((item) => item.className).join("、")}` : `${entry.className} · ${entry.sessionCode}`} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} onEntry={updateTaskEntry} onDraft={(patch) => dispatch({ type: "draft", patch })} onClassOverrideChange={(sessionCode, override) => dispatch({ type: "class-override", sessionCode, override })} onStudentOverrideChange={(studentId, generationConfig) => dispatch({ type: "student-override", studentId, generationConfig })} onBack={() => void showTaskStage("prepare")} onStart={() => void confirmScopeAndCreate()} />}
       {!hasPlanDocument && !entry && state.stage !== "studio" && <StatusBanner tone="warning">请先选择真实课次。</StatusBanner>}
       {state.stage === "studio" && <FeedbackTaskStudioStage semesterId={context.context.semesterId} className={context.context.className} sessionCode={context.context.sessionCode} planId={state.planId} batchId={state.batchId} context={context.data} onPlanChange={changeStudioPlan} pendingClassCount={pendingGroupDraft?.entries.filter((item) => item.selected).length ?? 0} onResumePending={pendingGroupDraft ? resumePendingGroupClasses : undefined} onNewTask={() => void endAndStartNew()} />}

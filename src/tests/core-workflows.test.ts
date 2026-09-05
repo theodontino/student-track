@@ -96,7 +96,7 @@ describe("core transactional workflows", () => {
     const input = {
       sessionCode,
       scores: [
-        { studentId: studentIds[0], scoreA: 5, scoreB: 4, scoreC: 3, note: "主动回答问题" },
+        { studentId: studentIds[0], scoreA: 4.2, scoreB: 4, scoreC: 3, note: "主动回答问题" },
         { studentId: studentIds[1], scoreA: 2, scoreB: 3, scoreC: 4 },
       ],
       attendances: [
@@ -112,7 +112,11 @@ describe("core transactional workflows", () => {
       orderBy: { studentId: "asc" },
     });
     expect(metrics).toHaveLength(2);
-    expect(metrics.find((metric) => metric.studentId === studentIds[0])?.scoreD).toBe(0);
+    expect(metrics.find((metric) => metric.studentId === studentIds[0])).toMatchObject({
+      scoreA: 4.2,
+      scoreD: 0,
+      operator: "quickScore",
+    });
     expect(metrics.find((metric) => metric.studentId === studentIds[1])?.scoreD).toBe(5);
     expect(await prisma.event.count({ where: { sessionId, description: "主动回答问题" } })).toBe(1);
   });
@@ -297,6 +301,51 @@ describe("core transactional workflows", () => {
     await expect(prisma.event.findFirst({
       where: { sessionId, studentId: student.id, type: "教师处理" },
     })).resolves.toMatchObject({ description: expect.stringContaining("题1：独立完成但节奏较慢") });
+  });
+
+  it("confirms unified intake by stable student ID when the class contains duplicate names", async () => {
+    const students = await prisma.student.findMany({
+      where: { id: { in: studentIds } },
+      orderBy: { studentId: "asc" },
+    });
+    await prisma.student.update({ where: { id: students[1]!.id }, data: { name: students[0]!.name } });
+    const parsedResult = {
+      students: [{
+        name: students[0]!.name,
+        studentId: students[0]!.studentId,
+        scores: { A: 4.2, B: null, C: null },
+        events: [],
+        communication: null,
+        present: true,
+      }],
+      alert_suggestion: "",
+    };
+    const draft = await prisma.draftRecord.create({
+      data: {
+        rawText: JSON.stringify({
+          class: { code: classCode, name: "统一课后材料" },
+          stepSessionId: "feedback-intake:stable-id-test",
+          students: parsedResult.students,
+        }),
+        sessionCode,
+        parsedResult: JSON.stringify(parsedResult),
+      },
+    });
+    draftIds.push(draft.id);
+
+    await expect(processDraftReview({ draftId: draft.id, action: "confirm" })).resolves.toMatchObject({
+      success: true,
+      status: "confirmed",
+    });
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: students[0]!.id, sessionId } },
+    })).resolves.toMatchObject({
+      scoreA: 4.2,
+      operator: "nlReview",
+    });
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: students[1]!.id, sessionId } },
+    })).resolves.toBeNull();
   });
 
   it("validates class selection and refuses to delete a session that already has facts", async () => {

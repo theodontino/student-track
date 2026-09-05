@@ -28,7 +28,7 @@ export default function StudentScoreGrid({ cards, genders, onScore, onPresent, o
                 const score = card[`score${dimension.key}` as keyof CardScore] as number;
                 return (
                   <div key={dimension.key} className="quick-score-card__dimension">
-                    <span>{dimension.label}</span>
+                    <span>{dimension.label}{dimension.key === "A" && !Number.isInteger(score) ? <em>{score.toFixed(1)}</em> : null}</span>
                     <div>{[0, 1, 2, 3, 4, 5].map((value) => (
                       <button
                         key={value}
