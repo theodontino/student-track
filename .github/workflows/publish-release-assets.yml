@@ -1,0 +1,172 @@
+name: Publish verified release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-release-assets.yml"
+      - "docs/release-evidence/**"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-release-assets-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release identity
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          evidence="docs/release-evidence/${version}.md"
+
+          if [[ ! -f "$evidence" ]]; then
+            echo "Missing release evidence: $evidence" >&2
+            exit 1
+          fi
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag does not exist yet; nothing to publish on this event."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          product_sha="$(grep -E '^[-] `PRODUCT_VERIFIED_SHA`: `[0-9a-f]{40}`$' "$evidence" | sed -E 's/.*`([0-9a-f]{40})`.*/\1/' | head -n1)"
+          if [[ ! "$product_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release evidence does not contain a valid PRODUCT_VERIFIED_SHA." >&2
+            exit 1
+          fi
+
+          git fetch --force --tags origin
+          tag_sha="$(git rev-list -n 1 "$tag")"
+          if [[ "$tag_sha" != "$product_sha" ]]; then
+            echo "Tag $tag resolves to $tag_sha, expected PRODUCT_VERIFIED_SHA $product_sha." >&2
+            exit 1
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "product_sha=$product_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Locate successful L3 artifacts
+        id: artifacts
+        if: steps.release.outputs.skip != 'true'
+        shell: bash
+        env:
+          PRODUCT_SHA: ${{ steps.release.outputs.product_sha }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${PRODUCT_SHA}&status=completed&per_page=100" \
+            --jq '.workflow_runs[] | select(.name == "CI policy" and .conclusion == "success") | .id' | head -n1)"
+          if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+            echo "No successful CI policy run found for $PRODUCT_SHA." >&2
+            exit 1
+          fi
+
+          windows_artifact="student-track-core-windows-x64-${PRODUCT_SHA}"
+          macos_artifact="student-track-full-macos-${PRODUCT_SHA}"
+          artifact_names="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[].name')"
+          grep -Fxq "$windows_artifact" <<<"$artifact_names" || { echo "Missing artifact $windows_artifact" >&2; exit 1; }
+          grep -Fxq "$macos_artifact" <<<"$artifact_names" || { echo "Missing artifact $macos_artifact" >&2; exit 1; }
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "windows_artifact=$windows_artifact" >> "$GITHUB_OUTPUT"
+          echo "macos_artifact=$macos_artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Download verified packages
+        if: steps.release.outputs.skip != 'true'
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.artifacts.outputs.run_id }}
+          WINDOWS_ARTIFACT: ${{ steps.artifacts.outputs.windows_artifact }}
+          MACOS_ARTIFACT: ${{ steps.artifacts.outputs.macos_artifact }}
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets/windows" "$assets/macos" "$assets/final"
+
+          gh run download "$RUN_ID" -n "$WINDOWS_ARTIFACT" -D "$assets/windows"
+          gh run download "$RUN_ID" -n "$MACOS_ARTIFACT" -D "$assets/macos"
+
+          windows_zip="$(find "$assets/windows" -maxdepth 2 -type f -name "StudentTrackCore-Windows-x64-${VERSION}.zip" -print -quit)"
+          macos_zip="$(find "$assets/macos" -maxdepth 2 -type f -name "StudentTrackFull-macOS-*-${VERSION}.zip" -print -quit)"
+          [[ -n "$windows_zip" && -f "$windows_zip" ]] || { echo "Verified Windows ZIP not found." >&2; exit 1; }
+          [[ -n "$macos_zip" && -f "$macos_zip" ]] || { echo "Verified macOS ZIP not found." >&2; exit 1; }
+
+          cp "$windows_zip" "$assets/final/"
+          cp "$macos_zip" "$assets/final/"
+          git show "${TAG}:scripts/windows/Install-StudentTrackCore.cmd" > "$assets/final/Install-StudentTrackCore.cmd"
+          git show "${TAG}:scripts/windows/Install-StudentTrackCore.ps1" > "$assets/final/Install-StudentTrackCore.ps1"
+
+          grep -Fq "$TAG" "$assets/final/Install-StudentTrackCore.cmd"
+          grep -Fq "$TAG" "$assets/final/Install-StudentTrackCore.ps1"
+          find "$assets/final" -maxdepth 1 -type f -printf '%f\n' | sort
+
+      - name: Publish missing assets without replacing mismatches
+        if: steps.release.outputs.skip != 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/release-assets/final"
+
+          for file in "$assets"/*; do
+            name="$(basename "$file")"
+            local_sha="$(sha256sum "$file" | awk '{print $1}')"
+            existing_digest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq ".assets[] | select(.name == \"${name}\") | .digest" | head -n1)"
+
+            if [[ -n "$existing_digest" ]]; then
+              if [[ "$existing_digest" != "sha256:${local_sha}" ]]; then
+                echo "Existing release asset $name has digest $existing_digest, expected sha256:$local_sha; refusing to overwrite." >&2
+                exit 1
+              fi
+              echo "$name already matches verified artifact; keeping it."
+              continue
+            fi
+
+            gh release upload "$TAG" "$file"
+            published_digest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq ".assets[] | select(.name == \"${name}\") | .digest" | head -n1)"
+            if [[ "$published_digest" != "sha256:${local_sha}" ]]; then
+              echo "Published digest for $name did not match local verified file." >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify release distribution
+        if: steps.release.outputs.skip != 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          names="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.assets[].name')"
+          grep -Fxq "Install-StudentTrackCore.cmd" <<<"$names"
+          grep -Fxq "Install-StudentTrackCore.ps1" <<<"$names"
+          grep -Fxq "StudentTrackCore-Windows-x64-${VERSION}.zip" <<<"$names"
+          grep -Eq "^StudentTrackFull-macOS-.+-${VERSION}\.zip$" <<<"$names"
+          echo "Release $TAG now contains the verified Windows Core and macOS Full distribution assets."
