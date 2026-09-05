@@ -29,6 +29,7 @@ import {
   type FeedbackPlanItemGenerationConfig,
 } from "@/lib/feedback-plan";
 import { prisma } from "@/lib/prisma";
+import { feedbackPlanActionBucket, feedbackPlanItemStatusCounts } from "@/lib/feedback-plan-summary";
 import {
   assertClassAvailable,
   assertFeedbackBatchAvailable,
@@ -47,6 +48,17 @@ import {
 } from "@/services/feedback-plan-service";
 
 type BatchDb = PrismaClient | Prisma.TransactionClient;
+
+function assertLegacyBatchGenerationAvailable(generationApproach: unknown) {
+  if (generationApproach === "legacy") {
+    throw new ApiError(
+      "旧生成方式已退役；请另存为新班级组计划并选择受限反馈或自由反馈",
+      409,
+      "legacy_generation_retired",
+      false,
+    );
+  }
+}
 
 type FeedbackPlanBatchNameScope = {
   semesterId: string;
@@ -114,19 +126,6 @@ const batchInclude = {
   exportRuns: { orderBy: { createdAt: "desc" as const } },
 } as const;
 
-function itemCounts(items: Array<{ status: string }>) {
-  const count = (statuses: string[]) => items.filter((item) => statuses.includes(item.status)).length;
-  return {
-    total: items.length,
-    queued: count(["queued"]),
-    running: count(["generating"]),
-    generated: count(["needs_review", "approved", "exported"]),
-    approved: count(["approved", "exported"]),
-    exported: count(["exported"]),
-    failed: count(["generation_failed"]),
-  };
-}
-
 function itemConfigFromSnapshot(snapshot: string): FeedbackPlanItemGenerationConfig | null | undefined {
   try {
     const value = JSON.parse(snapshot) as unknown;
@@ -172,7 +171,12 @@ export function toFeedbackPlanBatchView<T extends {
   }
   const plans = batch.plans.map((plan) => {
     const storedGenerationApproach = normalizeStoredFeedbackGenerationApproach(plan.generationApproach);
-    const progress = itemCounts(plan.items);
+    const itemStatusCounts = feedbackPlanItemStatusCounts(plan.items);
+    const progress = {
+      ...itemStatusCounts,
+      generated: itemStatusCounts.completed,
+      approved: itemStatusCounts.approved + itemStatusCounts.exported,
+    };
     let parsedInput: unknown = null;
     try {
       const candidate = FeedbackPlanInputSnapshotSchema.safeParse(JSON.parse(plan.inputSnapshot));
@@ -182,6 +186,9 @@ export function toFeedbackPlanBatchView<T extends {
       ...plan,
       generationApproach: storedGenerationApproach === "legacy" ? null : storedGenerationApproach,
       generationApproachLabel: feedbackGenerationApproachLabel(storedGenerationApproach),
+      legacyReadonly: plan.generationApproach === "legacy",
+      itemStatusCounts,
+      actionBucket: feedbackPlanActionBucket((plan as { status?: string }).status ?? "draft", itemStatusCounts),
       input: parsedInput,
       items: plan.items.map((item) => {
         const { generationExecutionSnapshot, ...publicItem } = item;
@@ -200,14 +207,22 @@ export function toFeedbackPlanBatchView<T extends {
       },
     };
   });
-  const totals = itemCounts(batch.plans.flatMap((plan) => plan.items));
-  totals.exported = batchExportedItemIds.size;
+  const allItemStatusCounts = feedbackPlanItemStatusCounts(batch.plans.flatMap((plan) => plan.items));
+  const totals = {
+    ...allItemStatusCounts,
+    generated: allItemStatusCounts.completed,
+    approved: allItemStatusCounts.approved + allItemStatusCounts.exported,
+    exported: batchExportedItemIds.size,
+  };
   const storedGenerationApproach = normalizeStoredFeedbackGenerationApproach(batch.generationApproach);
   return {
     ...batch,
     generationApproach: storedGenerationApproach === "legacy" ? null : storedGenerationApproach,
     generationApproachLabel: feedbackGenerationApproachLabel(storedGenerationApproach),
+    legacyReadonly: batch.generationApproach === "legacy",
     plans,
+    itemStatusCounts: allItemStatusCounts,
+    actionBucket: feedbackPlanActionBucket((batch as { status?: string }).status ?? "draft", allItemStatusCounts, "batch"),
     progress: { ...totals, completedClasses: plans.filter((plan) => plan.progress.failed === 0 && plan.progress.generated === plan.progress.total).length, totalClasses: plans.length },
   };
 }
@@ -308,8 +323,8 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
       if (!run) throw new ApiError("有班级的材料运行不存在", 404, "not_found", false);
       if (run.status !== "applied") throw new ApiError("有班级尚未确认课堂事实", 409, "conflict", false);
       if (run.sessionCode !== childSessions[index]?.code) throw new ApiError("材料运行与目标课次不一致", 409, "conflict", false);
-      // planId is a legacy convenience pointer, not exclusive ownership.
-      // The same confirmed run can seed several independently versioned plans.
+      // Confirmed source history may seed several independently versioned
+      // plans; the retained legacy pointer is deliberately ignored here.
       return run;
     }));
 
@@ -349,7 +364,6 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
         semesterId: input.semesterId,
         type: input.type,
         outputRequirement: input.outputRequirement,
-        generationMode: input.generationMode,
         generationApproach: input.generationApproach,
         status: "draft",
         sharedLessonRevisionId: revision?.id,
@@ -375,7 +389,6 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
         type: input.type,
         outputRequirement: child.outputRequirement ?? input.outputRequirement,
         semesterId: input.semesterId,
-        generationMode: input.generationMode,
         generationApproach: input.generationApproach,
         ...(intakeRun ? { intakeRunIds: [intakeRun.id] } : {}),
         lessonMaterial,
@@ -393,16 +406,10 @@ export async function createFeedbackPlanBatch(raw: FeedbackPlanBatchCreateInput,
           batchId: batch.id,
           batchOrder: index + 1,
           basedOnPlanId: sourcePlanByClassId.get(child.classId),
-          generationMode: input.generationMode,
           generationApproach: input.generationApproach,
           inputSnapshot,
         },
       });
-      // Keep the old pointer useful for callers that still expect it, without
-      // stealing an intake run from an earlier plan.
-      if (intakeRun && !intakeRun.planId) {
-        await tx.feedbackIntakeRun.updateMany({ where: { id: intakeRun.id, planId: null }, data: { planId } });
-      }
     }
     const created = await tx.feedbackPlanBatch.findUnique({ where: { id: batch.id }, include: batchInclude });
     if (!created) throw new Error("反馈批次创建后无法读取");
@@ -452,6 +459,7 @@ export async function updateFeedbackPlanBatchDraft(
       },
     });
     if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+    assertLegacyBatchGenerationAvailable(batch.generationApproach);
     if (batch.archivedAt) throw new ApiError("已归档反馈批次为只读，请先取消归档", 409, "conflict", false);
     if (batch.planRevision !== patch.expectedPlanRevision) {
       throw new ApiError("反馈批次已被其他操作更新，请刷新后重试", 409, "conflict", false);
@@ -507,7 +515,6 @@ export async function updateFeedbackPlanBatchDraft(
       const updatedPlan = await updateFeedbackPlanDraft(plan.id, {
         expectedPlanRevision: plan.planRevision,
         outputRequirement: classOverride?.outputRequirement ?? patch.outputRequirement,
-        generationMode: patch.generationMode,
         generationApproach: generationApproach === "legacy" ? undefined : generationApproach,
         studentIds: selection.studentIds,
         generationPreferences: classOverride?.generationPreferences ?? patch.generationPreferences,
@@ -534,7 +541,6 @@ export async function updateFeedbackPlanBatchDraft(
       data: {
         ...(patch.displayName !== undefined ? { displayName } : {}),
         outputRequirement: patch.outputRequirement,
-        generationMode: patch.generationMode,
         generationApproach,
         status: "draft",
         currentPlanId: null,
@@ -592,7 +598,7 @@ export async function cloneFeedbackPlanBatchDraft(
     });
     if (!source) throw new ApiError("反馈批次不存在", 404, "not_found", false);
     if (!source.plans.length) throw new ApiError("反馈批次没有可复制的班级计划", 409, "conflict", false);
-    if (normalizeStoredFeedbackGenerationApproach(source.generationApproach) === "legacy" && input.generationApproach === undefined) {
+    if (source.generationApproach === "legacy" && input.generationApproach === undefined) {
       throw new ApiError("旧生成方式班级组计划另存为时必须选择受限反馈或自由反馈", 409, "conflict", false);
     }
     const generationApproach = feedbackGenerationApproachForDerivedPlan(
@@ -612,7 +618,6 @@ export async function cloneFeedbackPlanBatchDraft(
         semesterId: source.semesterId,
         type: source.type,
         outputRequirement: source.outputRequirement,
-        generationMode: source.generationMode,
         generationApproach,
         status: "draft",
         sharedLessonRevisionId: source.sharedLessonRevisionId,
@@ -665,13 +670,16 @@ async function runBatchJob(batchId: string, db: PrismaClient = prisma) {
       where: { id: batchId },
       include: { plans: { orderBy: { batchOrder: "asc" }, include: { items: { select: { status: true } } } } },
     });
-    if (!batch || batch.archivedAt || ["archived", "completed", "failed", "paused"].includes(batch.status)) return;
+    if (!batch) return;
+    assertLegacyBatchGenerationAvailable(batch.generationApproach);
+    if (batch.archivedAt || ["archived", "completed", "failed", "paused"].includes(batch.status)) return;
     const current = batch.plans.find((plan) => plan.id === batch.currentPlanId)
       ?? batch.plans.find((plan) => plan.items.some((item) => !["needs_review", "approved", "exported"].includes(item.status)));
     if (!current) {
       await db.feedbackPlanBatch.update({ where: { id: batchId }, data: { status: "completed", currentPlanId: null, failedPlanId: null, planRevision: { increment: 1 } } });
       return;
     }
+    assertLegacyBatchGenerationAvailable(current.generationApproach);
 
     if (batch.status === "pause_requested") {
       if (["queued", "generating", "pause_requested"].includes(current.status)) {
@@ -729,7 +737,7 @@ async function runBatchJob(batchId: string, db: PrismaClient = prisma) {
       }
     } else {
       await startFeedbackPlanGeneration(
-        { planId: current.id, generationMode: batch.generationMode === "fast" ? "fast" : "standard" },
+        { planId: current.id },
         db,
         { allowBatchStart: true },
       );
@@ -765,6 +773,7 @@ export async function startFeedbackPlanBatch(
           status: true,
           generationStartedAt: true,
           generationCompletedAt: true,
+          generationApproach: true,
           items: {
             select: {
               status: true,
@@ -779,6 +788,8 @@ export async function startFeedbackPlanBatch(
     },
   });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+  assertLegacyBatchGenerationAvailable(batch.generationApproach);
+  for (const plan of batch.plans) assertLegacyBatchGenerationAvailable(plan.generationApproach);
   if (batch.archivedAt) throw new ApiError("已归档反馈批次不能启动", 409, "conflict", false);
   if (expectedPlanRevision && expectedPlanRevision !== batch.planRevision) {
     throw new ApiError("反馈批次已被其他操作更新，请刷新后重试", 409, "conflict", false);
@@ -823,8 +834,13 @@ export async function pauseFeedbackPlanBatch(batchId: string, db: PrismaClient =
 }
 
 export async function continueFeedbackPlanBatch(batchId: string, db: PrismaClient = prisma) {
-  const batch = await db.feedbackPlanBatch.findUnique({ where: { id: batchId }, select: { status: true, archivedAt: true } });
+  const batch = await db.feedbackPlanBatch.findUnique({
+    where: { id: batchId },
+    select: { status: true, archivedAt: true, generationApproach: true, plans: { select: { generationApproach: true } } },
+  });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+  assertLegacyBatchGenerationAvailable(batch.generationApproach);
+  for (const plan of batch.plans) assertLegacyBatchGenerationAvailable(plan.generationApproach);
   if (batch.archivedAt || batch.status === "archived") throw new ApiError("已归档反馈批次不能继续", 409, "conflict", false);
   if (!["paused", "queued", "running", "pause_requested"].includes(batch.status)) throw new ApiError("当前批次不能继续", 409, "conflict", false);
   await db.feedbackPlanBatch.update({ where: { id: batchId }, data: { status: "queued", planRevision: { increment: 1 } } });
@@ -833,8 +849,12 @@ export async function continueFeedbackPlanBatch(batchId: string, db: PrismaClien
 }
 
 export async function retryFeedbackPlanBatch(batchId: string, db: PrismaClient = prisma) {
-  const batch = await db.feedbackPlanBatch.findUnique({ where: { id: batchId }, select: { failedPlanId: true, archivedAt: true, status: true } });
+  const batch = await db.feedbackPlanBatch.findUnique({
+    where: { id: batchId },
+    select: { failedPlanId: true, archivedAt: true, status: true, generationApproach: true },
+  });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+  assertLegacyBatchGenerationAvailable(batch.generationApproach);
   if (batch.archivedAt || batch.status !== "failed" || !batch.failedPlanId) throw new ApiError("当前批次没有可重试的失败班级", 409, "conflict", false);
   await retryFeedbackPlanGeneration({ planId: batch.failedPlanId }, db, { allowBatchControl: true });
   await db.feedbackPlanBatch.update({ where: { id: batchId }, data: { status: "running", currentPlanId: batch.failedPlanId, failedPlanId: null, planRevision: { increment: 1 } } });
@@ -868,6 +888,7 @@ export async function retryFeedbackPlanBatchWithFree(batchId: string, db: Prisma
     },
   });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
+  assertLegacyBatchGenerationAvailable(batch.generationApproach);
   if (batch.archivedAt || batch.status !== "failed") {
     throw new ApiError("只有生成失败的班级组计划可以改用自由反馈", 409, "conflict", false);
   }

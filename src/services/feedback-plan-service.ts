@@ -48,7 +48,6 @@ import {
   type CommunicationPreference,
   type FeedbackCompositionPlan,
   type FeedbackEvidenceBundle,
-  type FeedbackGenerationMode,
   type FeedbackGenerationPreferences,
   type FeedbackHistorySnapshot,
   type FeedbackPlanCloneDraftInput,
@@ -66,9 +65,10 @@ import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import type { LessonFeedbackMaterial, StudentAssessmentEvidence } from "@/lib/feedback-materials";
 import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
 import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
+import { feedbackPlanActionBucket, feedbackPlanItemStatusCounts } from "@/lib/feedback-plan-summary";
 import { createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
-import { generateFeedbackPlanComposition } from "@/services/feedback-generation-service";
+import { generateFreeFeedbackPlanComposition } from "@/services/feedback-generation-service";
 import {
   generateRestrictedFeedback,
   RestrictedFeedbackCheckpointV1Schema,
@@ -90,7 +90,6 @@ function feedbackPlanDraftFingerprint(input: {
   snapshot: Extract<FeedbackPlanInputSnapshot, { version: 2 }>;
   type: FeedbackPlanCreateInput["type"];
   outputRequirement: string;
-  generationMode: FeedbackGenerationMode;
   generationApproach: StoredFeedbackGenerationApproach;
   generationPreferences: FeedbackGenerationPreferences;
   selectedStudentIds: Array<string | null>;
@@ -112,7 +111,6 @@ function feedbackPlanDraftFingerprint(input: {
     factSourceFingerprint,
     type: input.type,
     outputRequirement: input.outputRequirement,
-    generationMode: input.generationMode,
     generationApproach: input.generationApproach,
     generationPreferences: input.generationPreferences,
     selectedStudentIds: [...input.selectedStudentIds].sort((left, right) => String(left).localeCompare(String(right))),
@@ -357,22 +355,18 @@ function derivePlanStatus(items: Array<{ status: string }>) {
 }
 
 function generationProgress(items: Array<{ status: string }>) {
-  const counts = items.reduce<Record<string, number>>((result, item) => {
-    result[item.status] = (result[item.status] ?? 0) + 1;
-    return result;
-  }, {});
-  return {
-    total: items.length,
-    queued: counts.queued ?? 0,
-    running: counts.generating ?? 0,
-    completed: (counts.needs_review ?? 0) + (counts.approved ?? 0) + (counts.exported ?? 0),
-    failed: counts.generation_failed ?? 0,
-    stale: counts.stale ?? 0,
-  };
+  return feedbackPlanItemStatusCounts(items);
 }
 
-function normalizedGenerationMode(value: string | null | undefined): FeedbackGenerationMode {
-  return value === "fast" ? "fast" : "standard";
+function assertLegacyFeedbackGenerationAvailable(generationApproach: unknown) {
+  if (generationApproach === "legacy") {
+    throw new ApiError(
+      "旧生成方式已退役；请另存为新计划并选择受限反馈或自由反馈",
+      409,
+      "legacy_generation_retired",
+      false,
+    );
+  }
 }
 
 function generationTiming(plan: {
@@ -541,15 +535,20 @@ export function toFeedbackPlanDetail<T extends {
   const storedGenerationApproach = normalizeStoredFeedbackGenerationApproach(
     (plan as { generationApproach?: unknown }).generationApproach,
   );
+  const legacyReadonly = (plan as { generationApproach?: unknown }).generationApproach === "legacy";
+  const itemStatusCounts = generationProgress(plan.items);
   return {
     ...plan,
     generationApproach: storedGenerationApproach === "legacy" ? null : storedGenerationApproach,
     generationApproachLabel: feedbackGenerationApproachLabel(storedGenerationApproach),
+    legacyReadonly,
     items: plan.items.map((item) => toFeedbackPlanItemView(item, plan.type)),
     input: FeedbackPlanInputSnapshotSchema.safeParse(parseJson((plan as { inputSnapshot?: string }).inputSnapshot, null)).success
       ? FeedbackPlanInputSnapshotSchema.parse(parseJson((plan as { inputSnapshot?: string }).inputSnapshot, null))
       : null,
-    generationProgress: generationProgress(plan.items),
+    itemStatusCounts,
+    actionBucket: feedbackPlanActionBucket((plan as { status?: string }).status ?? "draft", itemStatusCounts),
+    generationProgress: itemStatusCounts,
     generationTiming: generationTiming(plan),
   };
 }
@@ -986,7 +985,6 @@ export async function createFeedbackPlan(
   const input = {
     ...parsedInput,
     generationPreferences,
-    generationMode: normalizedGenerationMode(parsedInput.generationMode),
     generationApproach: feedbackGenerationApproachForNewPlan(parsedInput.generationApproach),
     lessonMaterial,
     sessionId: (await resolveSession(db, parsedInput.sessionId))?.id ?? parsedInput.sessionId,
@@ -1126,7 +1124,6 @@ export async function createFeedbackPlan(
     input: {
       type: input.type,
       outputRequirement: input.outputRequirement,
-      generationMode: input.generationMode,
       generationApproach: input.generationApproach,
       semesterId: input.semesterId,
       classId: input.classId,
@@ -1208,7 +1205,6 @@ export async function createFeedbackPlan(
     snapshot: inputSnapshot,
     type: input.type,
     outputRequirement: input.outputRequirement,
-    generationMode: input.generationMode,
     generationApproach: input.generationApproach,
     generationPreferences,
     selectedStudentIds: selectedIds,
@@ -1241,7 +1237,6 @@ export async function createFeedbackPlan(
         rangeEndSessionId,
         inputFingerprint,
         inputSnapshot: json(inputSnapshot),
-        generationMode: input.generationMode,
         generationApproach: input.generationApproach,
         items: {
           create: selectedIds.map((studentId) => {
@@ -1351,7 +1346,9 @@ export async function listFeedbackPlans(input: {
       ? null
       : normalizeStoredFeedbackGenerationApproach(plan.generationApproach),
     generationApproachLabel: feedbackGenerationApproachLabel(plan.generationApproach),
+    legacyReadonly: plan.generationApproach === "legacy",
     itemStatusCounts: generationProgress(plan.items),
+    actionBucket: feedbackPlanActionBucket(plan.status, generationProgress(plan.items)),
     studentSummaries: plan.items.filter((item) => item.student).map((item) => ({ id: item.student!.id, name: item.student!.name, studentId: item.student!.studentId })),
   }));
 }
@@ -1569,6 +1566,7 @@ export async function updateFeedbackPlanDraft(
   const execute = async (tx: FeedbackPlanDb) => {
     const plan = await storedFeedbackPlanDraft(id, tx);
     if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+    assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
     assertMutableFeedbackPlanDraft(plan, patch.expectedPlanRevision, options.allowBatchDraftUpdate === true);
     const snapshot = feedbackPlanSnapshotV2(plan);
     const nextType = patch.type ?? plan.type as FeedbackPlanCreateInput["type"];
@@ -1608,14 +1606,12 @@ export async function updateFeedbackPlanDraft(
       ? await allocateFeedbackPlanDisplayName(tx, plan, patch.displayName, plan.id)
       : plan.displayName;
     const nextOutputRequirement = patch.outputRequirement ?? plan.outputRequirement;
-    const nextGenerationMode = normalizedGenerationMode(patch.generationMode ?? plan.generationMode);
     const nextGenerationApproach = patch.generationApproach
       ?? normalizeStoredFeedbackGenerationApproach(plan.generationApproach);
     const nextFingerprint = feedbackPlanDraftFingerprint({
       snapshot,
       type: nextType,
       outputRequirement: nextOutputRequirement,
-      generationMode: nextGenerationMode,
       generationApproach: nextGenerationApproach,
       generationPreferences,
       selectedStudentIds: selectedIds,
@@ -1631,7 +1627,6 @@ export async function updateFeedbackPlanDraft(
       displayName: nextDisplayName,
       type: nextType,
       outputRequirement: nextOutputRequirement,
-      generationMode: nextGenerationMode,
       generationApproach: nextGenerationApproach,
       inputFingerprint: nextFingerprint,
       inputSnapshot: json(nextSnapshot),
@@ -1729,8 +1724,7 @@ export async function cloneFeedbackPlanDraft(
       throw new ApiError("班级组子计划不能单独修正，请从班级组计划建立修正计划", 409, "conflict", false);
     }
     const snapshot = feedbackPlanSnapshotV2(source);
-    const sourceGenerationApproach = normalizeStoredFeedbackGenerationApproach(source.generationApproach);
-    if (sourceGenerationApproach === "legacy" && input.generationApproach === undefined) {
+    if (source.generationApproach === "legacy" && input.generationApproach === undefined) {
       throw new ApiError("旧生成方式计划另存为时必须选择受限反馈或自由反馈", 409, "conflict", false);
     }
     const generationApproach = feedbackGenerationApproachForDerivedPlan(
@@ -1747,7 +1741,6 @@ export async function cloneFeedbackPlanDraft(
       snapshot,
       type: source.type as FeedbackPlanCreateInput["type"],
       outputRequirement: source.outputRequirement,
-      generationMode: normalizedGenerationMode(source.generationMode),
       generationApproach,
       generationPreferences: normalizeFeedbackGenerationPreferences(source.type as FeedbackPlanCreateInput["type"], snapshot.generationPreferences),
       selectedStudentIds: source.type === "class_update" ? [null] : selectedStudentIds,
@@ -1775,7 +1768,6 @@ export async function cloneFeedbackPlanDraft(
           selectedStudentIds,
           studentOverrides: [...studentOverrides.entries()].map(([studentId, generationConfig]) => ({ studentId, generationConfig })),
         }),
-        generationMode: normalizedGenerationMode(source.generationMode),
         generationApproach,
         items: {
           create: source.items.map((item) => ({
@@ -2470,6 +2462,7 @@ export async function generateFeedbackPlanItems(input: {
 }, db: PrismaClient = prisma) {
   let plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, include: { items: { include: { student: true, tasks: true } } } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   let selected = input.itemIds
     ? plan.items.filter((item) => input.itemIds!.includes(item.id))
@@ -2683,8 +2676,7 @@ export async function generateFeedbackPlanItems(input: {
       client: createLLMClient("feedbackReview"),
       model: getLLMModel("feedbackReview"),
     };
-    const generationMode = normalizedGenerationMode(plan.generationMode);
-    const storedApproach = normalizeStoredFeedbackGenerationApproach(plan.generationApproach);
+    const storedApproach: FeedbackGenerationApproach = plan.generationApproach === "free" ? "free" : "restricted";
     await input.onProgress?.({ type: "status", message: `开始生成 ${selected.length} 条反馈` });
     const failures: Array<{ itemId: string; name: string; message: string }> = [];
     for (const item of selected) {
@@ -2697,22 +2689,20 @@ export async function generateFeedbackPlanItems(input: {
         : "班级家长";
       const itemName = item.studentId ? studentName : "班级公共反馈";
       try {
-        if (storedApproach !== "legacy") {
-          const execution = beginFeedbackGenerationExecution(
-            item.generationExecutionSnapshot,
-            storedApproach,
-          );
-          const started = await db.feedbackPlanItem.updateMany({
-            where: { id: item.id, status: "generating" },
-            data: {
-              generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(execution.snapshot),
-            },
-          });
-          if (started.count !== 1) {
-            throw new ApiError("反馈条目状态已经变化，请刷新后重试", 409, "conflict", false);
-          }
-          executionByItem.set(item.id, execution);
+        const begunExecution = beginFeedbackGenerationExecution(
+          item.generationExecutionSnapshot,
+          storedApproach,
+        );
+        const started = await db.feedbackPlanItem.updateMany({
+          where: { id: item.id, status: "generating" },
+          data: {
+            generationExecutionSnapshot: serializeFeedbackGenerationExecutionSnapshot(begunExecution.snapshot),
+          },
+        });
+        if (started.count !== 1) {
+          throw new ApiError("反馈条目状态已经变化，请刷新后重试", 409, "conflict", false);
         }
+        executionByItem.set(item.id, begunExecution);
         const effectiveConfig = effectiveFeedbackPlanConfig(plan, item);
         const bundle = bundleForPlanConfig(sanitizeFeedbackEvidenceBundle(assessmentBundleOverrides.get(item.id)
           ?? FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {}))), effectiveConfig);
@@ -2732,15 +2722,15 @@ export async function generateFeedbackPlanItems(input: {
             ? "standard" as const
             : preference?.length === "short" ? "short" as const : "standard" as const;
         const execution = executionByItem.get(item.id);
-        const actualApproach = execution?.actualApproach ?? null;
+        if (!execution) {
+          throw new ApiError("反馈生成缺少执行快照，请刷新后重试", 409, "conflict", false);
+        }
+        const actualApproach = execution.actualApproach;
         let composition: FeedbackCompositionPlan;
         let draftComposition: FeedbackCompositionPlan | null = null;
         let restrictedGeneration: RestrictedFeedbackGenerationResult | null = null;
 
         if (actualApproach === "restricted") {
-          if (!execution) {
-            throw new ApiError("受限反馈缺少执行快照，请刷新后重试", 409, "conflict", false);
-          }
           const planner = getDraftRuntime();
           const writer = getReviewRuntime();
           const checkpoint = RestrictedFeedbackCheckpointV1Schema.safeParse(execution.snapshot.restrictedCheckpoint);
@@ -2782,9 +2772,7 @@ export async function generateFeedbackPlanItems(input: {
           composition = restrictedGeneration.composition;
         } else {
           const draft = getDraftRuntime();
-          const effectiveMode = actualApproach === "free" ? "fast" as const : generationMode;
-          const review = effectiveMode === "fast" ? draft : getReviewRuntime();
-          const generated = await generateFeedbackPlanComposition({
+          const generated = await generateFreeFeedbackPlanComposition({
             studentName,
             planType: effectiveConfig.type,
             outputRequirement: effectiveConfig.outputRequirement,
@@ -2793,9 +2781,6 @@ export async function generateFeedbackPlanItems(input: {
             length,
             draftClient: draft.client,
             draftModel: draft.model,
-            reviewClient: review.client,
-            reviewModel: review.model,
-            generationMode: effectiveMode,
             generationPreferences: effectiveConfig.generationPreferences,
             referenceDate,
             existingTaskIds: generationTaskIds,
@@ -2817,9 +2802,7 @@ export async function generateFeedbackPlanItems(input: {
             taskType: "feedback",
             stage: actualApproach === "restricted"
               ? "plan-restricted"
-              : actualApproach === "free"
-                ? "plan-free"
-                : generationMode === "fast" ? "plan-draft" : "plan-review",
+              : "plan-free",
             semesterId: plan.semesterId,
             classId: plan.classId,
             sessionId: plan.sessionId,
@@ -2828,14 +2811,10 @@ export async function generateFeedbackPlanItems(input: {
             sourceRefs: item.studentId ? [{ type: "student", id: item.studentId }] : [],
             promptVersion: actualApproach === "restricted"
               ? "feedback-plan-v3-restricted"
-              : actualApproach === "free"
-                ? "feedback-plan-v3-free"
-                : generationMode === "fast" ? "feedback-plan-v2-fast" : "feedback-plan-v2",
+              : "feedback-plan-v3-free",
             modelRole: actualApproach === "restricted"
               ? "feedbackReview"
-              : actualApproach === "free"
-                ? "feedbackDraft"
-                : generationMode === "fast" ? "feedbackDraft" : "feedbackReview",
+              : "feedbackDraft",
             inputRevision: String(plan.planRevision),
             variantKey: execution ? `feedback-plan-item:${item.id}:attempt:${execution.attempt}` : null,
             inputSnapshot: restrictedGeneration ? {
@@ -2850,14 +2829,14 @@ export async function generateFeedbackPlanItems(input: {
             } : {
               evidenceBundle: bundle,
               draftComposition,
-              ...(actualApproach ? { generationApproach: actualApproach } : { generationMode }),
+              generationApproach: actualApproach,
               generationConfig: effectiveConfig,
               generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
             },
             outputSnapshot: {
               composition,
               audit,
-              ...(actualApproach ? { generationApproach: actualApproach } : { generationMode }),
+              generationApproach: actualApproach,
               ...(restrictedGeneration ? {
                 planner: restrictedGeneration.planner,
                 writer: restrictedGeneration.writer,
@@ -3019,9 +2998,10 @@ async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prism
   while (true) {
     const plan = await db.feedbackPlan.findUnique({
       where: { id: planId },
-      select: { status: true, items: { select: { status: true } } },
+      select: { status: true, generationApproach: true, items: { select: { status: true } } },
     });
     if (!plan) return;
+    assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
 
     if (plan.status !== "pause_requested") {
       while (active.size < MAX_FEEDBACK_CONCURRENCY) {
@@ -3207,7 +3187,6 @@ export async function startFeedbackPlanGeneration(input: {
   planId: string;
   itemIds?: string[];
   assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
-  generationMode?: FeedbackGenerationMode;
   generationApproach?: FeedbackGenerationApproach;
   expectedPlanRevision?: number;
 }, db: PrismaClient = prisma, options: { allowBatchStart?: boolean } = {}) {
@@ -3226,6 +3205,7 @@ export async function startFeedbackPlanGeneration(input: {
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchStart) {
     throw new ApiError("班级组子计划不能单独启动，请从班级组计划开始生成", 409, "conflict", false);
@@ -3253,7 +3233,7 @@ export async function startFeedbackPlanGeneration(input: {
         id: true,
         archivedAt: true,
         planRevision: true,
-        generationMode: true,
+        generationApproach: true,
         generationStartedAt: true,
         items: {
           select: {
@@ -3268,6 +3248,7 @@ export async function startFeedbackPlanGeneration(input: {
       },
     });
     if (!current) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+    assertLegacyFeedbackGenerationAvailable(current.generationApproach);
     if (current.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
     if (current.planRevision !== preparedPlanRevision) {
       throw new ApiError("反馈计划已被其他操作更新，请刷新后重试", 409, "conflict", false);
@@ -3296,9 +3277,6 @@ export async function startFeedbackPlanGeneration(input: {
       },
       data: {
         status: "queued",
-        generationMode: firstStart
-          ? normalizedGenerationMode(input.generationMode ?? current.generationMode)
-          : current.generationMode,
         generationStartedAt: current.generationStartedAt ?? generationRunStartedAt,
         generationCompletedAt: null,
         ...(firstStart ? { generationElapsedMs: 0 } : {}),
@@ -3358,9 +3336,10 @@ export async function continueFeedbackPlanGeneration(
 ) {
   const plan = await db.feedbackPlan.findUnique({
     where: { id: planId },
-    select: { id: true, archivedAt: true, generationStartedAt: true, batchId: true },
+    select: { id: true, archivedAt: true, generationStartedAt: true, batchId: true, generationApproach: true },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {
     throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中继续", 409, "conflict", false);
@@ -3401,9 +3380,10 @@ export async function retryFeedbackPlanGeneration(
 ) {
   const plan = await db.feedbackPlan.findUnique({
     where: { id: input.planId },
-    select: { id: true, archivedAt: true, generationMode: true, batchId: true },
+    select: { id: true, archivedAt: true, generationApproach: true, batchId: true },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {
     throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中重试", 409, "conflict", false);
@@ -3447,7 +3427,6 @@ export async function retryFeedbackPlanGeneration(
         where: { id: input.planId },
         data: {
           status: "queued",
-          generationMode: normalizedGenerationMode(plan.generationMode),
           generationStartedAt,
           generationCompletedAt: null,
           generationElapsedMs: 0,
@@ -3500,6 +3479,7 @@ export async function retryFeedbackPlanGenerationWithFree(
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {
     throw new ApiError("班级组子计划由批次统一控制，请在班级组计划中切换生成方式", 409, "conflict", false);

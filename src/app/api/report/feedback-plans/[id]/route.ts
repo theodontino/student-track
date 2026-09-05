@@ -154,12 +154,6 @@ export async function POST(request: NextRequest, context: Context) {
       const itemIds = Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined;
       const assessmentEvidence = FeedbackPlanAssessmentEvidenceSchema.safeParse(body.assessmentEvidence ?? {});
       if (!assessmentEvidence.success) throw new ApiError("测评证据参数无效", 400, "invalid_request", false);
-      const generationMode = body.generationMode === undefined
-        ? undefined
-        : body.generationMode === "fast" || body.generationMode === "standard"
-          ? body.generationMode
-          : null;
-      if (generationMode === null) throw new ApiError("生成方式参数无效", 400, "invalid_request", false);
       const generationApproach = body.generationApproach === undefined
         ? undefined
         : FeedbackGenerationApproachSchema.safeParse(body.generationApproach);
@@ -171,7 +165,6 @@ export async function POST(request: NextRequest, context: Context) {
         planId: id,
         itemIds,
         assessmentEvidence: assessmentEvidence.data,
-        generationMode,
         generationApproach: generationApproach?.data,
         expectedPlanRevision,
       });

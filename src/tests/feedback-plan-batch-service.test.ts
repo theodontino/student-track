@@ -6,7 +6,7 @@ import { parseLessonFeedbackMaterial } from "@/lib/feedback-materials";
 const generationMocks = vi.hoisted(() => ({ generate: vi.fn() }));
 vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/feedback-generation-service")>(),
-  generateFeedbackPlanComposition: generationMocks.generate,
+  generateFreeFeedbackPlanComposition: generationMocks.generate,
 }));
 vi.mock("@/services/restricted-feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/restricted-feedback-generation-service")>(),
@@ -247,7 +247,6 @@ describe("feedback plan batch service", () => {
       expectedPlanRevision: batch.planRevision,
       displayName: "守恒关系课后反馈",
       outputRequirement: "更新后的共同要求",
-      generationMode: "fast",
       generationPreferences: {
         closureType: "positive_recognition",
         moduleKeys: ["observed_moment"],
@@ -281,7 +280,7 @@ describe("feedback plan batch service", () => {
     expect(updated).toMatchObject({
       displayName: "守恒关系课后反馈",
       outputRequirement: "更新后的共同要求",
-      generationMode: "fast",
+      generationMode: "standard",
       status: "draft",
       planRevision: batch.planRevision + 1,
     });
@@ -291,7 +290,7 @@ describe("feedback plan batch service", () => {
       include: { items: true },
     });
     expect(plans.map((plan) => plan.outputRequirement)).toEqual(["更新后的共同要求", "二班独立要求"]);
-    expect(plans.map((plan) => plan.generationMode)).toEqual(["fast", "fast"]);
+    expect(plans.map((plan) => plan.generationMode)).toEqual(["standard", "standard"]);
     expect(plans.map((plan) => JSON.parse(plan.inputSnapshot).generationPreferences)).toEqual([
       { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
       { closureType: "home_cooperation", moduleKeys: ["parent_action"] },
@@ -304,7 +303,6 @@ describe("feedback plan batch service", () => {
       action: "plan_draft",
       expectedPlanRevision: updated.planRevision,
       outputRequirement: "不应部分保存",
-      generationMode: "standard",
       generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
       studentSelections: [
         { classId: classIds[0]!, studentIds: [scopeStudentIds[0]!] },
@@ -325,7 +323,6 @@ describe("feedback plan batch service", () => {
       action: "plan_draft",
       expectedPlanRevision: updated.planRevision,
       outputRequirement: "不应越过冻结事实",
-      generationMode: "standard",
       generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
       studentSelections: [
         { classId: classIds[0]!, studentIds: ["missing-student"] },
@@ -355,7 +352,6 @@ describe("feedback plan batch service", () => {
       action: "plan_draft",
       expectedPlanRevision: batch.planRevision,
       outputRequirement: "不能覆盖",
-      generationMode: "standard",
       generationPreferences: { closureType: "positive_recognition", moduleKeys: ["observed_moment"] },
       studentSelections: classIds.map((classId, index) => ({ classId, studentIds: [studentIds[index]!] })),
       classOverrides: [],
@@ -412,7 +408,6 @@ describe("feedback plan batch service", () => {
       semesterId,
       type: "event_micro",
       outputRequirement: "克隆来源要求",
-      generationMode: "fast",
       plans: classIds.map((classId, index) => ({
         classId,
         sessionId: sessionIds[index],
@@ -453,7 +448,7 @@ describe("feedback plan batch service", () => {
       basedOnBatchId: source.id,
       status: "draft",
       outputRequirement: source.outputRequirement,
-      generationMode: source.generationMode,
+      generationMode: "standard",
     });
     expect(clone.plans.map((plan) => plan.id)).not.toEqual(source.plans.map((plan) => plan.id));
     const clonedPlans = await prisma.feedbackPlan.findMany({
@@ -480,7 +475,6 @@ describe("feedback plan batch service", () => {
       patch: {
         action: "plan_draft",
         outputRequirement: "页面中的新统一要求",
-        generationMode: "standard",
         generationPreferences: { closureType: "positive_recognition", length: "detailed", tone: "professional", moduleKeys: ["observed_moment"] },
         studentSelections: classIds.map((classId, index) => ({ classId, studentIds: [studentIds[index]!] })),
         classOverrides: [],
@@ -504,7 +498,6 @@ describe("feedback plan batch service", () => {
       semesterId,
       type: "event_micro",
       outputRequirement: "来源批次要求",
-      generationMode: "fast",
       generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
       plans: classIds.map((classId, index) => ({
         classId,
@@ -525,7 +518,6 @@ describe("feedback plan batch service", () => {
       semesterId,
       type: "event_micro",
       outputRequirement: "来源批次要求",
-      generationMode: "fast",
       plans: [{
         classId: classIds[0]!,
         sessionId: sessionIds[0]!,
@@ -542,7 +534,6 @@ describe("feedback plan batch service", () => {
       semesterId,
       type: "event_micro",
       outputRequirement: "来源批次要求",
-      generationMode: "fast",
       generationPreferences: { closureType: "positive_recognition", length: "short", tone: "gentle", moduleKeys: ["observed_moment"] },
       plans: [{
         classId: classIds[0]!,
@@ -599,7 +590,6 @@ describe("feedback plan batch service", () => {
       semesterId,
       type: "event_micro" as const,
       outputRequirement: "班级组一站式反馈",
-      generationMode: "fast" as const,
       groupLessonId: lessonId,
       sharedLessonRevisionId: revisionId,
       sharedMaterialConfirmed: true,
@@ -610,8 +600,7 @@ describe("feedback plan batch service", () => {
     expect(repeated.id).toBe(created.id);
     expect(created.plans).toHaveLength(2);
     const linkedRuns = await prisma.feedbackIntakeRun.findMany({ where: { id: { in: runs.map((run) => run.id) } }, orderBy: { sourceFingerprint: "asc" } });
-    expect(linkedRuns.every((run) => Boolean(run.planId))).toBe(true);
-    expect(new Set(linkedRuns.map((run) => run.planId)).size).toBe(2);
+    expect(linkedRuns.every((run) => run.planId === null)).toBe(true);
   });
 
   it("uses historical real-session links after a class leaves the current group", async () => {
@@ -674,7 +663,6 @@ describe("feedback plan batch service", () => {
       semesterId,
       type: "event_micro" as const,
       outputRequirement: "新的班级组计划",
-      generationMode: "standard" as const,
       groupLessonId: lessonId,
       sharedLessonRevisionId: revisionId,
       sharedMaterialConfirmed: true,
@@ -827,13 +815,12 @@ describe("feedback plan batch service", () => {
 
     let releaseFirst: (() => void) | undefined;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const actualModes: string[] = [];
+    let generationCalls = 0;
     generationMocks.generate.mockImplementation(async (input: {
-      generationMode?: string;
       evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
     }) => {
-      actualModes.push(input.generationMode ?? "");
-      if (actualModes.length === 1) await firstGate;
+      generationCalls += 1;
+      if (generationCalls === 1) await firstGate;
       const evidence = input.evidenceBundle.teachingEvidence[0] ?? { id: "fallback", content: "已确认课堂事实" };
       const composition = {
         version: 1 as const,
@@ -864,7 +851,7 @@ describe("feedback plan batch service", () => {
     expect(preparedItems[1]!.status).toBe("evidence_ready");
     releaseFirst!();
     await vi.waitFor(async () => expect((await getFeedbackPlanBatch(batch.id))?.status).toBe("completed"), { timeout: 5000, interval: 50 });
-    expect(actualModes).toEqual(["fast", "fast"]);
+    expect(generationCalls).toBe(2);
     await expect(prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { id: batch.id } })).resolves.toMatchObject({ generationApproach: "restricted" });
   });
 

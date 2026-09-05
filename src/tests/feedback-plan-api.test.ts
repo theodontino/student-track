@@ -45,6 +45,7 @@ describe("feedback plan API", () => {
         displayName: "  周末复盘  ",
         outputRequirement: "突出进步",
         generationMode: "fast",
+        generationApproach: "free",
         studentIds: ["student-1"],
         expectedPlanRevision: 1,
       },
@@ -53,7 +54,7 @@ describe("feedback plan API", () => {
     expect(planMocks.updateDraft).toHaveBeenCalledWith("plan-1", {
       displayName: "周末复盘",
       outputRequirement: "突出进步",
-      generationMode: "fast",
+      generationApproach: "free",
       studentIds: ["student-1"],
       expectedPlanRevision: 1,
     });

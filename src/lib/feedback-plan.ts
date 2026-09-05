@@ -15,6 +15,7 @@ export type FeedbackPlanType = typeof FEEDBACK_PLAN_TYPES[number];
 export const STUDENT_FEEDBACK_PLAN_TYPES = ["event_micro", "stage_trend", "course_end"] as const;
 export type StudentFeedbackPlanType = typeof STUDENT_FEEDBACK_PLAN_TYPES[number];
 
+/** Historical storage value. Current generation no longer exposes this as a choice. */
 export const FEEDBACK_GENERATION_MODES = ["standard", "fast"] as const;
 export type FeedbackGenerationMode = typeof FEEDBACK_GENERATION_MODES[number];
 
@@ -393,7 +394,6 @@ export const FeedbackPlanCreateSchema = z.object({
   basedOnPlanId: z.string().trim().min(1).max(200).optional(),
   type: z.enum(FEEDBACK_PLAN_TYPES),
   outputRequirement: z.string().trim().min(1).max(2000),
-  generationMode: z.enum(FEEDBACK_GENERATION_MODES).optional(),
   generationApproach: FeedbackGenerationApproachSchema.default("restricted"),
   semesterId: z.string().trim().min(1).max(200),
   classId: z.string().trim().min(1).max(200),
@@ -421,7 +421,6 @@ export const FeedbackPlanDraftPatchSchema = z.object({
   displayName: z.string().trim().min(1).max(120).optional(),
   type: z.enum(FEEDBACK_PLAN_TYPES).optional(),
   outputRequirement: z.string().trim().min(1).max(2000).optional(),
-  generationMode: z.enum(FEEDBACK_GENERATION_MODES).optional(),
   generationApproach: FeedbackGenerationApproachSchema.optional(),
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
   generationPreferences: FeedbackGenerationPreferencesSchema.optional(),

@@ -8,18 +8,29 @@ import {
   serializeFeedbackGenerationExecutionSnapshot,
 } from "@/lib/feedback-generation-approach";
 import { FeedbackPlanCreateSchema, defaultFeedbackGenerationPreferences } from "@/lib/feedback-plan";
+import { FeedbackPlanBatchCreateSchema } from "@/lib/feedback-plan-batch";
 import { prisma } from "@/lib/prisma";
 import {
   cloneFeedbackPlanBatchDraft,
+  continueFeedbackPlanBatch,
   createFeedbackPlanBatch,
   getFeedbackPlanBatch,
+  retryFeedbackPlanBatch,
+  retryFeedbackPlanBatchWithFree,
   saveFeedbackPlanBatchAs,
+  startFeedbackPlanBatch,
 } from "@/services/feedback-plan-batch-service";
 import {
   cloneFeedbackPlanDraft,
+  continueFeedbackPlanGeneration,
   createFeedbackPlan,
+  generateFeedbackPlanItems,
   getFeedbackPlan,
+  listFeedbackPlans,
+  retryFeedbackPlanGeneration,
+  retryFeedbackPlanGenerationWithFree,
   saveFeedbackPlanAs,
+  startFeedbackPlanGeneration,
   toFeedbackPlanDetail,
   updateFeedbackPlanDraft,
 } from "@/services/feedback-plan-service";
@@ -38,12 +49,30 @@ afterAll(async () => {
 
 describe("feedback generation approach", () => {
   it("keeps legacy internal while exposing only restricted and free for new plans", () => {
-    expect(FeedbackPlanCreateSchema.parse({
+    const parsed = FeedbackPlanCreateSchema.parse({
       type: "event_micro",
       outputRequirement: "合成反馈要求",
       semesterId: "semester-test",
       classId: "class-test",
-    }).generationApproach).toBe("restricted");
+      generationMode: "fast",
+    });
+    expect(parsed.generationApproach).toBe("restricted");
+    expect(parsed).not.toHaveProperty("generationMode");
+    expect(() => FeedbackPlanCreateSchema.parse({
+      type: "event_micro",
+      outputRequirement: "合成反馈要求",
+      semesterId: "semester-test",
+      classId: "class-test",
+      generationApproach: "legacy",
+    })).toThrow();
+    expect(() => FeedbackPlanBatchCreateSchema.parse({
+      requestKey: "legacy-batch-request",
+      semesterId: "semester-test",
+      type: "event_micro",
+      outputRequirement: "合成反馈要求",
+      generationApproach: "legacy",
+      plans: [{ classId: "class-test" }],
+    })).toThrow();
     expect(normalizeStoredFeedbackGenerationApproach(undefined)).toBe("legacy");
     expect(feedbackGenerationApproachLabel("legacy")).toBe("旧生成方式");
     expect(feedbackGenerationApproachForDerivedPlan("legacy")).toBe("restricted");
@@ -142,6 +171,49 @@ describe("feedback generation approach", () => {
     expect(toFeedbackPlanDetail(historical)).toMatchObject({
       generationApproach: null,
       generationApproachLabel: "旧生成方式",
+      legacyReadonly: true,
+    });
+    expect(await listFeedbackPlans({ semesterId: semester.id })).toContainEqual(expect.objectContaining({
+      id: saved.id,
+      generationApproach: null,
+      legacyReadonly: true,
+    }));
+    const retired = { status: 409, code: "legacy_generation_retired" };
+    await expect(startFeedbackPlanGeneration({ planId: saved.id })).rejects.toMatchObject(retired);
+    await expect(continueFeedbackPlanGeneration(saved.id)).rejects.toMatchObject(retired);
+    await expect(retryFeedbackPlanGeneration({ planId: saved.id })).rejects.toMatchObject(retired);
+    await expect(retryFeedbackPlanGenerationWithFree({ planId: saved.id })).rejects.toMatchObject(retired);
+    await expect(generateFeedbackPlanItems({ planId: saved.id })).rejects.toMatchObject(retired);
+
+    const historicalGeneration = await prisma.generationRecord.create({
+      data: {
+        taskType: "feedback",
+        stage: "plan-review",
+        semesterId: semester.id,
+        classId: classRecord.id,
+        sessionId: session.id,
+        studentId: student.id,
+        sourceRefs: "[]",
+        sourceFingerprint: `${marker}-legacy-generation`,
+        promptVersion: "test-v1",
+        modelName: "legacy-test-model",
+        modelSettings: "{}",
+        feedbackPlanItemId: saved.items[0]!.id,
+        finalText: "旧方式已经生成的正文",
+      },
+    });
+    await prisma.feedbackPlanItem.update({
+      where: { id: saved.items[0]!.id },
+      data: {
+        status: "exported",
+        finalText: "旧方式已经生成的正文",
+        finalTextHash: "legacy-final-text",
+        selectedGenerationId: historicalGeneration.id,
+        approvedAt: new Date("2099-01-02T08:00:00.000Z"),
+        exportedAt: new Date("2099-01-02T09:00:00.000Z"),
+        generationExecutionSnapshot: JSON.stringify({ version: 1, attempts: [{ status: "succeeded" }] }),
+        compositionSnapshot: JSON.stringify({ version: 1, draftFeedback: "旧方式已经生成的正文" }),
+      },
     });
     await expect(cloneFeedbackPlanDraft({ planId: saved.id, displayName: "缺少方式的修订" }))
       .rejects.toThrow("必须选择受限反馈或自由反馈");
@@ -163,6 +235,19 @@ describe("feedback generation approach", () => {
       generationApproach: "restricted",
       displayName: "受限反馈修订",
     });
+    expect(savedAs.items).toEqual([expect.objectContaining({
+      status: "evidence_ready",
+      finalText: null,
+      selectedGenerationId: null,
+      approvedAt: null,
+      exportedAt: null,
+      generationExecutionSnapshot: "{}",
+      compositionSnapshot: "{}",
+      auditSnapshot: "{}",
+    })]);
+    await expect(prisma.generationRecord.count({
+      where: { feedbackPlanItemId: savedAs.items[0]!.id },
+    })).resolves.toBe(0);
     expect(savedAs.inputFingerprint).toBe(directlyCloned.inputFingerprint);
     await expect(prisma.feedbackPlan.findUniqueOrThrow({ where: { id: saved.id } }))
       .resolves.toMatchObject({ generationApproach: "legacy" });
@@ -212,6 +297,15 @@ describe("feedback generation approach", () => {
 
     await prisma.feedbackPlanBatch.update({ where: { id: batch.id }, data: { generationApproach: "legacy" } });
     await prisma.feedbackPlan.updateMany({ where: { batchId: batch.id }, data: { generationApproach: "legacy" } });
+    expect(await getFeedbackPlanBatch(batch.id)).toMatchObject({
+      generationApproach: null,
+      legacyReadonly: true,
+      plans: [expect.objectContaining({ generationApproach: null, legacyReadonly: true })],
+    });
+    await expect(startFeedbackPlanBatch(batch.id)).rejects.toMatchObject(retired);
+    await expect(continueFeedbackPlanBatch(batch.id)).rejects.toMatchObject(retired);
+    await expect(retryFeedbackPlanBatch(batch.id)).rejects.toMatchObject(retired);
+    await expect(retryFeedbackPlanBatchWithFree(batch.id)).rejects.toMatchObject(retired);
     await expect(cloneFeedbackPlanBatchDraft({ batchId: batch.id, displayName: "缺少方式的批次修订" }))
       .rejects.toThrow("必须选择受限反馈或自由反馈");
     const savedBatch = await saveFeedbackPlanBatchAs({
@@ -221,7 +315,6 @@ describe("feedback generation approach", () => {
         action: "plan_draft",
         expectedPlanRevision: batch.planRevision,
         outputRequirement: batch.outputRequirement,
-        generationMode: "standard",
         generationApproach: "free",
         generationPreferences: defaultFeedbackGenerationPreferences("event_micro"),
         studentSelections: [{ classId: classRecord.id, studentIds: [student.id] }],
@@ -231,5 +324,6 @@ describe("feedback generation approach", () => {
     });
     expect(savedBatch.generationApproach).toBe("free");
     expect(savedBatch.plans.every((plan) => plan.generationApproach === "free")).toBe(true);
+    await prisma.generationRecord.delete({ where: { id: historicalGeneration.id } });
   });
 });
