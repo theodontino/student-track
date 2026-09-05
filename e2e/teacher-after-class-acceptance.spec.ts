@@ -89,8 +89,10 @@ test.describe("教师纯页面课后验收", () => {
       await page.getByRole("button", { name: "助教 Excel：查看详情" }).click();
       await expect(page.getByText(`助教表日期 2026-10-09 与课次日期 ${lesson.date} 不一致`)).toBeVisible();
       await page.getByRole("radio", { name: "仍作为当前课次采用" }).check();
+      await expect(page.getByRole("button", { name: "确认事实并建立计划" })).toBeDisabled();
       await page.getByRole("button", { name: "全部采用助教表评分（4）" }).click();
       await page.getByRole("button", { name: "关闭" }).click();
+      await expect(page.getByRole("button", { name: "确认事实并建立计划" })).toBeEnabled();
       await expect(page.getByLabel("本次课程材料")).toHaveValue("current");
       await expect(page.getByText(`班级组第 ${lesson.sequence} 讲`)).toBeVisible();
       await page.getByRole("button", { name: "确认事实并建立计划" }).click();
