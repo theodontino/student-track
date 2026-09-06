@@ -42,6 +42,7 @@ export const FeedbackGenerationExecutionAttemptV1Schema = z.object({
   attempt: z.number().int().positive(),
   trigger: z.enum(["initial", "retry", "explicit_fallback"]),
   actualApproach: FeedbackGenerationApproachSchema,
+  stage: z.enum(["planner", "writer", "free", "deterministic_check"]).optional(),
   status: z.enum(["running", "failed", "succeeded", "interrupted"]),
   startedAt: z.string().datetime({ offset: true }),
   completedAt: z.string().datetime({ offset: true }).optional(),
@@ -49,6 +50,7 @@ export const FeedbackGenerationExecutionAttemptV1Schema = z.object({
     code: z.string().trim().min(1).max(100),
     message: z.string().trim().min(1).max(500),
     retryable: z.boolean(),
+    kind: z.enum(["schema", "timeout", "connection", "aborted", "service"]).optional(),
   }).optional(),
   generationRecordId: z.string().trim().min(1).max(200).optional(),
 });

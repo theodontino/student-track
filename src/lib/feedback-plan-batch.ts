@@ -144,6 +144,7 @@ export const FeedbackPlanBatchActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("start"), generationApproach: FeedbackGenerationApproachSchema.optional(), expectedPlanRevision: z.number().int().positive().optional() }),
   z.object({ action: z.literal("pause") }),
   z.object({ action: z.literal("continue") }),
+  z.object({ action: z.literal("force_stop") }),
   z.object({ action: z.literal("retry") }),
   z.object({ action: z.literal("retry_with_free") }),
   z.object({ action: z.literal("archive") }),

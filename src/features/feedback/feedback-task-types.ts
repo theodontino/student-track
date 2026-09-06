@@ -104,7 +104,17 @@ export type FeedbackBatchClient = {
       generationExecution?: {
         requestedApproach: "restricted" | "free";
         nextApproach: "restricted" | "free";
-        attempts: Array<{ actualApproach: "restricted" | "free"; status: string }>;
+        attempts: Array<{
+          actualApproach: "restricted" | "free";
+          status: string;
+          stage?: "planner" | "writer" | "free" | "deterministic_check";
+          error?: {
+            code: string;
+            message: string;
+            retryable: boolean;
+            kind?: "schema" | "timeout" | "connection" | "aborted" | "service";
+          };
+        }>;
       } | null;
     }>;
   }>;

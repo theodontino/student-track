@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
   validateCompositionForBundle,
   type FeedbackAuditSnapshot,
   type FeedbackCompositionPlan,
@@ -25,5 +26,24 @@ export function createAuditSnapshot(
     items: result.issues,
     textHash: sha256(composition.draftFeedback),
     semanticReviewRequired: result.status !== "pass",
+  };
+}
+
+export function blockAuditForRestrictedWriter(
+  audit: FeedbackAuditSnapshot,
+  message: string,
+): FeedbackAuditSnapshot {
+  return {
+    ...audit,
+    status: "blocked",
+    items: [
+      ...audit.items.filter((issue) => issue.code !== RESTRICTED_WRITER_OUTPUT_INVALID_CODE),
+      {
+        code: RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
+        severity: "blocked",
+        message: message.trim().slice(0, 1000) || "受限 Writer 草稿未通过程序核验",
+      },
+    ],
+    semanticReviewRequired: true,
   };
 }
