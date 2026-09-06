@@ -454,6 +454,7 @@ const auditIssueGuidance: Record<string, { area: string; title: string; impact: 
   empty_text: { area: "教师最终正文", title: "正文为空", impact: "没有可供教师批准和导出的反馈文本。", action: "在正文编辑框补充反馈并保存。" },
   restricted_writer_output_invalid: { area: "受限 Writer 草稿", title: "草稿未通过程序核验", impact: "草稿已保留供教师检查，但当前不能批准、导出或生成企微草稿。", action: "逐字核对并实际修改正文，保存后系统会重新执行程序核验。" },
   recipient_mismatch: { area: "正文称呼", title: "反馈对象可能写错", impact: "面向家长的反馈使用了直接对学生说话的表达。", action: "把“你要……”等学生式称呼改为面向家长的表述。" },
+  recipient_placeholder: { area: "正文称呼", title: "收件人占位符尚未替换", impact: "反馈中仍有模板姓名或家长称呼占位符，因此不能批准或导出。", action: "把占位符替换为适合当前家长的自然称呼后保存。" },
   module_not_allowed: { area: "生成阶段结构 → 模块", title: "反馈类型与模块不匹配", impact: "当前计划类型不允许使用其中一个模块。", action: "新建计划时选择当前类型允许的模块。" },
   evidence_ref_missing: { area: "模块引用证据", title: "模块引用的证据已经不存在", impact: "正文结构无法追溯到本计划冻结的证据。", action: "对照事实修正正文；如需模型重写，请建立一份修正计划。" },
   evidence_coverage_duplicate: { area: "正文证据覆盖", title: "同一证据被重复登记", impact: "系统无法准确判断正文是否完整保留证据。", action: "先修正并保存正文；如需模型重写，请建立修正计划，并保留此错误代码用于排查。" },

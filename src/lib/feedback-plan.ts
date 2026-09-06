@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { LessonFeedbackMaterialSchema, StudentAssessmentEvidenceSchema } from "@/lib/contracts/feedback";
 import { FeedbackGenerationApproachSchema } from "@/lib/feedback-generation-approach";
-import { containsStudentDirectedAddress, stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
+import { containsRecipientPlaceholder, containsStudentDirectedAddress, stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
 
 export {
   FEEDBACK_GENERATION_APPROACHES,
@@ -361,6 +361,9 @@ export const RESTRICTED_WRITER_OUTPUT_INVALID_CODE = "restricted_writer_output_i
 export const HARD_FEEDBACK_AUDIT_CODES = new Set([
   "empty_text",
   "cross_student_content",
+  "internal_content_leak",
+  "recipient_mismatch",
+  "recipient_placeholder",
   "unconfirmed_evidence",
   RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
 ]);
@@ -531,6 +534,13 @@ export function validateCompositionForBundle(
       code: "recipient_mismatch",
       severity: "blocked",
       message: "家长反馈直接对学生使用了第二人称或学生式鼓励语",
+    });
+  }
+  if (options.enforceParentAudience && containsRecipientPlaceholder(composition.draftFeedback)) {
+    issues.push({
+      code: "recipient_placeholder",
+      severity: "blocked",
+      message: "家长反馈包含未替换的收件人占位符",
     });
   }
   for (const section of included) {
