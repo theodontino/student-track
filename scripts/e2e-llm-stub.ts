@@ -205,6 +205,61 @@ function restrictedWriterPayload(prompt: string) {
   };
 }
 
+interface ContentBriefEvidenceItem {
+  id?: string;
+  content?: string;
+}
+
+interface ContentBriefPlannerInput {
+  evidenceBundle?: {
+    teachingEvidence?: ContentBriefEvidenceItem[];
+    assessmentEvidence?: ContentBriefEvidenceItem[];
+    communicationContext?: ContentBriefEvidenceItem[];
+  };
+}
+
+function contentBriefPlannerPayload(prompt: string) {
+  const input = jsonSection<ContentBriefPlannerInput>(prompt, "冻结输入：\n", "\n\n只返回合法 JSON，字段必须是：") ?? {};
+  const source = [
+    ...(input.evidenceBundle?.teachingEvidence ?? []),
+    ...(input.evidenceBundle?.assessmentEvidence ?? []),
+    ...(input.evidenceBundle?.communicationContext ?? []),
+  ].find((item) => item.id && item.content) ?? {
+    id: "stub-evidence",
+    content: "本次课堂学习情况已经完成记录",
+  };
+  const point = { content: source.content!, evidenceRefs: [source.id!] };
+  return {
+    mainFocus: "根据已确认事实形成简洁反馈",
+    present: [point],
+    background: [],
+    interpretations: [],
+    contextOnly: [],
+    omit: [],
+    communicationIntent: "向家长清楚说明已确认的学习情况",
+    unresolved: [],
+  };
+}
+
+interface ContentBriefWriterInput {
+  studentName?: string;
+  contentBrief?: {
+    present?: Array<{ content?: string }>;
+    background?: Array<{ content?: string }>;
+    interpretations?: Array<{ content?: string }>;
+  };
+}
+
+function contentBriefWriterPayload(prompt: string) {
+  const input = jsonSection<ContentBriefWriterInput>(prompt, "受限输入：\n", "\n\n只返回合法 JSON：") ?? {};
+  const content = [
+    ...(input.contentBrief?.present ?? []),
+    ...(input.contentBrief?.background ?? []),
+    ...(input.contentBrief?.interpretations ?? []),
+  ].find((item) => item.content)?.content ?? "本次课堂学习情况已经完成记录";
+  return { feedback: (input.studentName ?? "学生") + "家长您好，" + content + "。" };
+}
+
 function completionContent(prompt: string) {
   const step = stepPayload(prompt);
   if (step) return JSON.stringify(step);
@@ -213,6 +268,12 @@ function completionContent(prompt: string) {
   }
   if (prompt.includes("反馈组装模型") || prompt.includes("反馈审核与润色模型") || prompt.includes("结构修复模型")) {
     return JSON.stringify(compositionPayload(prompt));
+  }
+  if (prompt.includes("Student Track 的反馈 Planner") && prompt.includes("冻结输入：")) {
+    return JSON.stringify(contentBriefPlannerPayload(prompt));
+  }
+  if (prompt.includes("Student Track 的反馈 Writer") && prompt.includes("ContentBrief")) {
+    return JSON.stringify(contentBriefWriterPayload(prompt));
   }
   if (prompt.includes("Student Track 的反馈 Planner")) {
     return JSON.stringify(restrictedPlannerPayload(prompt));

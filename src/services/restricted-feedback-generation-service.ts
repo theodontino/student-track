@@ -12,10 +12,13 @@ import {
   sanitizeFeedbackComposition,
   sanitizeFeedbackEvidenceBundle,
   type FeedbackCompositionPlan,
+  type CommunicationPreference,
   type FeedbackEvidenceBundle,
   type FeedbackGenerationPreferences,
   type FeedbackPlanType,
+  type StudentFeedbackPlanType,
 } from "@/lib/feedback-plan";
+import type { LessonFeedbackMaterial } from "@/lib/feedback-materials";
 import type { FeedbackLength, FeedbackStyle } from "@/lib/feedback-sections";
 import { sanitizeFeedbackPromptText } from "@/lib/feedback-text-safety";
 import { ApiError } from "@/lib/api-errors";
@@ -28,6 +31,7 @@ type LLMClient = ReturnType<typeof createLLMClient>;
 
 const STRATEGY_MAX_TOKENS = 4096;
 const WRITER_MAX_TOKENS = 4096;
+const CONTENT_BRIEF_MAX_TOKENS = 2048;
 const TEACHING_BACKGROUND_REF_PREFIX = "teaching-background:";
 const OUTPUT_REQUIREMENT_REF = "teacher-output-requirement";
 
@@ -159,6 +163,60 @@ export const RestrictedFeedbackCheckpointV1Schema = z.object({
 });
 export type RestrictedFeedbackCheckpointV1 = z.infer<typeof RestrictedFeedbackCheckpointV1Schema>;
 
+const briefPointSchema = z.object({
+  content: z.string().trim().min(1).max(1600),
+  evidenceRefs: z.array(z.string().trim().min(1).max(200)).max(30),
+});
+
+const briefContextSchema = z.object({
+  content: z.string().trim().min(1).max(1600),
+  reason: z.string().trim().min(1).max(500),
+});
+
+const briefOmitSchema = z.object({
+  evidenceRefs: z.array(z.string().trim().min(1).max(200)).max(30),
+  reason: z.string().trim().min(1).max(500),
+});
+
+export const ContentBriefSchema = z.object({
+  mainFocus: z.string().trim().min(1).max(1200),
+  present: z.array(briefPointSchema).max(30),
+  background: z.array(briefPointSchema).max(20),
+  interpretations: z.array(briefPointSchema.extend({ confidence: z.enum(["high", "medium", "low"]) })).max(20),
+  contextOnly: z.array(briefContextSchema).max(20),
+  omit: z.array(briefOmitSchema).max(30),
+  communicationIntent: z.string().trim().max(1000),
+  unresolved: z.array(z.string().trim().min(1).max(500)).max(20),
+});
+export type ContentBrief = z.infer<typeof ContentBriefSchema>;
+
+export const StudentContentBriefWriterInputSchema = z.object({
+  studentName: z.string().trim().min(1).max(200),
+  plan: z.object({
+    type: z.enum(["event_micro", "stage_trend", "course_end"]),
+    style: z.enum(["gentle", "professional"]),
+    length: z.enum(["short", "standard"]),
+    closureType: z.enum(FEEDBACK_CLOSURE_TYPES).nullable(),
+  }),
+  contentBrief: z.object({
+    mainFocus: ContentBriefSchema.shape.mainFocus,
+    present: ContentBriefSchema.shape.present,
+    background: ContentBriefSchema.shape.background,
+    interpretations: ContentBriefSchema.shape.interpretations,
+    communicationIntent: ContentBriefSchema.shape.communicationIntent,
+  }),
+  stableRules: z.array(z.string().trim().min(1).max(500)).min(1).max(12),
+});
+export type StudentContentBriefWriterInput = z.infer<typeof StudentContentBriefWriterInputSchema>;
+
+export const RestrictedFeedbackCheckpointV2Schema = z.object({
+  version: z.literal(2),
+  contentBrief: ContentBriefSchema,
+  writerInput: StudentContentBriefWriterInputSchema,
+  plannerTrace: restrictedGenerationStageTraceSchema,
+});
+export type RestrictedFeedbackCheckpointV2 = z.infer<typeof RestrictedFeedbackCheckpointV2Schema>;
+
 export interface GenerationTokenUsage {
   inputTokens: number | null;
   outputTokens: number | null;
@@ -216,6 +274,36 @@ export interface RestrictedFeedbackGenerationInput {
   checkpoint?: RestrictedFeedbackCheckpointV1 | null;
   onCheckpoint?: (checkpoint: RestrictedFeedbackCheckpointV1) => Promise<void> | void;
   signal?: AbortSignal;
+}
+
+export interface StudentContentBriefGenerationInput {
+  studentName: string;
+  planType: StudentFeedbackPlanType;
+  outputRequirement: string;
+  evidenceBundle: FeedbackEvidenceBundle;
+  lessonMaterial: LessonFeedbackMaterial;
+  communicationPreference?: CommunicationPreference | null;
+  style: FeedbackStyle;
+  length: FeedbackLength;
+  generationPreferences?: FeedbackGenerationPreferences;
+  plannerClient: LLMClient;
+  plannerModel: string;
+  writerClient: LLMClient;
+  writerModel: string;
+  plannerProfileId?: string;
+  writerProfileId?: string;
+  referenceDate?: string;
+  checkpoint?: RestrictedFeedbackCheckpointV2 | null;
+  onCheckpoint?: (checkpoint: RestrictedFeedbackCheckpointV2) => Promise<void> | void;
+  signal?: AbortSignal;
+}
+
+export interface StudentContentBriefGenerationResult {
+  contentBrief: ContentBrief;
+  writerInput: StudentContentBriefWriterInput;
+  composition: FeedbackCompositionPlan;
+  planner: RestrictedGenerationStageTrace & { reusedCheckpoint: boolean };
+  writer: RestrictedGenerationStageTrace;
 }
 
 function emptyUsage(): GenerationTokenUsage {
@@ -312,6 +400,224 @@ function parseJsonObject(value: string, label: string) {
   } catch {
     throw new ApiError(`${label}未返回合法 JSON`, 502, "llm_schema_invalid", true);
   }
+}
+
+export function buildStudentContentBriefPlannerInput(input: StudentContentBriefGenerationInput) {
+  return {
+    evidenceBundle: input.evidenceBundle,
+    plan: {
+      type: input.planType,
+      outputRequirement: input.outputRequirement,
+      generationPreferences: input.generationPreferences ?? null,
+      lessonMaterial: input.lessonMaterial,
+      referenceDate: input.referenceDate ?? null,
+    },
+    communicationPreference: input.communicationPreference ?? null,
+    deterministicBoundaries: {
+      closureType: input.generationPreferences?.closureType ?? null,
+      moduleKeys: input.generationPreferences?.moduleKeys ?? [],
+      allowedModuleKeys: input.generationPreferences?.moduleKeys?.length
+        ? input.generationPreferences.moduleKeys
+        : [...FEEDBACK_MODULES[input.planType]],
+      existingTaskIds: input.evidenceBundle.executionConstraints.existingTaskIds,
+    },
+  };
+}
+
+export function parseContentBrief(value: string, evidence: FeedbackEvidenceBundle): ContentBrief {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleanJsonText(value));
+  } catch {
+    throw new ApiError("Planner 未返回合法 ContentBrief", 502, "llm_schema_invalid", true);
+  }
+  const result = ContentBriefSchema.safeParse(parsed);
+  if (!result.success) throw new ApiError("Planner ContentBrief 字段不完整", 502, "llm_schema_invalid", true);
+  const allowedRefs = new Set([
+    ...evidence.teachingEvidence,
+    ...evidence.assessmentEvidence,
+    ...evidence.communicationContext,
+  ].map((item) => item.id));
+  const referencedItems = [
+    ...result.data.present,
+    ...result.data.background,
+    ...result.data.interpretations,
+    ...result.data.omit,
+  ];
+  const unknownRefs = [...new Set(referencedItems
+    .flatMap((item) => item.evidenceRefs)
+    .filter((ref) => !allowedRefs.has(ref)))];
+  if (unknownRefs.length) {
+    throw new ApiError(`Planner ContentBrief 包含未知 evidenceRef：${unknownRefs.slice(0, 6).join("、")}`, 502, "llm_schema_invalid", true);
+  }
+  return result.data;
+}
+
+export function buildStudentContentBriefWriterInput(
+  input: StudentContentBriefGenerationInput,
+  brief: ContentBrief,
+): StudentContentBriefWriterInput {
+  return StudentContentBriefWriterInputSchema.parse({
+    studentName: input.studentName,
+    plan: {
+      type: input.planType,
+      style: input.style,
+      length: input.length,
+      closureType: input.generationPreferences?.closureType ?? null,
+    },
+    contentBrief: {
+      mainFocus: brief.mainFocus,
+      present: brief.present,
+      background: brief.background,
+      interpretations: brief.interpretations,
+      communicationIntent: brief.communicationIntent,
+    },
+    stableRules: [
+      "默认收件人是家长，谈到学生时使用姓名、孩子或第三人称，不直接对学生说你。",
+      "只使用受限 ContentBrief 中允许披露的信息，不补充未提供的事实。",
+      "自然组织成一条像老师发微信的反馈，不套固定段式，不为了完整强行加入表扬、建议、趋势或历史。",
+      "只返回 JSON：{\"feedback\":\"可发送文本\"}。",
+    ],
+  });
+}
+
+export function parseWriterFeedback(value: string) {
+  const cleaned = cleanJsonText(value);
+  try {
+    const parsed = JSON.parse(cleaned) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && typeof (parsed as { feedback?: unknown }).feedback === "string") {
+      return (parsed as { feedback: string }).feedback.trim();
+    }
+  } catch {
+    // A compatible provider may ignore JSON mode; a non-empty draft is still a candidate.
+  }
+  return value.trim();
+}
+
+function studentContentBriefPlannerPrompt(input: StudentContentBriefGenerationInput) {
+  return `你是 Student Track 的反馈 Planner。你只负责从冻结事实中规划本次反馈要说什么，不写家长正文，不追求漂亮表达，也不要为了覆盖率强行纳入所有证据。
+
+读取下面的冻结输入。present 是本次值得直接进入反馈的信息，background 是压缩后的背景，interpretations 是有证据支持的教学判断；contextOnly 只供 Planner 理解，Writer 不会看到它的原始内容；omit 表示本次完全不传给 Writer。evidenceRefs 只能使用证据包中的真实证据 ID。
+
+generationPreferences.moduleKeys 是本计划的披露权限边界，不只是写作偏好：非空时只有其中列出的模块可以向 Writer 披露；为空时按当前反馈类型的完整允许模块目录处理。未授权模块只能停留在 contextOnly 或 omit 中用于 Planner 理解与排除，不得出现在 present、background、interpretations 或任何下发给 Writer 的字段中。
+
+冻结输入：
+${JSON.stringify(buildStudentContentBriefPlannerInput(input))}
+
+只返回合法 JSON，字段必须是：
+{"mainFocus":"...","present":[{"content":"...","evidenceRefs":["..."]}],"background":[{"content":"...","evidenceRefs":["..."]}],"interpretations":[{"content":"...","evidenceRefs":["..."],"confidence":"high|medium|low"}],"contextOnly":[{"content":"...","reason":"..."}],"omit":[{"evidenceRefs":["..."],"reason":"..."}],"communicationIntent":"...","unresolved":[]}
+
+不要输出家长称呼、成稿段落或固定模板。`;
+}
+
+function studentContentBriefWriterPrompt(writerInput: StudentContentBriefWriterInput) {
+  return `你是 Student Track 的反馈 Writer。请根据已经规划好的允许披露内容，写一条自然、像老师真实发微信给家长的反馈。
+
+Writer 只能读取下面的受限输入。不要猜测或补充事实，不要重新读取证据，不要提到 Planner、ContentBrief、模型或内部字段。不要使用固定“总体表现—数据—问题—建议”模板，也不要为了完整而强行加入没有规划的表扬、建议、趋势或历史。
+
+受限输入：
+${JSON.stringify(writerInput)}
+
+只返回合法 JSON：{"feedback":"可发送文本"}。`;
+}
+
+function studentContentBriefComposition(
+  input: StudentContentBriefGenerationInput,
+  candidateText: string,
+): FeedbackCompositionPlan {
+  const composition = sanitizeFeedbackComposition({
+    version: 1,
+    closureType: input.generationPreferences?.closureType ?? FEEDBACK_CLOSURES_BY_TYPE[input.planType][0],
+    needParentAction: false,
+    parentAction: null,
+    modules: [],
+    evidenceCoverage: [],
+    draftFeedback: candidateText,
+  });
+  if (!composition.draftFeedback.trim()) {
+    throw new ApiError("反馈 Writer 未返回可展示正文", 502, "llm_schema_invalid", true);
+  }
+  return composition;
+}
+
+export async function generateStudentContentBriefFeedback(
+  input: StudentContentBriefGenerationInput,
+): Promise<StudentContentBriefGenerationResult> {
+  let checkpoint = input.checkpoint ?? null;
+  let planner: StudentContentBriefGenerationResult["planner"];
+  if (checkpoint) {
+    planner = { ...checkpoint.plannerTrace, reusedCheckpoint: true };
+  } else {
+    const startedAt = performance.now();
+    let usage = emptyUsage();
+    let plannerAttempts = 0;
+    let contentBrief: ContentBrief | null = null;
+    let plannerFailure: unknown = new ApiError("Planner ContentBrief 无效", 502, "llm_schema_invalid", true);
+    const basePrompt = studentContentBriefPlannerPrompt(input);
+    for (let attempt = 1; attempt <= 2 && !contentBrief; attempt += 1) {
+      plannerAttempts = attempt;
+      const prompt = attempt === 1
+        ? basePrompt
+        : `${basePrompt}\n\n上一轮 ContentBrief 无效：${plannerFailure instanceof Error ? plannerFailure.message : "字段或 evidenceRef 不符合协议"}。请从同一份冻结输入重新规划，严格使用真实 evidenceRef；不要静默删除含未知引用的内容，直接返回修正后的完整 JSON。`;
+      const response = await createJsonCompletion({
+        client: input.plannerClient,
+        role: "feedbackDraft",
+        profileId: input.plannerProfileId,
+        model: input.plannerModel,
+        prompt,
+        maxTokens: CONTENT_BRIEF_MAX_TOKENS,
+        signal: input.signal,
+      });
+      usage = mergeUsage(usage, response.usage);
+      try {
+        contentBrief = parseContentBrief(response.content, input.evidenceBundle);
+      } catch (error) {
+        plannerFailure = error;
+      }
+    }
+    if (!contentBrief) throw plannerFailure;
+    const writerInput = buildStudentContentBriefWriterInput(input, contentBrief);
+    const plannerTrace = restrictedGenerationStageTraceSchema.parse({
+      model: input.plannerModel,
+      attempts: plannerAttempts,
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      usage,
+    });
+    checkpoint = RestrictedFeedbackCheckpointV2Schema.parse({
+      version: 2,
+      contentBrief,
+      writerInput,
+      plannerTrace,
+    });
+    planner = { ...plannerTrace, reusedCheckpoint: false };
+    await input.onCheckpoint?.(checkpoint);
+  }
+
+  const writerStartedAt = performance.now();
+  const writerResponse = await createJsonCompletion({
+    client: input.writerClient,
+    role: "feedbackReview",
+    profileId: input.writerProfileId,
+    model: input.writerModel,
+    prompt: studentContentBriefWriterPrompt(checkpoint.writerInput),
+    maxTokens: CONTENT_BRIEF_MAX_TOKENS,
+    signal: input.signal,
+  });
+  const candidateText = parseWriterFeedback(writerResponse.content);
+  const composition = studentContentBriefComposition(input, candidateText);
+  return {
+    contentBrief: checkpoint.contentBrief,
+    writerInput: checkpoint.writerInput,
+    composition: normalizeCompositionDates(composition, input.referenceDate),
+    planner,
+    writer: {
+      model: input.writerModel,
+      attempts: 1,
+      durationMs: Math.max(0, Math.round(performance.now() - writerStartedAt)),
+      usage: writerResponse.usage,
+    },
+  };
 }
 
 interface RestrictedDisclosureSource {

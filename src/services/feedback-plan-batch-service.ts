@@ -22,6 +22,7 @@ import {
 } from "@/lib/feedback-plan-batch";
 import {
   FeedbackPlanInputSnapshotSchema,
+  FeedbackAuditSnapshotSchema,
   FeedbackPlanItemGenerationConfigSchema,
   FeedbackPlanAssessmentEvidenceSchema,
   normalizeFeedbackGenerationPreferences,
@@ -121,6 +122,7 @@ const batchInclude = {
           studentId: true,
           generationConfigSnapshot: true,
           generationExecutionSnapshot: true,
+          auditSnapshot: true,
           student: { select: { id: true, name: true, studentId: true } },
         },
       },
@@ -159,7 +161,7 @@ export function toFeedbackPlanBatchView<T extends {
     type: string;
     inputSnapshot: string;
     generationApproach?: unknown;
-    items: Array<{ id: string; status: string; generationConfigSnapshot?: string; generationExecutionSnapshot?: string }>;
+    items: Array<{ id: string; status: string; generationConfigSnapshot?: string; generationExecutionSnapshot?: string; auditSnapshot?: string }>;
   }>;
   exportRuns: Array<{ itemManifest: string }>;
 }>(batch: T) {
@@ -203,6 +205,16 @@ export function toFeedbackPlanBatchView<T extends {
         generationExecution: generationExecutionSnapshot === undefined
           ? undefined
           : feedbackGenerationExecutionPublicView(generationExecutionSnapshot),
+        audit: item.auditSnapshot === undefined
+          ? undefined
+          : (() => {
+              try {
+                const parsed = FeedbackAuditSnapshotSchema.safeParse(JSON.parse(item.auditSnapshot));
+                return parsed.success ? parsed.data : null;
+              } catch {
+                return null;
+              }
+            })(),
       }; }),
       progress: {
         ...progress,

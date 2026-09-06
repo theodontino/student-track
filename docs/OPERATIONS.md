@@ -41,7 +41,7 @@ GitHub Actions 的 **Build Windows Core offline package** 继续保留给临时�
 
 ```powershell
 $installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.5/Install-StudentTrackCore.ps1" -OutFile $installer
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.6/Install-StudentTrackCore.ps1" -OutFile $installer
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 ```
 
@@ -432,6 +432,8 @@ Student Track 不管理或删除 LM Studio 自身日志。LM Studio 的开发日
 升级到 1.3.0-beta.4 后运行 `npx prisma migrate deploy`。本次不删除字段或重建表，只把可以同时证明从未进入生成阶段、没有 GenerationRecord、执行快照、正文、批准或导出痕迹的历史顶层 `ready` Plan 改为 `draft`；Batch 只有在全部子 Plan 都满足时才同步改为 `draft`。`FeedbackIntakeRun.planId`、历史 `generationMode`、稳定 ID、正文、批准、导出和生成记录均保留原值。升级既有数据库前仍须先备份并校验。
 
 升级到 1.3.0-beta.5 后运行 `npx prisma migrate deploy`。本次将 `SessionMetric` 与 `SessionMetricHistory` 的 A 分改为 SQLite `REAL`，既有整数会等值保留，B/C/D、课次关系、操作人和历史记录不变；升级既有数据库前仍须先备份并校验。
+
+升级到 1.3.0-beta.6 后运行 `npx prisma migrate deploy` 以确认数据库已追平；本次不新增 migration。学生受限反馈的执行 checkpoint 在现有版本化快照容器内从 V1 重新建立为 V2，不重写历史计划、正文、批准、导出或生成记录。
 
 ## 发布与封档
 

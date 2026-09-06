@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FeedbackEvidenceBundle } from "@/lib/feedback-plan";
 import {
+  buildStudentContentBriefWriterInput,
   buildRestrictedWriterInput,
   compileRestrictedComposition,
+  generateStudentContentBriefFeedback,
   generateRestrictedFeedback,
+  RestrictedFeedbackCheckpointV2Schema,
   validateFeedbackStrategy,
+  type ContentBrief,
   type FeedbackStrategyV1,
   type RestrictedFeedbackCheckpointV1,
 } from "@/services/restricted-feedback-generation-service";
@@ -486,5 +490,154 @@ describe("restricted feedback generation", () => {
       checkpoint: checkpoint(),
     })).rejects.toThrow("未返回合法 JSON");
     expect(invalidCreate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("student restricted ContentBrief generation", () => {
+  const lessonMaterial = {
+    version: 1 as const,
+    groupFeedbackRaw: "",
+    assessmentBriefRaw: "",
+    lessonTitle: "合成课程",
+    classroomContent: [],
+    classroomFocus: [],
+    classroomExplanation: [],
+    homework: [],
+    assessmentFocus: [],
+    correctionAdvice: [],
+    otherNotes: [],
+  };
+  const largeAssessment = [
+    "本次出门测总正确率 62%",
+    "同期均值 78%",
+    "知识点 A：离子反应",
+    "知识点 B：氧化还原",
+    "知识点 C：物质的量",
+    "第 1 题错误",
+    "第 2 题错误",
+    "第 3 题错误",
+  ].join("；");
+  const contentBrief: ContentBrief = {
+    mainFocus: "说明本次出门测",
+    present: [{ content: "出门测正确率 62%", evidenceRefs: ["assessment-large"] }],
+    background: [{ content: "本次练习用于检查离子反应", evidenceRefs: ["fact-1"] }],
+    interpretations: [{ content: "离子反应仍需巩固", evidenceRefs: ["assessment-large"], confidence: "high" }],
+    contextOnly: [{ content: "同期均值只供判断", reason: "本次不对家长展开" }],
+    omit: [{ evidenceRefs: ["communication-secret"], reason: "原始沟通不下发" }],
+    communicationIntent: "简短说明表现并保持积极",
+    unresolved: ["后续表现待观察"],
+  };
+  const studentEvidence: FeedbackEvidenceBundle = {
+    ...evidence,
+    assessmentEvidence: [{
+      id: "assessment-large",
+      kind: "fact",
+      content: largeAssessment,
+      sourceRefs: [{ type: "assessment", id: "test-assessment" }],
+      confirmed: true,
+    }],
+  };
+  const studentInput = {
+    ...generationInput,
+    lessonMaterial,
+    communicationPreference: null,
+    evidenceBundle: studentEvidence,
+  };
+
+  it("Writer 只接收 Planner 整理后的 ContentBrief，不接收原始事实和教师要求", async () => {
+    const planner = clientWith(contentBrief);
+    const writer = clientWith({ feedback: "这次出门测正确率为62%，离子反应还需要继续巩固。" });
+
+    const result = await generateStudentContentBriefFeedback({
+      ...studentInput,
+      plannerClient: planner.client,
+      writerClient: writer.client,
+    });
+
+    const plannerPrompt = planner.create.mock.calls[0]![0].messages[0].content as string;
+    const writerPrompt = writer.create.mock.calls[0]![0].messages[0].content as string;
+    expect(plannerPrompt).toContain(largeAssessment);
+    expect(plannerPrompt).toContain(generationInput.outputRequirement);
+    expect(writerPrompt).toContain("出门测正确率 62%");
+    expect(writerPrompt).toContain("离子反应仍需巩固");
+    expect(writerPrompt).not.toContain(largeAssessment);
+    expect(writerPrompt).not.toContain("同期均值 78%");
+    expect(writerPrompt).not.toContain("知识点 B");
+    expect(writerPrompt).not.toContain("第 1 题错误");
+    expect(writerPrompt).not.toContain(generationInput.outputRequirement);
+    expect(writerPrompt).not.toContain("communication-secret");
+    expect(writerPrompt).not.toContain("contextOnly");
+    expect(writerPrompt).not.toContain("omit");
+    expect(writerPrompt).not.toContain("unresolved");
+    expect(result.composition).toMatchObject({
+      modules: [],
+      evidenceCoverage: [],
+      draftFeedback: "这次出门测正确率为62%，离子反应还需要继续巩固。",
+    });
+  });
+
+  it("Planner 未知 evidenceRef 只修正一次，第二次仍无效则失败", async () => {
+    const invalidBrief = {
+      ...contentBrief,
+      present: [{ content: "不存在的事实", evidenceRefs: ["missing-evidence"] }],
+    };
+    const planner = clientWith(invalidBrief, invalidBrief);
+    const writer = clientWith({ feedback: "不应调用" });
+
+    await expect(generateStudentContentBriefFeedback({
+      ...studentInput,
+      plannerClient: planner.client,
+      writerClient: writer.client,
+    })).rejects.toThrow("未知 evidenceRef");
+    expect(planner.create).toHaveBeenCalledTimes(2);
+    expect(writer.create).not.toHaveBeenCalled();
+  });
+
+  it("Writer 返回 JSON 或普通正文时都保留非空 candidate", async () => {
+    const checkpoint = RestrictedFeedbackCheckpointV2Schema.parse({
+      version: 2,
+      contentBrief,
+      writerInput: buildStudentContentBriefWriterInput(studentInput as any, contentBrief),
+      plannerTrace: {
+        model: "planner-model",
+        attempts: 1,
+        durationMs: 7,
+        usage: { inputTokens: 2, outputTokens: 2, reasoningTokens: null, totalTokens: 4 },
+      },
+    });
+    const jsonWriter = clientWith({ feedback: "JSON 正文" });
+    const jsonResult = await generateStudentContentBriefFeedback({
+      ...studentInput,
+      plannerClient: clientWith().client,
+      writerClient: jsonWriter.client,
+      checkpoint,
+    });
+    expect(jsonResult.composition.draftFeedback).toBe("JSON 正文");
+    expect(jsonResult.planner).toMatchObject({ model: "planner-model", reusedCheckpoint: true });
+
+    const rawCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "普通正文也应保存" } }],
+      usage: { prompt_tokens: 3, completion_tokens: 3, total_tokens: 6 },
+    });
+    const rawResult = await generateStudentContentBriefFeedback({
+      ...studentInput,
+      plannerClient: clientWith().client,
+      writerClient: { chat: { completions: { create: rawCreate } } } as any,
+      checkpoint,
+    });
+    expect(rawResult.composition.draftFeedback).toBe("普通正文也应保存");
+  });
+
+  it("Writer 没有任何非空正文时才失败", async () => {
+    const planner = clientWith(contentBrief);
+    const emptyCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "" } }],
+      usage: { prompt_tokens: 3, completion_tokens: 0, total_tokens: 3 },
+    });
+    await expect(generateStudentContentBriefFeedback({
+      ...studentInput,
+      plannerClient: planner.client,
+      writerClient: { chat: { completions: { create: emptyCreate } } } as any,
+    })).rejects.toThrow("未返回有效 JSON");
   });
 });
