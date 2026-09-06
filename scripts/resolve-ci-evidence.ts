@@ -73,6 +73,19 @@ function isAncestor(ancestorSha: string, headSha: string) {
   }).status === 0;
 }
 
+function ancestorCommits(revision: string) {
+  try {
+    return execFileSync("git", ["rev-list", "--max-count=100", revision], {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .map((value) => value.trim())
+      .filter((value) => SHA_PATTERN.test(value));
+  } catch {
+    return [];
+  }
+}
+
 function readEvent(): GithubEvent {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) return {};
@@ -200,23 +213,26 @@ async function main() {
   }
 
   try {
-    const checks = await listCheckRuns(evidenceRefSha);
-    const markers = checks
-      .map(markerFromCheck)
-      .filter((marker): marker is EvidenceMarker => Boolean(marker))
-      .filter((marker) => isAncestor(marker.productSha, context.headSha))
-      .filter((marker) => (
-        context.eventName !== "pull_request"
-        || evidenceRefSha === context.baseSha
-        || marker.baseSha === context.baseSha
-      ))
-      .sort((left, right) => right.completedAt.localeCompare(left.completedAt));
     let marker: EvidenceMarker | undefined;
-    for (const candidate of markers) {
-      if (await isTrustedWorkflowRun(candidate, evidenceRefSha)) {
-        marker = candidate;
-        break;
+    for (const candidateRefSha of ancestorCommits(evidenceRefSha)) {
+      const checks = await listCheckRuns(candidateRefSha);
+      const markers = checks
+        .map(markerFromCheck)
+        .filter((candidate): candidate is EvidenceMarker => Boolean(candidate))
+        .filter((candidate) => isAncestor(candidate.productSha, context.headSha))
+        .filter((candidate) => (
+          context.eventName !== "pull_request"
+          || evidenceRefSha === context.baseSha
+          || candidate.baseSha === context.baseSha
+        ))
+        .sort((left, right) => right.completedAt.localeCompare(left.completedAt));
+      for (const candidate of markers) {
+        if (await isTrustedWorkflowRun(candidate, candidateRefSha)) {
+          marker = candidate;
+          break;
+        }
       }
+      if (marker) break;
     }
     if (marker) {
       result.evidence_found = true;
