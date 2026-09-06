@@ -6,6 +6,15 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.3.0-beta.6",
+    title: "受限反馈恢复 ContentBrief 生成链路",
+    changes: [
+      "学生受限反馈恢复为 Planner 阅读冻结事实后输出 ContentBrief，Writer 只根据该简报写成自然反馈，不再回填完整测评、原始沟通或教师原始要求。",
+      "模型已写出非空候选正文即视为生成完成；自动核验有问题时仍保留正文、生成记录和教师编辑入口，但继续禁止批准与导出。",
+      "学生反馈暂停后可从 V2 ContentBrief checkpoint 继续而不重跑 Planner；班级公共反馈保持原有 V1 路线，自由反馈和既有运行时调度不变。",
+    ],
+  },
+  {
     version: "1.3.0-beta.5",
     title: "课堂材料导入与冲突确认修复",
     changes: [

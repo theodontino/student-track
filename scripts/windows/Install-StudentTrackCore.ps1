@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$ReleaseTag = "v1.3.0-beta.5",
+    [string]$ReleaseTag = "v1.3.0-beta.6",
     [switch]$NoDesktopShortcut
 )
 
