@@ -1,4 +1,4 @@
-import { normalizeDimensionScore } from "@/config/rules";
+import { normalizeDimensionScore, normalizeScoreA } from "@/config/rules";
 import { prisma } from "@/lib/prisma";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
@@ -27,8 +27,8 @@ export interface SubmitQuickScoresInput {
   attendances?: QuickAttendanceEntry[];
 }
 
-function normalizeScore(value: unknown) {
-  const score = normalizeDimensionScore(value);
+function normalizeScore(value: unknown, dimension: "A" | "B" | "C") {
+  const score = dimension === "A" ? normalizeScoreA(value) : normalizeDimensionScore(value);
   if (score === null) throw new ServiceError("评分必须是有效数字", 400);
   return score;
 }
@@ -90,9 +90,9 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
 
     for (const entry of input.scores) {
       if (!session && !entry.date) throw new ServiceError("无课次评分必须提供日期", 400);
-      const scoreA = normalizeScore(entry.scoreA);
-      const scoreB = normalizeScore(entry.scoreB);
-      const scoreC = normalizeScore(entry.scoreC);
+      const scoreA = normalizeScore(entry.scoreA, "A");
+      const scoreB = normalizeScore(entry.scoreB, "B");
+      const scoreC = normalizeScore(entry.scoreC, "C");
       const metricDate = session?.date ?? entry.date!;
 
       if (session) {

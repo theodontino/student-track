@@ -15,7 +15,11 @@ import {
   createFeedbackGroupIntake,
   prepareFeedbackGroupIntakeFromExistingFacts,
 } from "@/services/feedback-group-intake-service";
-import { resolveFeedbackIntakeRun, type IntakeFile } from "@/services/feedback-intake-service";
+import {
+  createOrGetFeedbackIntakeRun,
+  resolveFeedbackIntakeRun,
+  type IntakeFile,
+} from "@/services/feedback-intake-service";
 import {
   createClassGroup,
   createGroupLesson,
@@ -57,7 +61,7 @@ function assistantWorkbook() {
   const sheet = XLSX.utils.aoa_to_sheet([
     ["日期", "2099-05-01", "课次", "1"],
     ["姓名", "听课证号", "班级编号", "班级名称", "课堂纪律", "课后作业", "出门测"],
-    ["合成甲", `${marker}-A`, `${marker}-01`, "合成一班", 5, 4, 5],
+    ["合成甲", `${marker}-A`, `${marker}-01`, "合成一班", 5, 4, 4],
     ["合成乙", `${marker}-B`, `${marker}-02`, "合成二班", 4, 5, 4],
   ]);
   XLSX.utils.book_append_sheet(workbook, sheet, "课堂");
@@ -139,18 +143,35 @@ beforeAll(async () => {
   await prisma.classGroupMembership.deleteMany({ where: { classId: secondClassId } });
 });
 
-beforeEach(() => {
-  assessmentMocks.parseAssessmentPdf.mockReset().mockImplementation(async (_buffer: ArrayBuffer, fileName: string) => {
+beforeEach(async () => {
+  await prisma.feedbackIntakeRun.deleteMany({ where: { sessionCode: { in: sessionCodes } } });
+  await prisma.sessionMetric.deleteMany({ where: { sessionId: { in: [firstSessionId, secondSessionId] } } });
+  assessmentMocks.parseAssessmentPdf.mockReset().mockImplementation(async (buffer: ArrayBuffer, fileName: string) => {
+    const sourceText = new TextDecoder().decode(buffer);
+    const fileEvidence = {
+      ...evidence,
+      ...(fileName.includes("81") || sourceText.includes("rate-81") ? { correctRate: 81 } : {}),
+      ...(fileName.includes("82") || sourceText.includes("rate-82") ? { correctRate: 82 } : {}),
+      ...(fileName.includes("83") || sourceText.includes("rate-83") ? { correctRate: 83 } : {}),
+      ...(fileName.includes("no-date") ? { reportDate: "" } : {}),
+      ...(fileName.includes("wrong-date") ? { reportDate: "2099-05-02" } : {}),
+    };
     if (fileName.includes("合成甲")) {
-      return { reportStudentName: "合成甲", reportStudentId: `${marker}-A`, evidence };
+      return { reportStudentName: "合成甲", reportStudentId: `${marker}-A`, evidence: fileEvidence };
     }
     if (fileName.includes("合成乙")) {
-      return { reportStudentName: "合成乙", reportStudentId: `${marker}-B`, evidence };
+      return { reportStudentName: "合成乙", reportStudentId: `${marker}-B`, evidence: fileEvidence };
+    }
+    if (sourceText.includes("same-name-a")) {
+      return { reportStudentName: "同名学生", reportStudentId: `${marker}-SAME-A`, evidence: fileEvidence };
+    }
+    if (sourceText.includes("same-name-c")) {
+      return { reportStudentName: "同名学生", reportStudentId: `${marker}-SAME-C`, evidence: fileEvidence };
     }
     if (fileName.includes("同名")) {
       return { reportStudentName: "同名学生", reportStudentId: "", evidence };
     }
-    return { reportStudentName: "未归属学生", reportStudentId: `${marker}-UNKNOWN`, evidence };
+    return { reportStudentName: "未归属学生", reportStudentId: `${marker}-UNKNOWN`, evidence: fileEvidence };
   });
 });
 
@@ -164,6 +185,640 @@ afterAll(async () => {
 });
 
 describe("feedback group intake service", () => {
+  it("lets the teacher adopt a conflicting decimal PDF A while preserving existing B/C", async () => {
+    await prisma.sessionMetric.upsert({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+      create: {
+        studentId: firstUniqueStudentId,
+        sessionId: firstSessionId,
+        date: "2099-05-01",
+        scoreA: 2,
+        scoreB: 4,
+        scoreC: 2,
+        scoreD: 3,
+        operator: "system",
+      },
+      update: {
+        scoreA: 2,
+        scoreB: 4,
+        scoreC: 2,
+        operator: "system",
+      },
+    });
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-83.pdf", "%PDF decimal-score")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const conflict = run.issues.find((item) => item.code === "score_conflict");
+    expect(conflict?.scoreConflict).toMatchObject({
+      studentId: `${marker}-A`,
+      dimension: "A",
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ sourceKind: "current_metric", score: 2 }),
+        expect.objectContaining({ sourceKind: "assessment_pdf", score: 4.2 }),
+      ]),
+    });
+    await expect(resolveFeedbackIntakeRun(run.id, { action: "confirm", decisions: [] }, prisma))
+      .rejects.toThrow("材料异常未处理");
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: conflict!.id, action: "use_score_candidate", candidateId: "missing-candidate" }],
+    }, prisma)).rejects.toThrow("材料异常未处理");
+    const pdfCandidate = conflict!.scoreConflict!.candidates.find((candidate) => candidate.sourceKind === "assessment_pdf")!;
+
+    await resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: conflict!.id, action: "use_score_candidate", candidateId: pdfCandidate.id }],
+    }, prisma);
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4.2, scoreB: 4, scoreC: 2 });
+  });
+
+  it("shows a score conflict during inspection even when the PDF date needs acceptance", async () => {
+    await prisma.sessionMetric.create({
+      data: {
+        studentId: firstUniqueStudentId,
+        sessionId: firstSessionId,
+        date: "2099-05-01",
+        scoreA: 2,
+        scoreB: 4,
+        scoreC: 2,
+        scoreD: 3,
+        operator: "teacher",
+      },
+    });
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-83-wrong-date.pdf", "%PDF wrong-date")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const dateIssue = run.issues.find((item) => item.code === "assessment_date_mismatch")!;
+    const conflict = run.issues.find((item) => item.code === "score_conflict")!;
+    expect(dateIssue).toBeTruthy();
+    expect(conflict.scoreConflict?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceKind: "current_metric", score: 2 }),
+      expect.objectContaining({ sourceKind: "assessment_pdf", score: 4.2 }),
+    ]));
+
+    const acceptDate = { issueId: dateIssue.id, action: "accept_source" as const, sourceName: dateIssue.sourceName };
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [acceptDate],
+    }, prisma)).resolves.toMatchObject({
+      status: "needs_review",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ code: "score_conflict" }),
+      ]),
+    });
+
+    const pdfCandidate = conflict.scoreConflict!.candidates.find((candidate) => candidate.sourceKind === "assessment_pdf")!;
+    const confirmed = await resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [
+        acceptDate,
+        { issueId: conflict.id, action: "use_score_candidate", candidateId: pdfCandidate.id },
+      ],
+    }, prisma);
+    expect(confirmed).toMatchObject({ status: "applied" });
+    expect(confirmed.appliedSummary.assessmentEvidence).toMatchObject({
+      [firstUniqueStudentId]: { correctRate: 83 },
+    });
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4.2, scoreB: 4, scoreC: 2 });
+  });
+
+  it("clears a dynamically discovered score conflict when an accepted source is changed to ignore", async () => {
+    await prisma.sessionMetric.create({
+      data: {
+        studentId: firstUniqueStudentId,
+        sessionId: firstSessionId,
+        date: "2099-05-01",
+        scoreA: 2,
+        scoreB: 4,
+        scoreC: 2,
+        scoreD: 3,
+        operator: "teacher",
+      },
+    });
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-83-wrong-date.pdf", "%PDF legacy-boundary-preview")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const dateIssue = run.issues.find((item) => item.code === "assessment_date_mismatch")!;
+    await prisma.feedbackIntakeRun.update({
+      where: { id: run.id },
+      data: { issues: JSON.stringify([dateIssue]) },
+    });
+
+    const reviewed = await resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: dateIssue.id, action: "accept_source", sourceName: dateIssue.sourceName }],
+    }, prisma);
+    expect(reviewed.status).toBe("needs_review");
+    expect(reviewed.issues).toContainEqual(expect.objectContaining({ code: "score_conflict" }));
+
+    const confirmed = await resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: dateIssue.id, action: "ignore_source", sourceName: dateIssue.sourceName }],
+    }, prisma);
+    expect(confirmed.status).toBe("applied");
+    expect(confirmed.issues).not.toContainEqual(expect.objectContaining({ code: "score_conflict" }));
+    expect(confirmed.appliedSummary.assessmentEvidence).toEqual({});
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 2, scoreB: 4, scoreC: 2 });
+  });
+
+  it("can skip writing a conflicting A without discarding PDF evidence", async () => {
+    await prisma.sessionMetric.upsert({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+      create: {
+        studentId: firstUniqueStudentId,
+        sessionId: firstSessionId,
+        date: "2099-05-01",
+        scoreA: 4.8,
+        scoreB: 4,
+        scoreC: 2,
+        scoreD: 3,
+        operator: "teacher",
+      },
+      update: {
+        scoreA: 4.8,
+        scoreB: 4,
+        scoreC: 2,
+        operator: "teacher",
+      },
+    });
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-83.pdf", "%PDF lower-authority-score")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const conflict = run.issues.find((item) => item.code === "score_conflict")!;
+    expect(conflict.scoreConflict?.candidates).toContainEqual(expect.objectContaining({ sourceKind: "current_metric", score: 4.8 }));
+    const confirmed = await resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: conflict.id, action: "skip_score" }],
+    }, prisma);
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4.8, scoreB: 4, scoreC: 2, operator: "teacher" });
+    expect(confirmed.appliedSummary.assessmentEvidence).toHaveProperty(firstUniqueStudentId);
+  });
+
+  it("keeps a uniquely matched automatic score when the PDF report date is missing", async () => {
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-no-date.pdf", "%PDF missing-date")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    expect(run.issues).toContainEqual(expect.objectContaining({ code: "assessment_date_missing" }));
+    const parsedResult = run.appliedSummary.parsedResult as { students?: Array<{ studentId?: string; scores?: Record<string, number | null> }> } | undefined;
+    expect(parsedResult?.students?.find((student) => student.studentId === `${marker}-A`)?.scores?.A).toBe(4);
+  });
+
+  it("creates a PDF-only metric with neutral B/C defaults", async () => {
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-83.pdf", "%PDF pdf-only")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    await expect(resolveFeedbackIntakeRun(run.id, { action: "confirm", decisions: [] }, prisma))
+      .resolves.toMatchObject({ status: "applied" });
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4.2, scoreB: 3, scoreC: 3 });
+  });
+
+  it("does not create a conflict when the current and PDF A values are equal", async () => {
+    await prisma.sessionMetric.create({
+      data: {
+        studentId: firstUniqueStudentId,
+        sessionId: firstSessionId,
+        date: "2099-05-01",
+        scoreA: 4,
+        scoreB: 5,
+        scoreC: 2,
+        scoreD: 3,
+        operator: "teacher",
+      },
+    });
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-80.pdf", "%PDF same-score")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    expect(run.issues).not.toContainEqual(expect.objectContaining({ code: "score_conflict" }));
+    await expect(resolveFeedbackIntakeRun(run.id, { action: "confirm", decisions: [] }, prisma))
+      .resolves.toMatchObject({ status: "applied" });
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4, scoreB: 5, scoreC: 2 });
+  });
+
+  it("rejects a saved score choice when the current metric changed during review", async () => {
+    await prisma.sessionMetric.create({
+      data: {
+        studentId: firstUniqueStudentId,
+        sessionId: firstSessionId,
+        date: "2099-05-01",
+        scoreA: 2,
+        scoreB: 4,
+        scoreC: 2,
+        scoreD: 3,
+        operator: "teacher",
+      },
+    });
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲-83.pdf", "%PDF stale-score")],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const conflict = run.issues.find((item) => item.code === "score_conflict")!;
+    const pdfCandidate = conflict.scoreConflict!.candidates.find((candidate) => candidate.sourceKind === "assessment_pdf")!;
+    await prisma.sessionMetric.update({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+      data: { scoreA: 4.8 },
+    });
+
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: conflict.id, action: "use_score_candidate", candidateId: pdfCandidate.id }],
+    }, prisma)).rejects.toThrow("核对期间已变化");
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4.8, scoreB: 4, scoreC: 2, scoreD: 3 });
+  });
+
+  it("routes differing assistant and PDF A values to one structured conflict", async () => {
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [
+        intakeFile("冲突助教表.xlsx", assistantWorkbook()),
+        intakeFile("合成甲-83-冲突.pdf", "%PDF conflicting-score"),
+      ],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const conflict = run.issues.find((item) => item.code === "score_conflict")!;
+    expect(conflict.scoreConflict).toMatchObject({
+      studentId: `${marker}-A`,
+      dimension: "A",
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ sourceKind: "assistant_roster", score: 4 }),
+        expect.objectContaining({ sourceKind: "assessment_pdf", score: 4.2 }),
+      ]),
+    });
+    expect(conflict.scoreConflict!.candidates.some((candidate) => candidate.sourceKind === "current_metric")).toBe(false);
+    const parsedResult = run.appliedSummary.parsedResult as { students?: Array<{ studentId?: string; scores?: Record<string, number | null> }> } | undefined;
+    expect(parsedResult?.students?.find((student) => student.studentId === `${marker}-A`)?.scores).toEqual({
+      A: null,
+      B: 5,
+      C: 4,
+    });
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: conflict.id, action: "skip_score" }],
+    }, prisma)).rejects.toThrow("材料异常未处理");
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toBeNull();
+    const assistantCandidate = conflict.scoreConflict!.candidates.find((candidate) => candidate.sourceKind === "assistant_roster")!;
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: conflict.id, action: "use_score_candidate", candidateId: assistantCandidate.id }],
+    }, prisma))
+      .resolves.toMatchObject({ status: "applied" });
+  });
+
+  it("keeps same-named students' score conflicts independently addressable", async () => {
+    const peer = await prisma.student.create({
+      data: {
+        name: "同名学生",
+        studentId: `${marker}-SAME-C`,
+        gender: "男",
+        enrollments: { create: { semesterId, classId: firstClassId } },
+      },
+    });
+    try {
+      await prisma.sessionMetric.createMany({
+        data: [firstSameNameStudentId, peer.id].map((studentId) => ({
+          studentId,
+          sessionId: firstSessionId,
+          date: "2099-05-01",
+          scoreA: 2,
+          scoreB: 3,
+          scoreC: 3,
+          scoreD: 3,
+          operator: "teacher",
+        })),
+      });
+      const created = await createOrGetFeedbackIntakeRun({
+        sessionCode: sessionCodes[0],
+        files: [
+          intakeFile("同名评分-83.pdf", "%PDF same-name-a"),
+          intakeFile("同名评分-83.pdf", "%PDF same-name-c"),
+        ],
+        db: prisma,
+      });
+      const conflicts = created.run.issues.filter((item) => item.code === "score_conflict");
+      expect(conflicts).toHaveLength(2);
+      expect(new Set(conflicts.map((item) => item.id)).size).toBe(2);
+      expect(new Set(conflicts.map((item) => item.scoreConflict?.studentId))).toEqual(new Set([
+        `${marker}-SAME-A`,
+        `${marker}-SAME-C`,
+      ]));
+
+      const decisions = conflicts.map((conflict) => {
+        const sourceKind = conflict.scoreConflict!.studentId === `${marker}-SAME-A`
+          ? "assessment_pdf"
+          : "current_metric";
+        const selected = conflict.scoreConflict!.candidates.find((candidate) => candidate.sourceKind === sourceKind)!;
+        return { issueId: conflict.id, action: "use_score_candidate" as const, candidateId: selected.id };
+      });
+      await expect(resolveFeedbackIntakeRun(created.run.id, {
+        action: "confirm",
+        decisions,
+      }, prisma)).resolves.toMatchObject({ status: "applied" });
+      await expect(prisma.sessionMetric.findUnique({
+        where: { studentId_sessionId: { studentId: firstSameNameStudentId, sessionId: firstSessionId } },
+      })).resolves.toMatchObject({ scoreA: 4.2 });
+      await expect(prisma.sessionMetric.findUnique({
+        where: { studentId_sessionId: { studentId: peer.id, sessionId: firstSessionId } },
+      })).resolves.toMatchObject({ scoreA: 2 });
+    } finally {
+      await prisma.student.delete({ where: { id: peer.id } });
+    }
+  });
+
+  it("requires a choice when two PDF files produce different A values", async () => {
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [
+        intakeFile("合成甲-80.pdf", "%PDF first-assessment"),
+        intakeFile("合成甲-83.pdf", "%PDF second-assessment"),
+      ],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const duplicate = run.issues.find((item) => item.code === "assessment_duplicate")!;
+    const conflict = run.issues.find((item) => item.code === "score_conflict")!;
+    expect(duplicate.assessmentDuplicate?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceName: "合成甲-80.pdf", scoreA: 4 }),
+      expect.objectContaining({ sourceName: "合成甲-83.pdf", scoreA: 4.2 }),
+    ]));
+    expect(conflict.scoreConflict?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceName: "合成甲-80.pdf", score: 4 }),
+      expect.objectContaining({ sourceName: "合成甲-83.pdf", score: 4.2 }),
+    ]));
+    const parsedResult = run.appliedSummary.parsedResult as { students?: Array<{ studentId?: string; scores?: Record<string, number | null> }> } | undefined;
+    expect(parsedResult?.students?.find((student) => student.studentId === `${marker}-A`)?.scores?.A).toBeNull();
+    const firstPdf = conflict.scoreConflict!.candidates.find((candidate) => candidate.sourceName === "合成甲-80.pdf")!;
+    const secondPdf = conflict.scoreConflict!.candidates.find((candidate) => candidate.sourceName === "合成甲-83.pdf")!;
+    const firstEvidence = duplicate.assessmentDuplicate!.candidates.find((candidate) => candidate.sourceName === "合成甲-80.pdf")!;
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [
+        { issueId: duplicate.id, action: "select_pdf", studentId: duplicate.assessmentDuplicate!.studentId, sourceName: firstEvidence.sourceName, candidateId: firstEvidence.id },
+        { issueId: conflict.id, action: "use_score_candidate", candidateId: secondPdf.id },
+      ],
+    }, prisma)).rejects.toThrow("材料异常未处理");
+    const confirmed = await resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [
+        { issueId: duplicate.id, action: "select_pdf", studentId: duplicate.assessmentDuplicate!.studentId, sourceName: firstEvidence.sourceName, candidateId: firstEvidence.id },
+        { issueId: conflict.id, action: "use_score_candidate", candidateId: firstPdf.id },
+      ],
+    }, prisma);
+    expect(confirmed.appliedSummary.assessmentEvidence).toMatchObject({
+      [firstUniqueStudentId]: { correctRate: 80 },
+    });
+  });
+
+  it("requires one PDF choice when distinct correct rates round to the same A", async () => {
+    const result = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [
+        intakeFile("合成甲-81.pdf", "%PDF assessment-81"),
+        intakeFile("合成甲-82.pdf", "%PDF assessment-82"),
+      ],
+      db: prisma,
+    });
+    const run = result.runs[0]!;
+    const duplicate = run.issues.find((item) => item.code === "assessment_duplicate")!;
+    expect(duplicate.assessmentDuplicate).toMatchObject({
+      studentId: firstUniqueStudentId,
+      studentName: "合成甲",
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ sourceName: "合成甲-81.pdf", correctRate: 81, scoreA: 4.1 }),
+        expect.objectContaining({ sourceName: "合成甲-82.pdf", correctRate: 82, scoreA: 4.1 }),
+      ]),
+    });
+    expect(run.issues).not.toContainEqual(expect.objectContaining({ code: "score_conflict" }));
+    expect(run.appliedSummary.assessmentEvidence).not.toHaveProperty(firstUniqueStudentId);
+    await expect(resolveFeedbackIntakeRun(run.id, { action: "confirm", decisions: [] }, prisma))
+      .rejects.toThrow("材料异常未处理");
+
+    const selected = duplicate.assessmentDuplicate!.candidates.find((candidate) => candidate.correctRate === 82)!;
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{ issueId: duplicate.id, action: "ignore_source", sourceName: selected.sourceName }],
+    }, prisma)).rejects.toThrow("材料异常未处理");
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{
+        issueId: duplicate.id,
+        action: "select_pdf",
+        studentId: "another-student",
+        sourceName: selected.sourceName,
+        candidateId: selected.id,
+      }],
+    }, prisma)).rejects.toThrow("材料异常未处理");
+    await expect(resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{
+        issueId: duplicate.id,
+        action: "select_pdf",
+        studentId: duplicate.assessmentDuplicate!.studentId,
+        sourceName: selected.sourceName,
+        candidateId: "missing-candidate",
+      }],
+    }, prisma)).rejects.toThrow("材料异常未处理");
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toBeNull();
+    const confirmed = await resolveFeedbackIntakeRun(run.id, {
+      action: "confirm",
+      decisions: [{
+        issueId: duplicate.id,
+        action: "select_pdf",
+        studentId: duplicate.assessmentDuplicate!.studentId,
+        sourceName: selected.sourceName,
+        candidateId: selected.id,
+      }],
+    }, prisma);
+    expect(confirmed.appliedSummary.assessmentEvidence).toMatchObject({
+      [firstUniqueStudentId]: { correctRate: 82 },
+    });
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4.1 });
+  });
+
+  it("persists score and PDF conflicts discovered after binding unresolved reports", async () => {
+    const created = await createOrGetFeedbackIntakeRun({
+      sessionCode: sessionCodes[0],
+      files: [
+        intakeFile("合成助教表.xlsx", assistantWorkbook()),
+        intakeFile("未归属-81.pdf", "%PDF bound-rate-81"),
+        intakeFile("未归属-83.pdf", "%PDF bound-rate-83"),
+      ],
+      db: prisma,
+    });
+    const identityIssues = created.run.issues.filter((item) => item.code === "assessment_student_mismatch");
+    expect(identityIssues).toHaveLength(2);
+    expect(created.run.issues).not.toContainEqual(expect.objectContaining({ code: "assessment_duplicate" }));
+    expect(created.run.issues).not.toContainEqual(expect.objectContaining({ code: "score_conflict" }));
+
+    const reviewed = await resolveFeedbackIntakeRun(created.run.id, {
+      action: "confirm",
+      decisions: identityIssues.map((item) => ({
+        issueId: item.id,
+        action: "bind_student" as const,
+        studentId: firstUniqueStudentId,
+        sourceName: item.sourceName,
+      })),
+    }, prisma);
+    expect(reviewed.status).toBe("needs_review");
+    expect(reviewed.appliedSummary.decisions).toEqual(expect.arrayContaining(
+      identityIssues.map((item) => expect.objectContaining({ issueId: item.id, action: "bind_student" })),
+    ));
+    const duplicate = reviewed.issues.find((item) => item.code === "assessment_duplicate")!;
+    const conflict = reviewed.issues.find((item) => item.code === "score_conflict")!;
+    expect(duplicate.assessmentDuplicate?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ correctRate: 81, scoreA: 4.1 }),
+      expect.objectContaining({ correctRate: 83, scoreA: 4.2 }),
+    ]));
+    expect(conflict.scoreConflict?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceKind: "assistant_roster", score: 4 }),
+      expect.objectContaining({ sourceKind: "assessment_pdf", score: 4.1 }),
+      expect.objectContaining({ sourceKind: "assessment_pdf", score: 4.2 }),
+    ]));
+
+    const selectedEvidence = duplicate.assessmentDuplicate!.candidates.find((candidate) => candidate.correctRate === 83)!;
+    const selectedScore = conflict.scoreConflict!.candidates.find((candidate) => (
+      candidate.sourceKind === "assessment_pdf" && candidate.sourceId === selectedEvidence.id
+    ))!;
+    const confirmed = await resolveFeedbackIntakeRun(reviewed.id, {
+      action: "confirm",
+      decisions: [
+        {
+          issueId: duplicate.id,
+          action: "select_pdf",
+          studentId: duplicate.assessmentDuplicate!.studentId,
+          sourceName: selectedEvidence.sourceName,
+          candidateId: selectedEvidence.id,
+        },
+        { issueId: conflict.id, action: "use_score_candidate", candidateId: selectedScore.id },
+      ],
+    }, prisma);
+    expect(confirmed).toMatchObject({ status: "applied" });
+    expect(confirmed.appliedSummary.assessmentEvidence).toMatchObject({
+      [firstUniqueStudentId]: { correctRate: 83 },
+    });
+  });
+
+  it("removes stale dynamic conflicts when bound PDF rows are changed to skip", async () => {
+    const created = await createOrGetFeedbackIntakeRun({
+      sessionCode: sessionCodes[0],
+      files: [
+        intakeFile("合成助教表.xlsx", assistantWorkbook()),
+        intakeFile("未归属-81.pdf", "%PDF rebound-rate-81"),
+        intakeFile("未归属-83.pdf", "%PDF rebound-rate-83"),
+      ],
+      db: prisma,
+    });
+    const identityIssues = created.run.issues.filter((item) => item.code === "assessment_student_mismatch");
+    const reviewed = await resolveFeedbackIntakeRun(created.run.id, {
+      action: "confirm",
+      decisions: identityIssues.map((item) => ({
+        issueId: item.id,
+        action: "bind_student" as const,
+        studentId: firstUniqueStudentId,
+        sourceName: item.sourceName,
+      })),
+    }, prisma);
+    expect(reviewed.status).toBe("needs_review");
+    expect(reviewed.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "assessment_duplicate" }),
+      expect.objectContaining({ code: "score_conflict" }),
+    ]));
+
+    const confirmed = await resolveFeedbackIntakeRun(reviewed.id, {
+      action: "confirm",
+      decisions: identityIssues.map((item) => ({
+        issueId: item.id,
+        action: "skip_student" as const,
+        sourceName: item.sourceName,
+      })),
+    }, prisma);
+    expect(confirmed.status).toBe("applied");
+    expect(confirmed.issues).not.toContainEqual(expect.objectContaining({ code: "assessment_duplicate" }));
+    expect(confirmed.issues).not.toContainEqual(expect.objectContaining({ code: "score_conflict" }));
+    expect(confirmed.appliedSummary.assessmentEvidence).toEqual({});
+    await expect(prisma.sessionMetric.findUnique({
+      where: { studentId_sessionId: { studentId: firstUniqueStudentId, sessionId: firstSessionId } },
+    })).resolves.toMatchObject({ scoreA: 4, scoreB: 5, scoreC: 4 });
+  });
+
+  it("keeps same-named distinct PDFs across consecutive upload batches", async () => {
+    const first = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      files: [intakeFile("合成甲.pdf", "%PDF rate-81")],
+      db: prisma,
+    });
+    const second = await createFeedbackGroupIntake({
+      groupLessonId,
+      sessionCodes: [sessionCodes[0]],
+      runIds: { [sessionCodes[0]]: first.runs[0]!.id },
+      files: [intakeFile("合成甲.pdf", "%PDF rate-82")],
+      db: prisma,
+    });
+    const run = second.runs[0]!;
+    const duplicate = run.issues.find((item) => item.code === "assessment_duplicate")!;
+    expect(run.sourceManifest.filter((item) => item.name === "合成甲.pdf")).toHaveLength(2);
+    expect(duplicate.assessmentDuplicate?.candidates).toHaveLength(2);
+    expect(new Set(duplicate.assessmentDuplicate?.candidates.map((candidate) => candidate.id)).size).toBe(2);
+    expect(duplicate.assessmentDuplicate?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceName: "合成甲.pdf", correctRate: 81, scoreA: 4.1 }),
+      expect.objectContaining({ sourceName: "合成甲.pdf", correctRate: 82, scoreA: 4.1 }),
+    ]));
+  });
+
   it("routes one group upload into independent runs for both historical class sessions", async () => {
     const result = await createFeedbackGroupIntake({
       groupLessonId,

@@ -10,7 +10,16 @@ import type {
 const boundedText = (max: number) => z.string().trim().min(1).max(max);
 const optionalBoundedText = (max: number) => z.string().trim().max(max).optional();
 const interventionText = (max: number) => z.string().trim().max(max).default("");
-const score = z.number().int().min(0).max(5).nullable();
+const scoreA = z.number().min(0).max(5).refine(
+  (value) => Math.abs(value * 10 - Math.round(value * 10)) < Number.EPSILON * 100,
+  "A 维评分最多保留一位小数",
+).nullable();
+const integerScore = z.number().int().min(0).max(5).nullable();
+const revisedScores = z.object({
+  A: scoreA.optional(),
+  B: integerScore.optional(),
+  C: integerScore.optional(),
+}).strict();
 
 export const AttentionSignalCandidateSchema = z.object({
   reason: z.enum(ATTENTION_REASONS),
@@ -33,7 +42,7 @@ export const TeacherInterventionSchema: z.ZodType<TeacherIntervention> = z.objec
 export const DraftStudentSchema = z.object({
   name: boundedText(100),
   studentId: optionalBoundedText(128),
-  scores: z.object({ A: score, B: score, C: score }),
+  scores: z.object({ A: scoreA, B: integerScore, C: integerScore }),
   events: z.array(boundedText(1000)).max(50),
   communication: z.object({
     type: boundedText(100),
@@ -54,7 +63,7 @@ export const DraftReviewResultSchema: z.ZodType<DraftReviewResult> = z.object({
   is_valid: z.boolean(),
   issues: z.array(boundedText(1000)).max(50),
   suggestions: z.array(boundedText(1000)).max(50),
-  revised_scores: z.record(z.string().max(100), z.record(z.string().max(10), score)).default({}),
+  revised_scores: z.record(z.string().max(100), revisedScores).default({}),
   revised_events: z.record(z.string().max(100), z.array(boundedText(1000)).max(50)).default({}),
   revised_teacher_interventions: z.record(
     z.string().max(100),

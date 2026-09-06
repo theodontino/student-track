@@ -1,6 +1,7 @@
 "use client";
 
 import { ConfirmDialog, EmptyState, StatusBanner } from "@/components/ui";
+import { ScoreDimensionLegend } from "@/components/ScoreDimensionLegend";
 import BulkScoreToolbar from "./BulkScoreToolbar";
 import { QuickScoreContextPanel } from "./QuickScoreContextPanel";
 import SaveBar from "./SaveBar";
@@ -12,6 +13,7 @@ export default function QuickScoreWorkspace() {
   return (
     <main className="quick-score-workspace">
       <QuickScoreContextPanel workspace={workspace} />
+      <ScoreDimensionLegend showAssessmentRule />
       {workspace.notice && <StatusBanner tone={workspace.notice.tone}>{workspace.notice.message}</StatusBanner>}
 
       {workspace.selectedClass && workspace.cards.length > 0 && (

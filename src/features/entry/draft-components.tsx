@@ -26,6 +26,7 @@ export function MetricEditor({ dimension, value, suggested, onChange }: { dimens
       <span>{DIM_LABEL[dimension]}{suggested != null ? ` · 建议 ${suggested}` : ""}</span>
       <Select value={value ?? ""} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}>
         <option value="">未提及</option>
+        {dimension === "A" && value !== null && !Number.isInteger(value) && <option value={value}>{value.toFixed(1)} 分（出门测自动换算）</option>}
         {[0, 1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score} 分</option>)}
       </Select>
     </label>

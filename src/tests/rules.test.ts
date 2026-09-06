@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  calculateAssessmentScoreA,
   calculateAttendanceScore,
   calculateStudentAlertCutoffs,
   evaluateAbsenceAlert,
   evaluateClassAverageAlert,
   normalizeDimensionScore,
+  normalizeScoreA,
 } from "@/config/rules";
 
 describe("business rules", () => {
@@ -13,6 +15,18 @@ describe("business rules", () => {
     expect(normalizeDimensionScore(2.6)).toBe(3);
     expect(normalizeDimensionScore(8)).toBe(5);
     expect(normalizeDimensionScore("invalid")).toBeNull();
+  });
+
+  it("keeps A at one decimal and derives it linearly from assessment accuracy", () => {
+    expect(normalizeScoreA(4.26)).toBe(4.3);
+    expect(normalizeScoreA(-2)).toBe(0);
+    expect(normalizeScoreA(8)).toBe(5);
+    expect(normalizeScoreA("invalid")).toBeNull();
+    expect([0, 1, 33.3, 76, 83, 99, 100].map(calculateAssessmentScoreA)).toEqual([
+      0, 0.1, 1.7, 3.8, 4.2, 5, 5,
+    ]);
+    expect(calculateAssessmentScoreA(-1)).toBeNull();
+    expect(calculateAssessmentScoreA(101)).toBeNull();
   });
 
   it("calculates attendance D score including the empty-semester fallback", () => {

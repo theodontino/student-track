@@ -2,8 +2,18 @@
 
 import { useRef, useState } from "react";
 import { Button, Dialog, IconButton } from "@/components/ui";
-import type { FeedbackIntakeDecision, FeedbackIntakeDecisionAction } from "@/services/feedback-intake-service";
+import {
+  materialBulkOperations,
+  materialChoiceSelected,
+  materialIssueActionTarget,
+  materialIssueChoices,
+  materialIssueStage,
+  type MaterialIssueActionTarget,
+} from "@/features/feedback/material-issue-actions";
+import type { FeedbackIntakeDecision, FeedbackIntakeIssue } from "@/services/feedback-intake-service";
 import styles from "./unified-feedback-workspace.module.css";
+
+export { materialIssueChoices } from "@/features/feedback/material-issue-actions";
 
 export type MaterialSourceKind = "assistant_roster" | "step_classroom" | "assessment_pdf";
 export type MaterialSourceStatus = "missing" | "ready" | "needs_review" | "applied";
@@ -15,12 +25,17 @@ export type MaterialIssueSummary = {
   runId?: string;
   className?: string;
   sourceName?: string;
+  sourceId?: string;
   candidates?: Array<{ id: string; name: string; studentId: string }>;
   stage?: "class" | "student" | "session" | "fact";
   rowNumber?: number;
   reportedStudent?: { name: string; studentId: string };
   rosterHint?: string;
+  scoreConflict?: FeedbackIntakeIssue["scoreConflict"];
+  assessmentDuplicate?: FeedbackIntakeIssue["assessmentDuplicate"];
+  attendanceConflict?: FeedbackIntakeIssue["attendanceConflict"];
   decision?: FeedbackIntakeDecision;
+  unassignedSource?: { fileName: string; kind: MaterialSourceKind | "ignored" };
 };
 
 export type MaterialSourceSummary = {
@@ -55,8 +70,8 @@ type NormalizedMaterialSource = MaterialSourceSummary & {
 
 const SOURCE_PRESENTATION: Record<MaterialSourceKind, { label: string; description: string }> = {
   assistant_roster: { label: "助教 Excel", description: "班级、日期与考勤" },
-  step_classroom: { label: "STEP 报告", description: "课堂观察与教师处理" },
-  assessment_pdf: { label: "测评 ZIP / 文件夹", description: "按花名册绑定学生" },
+  step_classroom: { label: "STEP 报告", description: "明确考勤、评分与课堂观察" },
+  assessment_pdf: { label: "测评 ZIP / 文件夹", description: "唯一匹配后按正确率自动换算 A" },
 };
 
 const SOURCE_ORDER = Object.keys(SOURCE_PRESENTATION) as MaterialSourceKind[];
@@ -69,6 +84,63 @@ const STATUS_PRESENTATION: Record<MaterialSourceStatus, { icon: string; label: s
 
 export function shouldAcceptMaterialFiles(busy: boolean, fileCount: number) {
   return !busy && fileCount > 0;
+}
+
+type DroppedFileEntry = {
+  isFile: true;
+  isDirectory: false;
+  fullPath?: string;
+  file: (success: (file: File) => void, failure?: (error: DOMException) => void) => void;
+};
+
+type DroppedDirectoryEntry = {
+  isFile: false;
+  isDirectory: true;
+  createReader: () => {
+    readEntries: (success: (entries: DroppedEntry[]) => void, failure?: (error: DOMException) => void) => void;
+  };
+};
+
+type DroppedEntry = DroppedFileEntry | DroppedDirectoryEntry;
+
+function fileFromDroppedEntry(entry: DroppedFileEntry) {
+  return new Promise<File>((resolve, reject) => entry.file((file) => {
+    const relativePath = entry.fullPath?.replace(/^\//, "");
+    if (relativePath && !file.webkitRelativePath) {
+      try { Object.defineProperty(file, "webkitRelativePath", { configurable: true, value: relativePath }); } catch { /* filename remains usable */ }
+    }
+    resolve(file);
+  }, reject));
+}
+
+async function filesFromDroppedEntry(entry: DroppedEntry): Promise<File[]> {
+  if (entry.isFile) return [await fileFromDroppedEntry(entry)];
+  const reader = entry.createReader();
+  const children: DroppedEntry[] = [];
+  while (true) {
+    const batch = await new Promise<DroppedEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) break;
+    children.push(...batch);
+  }
+  return (await Promise.all(children.map(filesFromDroppedEntry))).flat();
+}
+
+export async function droppedMaterialFiles(
+  dataTransfer: Pick<DataTransfer, "items" | "files">,
+  fallbackFiles = Array.from(dataTransfer.files),
+) {
+  try {
+    const itemFiles = await Promise.all(Array.from(dataTransfer.items).map(async (item) => {
+      const entry = (item as unknown as { webkitGetAsEntry?: () => DroppedEntry | null }).webkitGetAsEntry?.();
+      if (entry) return filesFromDroppedEntry(entry);
+      const file = item.kind === "file" ? item.getAsFile() : null;
+      return file ? [file] : [];
+    }));
+    const files = itemFiles.flat();
+    return files.length ? files : fallbackFiles;
+  } catch {
+    return fallbackFiles;
+  }
 }
 
 function normalizeSources(summary: GroupMaterialSummary): NormalizedMaterialSource[] {
@@ -95,24 +167,6 @@ function fileSummary(source: NormalizedMaterialSource) {
   return `${source.files.slice(0, 2).join("、")}，另有 ${source.files.length - 2} 个`;
 }
 
-export function materialIssueChoices(issue: MaterialIssueSummary): Array<{ action: FeedbackIntakeDecisionAction; label: string }> {
-  const stage = stageForIssue(issue);
-  if (stage === "class") return [{ action: "ignore_source", label: "本轮不采用这个文件" }];
-  if (stage === "session") return [{ action: "ignore_source", label: "本轮不采用这个文件" }, { action: "accept_source", label: "仍作为当前课次采用" }];
-  if (stage === "student") return [{ action: "skip_student", label: "本轮不采用这一行" }];
-  if (issue.code === "attendance_conflict") return [{ action: "use_assistant", label: "采用助教表" }, { action: "use_step", label: "采用 STEP" }, { action: "skip_attendance", label: "不写考勤" }];
-  if (issue.code?.includes("observation")) return [{ action: "merge_observation", label: "合并观察" }, { action: "ignore_observation", label: "忽略观察" }];
-  return [{ action: "ignore_source", label: "忽略来源" }];
-}
-
-function stageForIssue(issue: MaterialIssueSummary): NonNullable<MaterialIssueSummary["stage"]> {
-  if (issue.stage) return issue.stage;
-  if (issue.code?.includes("class_mismatch")) return "class";
-  if (issue.code?.includes("student") || issue.code?.includes("identity")) return "student";
-  if (issue.code?.includes("date") || issue.code?.includes("lesson")) return "session";
-  return "fact";
-}
-
 const STAGE_PRESENTATION = {
   class: { title: "1. 班级匹配", description: "先确认材料属于当前班级或共同课范围。" },
   student: { title: "2. 学生匹配", description: "只在已匹配班级的 ACTIVE 花名册内核对学生。" },
@@ -120,27 +174,54 @@ const STAGE_PRESENTATION = {
   fact: { title: "其他事实核对", description: "确认考勤、观察和重复事实的采用方式。" },
 } as const;
 
-export function MaterialIssueDecision({ issue, busy, onDecision }: {
+function applyMaterialIssueTarget(
+  target: MaterialIssueActionTarget | undefined,
+  onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void,
+  onIgnoreUnassignedSource?: (source: NonNullable<MaterialIssueSummary["unassignedSource"]>) => void,
+) {
+  if (!target) return;
+  if (target.kind === "unassigned") onIgnoreUnassignedSource?.(target.source);
+  else onDecision?.(target.runId, target.decision);
+}
+
+function MaterialBulkActionPanel({ issues, busy, onDecision, onIgnoreUnassignedSource }: {
+  issues: MaterialIssueSummary[];
+  busy: boolean;
+  onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
+  onIgnoreUnassignedSource?: (source: NonNullable<MaterialIssueSummary["unassignedSource"]>) => void;
+}) {
+  const operations = materialBulkOperations(issues);
+  if (!operations.length) return null;
+  return <section className={styles.materialBulkActions}>
+    <strong>批量操作</strong>
+    <small>只批量保存当前弹窗里的选择；课堂事实仍要由底部确认按钮写入。</small>
+    <div>{operations.map((operation, index) => <Button key={operation.key} uiSize="sm" variant={index === 0 ? "secondary" : "ghost"} disabled={busy} onClick={() => operation.targets.forEach((target) => applyMaterialIssueTarget(target, onDecision, onIgnoreUnassignedSource))}>{operation.label}（{operation.targets.length}）</Button>)}</div>
+  </section>;
+}
+
+export function MaterialIssueDecision({ issue, busy, onDecision, onIgnoreUnassignedSource }: {
   issue: MaterialIssueSummary;
   busy: boolean;
   onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
+  onIgnoreUnassignedSource?: (source: NonNullable<MaterialIssueSummary["unassignedSource"]>) => void;
 }) {
-  const studentStage = stageForIssue(issue) === "student";
+  const studentStage = materialIssueStage(issue) === "student";
   return <>
     {studentStage && issue.reportedStudent && <p className={styles.materialReportedStudent}>表内学生：{issue.reportedStudent.name}{issue.reportedStudent.studentId ? ` · ${issue.reportedStudent.studentId}` : ""}{issue.rowNumber ? ` · 第 ${issue.rowNumber} 行` : ""}</p>}
     {issue.rosterHint && <p className={styles.materialRosterHint}>{issue.rosterHint}</p>}
     {studentStage && issue.candidates?.length ? <label>绑定当前班学生<select value={issue.decision?.action === "bind_student" ? issue.decision.studentId : ""} disabled={busy} onChange={(event) => issue.runId && onDecision?.(issue.runId, { issueId: issue.id ?? "", action: "bind_student", studentId: event.target.value, sourceName: issue.sourceName })}><option value="">请选择</option>{issue.candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.studentId}</option>)}</select></label> : null}
-    <div className={styles.choiceRow}>{materialIssueChoices(issue).map((choice) => <label key={choice.action}><input type="radio" name={`${issue.runId}:${issue.id}`} checked={issue.decision?.action === choice.action} disabled={busy} onChange={() => issue.runId && onDecision?.(issue.runId, { issueId: issue.id ?? "", action: choice.action, sourceName: issue.sourceName })} />{choice.label}</label>)}</div>
+    <div className={styles.choiceRow}>{materialIssueChoices(issue).map((choice) => <label key={`${choice.action}:${choice.candidateId ?? ""}`}><input type="radio" name={`${issue.runId}:${issue.id}`} checked={materialChoiceSelected(issue.decision, choice)} disabled={busy} onChange={() => applyMaterialIssueTarget(materialIssueActionTarget(issue, choice), onDecision, onIgnoreUnassignedSource)} />{choice.label}</label>)}</div>
   </>;
 }
 
-function MaterialDetail({ source, busy, onAddFile, onAddFolder, onScan, onDecision }: {
+function MaterialDetail({ source, busy, onAddFile, onAddFolder, onScan, onDecision, onIgnoreUnassignedSource }: {
   source: NormalizedMaterialSource;
   busy: boolean;
   onAddFile: () => void;
   onAddFolder: () => void;
   onScan: () => void;
   onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
+  onIgnoreUnassignedSource?: (source: NonNullable<MaterialIssueSummary["unassignedSource"]>) => void;
 }) {
   const status = STATUS_PRESENTATION[source.status];
   return <div className={styles.materialDialog}>
@@ -149,8 +230,9 @@ function MaterialDetail({ source, busy, onAddFile, onAddFolder, onScan, onDecisi
       <span>{source.fileCount} 个文件{typeof source.matched === "number" && typeof source.total === "number" ? ` · 已匹配 ${source.matched}/${source.total} ${source.unit ?? ""}` : ""}</span>
     </div>
     {source.files.length > 0 && <section><strong>本轮采用文件</strong><ul>{source.files.map((file, index) => <li key={`${file}:${index}`}>{file}</li>)}</ul></section>}
+    <MaterialBulkActionPanel issues={source.issues} busy={busy} onDecision={onDecision} onIgnoreUnassignedSource={onIgnoreUnassignedSource} />
     {source.issues.length > 0 && <section><strong>需要教师核对</strong><div className={styles.materialIssueStages}>{(["class", "student", "session", "fact"] as const).map((stage) => {
-      const stageIssues = source.issues.filter((issue) => stageForIssue(issue) === stage);
+      const stageIssues = source.issues.filter((issue) => materialIssueStage(issue) === stage);
       if (!stageIssues.length) return null;
       const presentation = STAGE_PRESENTATION[stage];
       if (stage === "session") {
@@ -164,13 +246,13 @@ function MaterialDetail({ source, busy, onAddFile, onAddFolder, onScan, onDecisi
           return <article key={`${issue.id ?? "session"}:${groupIndex}`}>
             <div><strong>{issue.className ? `${issue.className} · ` : ""}课次不一致</strong>{issue.sourceName && <small>{issue.sourceName}</small>}</div>
             <ul>{items.map((item, index) => <li key={item.id ?? index}>{item.message}</li>)}</ul>
-            <MaterialIssueDecision issue={issue} busy={busy} onDecision={onDecision} />
+            <MaterialIssueDecision issue={issue} busy={busy} onDecision={onDecision} onIgnoreUnassignedSource={onIgnoreUnassignedSource} />
           </article>;
         })}</section>;
       }
       return <section key={stage} className={styles.materialIssueStage}><header><strong>{presentation.title}</strong><small>{presentation.description}</small></header><div className={styles.materialIssueChoices}>{stageIssues.map((issue, index) => <article key={issue.id ?? `${issue.message}:${index}`}>
         <div><strong>{issue.className ? `${issue.className} · ` : ""}{issue.message}</strong>{issue.sourceName && <small>{issue.sourceName}</small>}</div>
-        <MaterialIssueDecision issue={issue} busy={busy} onDecision={onDecision} />
+        <MaterialIssueDecision issue={issue} busy={busy} onDecision={onDecision} onIgnoreUnassignedSource={onIgnoreUnassignedSource} />
       </article>)}</div></section>;
     })}</div></section>}
     {source.status === "missing" && <p>这一来源是可选的；缺少它本身不会阻止确认。可以继续添加文件、选择文件夹或扫描收件箱。</p>}
@@ -180,7 +262,7 @@ function MaterialDetail({ source, busy, onAddFile, onAddFolder, onScan, onDecisi
   </div>;
 }
 
-export function MaterialIntakeCard({ summary, busy, confirmDisabled, confirmLabel, confirmHint, onFiles, onScan, onConfirm, onUseExistingFacts, useExistingFactsLabel, onIgnoreUnassigned, onDecision }: {
+export function MaterialIntakeCard({ summary, busy, confirmDisabled, confirmLabel, confirmHint, onFiles, onScan, onConfirm, onUseExistingFacts, useExistingFactsLabel, onIgnoreUnassigned, onIgnoreUnassignedSource, onDecision }: {
   summary: GroupMaterialSummary;
   busy: boolean;
   confirmDisabled?: boolean;
@@ -192,6 +274,7 @@ export function MaterialIntakeCard({ summary, busy, confirmDisabled, confirmLabe
   onUseExistingFacts?: () => void;
   useExistingFactsLabel?: string;
   onIgnoreUnassigned?: () => void;
+  onIgnoreUnassignedSource?: (source: NonNullable<MaterialIssueSummary["unassignedSource"]>) => void;
   onDecision?: (runId: string, decision: FeedbackIntakeDecision) => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -217,7 +300,13 @@ export function MaterialIntakeCard({ summary, busy, confirmDisabled, confirmLabe
     onDragEnter={(event) => { event.preventDefault(); if (!busy) setDragging(true); }}
     onDragOver={(event) => event.preventDefault()}
     onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
-    onDrop={(event) => { event.preventDefault(); setDragging(false); acceptFiles(Array.from(event.dataTransfer.files)); }}
+    onDrop={(event) => {
+      event.preventDefault();
+      setDragging(false);
+      const dataTransfer = event.dataTransfer;
+      const fallbackFiles = Array.from(dataTransfer.files);
+      void droppedMaterialFiles(dataTransfer, fallbackFiles).then(acceptFiles);
+    }}
   >
     <header className={styles.materialIntakeHeader}>
       <div><h3 id="feedback-material-title">{summary.title ?? "本轮材料"}</h3><p>Excel、STEP 和测评文件只用于补充本课事实；没有新材料也能继续核对当前课堂记录。</p></div>
@@ -244,12 +333,17 @@ export function MaterialIntakeCard({ summary, busy, confirmDisabled, confirmLabe
     <input ref={folderRef} hidden type="file" multiple disabled={busy} {...({ webkitdirectory: "" } as Record<string, string>)} onChange={(event) => { acceptFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
 
     <Dialog open={Boolean(detailSource)} title={detailSource ? `${detailSource.label} 详情` : "材料详情"} onClose={() => setDetailKind(null)}>
-      {detailSource && <MaterialDetail source={detailSource} busy={busy} onAddFile={() => { setDetailKind(null); chooseFiles(); }} onAddFolder={() => { setDetailKind(null); chooseFolder(); }} onScan={() => { setDetailKind(null); onScan(); }} onDecision={onDecision} />}
+      {detailSource && <MaterialDetail source={detailSource} busy={busy} onAddFile={() => { setDetailKind(null); chooseFiles(); }} onAddFolder={() => { setDetailKind(null); chooseFolder(); }} onScan={() => { setDetailKind(null); onScan(); }} onDecision={onDecision} onIgnoreUnassignedSource={onIgnoreUnassignedSource} />}
     </Dialog>
     <Dialog open={detailKind === "unassigned"} title="未归属材料" onClose={() => setDetailKind(null)}>
       <div className={styles.materialDialog}>
         <p>这些文件尚未归入所选班级或学生。处理、重新投料，或明确本轮不采用后才能继续。</p>
-        {unassignedIssues.length > 0 ? <ul>{unassignedIssues.map((issue, index) => <li key={issue.id ?? `${issue.message}:${index}`}>{issue.message}</li>)}</ul> : <p>有 {unassignedIssueCount} 份材料需要处理。</p>}
+        <MaterialBulkActionPanel issues={unassignedIssues} busy={busy} onDecision={onDecision} onIgnoreUnassignedSource={onIgnoreUnassignedSource} />
+        {unassignedIssues.length > 0 ? <div className={styles.materialIssueChoices}>{unassignedIssues.map((issue, index) => <article key={issue.id ?? `${issue.message}:${index}`}>
+          <div><strong>{issue.message}</strong>{issue.sourceName && <small>{issue.sourceName}</small>}</div>
+          {materialIssueChoices(issue).some((choice) => materialIssueActionTarget(issue, choice))
+            && <MaterialIssueDecision issue={issue} busy={busy} onDecision={onDecision} onIgnoreUnassignedSource={onIgnoreUnassignedSource} />}
+        </article>)}</div> : <p>有 {unassignedIssueCount} 份材料需要处理。</p>}
         <div className={styles.materialDialogActions}>{onIgnoreUnassigned && <Button variant="ghost" onClick={() => { onIgnoreUnassigned(); setDetailKind(null); }}>明确本轮不采用</Button>}<Button variant="secondary" onClick={() => { setDetailKind(null); chooseFiles(); }}>重新投料</Button></div>
       </div>
     </Dialog>

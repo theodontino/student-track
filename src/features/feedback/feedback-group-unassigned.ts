@@ -57,3 +57,23 @@ export function dismissFeedbackGroupUnassignedSourcesForSelectedClasses(input: {
     persistedActionableCount: sources.filter(isActionableSource).length,
   };
 }
+
+/** Dismisses one visible unresolved file without hiding unrelated material. */
+export function dismissFeedbackGroupUnassignedSource(input: {
+  sources: FeedbackGroupIntakeUnassigned[];
+  persistedActionableCount: number;
+  fileName: string;
+  kind: FeedbackGroupIntakeUnassigned["kind"];
+}) {
+  const knownActionableBefore = input.sources.filter(isActionableSource).length;
+  const sources = input.sources.filter((source) => !(
+    isActionableSource(source)
+    && source.fileName === input.fileName
+    && source.kind === input.kind
+  ));
+  const unknownActionableCount = Math.max(0, input.persistedActionableCount - knownActionableBefore);
+  return {
+    sources,
+    persistedActionableCount: unknownActionableCount + sources.filter(isActionableSource).length,
+  };
+}

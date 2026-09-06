@@ -6,6 +6,11 @@ export const SCORE_RULES = {
   default: 3,
 } as const;
 
+export const ASSESSMENT_SCORE_A_RULES = {
+  correctRateDivisor: 20,
+  decimalPlaces: 1,
+} as const;
+
 export const ATTENDANCE_SCORE_RULES = {
   maximum: 5,
 } as const;
@@ -42,6 +47,21 @@ export function normalizeDimensionScore(value: unknown, fallback = SCORE_RULES.d
   const numeric = Number(value ?? fallback);
   if (!Number.isFinite(numeric)) return null;
   return Math.round(Math.max(SCORE_RULES.minimum, Math.min(SCORE_RULES.maximum, numeric)));
+}
+
+/** Keeps the learning/assessment dimension within 0-5 at one decimal place. */
+export function normalizeScoreA(value: unknown, fallback = SCORE_RULES.default) {
+  const numeric = Number(value ?? fallback);
+  if (!Number.isFinite(numeric)) return null;
+  const bounded = Math.max(SCORE_RULES.minimum, Math.min(SCORE_RULES.maximum, numeric));
+  const scale = 10 ** ASSESSMENT_SCORE_A_RULES.decimalPlaces;
+  return Math.round(bounded * scale) / scale;
+}
+
+/** Converts a confirmed 0-100 assessment correct rate to the 0-5 A dimension. */
+export function calculateAssessmentScoreA(correctRate: number) {
+  if (!Number.isFinite(correctRate) || correctRate < 0 || correctRate > 100) return null;
+  return normalizeScoreA(correctRate / ASSESSMENT_SCORE_A_RULES.correctRateDivisor);
 }
 
 /** Calculates D from attendance; a semester without sessions uses the neutral default. */

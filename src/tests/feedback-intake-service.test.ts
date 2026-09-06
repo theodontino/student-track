@@ -1,7 +1,15 @@
+import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
-import { STEP_CLASSROOM_HEADER, STEP_INTERPRETATION_PROMPT, STEP_PROMPT_VERSION } from "@/services/step-classroom-import-service";
+import {
+  STEP_CLASSROOM_HEADER,
+  STEP_INTERPRETATION_PROMPT,
+  STEP_INTERPRETATION_PROMPT_V2,
+  STEP_PROMPT_VERSION,
+  STEP_PROMPT_VERSION_V2,
+} from "@/services/step-classroom-import-service";
+import { STEP_CLASSROOM_HEADER_V2 } from "@/lib/step-classroom-format";
 import { prisma } from "@/lib/prisma";
 import {
   classifyFeedbackIntakeFile,
@@ -66,7 +74,11 @@ function assistantFile(rows: unknown[][], date = "2026-07-08", lesson = "2", nam
   return file(name, XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer);
 }
 
-function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ contextQuestionIndex: number; text: string; recordedAt: string }> = []) {
+function stepFile(
+  completedAt = "2026-07-08T10:00:00+08:00",
+  notes: Array<{ contextQuestionIndex: number; text: string; recordedAt: string }> = [],
+  present = true,
+) {
   const payload = {
     class: { code: "E2E-CLASS", name: "E2E测试班" },
     stepSessionId: "beta3-step-test",
@@ -77,7 +89,7 @@ function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ cont
     students: [{
       studentId: "E2E-001",
       name: "测试甲",
-      present: true,
+      present,
       observations: [{
         questionIndex: 1,
         semanticAnchor: "fastIndependent",
@@ -89,6 +101,26 @@ function stepFile(completedAt = "2026-07-08T10:00:00+08:00", notes: Array<{ cont
     }],
   };
   return file("课堂.step-classroom.txt", textBuffer(`${STEP_CLASSROOM_HEADER}\nPROMPT_VERSION: ${STEP_PROMPT_VERSION}\n\n=== DATA BEGIN ===\n${JSON.stringify(payload)}\n=== DATA END ===\n=== PROMPT BEGIN ===\n${STEP_INTERPRETATION_PROMPT}\n=== PROMPT END ===`));
+}
+
+function stepV2File(stepSessionId: string) {
+  const payload = {
+    class: { code: "E2E-CLASS", name: "E2E测试班" },
+    stepSessionId,
+    title: "当前 V2 课堂",
+    startedAt: "2026-07-08T09:00:00+08:00",
+    completedAt: "2026-07-08T10:00:00+08:00",
+    knowledgePointCount: 0,
+    students: [{
+      studentId: "E2E-001",
+      name: "测试甲",
+      present: true,
+      scores: { A: 4, B: 3, C: 2 },
+      observations: [],
+      notes: [],
+    }],
+  };
+  return file("课堂.step-classroom-v2.txt", textBuffer(`${STEP_CLASSROOM_HEADER_V2}\nPROMPT_VERSION: ${STEP_PROMPT_VERSION_V2}\n\n=== DATA BEGIN ===\n${JSON.stringify(payload)}\n=== DATA END ===\n=== PROMPT BEGIN ===\n${STEP_INTERPRETATION_PROMPT_V2}\n=== PROMPT END ===`));
 }
 
 describe("feedback intake file preparation", () => {
@@ -187,6 +219,19 @@ describe("feedback intake file preparation", () => {
     expect(resolveIntakeStudentIdentity(roster, "", "测试甲")).toMatchObject({ match: roster[0], conflict: false });
   });
 
+  it("uses a valid student number to disambiguate duplicate names", () => {
+    const roster = [
+      { id: "student-a", name: "同名学生", studentId: "E2E-001" },
+      { id: "student-b", name: "同名学生", studentId: "E2E-002" },
+    ];
+
+    expect(resolveIntakeStudentIdentity(roster, "E2E-002", "同名学生")).toMatchObject({
+      match: roster[1],
+      conflict: false,
+      usedNameFallback: false,
+    });
+  });
+
   it("does not let a source-level date acceptance resolve an identity conflict from the same source", async () => {
     const run = await prisma.feedbackIntakeRun.create({
       data: {
@@ -256,6 +301,7 @@ describe("feedback intake file preparation", () => {
   it("classifies supported sources and ignores unrelated files", () => {
     expect(classifyFeedbackIntakeFile("助教课堂.xlsx")).toBe("assistant_roster");
     expect(classifyFeedbackIntakeFile("step-classroom.txt")).toBe("step_classroom");
+    expect(classifyFeedbackIntakeFile("E2E-2026.step-classroom-v2.txt")).toBe("step_classroom");
     expect(classifyFeedbackIntakeFile("说明.txt")).toBe("ignored");
     expect(classifyFeedbackIntakeFile("张三.pdf")).toBe("assessment_pdf");
     expect(classifyFeedbackIntakeFile("说明.docx")).toBe("ignored");
@@ -292,6 +338,72 @@ describe("feedback intake file preparation", () => {
     await prisma.feedbackIntakeRun.delete({ where: { id: first.run.id } });
   });
 
+  it("reparses the same STEP V2 file when an older run recorded it with a stale parser", async () => {
+    const source = stepV2File(`stale-parser-${crypto.randomUUID()}`);
+    const sourceHash = createHash("sha256").update(new Uint8Array(source.buffer)).digest("hex");
+    const legacyRun = await prisma.feedbackIntakeRun.create({
+      data: {
+        sessionCode: "2026070801",
+        sourceFingerprint: `legacy-parser-${crypto.randomUUID()}`,
+        sourceManifest: JSON.stringify([{
+          name: source.name,
+          source: source.source,
+          kind: "ignored",
+          size: source.buffer.byteLength,
+          sourceHash,
+        }]),
+        status: "ready",
+        issues: "[]",
+        appliedSummary: JSON.stringify({
+          parsedResult: { students: [], alert_suggestion: "" },
+          assessmentEvidence: {},
+          sourceFacts: [],
+          decisions: [],
+          applied: false,
+        }),
+      },
+    });
+    try {
+      const refreshed = await createOrGetFeedbackIntakeRun({
+        sessionCode: "2026070801",
+        runId: legacyRun.id,
+        files: [source],
+        db: prisma,
+      });
+      expect(refreshed.duplicate).toBe(false);
+      expect(refreshed.run.sourceManifest).toContainEqual(expect.objectContaining({
+        name: source.name,
+        kind: "step_classroom",
+        parserVersion: 5,
+      }));
+      expect((refreshed.run.appliedSummary.parsedResult as { students?: Array<Record<string, unknown>> }).students)
+        .toContainEqual(expect.objectContaining({ studentId: "E2E-001", scores: { A: 4, B: 3, C: 2 } }));
+    } finally {
+      await prisma.feedbackIntakeRun.deleteMany({ where: { id: legacyRun.id } });
+    }
+  });
+
+  it("keeps differing STEP and assistant scores as structured teacher decisions", async () => {
+    const inspection = await inspectFeedbackIntake({
+      sessionCode: "2026070801",
+      files: [
+        assistantFile([["测试甲", "E2E-001", "E2E-CLASS", "E2E测试班", 1, 1, 1, ""]]),
+        stepV2File(`teacher-priority-${crypto.randomUUID()}`),
+      ],
+      db: prisma,
+    });
+    expect(inspection.issues.filter((item) => item.code === "score_conflict")).toHaveLength(3);
+    expect(inspection.parsedResult.students).toContainEqual(expect.objectContaining({
+      studentId: "E2E-001",
+      scores: { A: null, B: null, C: null },
+    }));
+    expect(inspection.issues.find((item) => item.scoreConflict?.dimension === "A")?.scoreConflict?.candidates)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceKind: "assistant_roster", score: 1 }),
+        expect.objectContaining({ sourceKind: "step_classroom", score: 4 }),
+      ]));
+  });
+
   it("reuses the same material run without consulting its historical plan pointer", async () => {
     const input = { sessionCode: "2026070801", files: [stepFile()], db: prisma };
     const prepared = await createOrGetFeedbackIntakeRun(input);
@@ -326,12 +438,109 @@ describe("feedback intake file preparation", () => {
     const before = await prisma.draftRecord.count();
     const inspection = await inspectFeedbackIntake(input);
     expect(inspection.issues.some((item) => item.code === "step_date_mismatch")).toBe(true);
-    expect(inspection.parsedResult.students).toHaveLength(0);
+    expect(inspection.parsedResult.students).toContainEqual(expect.objectContaining({
+      name: "测试甲",
+      studentId: "E2E-001",
+    }));
     const result = await createOrGetFeedbackIntakeRun(input);
     expect(result.run.status).toBe("needs_review");
     expect(await prisma.draftRecord.count()).toBe(before);
     await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
   });
+
+  it("applies each attendance conflict strategy to the intended student", async () => {
+    const student = await prisma.student.findFirstOrThrow({ where: { studentId: "E2E-001" } });
+    const baseSession = await prisma.classSession.findUniqueOrThrow({ where: { code: "2026070801" } });
+    const session = await prisma.classSession.create({
+      data: {
+        code: `attendance-${crypto.randomUUID()}`,
+        date: "2026-07-08",
+        semesterNumber: 2,
+        semesterId: baseSession.semesterId,
+        classId: baseSession.classId,
+      },
+    });
+    const cases = [
+      { action: "use_assistant" as const, expected: false },
+      { action: "use_step" as const, expected: true },
+      { action: "skip_attendance" as const, expected: undefined },
+    ];
+
+    try {
+      for (const [index, item] of cases.entries()) {
+        const created = await createOrGetFeedbackIntakeRun({
+          sessionCode: session.code,
+          files: [
+            assistantFile([["测试乙", "E2E-002", "E2E-CLASS", "E2E测试班", 3, 3, 3, ""]], undefined, undefined, `考勤-${index}.xlsx`),
+            stepFile("2026-07-08T10:00:00+08:00", [], true),
+          ],
+          db: prisma,
+        });
+        const conflict = created.run.issues.find((issue) => issue.code === "attendance_conflict")!;
+        expect(conflict).toMatchObject({
+          id: "attendance_conflict:E2E-001",
+          attendanceConflict: { studentId: "E2E-001", studentName: "测试甲" },
+        });
+
+        await expect(resolveFeedbackIntakeRun(created.run.id, {
+          action: "confirm",
+          decisions: [{
+            issueId: conflict.id,
+            action: item.action,
+            studentId: conflict.attendanceConflict!.studentId,
+          }],
+        }, prisma)).resolves.toMatchObject({ status: "applied" });
+        const attendance = await prisma.attendance.findUnique({
+          where: { sessionId_studentId: { studentId: student.id, sessionId: session.id } },
+        });
+        expect(attendance?.present).toBe(item.expected);
+        await prisma.feedbackIntakeRun.delete({ where: { id: created.run.id } });
+        await prisma.attendance.deleteMany({ where: { sessionId: session.id } });
+      }
+    } finally {
+      await prisma.feedbackIntakeRun.deleteMany({ where: { sessionCode: session.code } });
+      await prisma.classSession.delete({ where: { id: session.id } });
+    }
+  });
+
+  it("adopts STEP notes without discarding the rest of the source and accepts the legacy action", async () => {
+    const input = {
+      sessionCode: "2026070801",
+      files: [stepFile("2026-07-08T10:00:00+08:00", [
+        { contextQuestionIndex: 1, text: "直接采用的自由备注", recordedAt: "2026-07-08T09:44:00+08:00" },
+        { contextQuestionIndex: 1, text: "旧动作保留的自由备注", recordedAt: "2026-07-08T09:45:00+08:00" },
+      ])],
+      db: prisma,
+    };
+    const result = await createOrGetFeedbackIntakeRun(input);
+    const noteIssues = result.run.issues.filter((item) => item.code === "step_note_review");
+    expect(noteIssues).toHaveLength(2);
+    const adopted = noteIssues.find((item) => item.message.includes("直接采用的自由备注"));
+    const legacy = noteIssues.find((item) => item.message.includes("旧动作保留的自由备注"));
+    expect(adopted).toBeDefined();
+    expect(legacy).toBeDefined();
+
+    const confirmed = await resolveFeedbackIntakeRun(result.run.id, {
+      action: "confirm",
+      decisions: [
+        { issueId: adopted!.id, action: "use_observation" },
+        { issueId: legacy!.id, action: "merge_observation" },
+      ],
+    }, prisma);
+    expect(confirmed.status).toBe("applied");
+    const saved = await prisma.draftRecord.findFirst({ where: { intakeRunId: result.run.id } });
+    const parsed = JSON.parse(saved!.parsedResult) as {
+      students: Array<{ events: string[]; present?: boolean; teacherInterventions?: Array<{ observedProblem: string }> }>;
+    };
+    expect(parsed.students[0]).toMatchObject({
+      present: true,
+      events: expect.arrayContaining(["直接采用的自由备注", "旧动作保留的自由备注"]),
+      teacherInterventions: expect.arrayContaining([
+        expect.objectContaining({ observedProblem: expect.stringContaining("独立完成") }),
+      ]),
+    });
+    await prisma.feedbackIntakeRun.delete({ where: { id: result.run.id } });
+  }, 20_000);
 
   it("requires an explicit decision for STEP free notes and persists an edited observation", async () => {
     const input = {

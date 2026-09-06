@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   STEP_CLASSROOM_HEADER,
   STEP_INTERPRETATION_PROMPT,
+  STEP_INTERPRETATION_PROMPT_V2,
   STEP_INTERPRETATION_PROMPT_V2_LEGACY,
   STEP_PROMPT_VERSION,
   STEP_PROMPT_VERSION_V2,
   StepClassroomImportError,
+  createStepDeterministicResult,
   createStepObservationOnlyResult,
   mergeStepClassroomResult,
   parseStepClassroomEnvelope,
@@ -45,13 +47,16 @@ function makeV2Export(overrides: Record<string, unknown> = {}) {
     title: "高三一班课堂",
     startedAt: "2026-08-11T09:00:00+08:00",
     completedAt: "2026-08-11T10:00:00+08:00",
-    questionCount: 2,
+    knowledgePointCount: 2,
     students: [{
       studentId: "test-2026001",
       name: "张三",
       present: true,
+      scores: { A: 4, B: 3, C: 2 },
       observations: [{
-        questionIndex: 1,
+        knowledgePointID: "00000000-0000-0000-0000-000000000011",
+        knowledgePointNameSnapshot: "函数单调性",
+        recordScope: "knowledgePoint",
         semanticModelVersion: 2,
         rawNormalizedPoint: { x: -0.4, y: 0.2 },
         performance: {
@@ -63,11 +68,11 @@ function makeV2Export(overrides: Record<string, unknown> = {}) {
         intervention: null,
         recordedAt: "2026-08-11T09:20:00+08:00",
       }],
-      notes: [{ contextQuestionIndex: 1, text: "按步骤完成", recordedAt: "2026-08-11T09:21:00+08:00" }],
+      notes: [{ knowledgePointID: null, knowledgePointNameSnapshot: null, recordScope: "session", text: "按步骤完成", recordedAt: "2026-08-11T09:21:00+08:00" }],
     }],
     ...overrides,
   };
-  return `${STEP_CLASSROOM_HEADER_V2}\nPROMPT_VERSION: ${STEP_PROMPT_VERSION_V2}\n\n=== DATA BEGIN ===\n${JSON.stringify(payload)}\n=== DATA END ===\n=== PROMPT BEGIN ===\n${STEP_INTERPRETATION_PROMPT_V2_LEGACY}\n=== PROMPT END ===`;
+  return `${STEP_CLASSROOM_HEADER_V2}\nPROMPT_VERSION: ${STEP_PROMPT_VERSION_V2}\n\n=== DATA BEGIN ===\n${JSON.stringify(payload)}\n=== DATA END ===\n=== PROMPT BEGIN ===\n${STEP_INTERPRETATION_PROMPT_V2}\n=== PROMPT END ===`;
 }
 
 describe("STEP classroom import envelope", () => {
@@ -141,21 +146,53 @@ describe("STEP classroom import envelope", () => {
     });
   });
 
-  it("accepts legacy V2 semantics and discards gesture coordinates", () => {
+  it("accepts the current V2 export, keeps explicit scores, and discards gesture coordinates", () => {
     const result = parseStepClassroomEnvelope(makeV2Export());
 
     expect(result.version).toBe(2);
     expect(result.payload.students[0]?.observations[0]).toMatchObject({
-      contextLabel: "题1",
+      contextLabel: "函数单调性",
       semanticAnchor: null,
       semanticText: "掌握充分，快于预期，重点关注掌握",
     });
+    expect(result.payload.students[0]?.scores).toEqual({ A: 4, B: 3, C: 2 });
     expect(result.dataText).not.toContain("rawNormalizedPoint");
     expect(result.dataText).not.toMatch(/\"[xy]\"/);
     expect(mergeStepClassroomResult(result.payload, null).students[0]?.events).toEqual([
-      "题1：掌握充分，快于预期，重点关注掌握",
-      "题1备注：按步骤完成（待教师复核）",
+      "函数单调性：掌握充分，快于预期，重点关注掌握",
+      "课堂事件备注：按步骤完成（待教师复核）",
     ]);
+    expect(createStepDeterministicResult(result.payload).students[0]).toMatchObject({
+      present: true,
+      scores: { A: 4, B: 3, C: 2 },
+    });
+  });
+
+  it("continues to accept the early V2 prompt and question-index shape", () => {
+    const current = makeV2Export();
+    const dataText = current.split("=== DATA BEGIN ===\n")[1]!.split("\n=== DATA END ===")[0]!;
+    const payload = JSON.parse(dataText) as Record<string, unknown> & { students: Array<Record<string, unknown>> };
+    payload.questionCount = 2;
+    delete payload.knowledgePointCount;
+    delete payload.students[0]!.scores;
+    payload.students[0]!.observations = [{
+      questionIndex: 1,
+      semanticModelVersion: 2,
+      rawNormalizedPoint: { x: -0.4, y: 0.2 },
+      performance: {
+        rawNormalizedPoint: { x: -0.4, y: 0.2 },
+        masteryDirection: "sufficient",
+        paceDirection: "fasterThanExpected",
+        primaryEmphasis: "mastery",
+      },
+      intervention: null,
+      recordedAt: "2026-08-11T09:20:00+08:00",
+    }];
+    payload.students[0]!.notes = [{ contextQuestionIndex: 1, text: "按步骤完成", recordedAt: "2026-08-11T09:21:00+08:00" }];
+    const legacy = `${STEP_CLASSROOM_HEADER_V2}\nPROMPT_VERSION: ${STEP_PROMPT_VERSION_V2}\n\n=== DATA BEGIN ===\n${JSON.stringify(payload)}\n=== DATA END ===\n=== PROMPT BEGIN ===\n${STEP_INTERPRETATION_PROMPT_V2_LEGACY}\n=== PROMPT END ===`;
+    const parsed = parseStepClassroomEnvelope(legacy);
+    expect(parsed.payload.students[0]?.observations[0]?.contextLabel).toBe("题1");
+    expect(parsed.payload.students[0]?.scores).toEqual({ A: null, B: null, C: null });
   });
 
   it("still rejects V2 coordinates outside the two review-only fields", () => {

@@ -332,7 +332,7 @@ erDiagram
     TEXT id PK
     TEXT studentId FK
     TEXT date
-    INTEGER scoreA
+    REAL scoreA
     INTEGER scoreB
     INTEGER scoreC
     INTEGER scoreD
@@ -345,7 +345,7 @@ erDiagram
     TEXT metricId
     TEXT studentId
     TEXT date
-    INTEGER scoreA
+    REAL scoreA
     INTEGER scoreB
     INTEGER scoreC
     INTEGER scoreD
@@ -1063,7 +1063,7 @@ erDiagram
 | `id` | `TEXT` | 是 | PK |
 | `studentId` | `TEXT` | 是 | FK |
 | `date` | `TEXT` | 是 |  |
-| `scoreA` | `INTEGER` | 是 |  |
+| `scoreA` | `REAL` | 是 |  |
 | `scoreB` | `INTEGER` | 是 |  |
 | `scoreC` | `INTEGER` | 是 |  |
 | `scoreD` | `INTEGER` | 是 | default: 3 |
@@ -1081,7 +1081,7 @@ erDiagram
 | `metricId` | `TEXT` | 是 |  |
 | `studentId` | `TEXT` | 是 |  |
 | `date` | `TEXT` | 是 |  |
-| `scoreA` | `INTEGER` | 是 |  |
+| `scoreA` | `REAL` | 是 |  |
 | `scoreB` | `INTEGER` | 是 |  |
 | `scoreC` | `INTEGER` | 是 |  |
 | `scoreD` | `INTEGER` | 是 |  |
