@@ -17,6 +17,34 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
 }));
 vi.mock("@/services/restricted-feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/restricted-feedback-generation-service")>(),
+  generateStudentContentBriefFeedback: async (input: {
+    studentName: string;
+    planType: string;
+    evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> };
+  }) => {
+    const generated = await generationMocks.generate(input);
+    return {
+      contentBrief: {
+        mainFocus: "测试反馈",
+        present: [],
+        background: [],
+        interpretations: [],
+        contextOnly: [],
+        omit: [],
+        communicationIntent: "测试",
+        unresolved: [],
+      },
+      writerInput: {
+        studentName: input.studentName,
+        plan: { type: input.planType, style: "gentle", length: "standard", closureType: generated.composition.closureType },
+        contentBrief: { mainFocus: "测试反馈", present: [], background: [], interpretations: [], communicationIntent: "测试" },
+        stableRules: ["测试边界"],
+      },
+      composition: generated.composition,
+      planner: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 }, reusedCheckpoint: false },
+      writer: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } },
+    };
+  },
   generateRestrictedFeedback: async (input: {
     studentName: string;
     planType: string;
@@ -145,6 +173,7 @@ afterEach(async () => {
   await prisma.student.deleteMany({ where: { studentId: studentNumber } });
   await prisma.student.deleteMany({ where: { studentId: `${studentNumber}-OVERRIDE` } });
   await prisma.student.deleteMany({ where: { studentId: `${studentNumber}-WCG` } });
+  await prisma.student.deleteMany({ where: { studentId: `${studentNumber}-OTHER` } });
   await prisma.student.deleteMany({ where: { studentId: { startsWith: `${studentNumber}-QUEUE-` } } });
   await prisma.class.deleteMany({ where: { code: `${classCode}-RANGE` } });
   await prisma.class.deleteMany({ where: { code: classCode } });
@@ -734,10 +763,11 @@ describe("feedback plan service", () => {
     expect(JSON.parse(generation.inputSnapshot ?? "{}")).toMatchObject({ generationApproach: "free" });
   });
 
-  it("retains an invalid restricted Writer draft as blocked review until the teacher edits it", async () => {
+  it("treats a student candidate with a hard audit issue as generated and records it for review", async () => {
     const semester = await prisma.semester.create({ data: { name: semesterName, startDate: "2099-01-01", endDate: "2099-12-31" } });
     const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: classCode, name: "受限草稿阻断测试班" } });
     const student = await prisma.student.create({ data: { name: "受限草稿学生", studentId: studentNumber, gender: "女", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
+    const otherStudent = await prisma.student.create({ data: { name: "其他合成学生", studentId: `${studentNumber}-OTHER`, gender: "男", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
     const session = await prisma.classSession.create({ data: { code: sessionCode, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
     await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: "课堂独立完成了基础题", rawText: "合成测试" } });
     const plan = await createFeedbackPlan({
@@ -749,7 +779,7 @@ describe("feedback plan service", () => {
       sessionId: session.id,
       studentIds: [student.id],
     });
-    const blockedText = "模型草稿：课堂独立完成了基础题。";
+    const blockedText = `${otherStudent.name}课堂独立完成了基础题。`;
     generationMocks.generate.mockResolvedValue({
       kind: "blocked_draft",
       strategy: {
@@ -796,18 +826,27 @@ describe("feedback plan service", () => {
       status: "needs_review",
       reviewMode: "model",
       finalText: blockedText,
-      selectedGenerationId: null,
+      selectedGenerationId: expect.any(String),
       generationError: null,
     });
-    expect(audit).toMatchObject({ status: "blocked", items: expect.arrayContaining([expect.objectContaining({ code: "restricted_writer_output_invalid", severity: "blocked" })]) });
-    expect(execution.attempts.at(-1)).toMatchObject({ status: "failed", stage: "deterministic_check" });
-    expect(execution.attempts.at(-1)).not.toHaveProperty("generationRecordId");
-    await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: item.id } })).resolves.toBe(0);
+    expect(audit).toMatchObject({ status: "blocked", items: expect.arrayContaining([expect.objectContaining({ code: "cross_student_content", severity: "blocked" })]) });
+    expect(execution.attempts.at(-1)).toMatchObject({ status: "succeeded", generationRecordId: item.selectedGenerationId });
+    await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: item.id } })).resolves.toBe(1);
+    const generationRecord = await prisma.generationRecord.findUniqueOrThrow({ where: { id: item.selectedGenerationId! } });
+    const generationInput = JSON.parse(generationRecord.inputSnapshot ?? "{}") as Record<string, unknown>;
+    expect(generationRecord.promptVersion).toBe("feedback-plan-v4-restricted-content-brief");
+    expect(generationInput).toMatchObject({
+      generationApproach: "restricted",
+      contentBrief: expect.any(Object),
+      writerInput: expect.any(Object),
+    });
+    expect(generationInput).not.toHaveProperty("strategy");
+    expect(JSON.stringify(generationInput.writerInput)).not.toContain("disclosures");
     await expect(approveFeedbackPlanItems({
       planId: plan.id,
       itemIds: [item.id],
       expectedHashes: { [item.id]: item.finalTextHash! },
-    })).rejects.toThrow("受限 Writer 草稿未通过程序核验");
+    })).rejects.toThrow("反馈文本出现其他学生姓名");
 
     const task = await createTeacherTask({
       planItemId: item.id,
@@ -817,19 +856,19 @@ describe("feedback plan service", () => {
     });
     await updateTeacherTaskStatus(task.id, "completed");
     item = await prisma.feedbackPlanItem.findUniqueOrThrow({ where: { id: item.id } });
-    expect(JSON.parse(item.auditSnapshot).items).toContainEqual(expect.objectContaining({ code: "restricted_writer_output_invalid" }));
+    expect(JSON.parse(item.auditSnapshot).items).toContainEqual(expect.objectContaining({ code: "cross_student_content" }));
 
     item = await patchFeedbackPlanItem(item.id, {
       finalText: blockedText,
       reviewMode: "teacher_edited",
       expectedItemRevision: item.itemRevision,
     });
-    expect(JSON.parse(item.auditSnapshot).items).toContainEqual(expect.objectContaining({ code: "restricted_writer_output_invalid" }));
+    expect(JSON.parse(item.auditSnapshot).items).toContainEqual(expect.objectContaining({ code: "cross_student_content" }));
     await expect(approveFeedbackPlanItems({
       planId: plan.id,
       itemIds: [item.id],
       expectedHashes: { [item.id]: item.finalTextHash! },
-    })).rejects.toThrow("受限 Writer 草稿未通过程序核验");
+    })).rejects.toThrow("反馈文本出现其他学生姓名");
 
     item = await patchFeedbackPlanItem(item.id, {
       finalText: "教师已核对并改写：课堂独立完成了基础题。",
@@ -837,13 +876,13 @@ describe("feedback plan service", () => {
       expectedItemRevision: item.itemRevision,
     });
     expect(item.reviewMode).toBe("teacher_edited");
-    expect(JSON.parse(item.auditSnapshot).items).not.toContainEqual(expect.objectContaining({ code: "restricted_writer_output_invalid" }));
+    expect(JSON.parse(item.auditSnapshot).items).not.toContainEqual(expect.objectContaining({ code: "cross_student_content" }));
     await expect(approveFeedbackPlanItems({
       planId: plan.id,
       itemIds: [item.id],
       expectedHashes: { [item.id]: item.finalTextHash! },
     })).resolves.toMatchObject({ status: "approved" });
-    await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: item.id } })).resolves.toBe(0);
+    await expect(prisma.generationRecord.count({ where: { feedbackPlanItemId: item.id } })).resolves.toBe(1);
   });
 
   it("can set, clear, and protect a student-specific plan configuration", async () => {
