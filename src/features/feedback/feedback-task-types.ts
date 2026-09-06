@@ -116,6 +116,10 @@ export type FeedbackBatchClient = {
           };
         }>;
       } | null;
+      audit?: {
+        status: "pass" | "needs_review" | "blocked";
+        items: Array<{ code: string; severity: "info" | "requires_teacher" | "blocked"; message: string }>;
+      } | null;
     }>;
   }>;
 };

@@ -71,9 +71,12 @@ import { blockAuditForRestrictedWriter, createAuditSnapshot, sha256 } from "@/se
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
 import { generateFreeFeedbackPlanComposition } from "@/services/feedback-generation-service";
 import {
+  generateStudentContentBriefFeedback,
   generateRestrictedFeedback,
   RestrictedFeedbackCheckpointV1Schema,
+  RestrictedFeedbackCheckpointV2Schema,
   type RestrictedFeedbackGenerationResult,
+  type StudentContentBriefGenerationResult,
 } from "@/services/restricted-feedback-generation-service";
 import { recordSuccessfulGeneration } from "@/services/generation-memory-service";
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
@@ -2799,29 +2802,12 @@ export async function generateFeedbackPlanItems(input: {
         let composition: FeedbackCompositionPlan;
         let draftComposition: FeedbackCompositionPlan | null = null;
         let restrictedGeneration: RestrictedFeedbackGenerationResult | null = null;
+        let studentContentBriefGeneration: StudentContentBriefGenerationResult | null = null;
 
         if (actualApproach === "restricted") {
           const planner = getDraftRuntime();
           const writer = getReviewRuntime();
-          const checkpoint = RestrictedFeedbackCheckpointV1Schema.safeParse(execution.snapshot.restrictedCheckpoint);
-          restrictedGeneration = await generateRestrictedFeedback({
-            studentName,
-            planType: effectiveConfig.type,
-            outputRequirement: effectiveConfig.outputRequirement,
-            evidenceBundle: bundle,
-            style,
-            length,
-            generationPreferences: effectiveConfig.generationPreferences,
-            plannerClient: planner.client,
-            plannerModel: planner.model,
-            writerClient: writer.client,
-            writerModel: writer.model,
-            referenceDate,
-            forbiddenStudentNames: item.studentId === null
-              ? classStudentNames
-              : identity.otherStudentNames,
-            checkpoint: checkpoint.success ? checkpoint.data : null,
-            onCheckpoint: async (nextCheckpoint) => {
+          const saveRestrictedCheckpoint = async (nextCheckpoint: unknown) => {
               const nextSnapshot: FeedbackGenerationExecutionSnapshotV1 = {
                 ...updateFeedbackGenerationExecutionStage(execution.snapshot, execution.attempt, "writer"),
                 restrictedCheckpoint: nextCheckpoint,
@@ -2836,10 +2822,51 @@ export async function generateFeedbackPlanItems(input: {
                 throw new ApiError("反馈条目状态已经变化，策略检查点未保存", 409, "conflict", false);
               }
               execution.snapshot = nextSnapshot;
-            },
-            signal: input.signal,
-          });
-          composition = restrictedGeneration.composition;
+          };
+          if (item.studentId) {
+            const checkpoint = RestrictedFeedbackCheckpointV2Schema.safeParse(execution.snapshot.restrictedCheckpoint);
+            studentContentBriefGeneration = await generateStudentContentBriefFeedback({
+              studentName,
+              planType: effectiveConfig.type as "event_micro" | "stage_trend" | "course_end",
+              outputRequirement: effectiveConfig.outputRequirement,
+              evidenceBundle: bundle,
+              lessonMaterial: lessonMaterial ?? defaultLessonMaterial(),
+              communicationPreference: preference ?? null,
+              style,
+              length,
+              generationPreferences: effectiveConfig.generationPreferences,
+              plannerClient: planner.client,
+              plannerModel: planner.model,
+              writerClient: writer.client,
+              writerModel: writer.model,
+              referenceDate,
+              checkpoint: checkpoint.success ? checkpoint.data : null,
+              onCheckpoint: saveRestrictedCheckpoint,
+              signal: input.signal,
+            });
+            composition = studentContentBriefGeneration.composition;
+          } else {
+            const checkpoint = RestrictedFeedbackCheckpointV1Schema.safeParse(execution.snapshot.restrictedCheckpoint);
+            restrictedGeneration = await generateRestrictedFeedback({
+              studentName,
+              planType: effectiveConfig.type,
+              outputRequirement: effectiveConfig.outputRequirement,
+              evidenceBundle: bundle,
+              style,
+              length,
+              generationPreferences: effectiveConfig.generationPreferences,
+              plannerClient: planner.client,
+              plannerModel: planner.model,
+              writerClient: writer.client,
+              writerModel: writer.model,
+              referenceDate,
+              forbiddenStudentNames: classStudentNames,
+              checkpoint: checkpoint.success ? checkpoint.data : null,
+              onCheckpoint: saveRestrictedCheckpoint,
+              signal: input.signal,
+            });
+            composition = restrictedGeneration.composition;
+          }
         } else {
           const draft = getDraftRuntime();
           const generated = await generateFreeFeedbackPlanComposition({
@@ -2898,14 +2925,25 @@ export async function generateFeedbackPlanItems(input: {
                 feedbackPlanItemId: item.id,
                 sourceRefs: item.studentId ? [{ type: "student", id: item.studentId }] : [],
                 promptVersion: actualApproach === "restricted"
-                  ? "feedback-plan-v3-restricted"
+                  ? studentContentBriefGeneration
+                    ? "feedback-plan-v4-restricted-content-brief"
+                    : "feedback-plan-v3-restricted"
                   : "feedback-plan-v3-free",
                 modelRole: actualApproach === "restricted"
                   ? "feedbackReview"
                   : "feedbackDraft",
                 inputRevision: String(plan.planRevision),
                 variantKey: execution ? `feedback-plan-item:${item.id}:attempt:${execution.attempt}` : null,
-                inputSnapshot: successfulRestrictedGeneration ? {
+                inputSnapshot: studentContentBriefGeneration ? {
+                  generationApproach: "restricted",
+                  requestedApproach: execution?.snapshot.requestedApproach,
+                  contentBrief: studentContentBriefGeneration.contentBrief,
+                  writerInput: studentContentBriefGeneration.writerInput,
+                  generationConfig: effectiveConfig,
+                  generationContext: { studentName, communicationPreference: preference ?? null, referenceDate },
+                  planner: studentContentBriefGeneration.planner,
+                  writer: studentContentBriefGeneration.writer,
+                } : successfulRestrictedGeneration ? {
                   generationApproach: "restricted",
                   requestedApproach: execution?.snapshot.requestedApproach,
                   strategy: successfulRestrictedGeneration.strategy,
@@ -2928,6 +2966,9 @@ export async function generateFeedbackPlanItems(input: {
                   ...(successfulRestrictedGeneration ? {
                     planner: successfulRestrictedGeneration.planner,
                     writer: successfulRestrictedGeneration.writer,
+                  } : studentContentBriefGeneration ? {
+                    planner: studentContentBriefGeneration.planner,
+                    writer: studentContentBriefGeneration.writer,
                   } : {}),
                 },
                 finalText: composition.draftFeedback,

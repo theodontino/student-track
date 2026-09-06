@@ -149,9 +149,9 @@ AI 生成历史由 `generation-memory-service` 实施热、温、长期三层保
 
 外部 LLM 失败只能使当前生成任务失败，不得修改已经保存的学生档案或历史记录。流式接口应使用统一 SSE 编解码工具，结束事件和错误事件必须可区分。
 
-课后反馈生成必须先由 Service 从冻结快照组装确定性 `FeedbackEvidenceBundle`，再只按计划的 `generationApproach` 执行。受限反馈由 `feedbackDraft` 角色的 Planner 产生并校验 `FeedbackStrategyV1`，服务端把策略编译为 `RestrictedWriterInputV1`，再交给 `feedbackReview` 角色的 Writer。Writer 只能看到当前收件人、表达偏好、准许披露的内容和家长动作，不能看到完整证据包、原始沟通、未披露内容、内部排除理由或其他学生信息。
+课后反馈生成必须先由 Service 从冻结快照组装确定性 `FeedbackEvidenceBundle`，再只按计划的 `generationApproach` 执行。学生受限反馈由 `feedbackDraft` 角色的 Planner 读取冻结输入并产生实验版 `ContentBrief`；服务端只校验其 Schema 和 `evidenceRefs`，不得再按引用回填原始证据内容。`feedbackReview` 角色的 Writer 只接收 Planner 写入 `present`、`background`、`interpretations` 的事实内容，以及 `mainFocus`、`communicationIntent` 和表达设置；它不能看到完整证据包、原始测评报告、原始沟通、教师 `outputRequirement`、`contextOnly`、`omit`、`unresolved` 或其他学生信息。班级公共反馈暂时继续使用 `FeedbackStrategyV1` 和 `RestrictedWriterInputV1`，不宣称已经过学生反馈实验验证。
 
-自由反馈只有一个逻辑模型阶段，由 `feedbackDraft` 角色根据当前学生的冻结、已确认材料直接生成结构化 Composition；供应商或 Schema 修复重试不构成第二个审核阶段。两种方式都执行收件人、串名、证据、模块、家长动作和正文的程序核验，并写入现有 Composition、审计、正文、批准和导出结构。受限 Writer 返回可解析 JSON 和非空正文、但结构协议仍失败时，只把正文恢复为带 `restricted_writer_output_invalid` 硬阻断的可编辑草稿；失败输出中的模块、覆盖和家长动作不进入可信 Composition，教师实际修改并重新核验前，服务端拒绝批准、Excel 导出和 WCG 草稿包。受限方式失败后的普通重试仍执行受限方式，可复用已保存的 Planner 检查点；只有教师明确确认才能让失败或未开始条目改用自由方式。历史 `generationMode` 只用于只读说明，不再选择执行分支；`generationApproach = "legacy"` 的开始、继续、重试及批次 worker 统一返回 `409 legacy_generation_retired`，不映射到当前方式。成功结果写入 `GenerationRecord`；阻断草稿不冒充成功记录，失败与中断尝试留在条目执行快照；两者都不得作为教师日常历史入口。LLM 不能决定学生身份、课次边界、考勤补全、D 分或数据库写入。
+自由反馈只有一个逻辑模型阶段，由 `feedbackDraft` 角色根据当前学生的冻结、已确认材料直接生成结构化 Composition；供应商或 Schema 修复重试不构成第二个审核阶段。学生受限 Writer 的非空正文通过薄适配进入现有 Composition，模块和证据覆盖保持为空，不反向要求 Writer 生成审计结构。生成状态只表示是否获得候选正文，程序核验另行判断收件人、串名、内部内容、证据、模块、家长动作和正文安全：有候选正文时一律保存正文、创建 `GenerationRecord` 并把执行记为成功，即使核验阻断也只进入待复核并禁止批准、Excel 导出和 WCG 草稿包；没有候选正文才进入生成失败。学生受限检查点使用保存 `ContentBrief`、Writer 输入和 Planner trace 的 V2，恢复后直接继续 Writer；学生旧 V1 检查点不转换、不复用，班级公共反馈继续使用 V1。受限方式失败后的普通重试仍执行受限方式；只有教师明确确认才能让失败或未开始条目改用自由方式。历史 `generationMode` 只用于只读说明，不再选择执行分支；`generationApproach = "legacy"` 的开始、继续、重试及批次 worker 统一返回 `409 legacy_generation_retired`，不映射到当前方式。LLM 不能决定学生身份、课次边界、考勤补全、D 分或数据库写入。
 
 反馈内容结构与表达参数相互独立。表达维度为“简洁 / 详细”和“温和 / 专业”；
 字符数仅用于界面参考，不改变模型审核状态，也不阻止保存或导出。单人场景通过普通
