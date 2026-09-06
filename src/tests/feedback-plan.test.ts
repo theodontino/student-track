@@ -244,7 +244,7 @@ describe("feedback plan composition gate", () => {
     expect(sanitizeFeedbackComposition(composition({ draftFeedback: `本次表现稳定。${boundary}` })).draftFeedback).toBe("本次表现稳定。");
   });
 
-  it("warns about student-directed language only while auditing model-generated parent text", () => {
+  it("blocks student-directed language only while auditing model-generated parent text", () => {
     const studentDirected = composition({ draftFeedback: "你今天第二道同类题已经能够独立完成，继续加油。" });
     const generatedAudit = validateCompositionForBundle(
       studentDirected,
@@ -253,11 +253,35 @@ describe("feedback plan composition gate", () => {
       undefined,
       { enforceParentAudience: true },
     );
-    expect(generatedAudit.status).toBe("needs_review");
-    expect(generatedAudit.issues).toContainEqual(expect.objectContaining({ code: "recipient_mismatch" }));
+    expect(generatedAudit.status).toBe("blocked");
+    expect(generatedAudit.issues).toContainEqual(expect.objectContaining({ code: "recipient_mismatch", severity: "blocked" }));
 
     const teacherEditAudit = validateCompositionForBundle(studentDirected, bundle());
     expect(teacherEditAudit.issues.some((issue) => issue.code === "recipient_mismatch")).toBe(false);
+  });
+
+  it("blocks an unresolved recipient placeholder in a model-generated candidate", () => {
+    const result = validateCompositionForBundle(
+      composition({ draftFeedback: "学生姓名家长您好，今天课堂完成了练习。" }),
+      bundle(),
+      undefined,
+      undefined,
+      { enforceParentAudience: true },
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "recipient_placeholder", severity: "blocked" }));
+  });
+
+  it("blocks internal workflow traces while keeping the candidate auditable", () => {
+    const result = validateCompositionForBundle(
+      composition({ draftFeedback: "这段是 AI 生成反馈，课堂完成了练习。" }),
+      bundle(),
+      undefined,
+      undefined,
+      { enforceParentAudience: true },
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "internal_content_leak", severity: "blocked" }));
   });
 
   it("warns about a parent action hidden in text when the action switch is false", () => {

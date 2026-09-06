@@ -11,6 +11,16 @@ vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
 }));
 vi.mock("@/services/restricted-feedback-generation-service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/services/restricted-feedback-generation-service")>(),
+  generateStudentContentBriefFeedback: async (input: { studentName: string; planType: string }) => {
+    const generated = await generationMocks.generate(input);
+    return {
+      contentBrief: { mainFocus: "测试反馈", present: [], background: [], interpretations: [], contextOnly: [], omit: [], communicationIntent: "测试", unresolved: [] },
+      writerInput: { studentName: input.studentName, plan: { type: input.planType, style: "gentle", length: "standard", closureType: generated.composition.closureType }, contentBrief: { mainFocus: "测试反馈", present: [], background: [], interpretations: [], communicationIntent: "测试" }, stableRules: ["测试边界"] },
+      composition: generated.composition,
+      planner: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 }, reusedCheckpoint: false },
+      writer: { model: "test-feedback-model", attempts: 1, durationMs: 1, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } },
+    };
+  },
   generateRestrictedFeedback: async (input: { studentName: string; planType: string }) => {
     const generated = await generationMocks.generate(input);
     return {
