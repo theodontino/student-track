@@ -41,7 +41,7 @@ GitHub Actions 的 **Build Windows Core offline package** 继续保留给临时�
 
 ```powershell
 $installer = Join-Path $env:TEMP "Install-StudentTrackCore.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.6/Install-StudentTrackCore.ps1" -OutFile $installer
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/theodontino/student-track/releases/download/v1.3.0-beta.7/Install-StudentTrackCore.ps1" -OutFile $installer
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 ```
 

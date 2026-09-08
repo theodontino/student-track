@@ -18,6 +18,7 @@ import {
   defaultFeedbackQueueFilter,
   feedbackBatchGenerationIsActive,
   feedbackQueueCategory,
+  parseFeedbackQueueInitialState,
   resolveFeedbackQueueTarget,
   feedbackStudioInitialPlanTarget,
   feedbackStudioPlanTarget,
@@ -126,6 +127,19 @@ describe("feedback task group workspace state", () => {
     for (const status of ["evidence_ready", "queued", "generating", "pause_requested", "paused", "generation_failed", "stale"]) {
       expect(feedbackQueueCategory(status)).toBe("action");
     }
+  });
+
+  it("parses queue URL state after hydration instead of during the server render", () => {
+    expect(parseFeedbackQueueInitialState("?queue=review&scopeClassId=class-b&itemId=item-b", "plan-a")).toEqual({
+      selectedFilter: "review",
+      classFilter: "class-b",
+      target: { planId: "plan-a", itemId: "item-b" },
+    });
+    expect(parseFeedbackQueueInitialState("?queue=invalid", "plan-a")).toEqual({
+      selectedFilter: null,
+      classFilter: "all",
+      target: { planId: "plan-a", itemId: "" },
+    });
   });
 
   it("opens an all-completed queue on the first non-empty completed category", () => {

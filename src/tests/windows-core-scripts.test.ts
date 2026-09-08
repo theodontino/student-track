@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+const productVersion = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8")).version as string;
 const scriptRoot = resolve(process.cwd(), "scripts", "windows");
 const common = readFileSync(resolve(scriptRoot, "StudentTrack-Core.Common.ps1"), "utf8");
 const prepare = readFileSync(resolve(scriptRoot, "Prepare-StudentTrackCore.ps1"), "utf8");
@@ -97,7 +98,7 @@ describe("Windows Core PowerShell entrypoints", () => {
   it("offers a clean-machine bootstrap without an administrator install or test-data seed", () => {
     expect(installer.charCodeAt(0)).toBe(0xfeff);
     expect(installer).toContain("#requires -Version 5.1");
-    expect(installer).toContain('"v1.3.0-beta.6"');
+    expect(installer).toContain(`"v${productVersion}"`);
     expect(installer).toContain("https://nodejs.org/dist/index.json");
     expect(installer).toContain('"win-x64-zip"');
     expect(installer).toContain('^v24\\.');
@@ -117,7 +118,7 @@ describe("Windows Core PowerShell entrypoints", () => {
   it("offers a double-click launcher that fetches the published bootstrap and preserves errors", () => {
     expect(clickInstaller).toMatch(/^@echo off/m);
     expect(clickInstaller).toContain("setlocal EnableExtensions DisableDelayedExpansion");
-    expect(clickInstaller).toContain("releases/download/v1.3.0-beta.6/Install-StudentTrackCore.ps1");
+    expect(clickInstaller).toContain(`releases/download/v${productVersion}/Install-StudentTrackCore.ps1`);
     expect(clickInstaller).toContain("Invoke-WebRequest -UseBasicParsing");
     expect(clickInstaller).toContain("$ErrorActionPreference='Stop'");
     expect(clickInstaller).toContain("SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
