@@ -7,7 +7,7 @@ import {
 import { createHash } from "node:crypto";
 
 
-import { discardFeedbackAttachment, readFeedbackAttachment, withFeedbackAttachmentRemoval, writeFeedbackAttachment } from "@/services/feedback-attachment-storage";
+import { readFeedbackAttachment, withFeedbackAttachmentRemoval, writeFeedbackAttachment } from "@/services/feedback-attachment-storage";
 type FeedbackPlanDb = PrismaClient | Prisma.TransactionClient;
 export async function validateFeedbackPlanAttachments(planId: string, db: FeedbackPlanDb = prisma) {
   const attachments = await db.feedbackAttachment.findMany({ where: { planId } });
@@ -43,7 +43,7 @@ export async function addFeedbackAttachment(input: {
     const item = await db.feedbackPlanItem.findFirst({ where: { id: input.planItemId, planId: input.planId }, select: { id: true } });
     if (!item) throw new ApiError("反馈计划条目不存在", 404, "not_found", false);
   }
-  const { hash, relativeLocator } = await writeFeedbackAttachment(input.planId, input.fileName, input.bytes);
+  const { hash, relativeLocator, discard } = await writeFeedbackAttachment(input.planId, input.fileName, input.bytes);
   try {
     return await db.feedbackAttachment.create({
       data: {
@@ -57,7 +57,7 @@ export async function addFeedbackAttachment(input: {
       },
     });
   } catch (error) {
-    await discardFeedbackAttachment(input.planId, relativeLocator);
+    await discard();
     throw error;
   }
 }

@@ -53,11 +53,12 @@ export async function writeFeedbackAttachment(planId: string, fileName: string, 
   const destination = path.join(feedbackAttachmentRoot(), planId, storedName);
   await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
   await fs.writeFile(destination, bytes, { mode: 0o600 });
-  return { hash, relativeLocator };
-}
-
-export async function discardFeedbackAttachment(planId: string, relativeLocator: string) {
-  await fs.unlink(attachmentDestination(planId, relativeLocator)).catch(() => undefined);
+  return {
+    hash,
+    relativeLocator,
+    // Failed persistence must discard the exact file written by this operation.
+    discard: async () => { await fs.unlink(destination).catch(() => undefined); },
+  };
 }
 
 export async function withFeedbackAttachmentRemoval<T>(planId: string, relativeLocator: string, removeRecord: () => Promise<T>) {
