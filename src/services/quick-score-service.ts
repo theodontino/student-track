@@ -4,7 +4,7 @@ import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
-import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-invalidation-service";
 import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 export interface QuickScoreEntry {

@@ -16,14 +16,13 @@ import { assertSemesterAvailable, assertSessionAvailable } from "@/services/acad
 import { getFeedbackScriptMaterial } from "@/services/feedback-script-library-service";
 import { ServiceError } from "@/services/service-error";
 
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-invalidation-service";
+
 type GroupLessonDb = PrismaClient | Prisma.TransactionClient;
 
 const HISTORICAL_UNLINK_ERROR = "该课次记录的是原班级组的历史进度，不能直接解除关联；如需纠正，请改挂到原班级组内的其他共同讲次";
 
 async function invalidateSessionFeedbackPlans(sessionId: string, db: Prisma.TransactionClient) {
-  // Loaded lazily to keep feedback-context -> group-lesson-service from forming
-  // a runtime import cycle through feedback-plan-service.
-  const { invalidateFeedbackPlans } = await import("@/services/feedback-plan-service");
   await invalidateFeedbackPlans({ sessionId }, db);
 }
 
