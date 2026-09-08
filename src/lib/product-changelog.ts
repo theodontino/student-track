@@ -6,6 +6,15 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.3.0-beta.8",
+    title: "跨班学生反馈计划与自适应并发",
+    changes: [
+      "多个班的学生可以在一份反馈计划中生成和复核，各自保存班级、课次、事实与设置，支持选择学生导出。",
+      "一次只执行一份计划；计划内模型请求从单并发逐步增加，服务繁忙时自动退避，暂停、继续和强制终止保持可控。",
+      "旧学生计划和批次保留只读查看与下载；继续工作时复制原事实和设置到新计划，不覆盖历史正文及批准记录。",
+    ],
+  },
+  {
     version: "1.3.0-beta.7",
     title: "反馈计划职责拆分与快速评分修复",
     changes: [
