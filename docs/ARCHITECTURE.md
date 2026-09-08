@@ -139,6 +139,8 @@ Page / Component
 
 正式事实变更后的计划失效传播由独立的 `feedback-plan-invalidation-service` 负责，考勤、快速评分、复核和共同课服务直接调用它；该服务只依赖数据库、快照 Schema 和 `feedback-plan/model` 中的纯函数，不依赖生成执行器、反馈上下文或批次编排。旧 `feedback-plan-service` 保留转导出以兼容现有入口。失效规则保持原有语义：V2 冻结事实快照及已有生成痕迹的计划不因后续事实变化而原位失效。
 
+附件业务由 `feedback-attachment-service` 管理，文件读写和删除失败恢复由 `feedback-attachment-storage` 管理；回收站复用存储层清理目录，不反向依赖计划或附件业务。沟通偏好候选及当前偏好的事务更新归属 `communication-preference-service`。原计划服务保留兼容转导出。
+
 `TeacherTask` 是未来教师动作的硬门禁；`TeacherObservation` 仅表示内部观察，不能解除承诺阻断。教师确认的教师处理会以 `Event.type = "教师处理"` 持久化，并在反馈计划证据中标记为已确认判断。沟通偏好候选由 Student Track 从教师手工设置，或从 handoff 包内经过消息 ID 与逐字证据校验的结构化偏好信号产生；教师确认沟通草稿后才建立候选，确认候选前不改变当前偏好。摘要正则不作为 WCC 偏好的事实来源，WCG 也不直接写入偏好标签。反馈附件写入仓库外私有目录，数据库只保存最小元数据和受控相对定位符。
 
 LLM 负责提出解析结果和文本建议，不是业务事实来源。姓名映射、班级边界、未提及学生缺勤、分数范围和最终写入由确定性代码及教师确认控制。
