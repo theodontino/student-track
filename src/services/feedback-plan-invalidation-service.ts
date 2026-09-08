@@ -76,18 +76,20 @@ export async function invalidateFeedbackPlans(input: {
     const end = position(plan.rangeEndSession);
     return Boolean(start && end && targetPosition >= start && targetPosition <= end);
   }).map((plan) => plan.id));
-  const itemIds = plans.flatMap((plan) => matchingPlanIds.has(plan.id)
+  const selectedItems = plans.flatMap((plan) => matchingPlanIds.has(plan.id)
     ? plan.items.filter((item) => (
       ["evidence_ready", "generating", "needs_review"].includes(item.status)
       && (studentIds.length > 0
         ? Boolean(item.studentId && studentIds.includes(item.studentId)) || Boolean(input.sessionId && item.studentId === null)
         : true)
-    )).map((item) => item.id)
+    )).map((item) => ({ id: item.id, planId: plan.id }))
     : []);
-  if (itemIds.length === 0) return 0;
+  if (selectedItems.length === 0) return 0;
+  const itemIds = selectedItems.map((item) => item.id);
   const updated = await db.feedbackPlanItem.updateMany({ where: { id: { in: itemIds } }, data: { status: "stale" } });
   if (updated.count > 0) {
-    await db.feedbackPlan.updateMany({ where: { id: { in: [...matchingPlanIds] } }, data: { status: "stale" } });
+    const selectedPlanIds = [...new Set(selectedItems.map((item) => item.planId))];
+    await db.feedbackPlan.updateMany({ where: { id: { in: selectedPlanIds } }, data: { status: "stale" } });
   }
   return updated.count;
 }

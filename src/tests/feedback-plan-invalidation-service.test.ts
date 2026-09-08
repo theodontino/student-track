@@ -49,6 +49,39 @@ describe("feedback plan invalidation service", () => {
     await expect(invalidateFeedbackPlans({ sessionId: session.id, studentIds: [students[0].id] })).resolves.toBe(0);
   });
 
+  it("keeps another student's V1 plan unchanged when only the selected student's facts change", async () => {
+    const { plan, session, students } = await createLegacyDraft();
+    const inputSnapshot = JSON.stringify({
+      version: 1,
+      lessonMaterial: {
+        version: 1, groupFeedbackRaw: "", assessmentBriefRaw: "", lessonTitle: "",
+        classroomContent: [], classroomFocus: [], classroomExplanation: [], homework: [],
+        assessmentFocus: [], correctionAdvice: [], otherNotes: [],
+      },
+    });
+    const selectedItem = plan.items.find((item) => item.studentId === students[0].id)!;
+    await prisma.feedbackPlan.update({
+      where: { id: plan.id },
+      data: { inputSnapshot, items: { deleteMany: { id: { not: selectedItem.id } } } },
+    });
+    const otherPlan = await prisma.feedbackPlan.create({
+      data: {
+        semesterId: plan.semesterId, classId: plan.classId, sessionId: session.id,
+        type: "event_micro", outputRequirement: "合成测试", inputFingerprint: "test-other-input",
+        inputSnapshot, status: "ready", items: { create: { studentId: students[1].id } },
+      },
+    });
+
+    await expect(invalidateFeedbackPlans({ sessionId: session.id, studentIds: [students[0].id] })).resolves.toBe(1);
+
+    const selected = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id }, include: { items: true } });
+    expect(selected.status).toBe("stale");
+    expect(selected.items.map((item) => item.status)).toEqual(["stale"]);
+    const untouched = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: otherPlan.id }, include: { items: true } });
+    expect(untouched.status).toBe("ready");
+    expect(untouched.items.map((item) => item.status)).toEqual(["evidence_ready"]);
+  });
+
   it("keeps plan and item invalidation inside the caller's transaction", async () => {
     const { plan, session } = await createLegacyDraft();
     await expect(prisma.$transaction(async (tx) => {
