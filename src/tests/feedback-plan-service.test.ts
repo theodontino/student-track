@@ -1,3 +1,4 @@
+import { isFeedbackPlanGenerationRunning as isDirectGenerationRunning, pauseFeedbackPlanGeneration as pauseDirectGeneration } from "@/services/feedback-plan/generation";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as XLSX from "xlsx";
 import { promises as fs } from "node:fs";
@@ -1365,7 +1366,9 @@ describe("feedback plan service", () => {
     await startFeedbackPlanGeneration({ planId: plan.id });
     await vi.waitFor(() => expect(started).toBe(2));
     expect(maximumActive).toBe(2);
-    await expect(pauseFeedbackPlanGeneration(plan.id)).resolves.toMatchObject({ status: "pause_requested" });
+    expect(isDirectGenerationRunning(plan.id)).toBe(true);
+    expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(true);
+    await expect(pauseDirectGeneration(plan.id)).resolves.toMatchObject({ status: "pause_requested" });
     while (releases.length) releases.shift()!();
     await vi.waitFor(async () => expect((await getFeedbackPlan(plan.id))?.status).toBe("paused"));
     const paused = await getFeedbackPlan(plan.id);
@@ -1397,6 +1400,10 @@ describe("feedback plan service", () => {
     expect(continued?.generationRunStartedAt).toBeNull();
     expect(continued?.items.every((item) => item.generationCompletedAt instanceof Date)).toBe(true);
     expect(generationMocks.generate).toHaveBeenCalledWith(expect.objectContaining({ planType: "event_micro" }));
+    await vi.waitFor(() => {
+      expect(isDirectGenerationRunning(plan.id)).toBe(false);
+      expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false);
+    });
   });
 
   it("reconciles a lost generation run completely and only once", async () => {
