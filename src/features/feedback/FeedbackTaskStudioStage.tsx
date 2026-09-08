@@ -117,14 +117,15 @@ export function resolveFeedbackQueueTarget(
   return resolved ? { planId: resolved.plan.id, itemId: resolved.item.id } : null;
 }
 
-function initialUrlValue(name: string, fallback: string) {
-  if (typeof window === "undefined") return fallback;
-  return new URLSearchParams(window.location.search).get(name) || fallback;
-}
-
-function initialQueueFilter() {
-  const value = initialUrlValue("queue", "");
-  return value === "action" || value === "review" || value === "done" || value === "all" ? value : null;
+export function parseFeedbackQueueInitialState(search: string, planId: string) {
+  const values = new URLSearchParams(search);
+  const value = values.get("queue") || "";
+  const selectedFilter: QueueFilter | null = value === "action" || value === "review" || value === "done" || value === "all" ? value as QueueFilter : null;
+  return {
+    selectedFilter,
+    classFilter: values.get("scopeClassId") || "all",
+    target: { planId, itemId: values.get("itemId") || "" },
+  };
 }
 
 function writeQueueUrl(values: { itemId?: string; queue?: QueueFilter | null; classId?: string }) {
@@ -157,16 +158,24 @@ export function FeedbackTaskStudioStage(props: Props) {
   const { batchId, onPlanChange, planId } = props;
   const [batch, setBatch] = useState<FeedbackBatchClient | null>(null);
   const [singlePlan, setSinglePlan] = useState<QueuePlan | null>(null);
-  const [selectedFilter, setSelectedFilter] = useState<QueueFilter | null>(initialQueueFilter);
-  const [classFilter, setClassFilter] = useState(() => initialUrlValue("scopeClassId", "all"));
-  const [target, setTarget] = useState<QueueTarget>(() => ({ planId, itemId: initialUrlValue("itemId", "") }));
+  const [selectedFilter, setSelectedFilter] = useState<QueueFilter | null>(null);
+  const [classFilter, setClassFilter] = useState("all");
+  const [target, setTarget] = useState<QueueTarget>({ planId, itemId: "" });
   const [queueOpen, setQueueOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const loadSequence = useRef(0);
+  const initialPlanId = useRef(planId);
   const resolvedInitialPlan = useRef("");
   const queueTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const initial = parseFeedbackQueueInitialState(window.location.search, initialPlanId.current);
+    setSelectedFilter(initial.selectedFilter);
+    setClassFilter(initial.classFilter);
+    setTarget(initial.target);
+  }, []);
 
   const loadPlans = useCallback(async () => {
     const sequence = ++loadSequence.current;
