@@ -9,7 +9,7 @@ import { prisma } from "@/lib/prisma";
 const generationMocks = vi.hoisted(() => ({ generate: vi.fn() }));
 vi.mock("@/lib/llm", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/llm")>(),
-  createLLMClient: () => ({ chat: { completions: { create: vi.fn() } } }),
+  createLLMClient: () => ({ baseURL: "https://synthetic.example/v1", apiKey: "synthetic-key", chat: { completions: { create: vi.fn() } } }),
   getLLMModel: () => "test-feedback-model",
 }));
 vi.mock("@/services/feedback-generation-service", async (importOriginal) => ({
@@ -1323,6 +1323,33 @@ describe("feedback plan service", () => {
     expect(refreshed!.items[0]!.evidenceSnapshot).toBe(frozenEvidence);
     expect(JSON.parse(refreshed!.items[0]!.evidenceSnapshot).assessmentEvidence).toHaveLength(2);
     expect(generationMocks.generate).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs only one plan and waits for force-stopped late work before accepting another", async () => {
+    const { plan } = await createQueueControlPlan(1);
+    const second = await cloneFeedbackPlanDraft({ planId: plan.id, displayName: "串行测试第二份计划" });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    generationMocks.generate.mockImplementation(async (input: { evidenceBundle: { teachingEvidence: Array<{ id: string; content: string }> } }) => {
+      await gate;
+      return queueControlComposition(input.evidenceBundle);
+    });
+    try {
+      await startFeedbackPlanGeneration({ planId: plan.id });
+      await vi.waitFor(() => expect(generationMocks.generate).toHaveBeenCalledTimes(1));
+      await expect(startFeedbackPlanGeneration({ planId: second.id })).rejects.toMatchObject({ status: 409 });
+      expect((await getFeedbackPlan(second.id))?.generationStartedAt).toBeNull();
+      await forceStopFeedbackPlanGeneration(plan.id);
+      await expect(startFeedbackPlanGeneration({ planId: second.id })).rejects.toMatchObject({ status: 409 });
+      release();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id)).toBe(false));
+      await startFeedbackPlanGeneration({ planId: second.id });
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(second.id)).toBe(false));
+      expect((await getFeedbackPlan(second.id))?.items[0].status).toBe("needs_review");
+    } finally {
+      release();
+      await vi.waitFor(() => expect(isFeedbackPlanGenerationRunning(plan.id) || isFeedbackPlanGenerationRunning(second.id)).toBe(false));
+    }
   });
 
   it("limits generation to two active items and continues only queued items after pause", async () => {

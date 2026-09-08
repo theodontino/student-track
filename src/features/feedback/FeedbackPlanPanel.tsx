@@ -92,6 +92,7 @@ interface PlanItem {
 }
 
 interface Plan {
+  generationCapacity?: { active: number; maximum: number; providers: Array<{ capacity: number; active: number; waiting: number; cooldownMs: number }> } | null;
   id: string;
   displayName?: string | null;
   type: FeedbackPlanType;
@@ -1456,6 +1457,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     {archivedReadOnly && <StatusBanner tone="warning">已归档，只读；请在反馈历史中取消归档后修改。</StatusBanner>}
     {!isReview && !activePlan && (planLoading || !plansLoaded) && <StatusBanner tone="info">正在读取反馈计划…</StatusBanner>}
     {!isReview && !activePlan && !planLoading && plansLoaded && !requestedPlanId && <StatusBanner tone="warning"><span>当前课次还没有可恢复的反馈计划，请先回到“复核”步骤创建计划。</span><Button uiSize="sm" variant="secondary" onClick={() => workspace.setActiveStep("review")}>返回复核</Button></StatusBanner>}
+    {activePlan?.generationCapacity && <p aria-label="模型请求并发">模型请求 {activePlan.generationCapacity.active}/{Math.min(activePlan.generationCapacity.maximum, activePlan.generationCapacity.providers.reduce((total, provider) => total + provider.capacity, 0)) || 1} · 等待 {activePlan.generationCapacity.providers.reduce((total, provider) => total + provider.waiting, 0)}{activePlan.generationCapacity.providers.some((provider) => provider.cooldownMs > 0) ? " · 服务繁忙，等待后自动重试" : ""}</p>}
     {repeatExportRequest && activePlan?.id === repeatExportRequest.planId && <StatusBanner tone="warning"><span>相同文本已经导出过。只有确实需要重新下载时才继续。</span><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, repeatExportRequest.mode, true, repeatExportRequest.itemIds)} disabled={busy}>确认重复导出</Button><Button uiSize="sm" variant="ghost" onClick={() => setRepeatExportRequest(null)} disabled={busy}>取消</Button></StatusBanner>}
     {studioMode && !legacyGenerationRetired && !llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>当前没有可用的 LLM API Key 或模型。已有正文仍可编辑；生成和重试暂时锁定。</span><Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
     {studioMode && activePlan && !legacyGenerationRetired && <details className="feedback-plan-studio-models"><summary>模型角色与生成设置</summary><LLMRoleAssignmentsPanel workspace={llmWorkspace} showWecom={false} /></details>}

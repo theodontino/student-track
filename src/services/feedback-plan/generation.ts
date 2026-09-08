@@ -1,3 +1,6 @@
+import { feedbackRequestCapacity, MAX_FEEDBACK_REQUESTS } from "./generation-capacity";
+import { capacityControlledFeedbackClient } from "./generation-client";
+import { FeedbackPlanLane } from "./generation-lane";
 import { assertStudentPlanWritable, isHistoricalStudentPlan, parseStudentContext } from "./model";
 import type { PrismaClient } from "@/generated/prisma/client";
 
@@ -403,11 +406,11 @@ export async function generateFeedbackPlanItems(input: {
     let draftRuntime: { client: ReturnType<typeof createLLMClient>; model: string } | null = null;
     let reviewRuntime: { client: ReturnType<typeof createLLMClient>; model: string } | null = null;
     const getDraftRuntime = () => draftRuntime ??= {
-      client: createLLMClient("feedbackDraft"),
+      client: capacityControlledFeedbackClient(createLLMClient("feedbackDraft"), input.signal),
       model: getLLMModel("feedbackDraft"),
     };
     const getReviewRuntime = () => reviewRuntime ??= {
-      client: createLLMClient("feedbackReview"),
+      client: capacityControlledFeedbackClient(createLLMClient("feedbackReview"), input.signal),
       model: getLLMModel("feedbackReview"),
     };
     const storedApproach: FeedbackGenerationApproach = plan.generationApproach === "free" ? "free" : "restricted";
@@ -799,68 +802,8 @@ type FeedbackGenerationJobHandle = {
 
 const feedbackGenerationJobs = new Map<string, FeedbackGenerationJobHandle>();
 
-const MAX_FEEDBACK_CONCURRENCY = 2;
-
-type FeedbackGenerationPermitWaiter = {
-  signal?: AbortSignal;
-  resolve: (release: (() => void) | null) => void;
-  onAbort?: () => void;
-};
-
-type FeedbackGenerationPermitPool = {
-  active: number;
-  waiters: FeedbackGenerationPermitWaiter[];
-};
-
-const feedbackGenerationPermitPools = new Map<string, FeedbackGenerationPermitPool>();
-
-function feedbackGenerationPermitScope(planId: string, batchId: string | null) {
-  return batchId ? `batch:${batchId}` : `plan:${planId}`;
-}
-
-function releaseFeedbackGenerationPermit(scope: string) {
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const pool = feedbackGenerationPermitPools.get(scope);
-    if (!pool) return;
-    pool.active = Math.max(0, pool.active - 1);
-    while (pool.waiters.length) {
-      const waiter = pool.waiters.shift()!;
-      waiter.signal?.removeEventListener("abort", waiter.onAbort!);
-      if (waiter.signal?.aborted) {
-        waiter.resolve(null);
-        continue;
-      }
-      pool.active += 1;
-      waiter.resolve(releaseFeedbackGenerationPermit(scope));
-      return;
-    }
-    if (pool.active === 0) feedbackGenerationPermitPools.delete(scope);
-  };
-}
-
-function acquireFeedbackGenerationPermit(scope: string, signal?: AbortSignal) {
-  if (signal?.aborted) return Promise.resolve<(() => void) | null>(null);
-  const pool = feedbackGenerationPermitPools.get(scope) ?? { active: 0, waiters: [] };
-  feedbackGenerationPermitPools.set(scope, pool);
-  if (pool.active < MAX_FEEDBACK_CONCURRENCY) {
-    pool.active += 1;
-    return Promise.resolve<(() => void) | null>(releaseFeedbackGenerationPermit(scope));
-  }
-  return new Promise<(() => void) | null>((resolve) => {
-    const waiter: FeedbackGenerationPermitWaiter = { signal, resolve };
-    waiter.onAbort = () => {
-      const index = pool.waiters.indexOf(waiter);
-      if (index >= 0) pool.waiters.splice(index, 1);
-      signal?.removeEventListener("abort", waiter.onAbort!);
-      resolve(null);
-      if (pool.active === 0 && pool.waiters.length === 0) feedbackGenerationPermitPools.delete(scope);
-    };
-    pool.waiters.push(waiter);
-    signal?.addEventListener("abort", waiter.onAbort, { once: true });
-  });
+export function getFeedbackGenerationCapacity(planId: string) {
+  return feedbackGenerationJobs.has(planId) ? feedbackRequestCapacity.snapshot() : null;
 }
 
 export function isFeedbackPlanGenerationRunning(planId: string) {
@@ -941,39 +884,24 @@ async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prism
     });
     if (!plan) return;
     assertStudentPlanWritable(plan);
-  assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
+    assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
     if (!["queued", "generating", "pause_requested"].includes(plan.status)) return;
 
     const parentAllowsClaims = !plan.batchId || plan.batch?.status === "running";
     if (plan.status !== "pause_requested" && parentAllowsClaims && !signal?.aborted) {
-      const hasRunnableSibling = plan.batch?.plans.some((sibling) => (
-        sibling.status !== "generation_failed"
-        && sibling.items.some((item) => ["evidence_ready", "queued", "generating"].includes(item.status))
-      )) ?? false;
-      const localConcurrency = plan.batchId && hasRunnableSibling ? 1 : MAX_FEEDBACK_CONCURRENCY;
+      // Two student chains can prepare/cache work while HTTP capacity starts at one.
+      const learnedCapacity = feedbackRequestCapacity.snapshot().providers.reduce((total, provider) => total + provider.capacity, 0);
+      const localConcurrency = Math.min(MAX_FEEDBACK_REQUESTS, Math.max(2, learnedCapacity));
       while (active.size < localConcurrency) {
         if (signal?.aborted) break;
-        const releasePermit = await acquireFeedbackGenerationPermit(
-          feedbackGenerationPermitScope(planId, plan.batchId),
-          signal,
-        );
-        if (!releasePermit) break;
-        let itemId: string | null;
-        try {
-          itemId = await claimQueuedFeedbackPlanItem(planId, plan.batchId, db, signal);
-        } catch (error) {
-          releasePermit();
-          throw error;
-        }
+        const itemId = await claimQueuedFeedbackPlanItem(planId, plan.batchId, db, signal);
         if (!itemId) {
-          releasePermit();
           break;
         }
         const task = generateFeedbackPlanItems({ planId, itemIds: [itemId], preclaimed: true, signal }, db)
           .catch(() => undefined)
           .finally(() => {
             active.delete(itemId);
-            releasePermit();
           });
         active.set(itemId, task);
       }
@@ -1180,7 +1108,7 @@ async function prepareQueuedGenerationEvidence(input: {
   });
 }
 
-export async function startFeedbackPlanGeneration(input: {
+async function startFeedbackPlanGenerationInternal(input: {
   planId: string;
   itemIds?: string[];
   assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
@@ -1505,7 +1433,7 @@ export async function forceStopFeedbackPlanGeneration(
   return { accepted: true, status: settled.status, interrupted };
 }
 
-export async function continueFeedbackPlanGeneration(
+async function continueFeedbackPlanGenerationInternal(
   planId: string,
   db: PrismaClient = prisma,
   options: { allowBatchControl?: boolean; expectedBatchRevision?: number } = {},
@@ -1574,7 +1502,7 @@ export async function continueFeedbackPlanGeneration(
   return { accepted: true, status: "queued", queued };
 }
 
-export async function retryFeedbackPlanGeneration(
+async function retryFeedbackPlanGenerationInternal(
   input: { planId: string; itemIds?: string[] },
   db: PrismaClient = prisma,
   options: { allowBatchControl?: boolean; startJob?: boolean } = {},
@@ -1666,7 +1594,7 @@ export async function retryFeedbackPlanGeneration(
   return { accepted: true, ...result };
 }
 
-export async function retryFeedbackPlanGenerationWithFree(
+async function retryFeedbackPlanGenerationWithFreeInternal(
   input: { planId: string; itemIds?: string[] },
   db: PrismaClient = prisma,
   options: {
@@ -1783,4 +1711,26 @@ export async function retryFeedbackPlanGenerationWithFree(
     void startFeedbackGenerationJob(plan.id, db).catch(() => undefined);
   }
   return { accepted: true, status: changed.queued ? "queued" : "prepared", ...changed };
+}
+
+const feedbackPlanLane = new FeedbackPlanLane();
+async function singlePlanLaunch<T>(planId: string, operation: () => Promise<T>) {
+  try {
+    return await feedbackPlanLane.launch(planId, feedbackGenerationJobs.keys(), operation, () => feedbackRequestCapacity.reset());
+  } catch (error) {
+    if (error instanceof Error && error.message === "feedback_plan_busy") throw new ApiError("还有反馈计划的生成请求尚未结束，请等待完成或先暂停它", 409, "conflict", false);
+    throw error;
+  }
+}
+export function startFeedbackPlanGeneration(...args: Parameters<typeof startFeedbackPlanGenerationInternal>) {
+  return singlePlanLaunch(args[0].planId, () => startFeedbackPlanGenerationInternal(...args));
+}
+export function continueFeedbackPlanGeneration(...args: Parameters<typeof continueFeedbackPlanGenerationInternal>) {
+  return singlePlanLaunch(args[0], () => continueFeedbackPlanGenerationInternal(...args));
+}
+export function retryFeedbackPlanGeneration(...args: Parameters<typeof retryFeedbackPlanGenerationInternal>) {
+  return singlePlanLaunch(args[0].planId, () => retryFeedbackPlanGenerationInternal(...args));
+}
+export function retryFeedbackPlanGenerationWithFree(...args: Parameters<typeof retryFeedbackPlanGenerationWithFreeInternal>) {
+  return singlePlanLaunch(args[0].planId, () => retryFeedbackPlanGenerationWithFreeInternal(...args));
 }
