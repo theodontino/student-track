@@ -1,8 +1,8 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import {
-    CommunicationPreferenceSchema,
-    type CommunicationPreference
+  CommunicationPreferenceSchema,
+  type CommunicationPreference
 } from "@/lib/feedback-plan";
 import { prisma } from "@/lib/prisma";
 
@@ -58,4 +58,28 @@ export async function resolvePreferenceCandidate(id: string, decision: "confirme
     });
     return updated;
   });
+}
+
+/** Called inside the communication confirmation transaction; the candidate remains pending. */
+export async function recordCommunicationPreferenceCandidate(input: {
+  studentId: string;
+  communicationId: string;
+  preference: CommunicationPreference;
+  evidence: { signals: string[]; messageIds?: unknown };
+}, db: Prisma.TransactionClient) {
+  const existingCandidate = await db.communicationPreferenceCandidate.findFirst({
+    where: { sourceType: "communication", sourceId: input.communicationId },
+    select: { id: true },
+  });
+  if (!existingCandidate) {
+    await db.communicationPreferenceCandidate.create({
+      data: {
+        studentId: input.studentId,
+        sourceType: "communication",
+        sourceId: input.communicationId,
+        preferenceSnapshot: JSON.stringify(input.preference),
+        evidenceSnapshot: JSON.stringify(input.evidence),
+      },
+    });
+  }
 }

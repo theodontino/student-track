@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
+import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
 import {
   createFeedbackGenerationExecutionSnapshot,
   feedbackGenerationApproachForDerivedPlan,
@@ -11,7 +11,15 @@ import {
   serializeFeedbackGenerationExecutionSnapshot,
   withExplicitFreeFeedbackFallback,
 } from "@/lib/feedback-generation-approach";
-import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
+import {
+  FeedbackAuditSnapshotSchema,
+  FeedbackPlanAssessmentEvidenceSchema,
+  FeedbackPlanInputSnapshotSchema,
+  FeedbackPlanItemGenerationConfigSchema,
+  normalizeFeedbackGenerationPreferences,
+  type FeedbackPlanCreateInput,
+  type FeedbackPlanItemGenerationConfig,
+} from "@/lib/feedback-plan";
 import {
   FeedbackPlanBatchCreateSchema,
   FeedbackPlanBatchDraftPatchSchema,
@@ -20,36 +28,17 @@ import {
   type FeedbackPlanBatchDraftPatch,
   type FeedbackPlanBatchRename,
 } from "@/lib/feedback-plan-batch";
-import {
-  FeedbackPlanInputSnapshotSchema,
-  FeedbackAuditSnapshotSchema,
-  FeedbackPlanItemGenerationConfigSchema,
-  FeedbackPlanAssessmentEvidenceSchema,
-  normalizeFeedbackGenerationPreferences,
-  type FeedbackPlanCreateInput,
-  type FeedbackPlanItemGenerationConfig,
-} from "@/lib/feedback-plan";
-import { prisma } from "@/lib/prisma";
 import { feedbackPlanActionBucket, feedbackPlanItemStatusCounts } from "@/lib/feedback-plan-summary";
+import { prisma } from "@/lib/prisma";
 import {
   assertClassAvailable,
   assertFeedbackBatchAvailable,
   assertSemesterAvailable,
 } from "@/services/academic-scope-recycle-service";
-import {
-  continueFeedbackPlanGeneration,
-  cloneFeedbackPlanDraft,
-  createFeedbackPlan,
-  derivePlanStatus,
-  feedbackPlanHasGenerationTrace,
-  feedbackPlanItemHasGeneratedResult,
-  forceStopFeedbackPlanGeneration,
-  isFeedbackPlanGenerationRunning,
-  pauseFeedbackPlanGeneration,
-  reconcileInterruptedFeedbackPlanGeneration,
-  startFeedbackPlanGeneration,
-  updateFeedbackPlanDraft,
-} from "@/services/feedback-plan-service";
+import { continueFeedbackPlanGeneration, forceStopFeedbackPlanGeneration, isFeedbackPlanGenerationRunning, pauseFeedbackPlanGeneration, reconcileInterruptedFeedbackPlanGeneration, startFeedbackPlanGeneration } from "@/services/feedback-plan/generation";
+import { cloneFeedbackPlanDraft, createFeedbackPlan, updateFeedbackPlanDraft } from "@/services/feedback-plan/lifecycle";
+import { derivePlanStatus, feedbackPlanHasGenerationTrace, feedbackPlanItemHasGeneratedResult } from "@/services/feedback-plan/model";
+import { randomUUID } from "node:crypto";
 
 type BatchDb = PrismaClient | Prisma.TransactionClient;
 

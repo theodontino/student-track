@@ -1,3 +1,4 @@
+import { recordCommunicationPreferenceCandidate } from "@/services/communication-preference-service";
 import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { normalizeDimensionScore, normalizeScoreA, SCORE_RULES } from "@/config/rules";
@@ -602,26 +603,17 @@ export async function processDraftReview(input: ProcessDraftInput, db: ReviewDb 
             ? wccPreferenceCandidate
             : inferCommunicationPreferenceCandidate(summary);
           if (preferenceCandidate && confirmedCommunicationId) {
-            const existingCandidate = await tx.communicationPreferenceCandidate.findFirst({
-              where: { sourceType: "communication", sourceId: confirmedCommunicationId },
-              select: { id: true },
-            });
-            if (!existingCandidate) {
-              await tx.communicationPreferenceCandidate.create({
-                data: {
-                  studentId: student.id,
-                  sourceType: "communication",
-                  sourceId: confirmedCommunicationId,
-                  preferenceSnapshot: JSON.stringify(preferenceCandidate.preference),
-                  evidenceSnapshot: JSON.stringify({
-                    signals: preferenceCandidate.signals,
-                    ...(isWccDraft && "messageIds" in preferenceCandidate
-                      ? { messageIds: preferenceCandidate.messageIds }
-                      : {}),
-                  }),
-                },
-              });
-            }
+            await recordCommunicationPreferenceCandidate({
+              studentId: student.id,
+              communicationId: confirmedCommunicationId,
+              preference: preferenceCandidate.preference,
+              evidence: {
+                signals: preferenceCandidate.signals,
+                ...(isWccDraft && "messageIds" in preferenceCandidate
+                  ? { messageIds: preferenceCandidate.messageIds }
+                  : {}),
+              },
+            }, tx);
           }
         }
       }
