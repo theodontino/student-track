@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
-import { addFeedbackAttachment, removeFeedbackAttachment } from "@/services/feedback-plan-service";
+import { addFeedbackAttachment, removeFeedbackAttachment } from "@/services/feedback-attachment-service";
 
 function errorResponse(error: unknown, fallback: string) {
   const failure = safeApiError(error, fallback);

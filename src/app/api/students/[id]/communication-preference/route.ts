@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
 import { CommunicationPreferenceSchema } from "@/lib/feedback-plan";
-import { createPreferenceCandidate } from "@/services/feedback-plan-service";
+import { createPreferenceCandidate } from "@/services/communication-preference-service";
 
 type Context = { params: Promise<{ id: string }> };
 

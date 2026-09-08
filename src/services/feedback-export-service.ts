@@ -5,7 +5,7 @@ import type { StudentRisk } from "@/services/student-risk-service";
 import { createHash } from "node:crypto";
 import { ApiError } from "@/lib/api-errors";
 import { assertProductCapability } from "@/lib/product-capability-guard";
-import { validateFeedbackPlanAttachments } from "@/services/feedback-plan-service";
+import { validateFeedbackPlanAttachments } from "@/services/feedback-attachment-service";
 
 export interface FeedbackExportCard {
   id: string;

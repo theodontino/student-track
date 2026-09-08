@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
-import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-invalidation-service";
 import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 export interface AttendanceUpdate {

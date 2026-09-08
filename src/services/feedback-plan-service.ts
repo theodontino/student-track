@@ -1,85 +1,89 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
+import { ApiError } from "@/lib/api-errors";
+import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
+import {
+    createFeedbackGenerationExecutionSnapshot,
+    feedbackGenerationApproachForDerivedPlan,
+    feedbackGenerationApproachForNewPlan,
+    feedbackGenerationApproachLabel,
+    feedbackGenerationExecutionPublicView,
+    normalizeStoredFeedbackGenerationApproach,
+    parseFeedbackGenerationExecutionSnapshot,
+    serializeFeedbackGenerationExecutionSnapshot,
+    withExplicitFreeFeedbackFallback,
+    type FeedbackGenerationApproach,
+    type FeedbackGenerationExecutionSnapshotV1,
+    type StoredFeedbackGenerationApproach,
+} from "@/lib/feedback-generation-approach";
+import type { LessonFeedbackMaterial, StudentAssessmentEvidence } from "@/lib/feedback-materials";
+import {
+    CommunicationPreferenceSchema,
+    FEEDBACK_PLAN_TYPES,
+    FeedbackAuditSnapshotSchema,
+    FeedbackCompositionPlanSchema,
+    FeedbackEvidenceBundleSchema,
+    FeedbackHistorySnapshotSchema,
+    FeedbackPlanCloneDraftSchema,
+    FeedbackPlanCreateSchema,
+    FeedbackPlanDraftPatchSchema,
+    FeedbackPlanInputSnapshotSchema,
+    FeedbackPlanInputSnapshotV2Schema,
+    FeedbackPlanItemGenerationConfigSchema,
+    FeedbackPlanItemPatchSchema,
+    FeedbackPlanRenameSchema,
+    isHardFeedbackAuditIssue,
+    normalizeFeedbackGenerationPreferences,
+    RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
+    sanitizeFeedbackComposition,
+    sanitizeFeedbackEvidenceBundle,
+    STUDENT_FEEDBACK_PLAN_TYPES,
+    type FeedbackCompositionPlan,
+    type FeedbackEvidenceBundle,
+    type FeedbackGenerationPreferences,
+    type FeedbackHistorySnapshot,
+    type FeedbackPlanAssessmentEvidenceInput,
+    type FeedbackPlanCloneDraftInput,
+    type FeedbackPlanCreateInput,
+    type FeedbackPlanDraftPatch,
+    type FeedbackPlanInputSnapshot,
+    type FeedbackPlanIntakeSourceSummary,
+    type FeedbackPlanItemGenerationConfig,
+    type FeedbackPlanItemPatch,
+    type FeedbackPlanRenameInput,
+    type FeedbackPlanStudentOverride
+} from "@/lib/feedback-plan";
+import { feedbackPlanActionBucket, feedbackPlanItemStatusCounts } from "@/lib/feedback-plan-summary";
+import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
+import { createLLMClient, getLLMModel } from "@/lib/llm";
 import { prisma } from "@/lib/prisma";
 import {
-  assertClassAvailable,
-  assertFeedbackPlanAvailable,
-  assertSemesterAvailable,
+    assertClassAvailable,
+    assertFeedbackPlanAvailable,
+    assertSemesterAvailable,
 } from "@/services/academic-scope-recycle-service";
-import { ApiError } from "@/lib/api-errors";
-import {
-  createFeedbackGenerationExecutionSnapshot,
-  feedbackGenerationApproachForDerivedPlan,
-  feedbackGenerationApproachForNewPlan,
-  feedbackGenerationApproachLabel,
-  feedbackGenerationExecutionPublicView,
-  normalizeStoredFeedbackGenerationApproach,
-  parseFeedbackGenerationExecutionSnapshot,
-  serializeFeedbackGenerationExecutionSnapshot,
-  withExplicitFreeFeedbackFallback,
-  type FeedbackGenerationApproach,
-  type FeedbackGenerationExecutionSnapshotV1,
-  type StoredFeedbackGenerationApproach,
-} from "@/lib/feedback-generation-approach";
-import { createLLMClient, getLLMModel } from "@/lib/llm";
-import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import {
-  CommunicationPreferenceSchema,
-  FEEDBACK_PLAN_TYPES,
-  STUDENT_FEEDBACK_PLAN_TYPES,
-  FeedbackAuditSnapshotSchema,
-  FeedbackCompositionPlanSchema,
-  FeedbackEvidenceBundleSchema,
-  FeedbackHistorySnapshotSchema,
-  FeedbackPlanCloneDraftSchema,
-  FeedbackPlanInputSnapshotSchema,
-  FeedbackPlanInputSnapshotV2Schema,
-  FeedbackPlanDraftPatchSchema,
-  FeedbackPlanItemGenerationConfigSchema,
-  FeedbackPlanCreateSchema,
-  FeedbackPlanItemPatchSchema,
-  FeedbackPlanRenameSchema,
-  RESTRICTED_WRITER_OUTPUT_INVALID_CODE,
-  isHardFeedbackAuditIssue,
-  normalizeFeedbackGenerationPreferences,
-  sanitizeFeedbackComposition,
-  sanitizeFeedbackEvidenceBundle,
-  type CommunicationPreference,
-  type FeedbackCompositionPlan,
-  type FeedbackEvidenceBundle,
-  type FeedbackGenerationPreferences,
-  type FeedbackHistorySnapshot,
-  type FeedbackPlanCloneDraftInput,
-  type FeedbackPlanDraftPatch,
-  type FeedbackPlanInputSnapshot,
-  type FeedbackPlanIntakeSourceSummary,
-  type FeedbackPlanAssessmentEvidenceInput,
-  type FeedbackPlanCreateInput,
-  type FeedbackPlanItemGenerationConfig,
-  type FeedbackPlanStudentOverride,
-  type FeedbackPlanItemPatch,
-  type FeedbackPlanRenameInput,
-} from "@/lib/feedback-plan";
-import { LessonFeedbackMaterialSchema } from "@/lib/contracts/feedback";
-import type { LessonFeedbackMaterial, StudentAssessmentEvidence } from "@/lib/feedback-materials";
-import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
-import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
-import { feedbackPlanActionBucket, feedbackPlanItemStatusCounts } from "@/lib/feedback-plan-summary";
-import { blockAuditForRestrictedWriter, createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
+import { validateFeedbackPlanAttachments } from "@/services/feedback-attachment-service";
+import { withFeedbackPlanDirectoryRemoval } from "@/services/feedback-attachment-storage";
 import { buildFeedbackContext, type FeedbackContextStudent } from "@/services/feedback-context-service";
 import { generateFreeFeedbackPlanComposition } from "@/services/feedback-generation-service";
-import {
-  generateStudentContentBriefFeedback,
-  generateRestrictedFeedback,
-  RestrictedFeedbackCheckpointV1Schema,
-  RestrictedFeedbackCheckpointV2Schema,
-  type RestrictedFeedbackGenerationResult,
-  type StudentContentBriefGenerationResult,
-} from "@/services/restricted-feedback-generation-service";
+import { blockAuditForRestrictedWriter, createAuditSnapshot, sha256 } from "@/services/feedback-plan-audit";
 import { recordSuccessfulGeneration } from "@/services/generation-memory-service";
+import {
+    generateRestrictedFeedback,
+    generateStudentContentBriefFeedback,
+    RestrictedFeedbackCheckpointV1Schema,
+    RestrictedFeedbackCheckpointV2Schema,
+    type RestrictedFeedbackGenerationResult,
+    type StudentContentBriefGenerationResult,
+} from "@/services/restricted-feedback-generation-service";
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
+import { randomUUID } from "node:crypto";
+export { createPreferenceCandidate, resolvePreferenceCandidate } from "@/services/communication-preference-service";
+export { addFeedbackAttachment, removeFeedbackAttachment, validateFeedbackPlanAttachments } from "@/services/feedback-attachment-service";
+export { purgeFeedbackAttachmentDirectories } from "@/services/feedback-attachment-storage";
+export { invalidateFeedbackPlans } from "@/services/feedback-plan-invalidation-service";
+export { feedbackPlanHasGenerationTrace, feedbackPlanItemHasGeneratedResult } from "@/services/feedback-plan/model";
+
+import { feedbackPlanHasGenerationTrace, feedbackPlanItemHasGeneratedResult } from "@/services/feedback-plan/model";
 
 function parseJson<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -1544,50 +1548,6 @@ async function storedFeedbackPlanDraft(id: string, db: FeedbackPlanDb) {
   });
 }
 
-const FEEDBACK_PLAN_GENERATED_STATUSES = new Set([
-  "queued",
-  "generating",
-  "pause_requested",
-  "paused",
-  "generation_failed",
-  "in_review",
-  "partially_approved",
-  "approved",
-  "partially_exported",
-  "exported",
-]);
-
-export function feedbackPlanItemHasGeneratedResult(item: {
-  status: string;
-  finalText: string | null;
-  selectedGenerationId: string | null;
-  approvedAt: Date | null;
-  exportedAt: Date | null;
-}) {
-  return Boolean(item.finalText || item.selectedGenerationId || item.approvedAt || item.exportedAt)
-    || ["needs_review", "approved", "exported"].includes(item.status);
-}
-
-export function feedbackPlanHasGenerationTrace(plan: {
-  status: string;
-  generationStartedAt: Date | null;
-  generationCompletedAt: Date | null;
-  items: Array<{
-    status: string;
-    finalText: string | null;
-    selectedGenerationId: string | null;
-    approvedAt: Date | null;
-    exportedAt: Date | null;
-  }>;
-}) {
-  return Boolean(plan.generationStartedAt || plan.generationCompletedAt)
-    || FEEDBACK_PLAN_GENERATED_STATUSES.has(plan.status)
-    || plan.items.some((item) => (
-      feedbackPlanItemHasGeneratedResult(item)
-      || ["queued", "generating", "pause_requested", "paused", "generation_failed"].includes(item.status)
-    ));
-}
-
 function assertMutableFeedbackPlanDraft(
   plan: StoredFeedbackPlanDraft,
   expectedPlanRevision: number,
@@ -2212,88 +2172,6 @@ export async function updateTeacherTaskStatus(id: string, status: "pending" | "c
   });
 }
 
-/**
- * Mark only mutable feedback-plan revisions stale after confirmed source changes.
- * Approved/exported history is immutable; a later generation gets a new revision.
- */
-export async function invalidateFeedbackPlans(input: {
-  classId?: string;
-  semesterId?: string;
-  sessionId?: string;
-  studentIds?: string[];
-}, db: FeedbackPlanDb = prisma) {
-  const studentIds = [...new Set(input.studentIds ?? [])];
-  const targetSession = input.sessionId
-    ? await db.classSession.findUnique({ where: { id: input.sessionId }, select: { id: true, classId: true, semesterId: true, date: true, semesterNumber: true } })
-    : null;
-  const classId = input.classId ?? targetSession?.classId ?? undefined;
-  const semesterId = input.semesterId ?? targetSession?.semesterId ?? undefined;
-  const plans = await db.feedbackPlan.findMany({
-    where: {
-      archivedAt: null,
-      generationStartedAt: null,
-      ...(classId ? { classId } : {}),
-      ...(semesterId ? { semesterId } : {}),
-      items: { some: { status: { in: ["evidence_ready", "generating", "needs_review"] } } },
-    },
-    select: {
-      id: true,
-      status: true,
-      inputSnapshot: true,
-      sessionId: true,
-      rangeStartSessionId: true,
-      rangeEndSessionId: true,
-      generationStartedAt: true,
-      generationCompletedAt: true,
-      session: { select: { date: true, semesterNumber: true } },
-      rangeStartSession: { select: { date: true, semesterNumber: true } },
-      rangeEndSession: { select: { date: true, semesterNumber: true } },
-      items: {
-        select: {
-          id: true,
-          studentId: true,
-          status: true,
-          finalText: true,
-          selectedGenerationId: true,
-          approvedAt: true,
-          exportedAt: true,
-        },
-      },
-    },
-  });
-  const position = (session: { date: string; semesterNumber: number } | null | undefined) => session
-    ? `${session.date}|${String(session.semesterNumber).padStart(6, "0")}`
-    : null;
-  const targetPosition = targetSession ? position(targetSession) : null;
-  const matchingPlanIds = new Set(plans.filter((plan) => {
-    if (feedbackPlanHasGenerationTrace(plan)) return false;
-    const snapshot = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));
-    // V2 plans own a durable fact snapshot from the moment they are created.
-    // New facts must create another named plan instead of silently rebasing it.
-    if (snapshot.success && snapshot.data.version === 2) return false;
-    if (!input.sessionId) return true;
-    if (plan.sessionId === input.sessionId) return true;
-    if (!targetPosition) return false;
-    const start = position(plan.rangeStartSession);
-    const end = position(plan.rangeEndSession);
-    return Boolean(start && end && targetPosition >= start && targetPosition <= end);
-  }).map((plan) => plan.id));
-  const itemIds = plans.flatMap((plan) => matchingPlanIds.has(plan.id)
-    ? plan.items.filter((item) => (
-      ["evidence_ready", "generating", "needs_review"].includes(item.status)
-      && (studentIds.length > 0
-        ? Boolean(item.studentId && studentIds.includes(item.studentId)) || Boolean(input.sessionId && item.studentId === null)
-        : true)
-    )).map((item) => item.id)
-    : []);
-  if (itemIds.length === 0) return 0;
-  const updated = await db.feedbackPlanItem.updateMany({ where: { id: { in: itemIds } }, data: { status: "stale" } });
-  if (updated.count > 0) {
-    await db.feedbackPlan.updateMany({ where: { id: { in: [...matchingPlanIds] } }, data: { status: "stale" } });
-  }
-  return updated.count;
-}
-
 export async function listTeacherTasks(input: { semesterId?: string; classId?: string; status?: string }, db: PrismaClient = prisma) {
   const planWhere: Prisma.FeedbackPlanWhereInput = {
     ...(input.semesterId ? { semesterId: input.semesterId } : {}),
@@ -2342,129 +2220,6 @@ export async function listTeacherTasks(input: { semesterId?: string; classId?: s
   return [...pending, ...history];
 }
 
-function feedbackAttachmentRoot() {
-  return path.resolve(resolveStudentTrackRuntimePath(
-    "feedback-attachments",
-    "STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT",
-    path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-attachments"),
-  ));
-}
-
-/** Removes only the controlled per-plan attachment directories after their database rows are purged. */
-export async function purgeFeedbackAttachmentDirectories(planIds: string[]) {
-  const root = feedbackAttachmentRoot();
-  for (const planId of [...new Set(planIds)]) {
-    const directory = path.resolve(root, planId);
-    const relative = path.relative(root, directory);
-    if (relative !== planId || relative.startsWith("..") || path.isAbsolute(relative)) {
-      throw new Error("反馈计划附件目录无效");
-    }
-    await fs.rm(directory, { recursive: true, force: true });
-  }
-}
-
-function safeAttachmentName(name: string) {
-  const base = path.basename(name).replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 160);
-  return base || "attachment";
-}
-
-function attachmentDestination(planId: string, relativeLocator: string) {
-  const prefix = `${path.posix.join("feedback-attachments", planId)}/`;
-  if (!relativeLocator.startsWith(prefix)) throw new Error("附件定位符不在受控目录内");
-  const filePart = relativeLocator.slice(prefix.length);
-  if (!filePart || filePart.includes("..") || path.posix.isAbsolute(filePart)) throw new Error("附件定位符无效");
-  const root = feedbackAttachmentRoot();
-  const destination = path.resolve(root, planId, ...filePart.split("/"));
-  const relative = path.relative(root, destination);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("附件路径越界");
-  return destination;
-}
-
-export async function validateFeedbackPlanAttachments(planId: string, db: FeedbackPlanDb = prisma) {
-  const attachments = await db.feedbackAttachment.findMany({ where: { planId } });
-  const result: Array<{ id: string; status: "available" | "missing" }> = [];
-  for (const attachment of attachments) {
-    let status: "available" | "missing" = "available";
-    try {
-      const destination = attachmentDestination(planId, attachment.relativeLocator);
-      const bytes = await fs.readFile(destination);
-      const hash = createHash("sha256").update(bytes).digest("hex");
-      if (bytes.byteLength !== attachment.sizeBytes || hash !== attachment.sha256) status = "missing";
-    } catch {
-      status = "missing";
-    }
-    if (attachment.status !== status) await db.feedbackAttachment.update({ where: { id: attachment.id }, data: { status } });
-    result.push({ id: attachment.id, status });
-  }
-  return result;
-}
-
-export async function addFeedbackAttachment(input: {
-  planId: string;
-  planItemId?: string;
-  fileName: string;
-  mimeType: string;
-  bytes: Uint8Array;
-}, db: PrismaClient = prisma) {
-  if (input.bytes.byteLength === 0 || input.bytes.byteLength > 25 * 1024 * 1024) throw new ApiError("附件大小必须在 1B 到 25MB 之间", 400, "invalid_request", false);
-  await assertFeedbackPlanAvailable(input.planId, db);
-  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true } });
-  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
-  if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
-  if (input.planItemId) {
-    const item = await db.feedbackPlanItem.findFirst({ where: { id: input.planItemId, planId: input.planId }, select: { id: true } });
-    if (!item) throw new ApiError("反馈计划条目不存在", 404, "not_found", false);
-  }
-  const hash = createHash("sha256").update(input.bytes).digest("hex");
-  const fileName = `${randomUUID()}-${safeAttachmentName(input.fileName)}`;
-  const relativeLocator = path.posix.join("feedback-attachments", input.planId, fileName);
-  const destination = path.join(feedbackAttachmentRoot(), input.planId, fileName);
-  await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-  await fs.writeFile(destination, input.bytes, { mode: 0o600 });
-  try {
-    return await db.feedbackAttachment.create({
-      data: {
-        planId: input.planId,
-        planItemId: input.planItemId,
-        displayName: input.fileName.trim().slice(0, 200) || "attachment",
-        mimeType: input.mimeType.trim().slice(0, 200) || "application/octet-stream",
-        sizeBytes: input.bytes.byteLength,
-        sha256: hash,
-        relativeLocator,
-      },
-    });
-  } catch (error) {
-    await fs.unlink(destination).catch(() => undefined);
-    throw error;
-  }
-}
-
-export async function removeFeedbackAttachment(input: { planId: string; attachmentId: string }, db: PrismaClient = prisma) {
-  await assertFeedbackPlanAvailable(input.planId, db);
-  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true } });
-  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
-  if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
-  const attachment = await db.feedbackAttachment.findFirst({ where: { id: input.attachmentId, planId: input.planId } });
-  if (!attachment) throw new ApiError("反馈附件不存在", 404, "not_found", false);
-  const destination = attachmentDestination(input.planId, attachment.relativeLocator);
-  const quarantine = `${destination}.delete-${randomUUID()}`;
-  let moved = false;
-  try {
-    await fs.rename(destination, quarantine);
-    moved = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  try {
-    await db.feedbackAttachment.delete({ where: { id: attachment.id } });
-    if (moved) await fs.unlink(quarantine).catch(() => undefined);
-    return { id: attachment.id, deleted: true };
-  } catch (error) {
-    if (moved) await fs.rename(quarantine, destination).catch(() => undefined);
-    throw error;
-  }
-}
-
 export async function deleteFeedbackPlan(id: string, db: PrismaClient = prisma) {
   const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, batchId: true, status: true, approvedAt: true, exportedAt: true, exportRuns: { select: { id: true }, take: 1 }, attachments: { select: { relativeLocator: true } }, items: { select: { status: true, finalText: true, selectedGenerationId: true, approvedAt: true, exportedAt: true, generations: { select: { id: true }, take: 1 }, attachments: { select: { id: true } } } } } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
@@ -2481,31 +2236,12 @@ export async function deleteFeedbackPlan(id: string, db: PrismaClient = prisma) 
   if (hasGenerationOrApproval) {
     throw new ApiError("已有生成、审核、导出或附件的反馈计划只能归档，不能删除", 409, "conflict", false);
   }
-  // Validate every persisted locator before moving anything. A corrupted row
-  // must fail closed rather than allowing deletion to operate on an unknown
-  // path, even though the normal plan directory is itself controlled.
-  for (const attachment of plan.attachments) attachmentDestination(id, attachment.relativeLocator);
-  const root = feedbackAttachmentRoot();
-  const planDirectory = path.resolve(root, id);
-  const relative = path.relative(root, planDirectory);
-  if (relative.startsWith("..") || path.isAbsolute(relative) || relative !== id) throw new Error("反馈计划附件目录无效");
-  const quarantineDirectory = path.resolve(root, `.deleted-${id}-${randomUUID()}`);
-  let moved = false;
-  try {
-    await fs.mkdir(root, { recursive: true, mode: 0o700 });
-    try { await fs.rename(planDirectory, quarantineDirectory); moved = true; } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") throw error;
-    }
+  return withFeedbackPlanDirectoryRemoval(id, plan.attachments, async () => {
     await db.$transaction(async (tx) => {
       await tx.feedbackPlan.delete({ where: { id } });
     });
-    if (moved) await fs.rm(quarantineDirectory, { recursive: true, force: true });
     return { id, deleted: true };
-  } catch (error) {
-    if (moved) await fs.rename(quarantineDirectory, planDirectory).catch(() => undefined);
-    throw error;
-  }
+  });
 }
 
 export async function archiveFeedbackPlan(id: string, db: PrismaClient = prisma) {
@@ -4106,46 +3842,3 @@ export async function retryFeedbackPlanGenerationWithFree(
   return { accepted: true, status: changed.queued ? "queued" : "prepared", ...changed };
 }
 
-export async function createPreferenceCandidate(input: {
-  studentId: string;
-  sourceType: "communication" | "teacher";
-  sourceId?: string;
-  preference: CommunicationPreference;
-  evidence?: { source?: "teacher_manual"; signals?: string[] };
-}, db: PrismaClient = prisma) {
-  const preference = CommunicationPreferenceSchema.parse(input.preference);
-  const evidence = {
-    ...(input.evidence?.source === "teacher_manual" ? { source: "teacher_manual" as const } : {}),
-    ...(input.evidence?.signals?.length ? { signals: input.evidence.signals.filter((signal) => typeof signal === "string").map((signal) => signal.slice(0, 100)).slice(0, 10) } : {}),
-  };
-  return db.communicationPreferenceCandidate.create({
-    data: {
-      studentId: input.studentId,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      preferenceSnapshot: json(preference),
-      evidenceSnapshot: json(evidence),
-    },
-  });
-}
-
-export async function resolvePreferenceCandidate(id: string, decision: "confirmed" | "rejected", db: PrismaClient = prisma) {
-  return db.$transaction(async (tx) => {
-    const candidate = await tx.communicationPreferenceCandidate.findUnique({ where: { id } });
-    if (!candidate) throw new ApiError("沟通偏好候选不存在", 404, "not_found", false);
-    if (candidate.status !== "pending") throw new ApiError("沟通偏好候选已经处理，不能重复提交", 409, "conflict", false);
-    const updated = await tx.communicationPreferenceCandidate.update({ where: { id }, data: { status: decision, reviewedAt: new Date() } });
-    if (decision === "rejected") return updated;
-    const preference = CommunicationPreferenceSchema.parse(parseJson(candidate.preferenceSnapshot, {}));
-    await tx.communicationPreferenceCandidate.updateMany({
-      where: { studentId: candidate.studentId, status: "confirmed", id: { not: id } },
-      data: { status: "superseded" },
-    });
-    await tx.communicationPreference.upsert({
-      where: { studentId: candidate.studentId },
-      create: { studentId: candidate.studentId, preferenceSnapshot: json(preference), sourceCandidateId: id, confirmedAt: new Date() },
-      update: { preferenceSnapshot: json(preference), sourceCandidateId: id, confirmedAt: new Date() },
-    });
-    return updated;
-  });
-}

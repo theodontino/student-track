@@ -1,30 +1,14 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { ApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
-import { resolveStudentTrackRuntimePath } from "@/lib/runtime-paths";
 import { createDatabaseBackup, verifyDatabaseBackup } from "@/services/database-backup-service";
+import { purgeFeedbackAttachmentDirectories } from "@/services/feedback-attachment-storage";
 
 export const RECYCLE_RETENTION_DAYS = 30;
 export const RECYCLE_RETENTION_MS = RECYCLE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 type RecycleDb = PrismaClient | Prisma.TransactionClient;
 type ScopeKind = "class" | "semester";
-
-async function purgeFeedbackAttachmentDirectories(planIds: string[]) {
-  const root = path.resolve(resolveStudentTrackRuntimePath(
-    "feedback-attachments",
-    "STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT",
-    path.join(os.homedir(), "Library", "Application Support", "Student Track", "feedback-attachments"),
-  ));
-  for (const planId of [...new Set(planIds)]) {
-    const directory = path.resolve(root, planId);
-    if (path.relative(root, directory) !== planId) throw new Error("反馈计划附件目录无效");
-    await fs.rm(directory, { recursive: true, force: true });
-  }
-}
 
 function purgeAt(deletedAt: Date) {
   return new Date(deletedAt.getTime() + RECYCLE_RETENTION_MS);

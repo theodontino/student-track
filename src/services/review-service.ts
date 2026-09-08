@@ -16,7 +16,7 @@ import { recalculateScoreDForStudents } from "@/lib/scoreD";
 import { ServiceError } from "@/services/service-error";
 import { addHighConfidenceAttentionLabels } from "@/services/student-label-service";
 import { adoptGenerationByOperationKey, compactHotGenerationRecordsForClass } from "@/services/generation-memory-service";
-import { invalidateFeedbackPlans } from "@/services/feedback-plan-service";
+import { invalidateFeedbackPlans } from "@/services/feedback-plan-invalidation-service";
 import { ASSISTANT_ROSTER_RAW_TEXT_PREFIX } from "@/lib/classroom-import-source";
 import { restrictStepResultToTeacherObservations } from "@/services/step-classroom-import-service";
 import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
