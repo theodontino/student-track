@@ -1,21 +1,24 @@
 import { DIM_CONFIG } from "@/lib/constants";
 import type { CardScore } from "@/lib/types";
+import { quickScoreChanges, type OriginalScore } from "./score-changes";
 
 interface Props {
   cards: CardScore[];
+  originals: Map<string, OriginalScore>;
   genders: Map<string, string>;
   onScore: (index: number, dimension: "A" | "B" | "C", value: number) => void;
   onPresent: (index: number) => void;
   onNote: (index: number, note: string) => void;
 }
 
-export default function StudentScoreGrid({ cards, genders, onScore, onPresent, onNote }: Props) {
+export default function StudentScoreGrid({ cards, originals, genders, onScore, onPresent, onNote }: Props) {
   return (
     <div className="quick-score-grid">
       {cards.map((card, index) => {
-        const changed = card.scoreA !== 3 || card.scoreB !== 3 || card.scoreC !== 3 || Boolean(card.note.trim());
+        const changes = quickScoreChanges(card, originals.get(card.studentId));
+        const changed = Object.keys(changes).length > 0;
         return (
-          <article key={card.studentId} className={`quick-score-card ${changed || !card.present ? "is-changed" : ""} ${!card.present ? "is-absent" : ""}`}>
+          <article key={card.studentId} className={`quick-score-card ${changed ? "is-changed" : ""} ${!card.present ? "is-absent" : ""}`}>
             <header>
               <div className={`quick-score-card__avatar ${genders.get(card.studentId) === "男" ? "is-male" : "is-female"}`} aria-hidden="true">{card.studentName[0]}</div>
               <span className="quick-score-card__name">{card.studentName}</span>
@@ -28,8 +31,9 @@ export default function StudentScoreGrid({ cards, genders, onScore, onPresent, o
                 const score = card[`score${dimension.key}` as keyof CardScore] as number;
                 return (
                   <div key={dimension.key} className="quick-score-card__dimension">
-                    <span>{dimension.label}{dimension.key === "A" && !Number.isInteger(score) ? <em>{score.toFixed(1)}</em> : null}</span>
-                    <div>{[0, 1, 2, 3, 4, 5].map((value) => (
+                    <span>{dimension.label}</span>
+                    <output className="col-start-1 row-start-2 text-[0.65rem] text-gray-500" aria-label={`${card.studentName} ${dimension.key} 当前分数`}>{score}{`score${dimension.key}` in changes ? " · 已修改" : ""}</output>
+                    <div className="col-start-2 row-start-1 row-span-2">{[0, 1, 2, 3, 4, 5].map((value) => (
                       <button
                         key={value}
                         type="button"

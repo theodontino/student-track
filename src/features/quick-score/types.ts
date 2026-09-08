@@ -1,5 +1,6 @@
 import type { CardScore } from "@/lib/types";
 import type { TeachingContext } from "@/features/teaching-context/types";
+import type { OriginalScore } from "./score-changes";
 
 export interface QuickScoreStudent {
   id: string;
@@ -30,12 +31,16 @@ export interface QuickScoreHistoryState {
   sessionCode: string;
   date: string;
   cards: CardScore[];
+  originalScores?: Record<string, OriginalScore>;
+  legacyCards?: CardScore[];
 }
 
 export interface QuickScoreSessionState {
   context: TeachingContext;
   date: string;
   cards: CardScore[];
+  originalScores?: Record<string, OriginalScore>;
+  legacyCards?: CardScore[];
 }
 
 export interface QuickScoreSaveResult {

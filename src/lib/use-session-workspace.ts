@@ -14,6 +14,7 @@ interface SessionWorkspaceOptions<T> {
   validate: (value: unknown) => value is T;
   version?: number;
   enabled?: boolean;
+  writeEnabled?: boolean;
 }
 
 export function useSessionWorkspace<T>({
@@ -23,6 +24,7 @@ export function useSessionWorkspace<T>({
   validate,
   version = 1,
   enabled = true,
+  writeEnabled = true,
 }: SessionWorkspaceOptions<T>) {
   const restoreRef = useRef(restore);
   const validateRef = useRef(validate);
@@ -60,11 +62,11 @@ export function useSessionWorkspace<T>({
   }, [enabled, flushPendingWrite, key, version]);
 
   useEffect(() => {
-    if (!enabled || hydratedKey !== key) return;
+    if (!enabled || !writeEnabled || hydratedKey !== key) return;
     pendingWriteRef.current = { key, value, version };
     if (writeTimerRef.current !== null) window.clearTimeout(writeTimerRef.current);
     writeTimerRef.current = window.setTimeout(flushPendingWrite, 300);
-  }, [enabled, flushPendingWrite, hydratedKey, key, value, version]);
+  }, [enabled, flushPendingWrite, hydratedKey, key, value, version, writeEnabled]);
 
   useEffect(() => {
     const flush = () => flushPendingWrite();

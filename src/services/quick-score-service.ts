@@ -1,4 +1,4 @@
-import { normalizeDimensionScore, normalizeScoreA } from "@/config/rules";
+import { normalizeDimensionScore, normalizeScoreA, SCORE_RULES } from "@/config/rules";
 import { prisma } from "@/lib/prisma";
 import { archiveMetricBeforeUpdate } from "@/lib/archive";
 import { logAction } from "@/lib/logger";
@@ -10,9 +10,9 @@ import { assertSessionAvailable } from "@/services/academic-scope-recycle-servic
 export interface QuickScoreEntry {
   studentId: string;
   date?: string;
-  scoreA: number;
-  scoreB: number;
-  scoreC: number;
+  scoreA?: number;
+  scoreB?: number;
+  scoreC?: number;
   note?: string;
 }
 
@@ -22,7 +22,7 @@ export interface QuickAttendanceEntry {
 }
 
 export interface SubmitQuickScoresInput {
-  scores: QuickScoreEntry[];
+  scores?: QuickScoreEntry[];
   sessionCode?: string;
   attendances?: QuickAttendanceEntry[];
 }
@@ -38,11 +38,13 @@ function normalizeScore(value: unknown, dimension: "A" | "B" | "C") {
  * classroom notes, attendance, and the derived D score.
  */
 export async function submitQuickScores(input: SubmitQuickScoresInput) {
-  if (!Array.isArray(input.scores) || input.scores.length === 0) {
-    throw new ServiceError("请提交至少一条评分", 400);
-  }
+  const scores = input.scores ?? [];
+  if (!Array.isArray(scores)) throw new ServiceError("评分数据格式错误", 400);
   if (input.attendances !== undefined && !Array.isArray(input.attendances)) {
     throw new ServiceError("考勤数据格式错误", 400);
+  }
+  if (scores.length === 0 && !(input.sessionCode && input.attendances?.length)) {
+    throw new ServiceError("请提交至少一项评分、考勤或备注修改", 400);
   }
 
   const result = await prisma.$transaction(async (tx) => {
@@ -56,7 +58,7 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
     if (session) await assertSessionAvailable(session.id, tx);
 
     const submittedStudentIds = Array.from(new Set([
-      ...input.scores.map((score) => score.studentId),
+      ...scores.map((score) => score.studentId),
       ...(input.attendances ?? []).map((attendance) => attendance.studentId),
     ]));
     if (submittedStudentIds.some((id) => typeof id !== "string" || !id)) {
@@ -81,21 +83,22 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
       throw new ServiceError("学生不存在或不属于当前课次班级", 400);
     }
 
-    const logEntries: Array<{
-      studentId: string;
-      scoreA: number;
-      scoreB: number;
-      scoreC: number;
-    }> = [];
+    const logEntries: QuickScoreEntry[] = [];
 
-    for (const entry of input.scores) {
+    for (const entry of scores) {
       if (!session && !entry.date) throw new ServiceError("无课次评分必须提供日期", 400);
-      const scoreA = normalizeScore(entry.scoreA, "A");
-      const scoreB = normalizeScore(entry.scoreB, "B");
-      const scoreC = normalizeScore(entry.scoreC, "C");
+      const changes = {
+        ...(entry.scoreA !== undefined ? { scoreA: normalizeScore(entry.scoreA, "A") } : {}),
+        ...(entry.scoreB !== undefined ? { scoreB: normalizeScore(entry.scoreB, "B") } : {}),
+        ...(entry.scoreC !== undefined ? { scoreC: normalizeScore(entry.scoreC, "C") } : {}),
+      };
+      const hasScores = Object.keys(changes).length > 0;
+      const note = entry.note?.trim();
+      if (!hasScores && !(note && session)) throw new ServiceError("请提供要修改的评分或课次备注", 400);
+      const initialScores = { scoreA: SCORE_RULES.default, scoreB: SCORE_RULES.default, scoreC: SCORE_RULES.default, ...changes };
       const metricDate = session?.date ?? entry.date!;
 
-      if (session) {
+      if (hasScores && session) {
         const existing = await tx.sessionMetric.findUnique({
           where: { studentId_sessionId: { studentId: entry.studentId, sessionId: session.id } },
         });
@@ -106,14 +109,12 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
             studentId: entry.studentId,
             date: metricDate,
             sessionId: session.id,
-            scoreA,
-            scoreB,
-            scoreC,
+            ...initialScores,
             operator: "quickScore",
           },
-          update: { scoreA, scoreB, scoreC },
+          update: changes,
         });
-      } else {
+      } else if (hasScores) {
         const existing = await tx.sessionMetric.findFirst({
           where: { studentId: entry.studentId, date: metricDate, sessionId: null },
           orderBy: { createdAt: "desc" },
@@ -122,7 +123,7 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
           await archiveMetricBeforeUpdate(existing.id, "update", tx);
           await tx.sessionMetric.update({
             where: { id: existing.id },
-            data: { scoreA, scoreB, scoreC },
+            data: changes,
           });
         } else {
           await tx.sessionMetric.create({
@@ -130,16 +131,13 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
               studentId: entry.studentId,
               date: metricDate,
               sessionId: null,
-              scoreA,
-              scoreB,
-              scoreC,
+              ...initialScores,
               operator: "quickScore",
             },
           });
         }
       }
 
-      const note = entry.note?.trim();
       if (note && session) {
         await tx.event.upsert({
           where: {
@@ -159,7 +157,7 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
           update: {},
         });
       }
-      logEntries.push({ studentId: entry.studentId, scoreA, scoreB, scoreC });
+      if (hasScores) logEntries.push({ studentId: entry.studentId, ...changes });
     }
 
     if (session && input.attendances) {
@@ -203,7 +201,7 @@ export async function submitQuickScores(input: SubmitQuickScoresInput) {
     }
 
     return {
-      count: input.scores.length,
+      count: scores.length,
       attUpdated: session ? input.attendances?.length ?? 0 : 0,
       logEntries,
     };

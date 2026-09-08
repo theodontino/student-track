@@ -7,6 +7,7 @@ import { QuickScoreContextPanel } from "./QuickScoreContextPanel";
 import SaveBar from "./SaveBar";
 import StudentScoreGrid from "./StudentScoreGrid";
 import { useQuickScorePage } from "./useQuickScorePage";
+import { LegacyScoreDraft } from "./LegacyScoreDraft";
 
 export default function QuickScoreWorkspace() {
   const workspace = useQuickScorePage();
@@ -15,9 +16,15 @@ export default function QuickScoreWorkspace() {
       <QuickScoreContextPanel workspace={workspace} />
       <ScoreDimensionLegend showAssessmentRule />
       {workspace.notice && <StatusBanner tone={workspace.notice.tone}>{workspace.notice.message}</StatusBanner>}
+      {workspace.selectedClass && !workspace.cardsReady && (
+        workspace.loadError
+          ? <button type="button" onClick={() => void workspace.retryLoad()}>重新加载评分</button>
+          : <p role="status">正在加载当前课次评分…</p>
+      )}
 
       {workspace.selectedClass && workspace.cards.length > 0 && (
-        <>
+        <fieldset disabled={workspace.editingDisabled} aria-label="当前课次评分" aria-busy={!workspace.cardsReady || workspace.submitting} className="min-w-0">
+          <LegacyScoreDraft cards={workspace.legacyCards} currentCards={workspace.cards} onRestore={workspace.restoreLegacyField} onDismiss={workspace.dismissLegacyDraft} />
           <BulkScoreToolbar
             cards={workspace.cards}
             changedCount={workspace.changedCount}
@@ -26,6 +33,7 @@ export default function QuickScoreWorkspace() {
           />
           <StudentScoreGrid
             cards={workspace.cards}
+            originals={workspace.originalScores}
             genders={workspace.genders}
             onScore={workspace.setScore}
             onPresent={workspace.togglePresent}
@@ -38,10 +46,10 @@ export default function QuickScoreWorkspace() {
             result={workspace.result}
             onSave={() => void workspace.handleSubmit()}
           />
-        </>
+        </fieldset>
       )}
 
-      {workspace.selectedClass && workspace.cards.length === 0 && (
+      {workspace.selectedClass && workspace.cardsReady && workspace.cards.length === 0 && (
         <EmptyState title="该班级暂无学生" description="请先在学生档案中添加学生，或切换到其他班级。" />
       )}
       {!workspace.selectedClass && (

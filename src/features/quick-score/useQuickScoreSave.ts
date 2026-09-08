@@ -4,9 +4,12 @@ import { useState } from "react";
 import type { CardScore, SessionInfo } from "@/lib/types";
 import { saveQuickScores } from "./api";
 import type { QuickScoreNotice, QuickScoreSaveResult } from "./types";
+import { quickScorePayload, type OriginalScore } from "./score-changes";
 
 export function useQuickScoreSave({
   changedCards,
+  originalScores,
+  ready,
   date,
   sessionCode,
   sessions,
@@ -15,6 +18,8 @@ export function useQuickScoreSave({
   reloadSession,
 }: {
   changedCards: CardScore[];
+  originalScores: Map<string, OriginalScore>;
+  ready: boolean;
   date: string;
   sessionCode: string;
   sessions: SessionInfo[];
@@ -25,23 +30,16 @@ export function useQuickScoreSave({
   const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
+    if (!ready || submitting) return;
     if (changedCards.length === 0) {
       setNotice({ tone: "info", message: "没有改动，无需提交。" });
       return;
     }
-    const scores = changedCards.map((card) => ({
-      studentId: card.studentId,
-      date,
-      scoreA: card.scoreA,
-      scoreB: card.scoreB,
-      scoreC: card.scoreC,
-      note: card.note || undefined,
-    }));
-    const attendances = changedCards.map((card) => ({ studentId: card.studentId, present: card.present }));
+    const payload = quickScorePayload(changedCards, originalScores, date, sessionCode);
     setSubmitting(true);
     setNotice(null);
     try {
-      const data = await saveQuickScores({ scores, sessionCode: sessionCode || undefined, attendances });
+      const data = await saveQuickScores(payload);
       setResult(data);
       if (sessionCode) {
         const session = sessions.find((item) => item.code === sessionCode);
