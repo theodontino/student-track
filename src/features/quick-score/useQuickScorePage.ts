@@ -22,6 +22,7 @@ export function useQuickScorePage() {
     contextHydrated,
     students: reference.students,
     cards: scoreCards.cards,
+    originalScores: scoreCards.originalScores,
     setContext: teachingContext.setContext,
     setSemesterId: teachingContext.setSemesterId,
     setSessionCode: teachingContext.setSessionCode,
@@ -68,6 +69,9 @@ export function useQuickScorePage() {
   }, [reference.classes, selectedClass, selectedClassId, setSelectedClassId]);
 
   return {
+    legacyCards: session.legacyCards,
+    dismissLegacyDraft: session.dismissLegacyDraft,
+    restoreLegacyField: session.restoreLegacyField,
     absentCount: scoreCards.absentCount,
     bulkSet: scoreCards.bulkSet,
     cards: scoreCards.cards,

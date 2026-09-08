@@ -43,6 +43,8 @@ describe("quick-score workspace state", () => {
       cards: [card],
     };
     expect(isQuickScoreSessionState(state)).toBe(true);
+    expect(isQuickScoreSessionState({ ...state, originalScores: { [card.studentId]: card }, legacyCards: [card] })).toBe(true);
+    expect(isQuickScoreSessionState({ ...state, originalScores: { [card.studentId]: { ...card, scoreA: null } } })).toBe(false);
     expect(isQuickScoreSessionState({ ...state, cards: [{ ...card, scoreA: null }] })).toBe(false);
   });
 });

@@ -20,5 +20,13 @@ export function isQuickScoreSessionState(value: unknown): value is QuickScoreSes
   return isTeachingContext(state.context)
     && typeof state.date === "string"
     && Array.isArray(state.cards)
-    && state.cards.every(isCardScore);
+    && state.cards.every(isCardScore)
+    && (state.originalScores === undefined || (
+      state.originalScores !== null && typeof state.originalScores === "object"
+      && !Array.isArray(state.originalScores)
+      && Object.values(state.originalScores).every((score) => score && typeof score === "object"
+        && typeof score.scoreA === "number" && typeof score.scoreB === "number"
+        && typeof score.scoreC === "number" && typeof score.present === "boolean")
+    ))
+    && (state.legacyCards === undefined || (Array.isArray(state.legacyCards) && state.legacyCards.every(isCardScore)));
 }

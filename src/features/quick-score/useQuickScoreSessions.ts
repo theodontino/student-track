@@ -16,6 +16,7 @@ import type {
   QuickScoreStudent,
 } from "./types";
 import { isQuickScoreSessionState } from "./workspace-state";
+import { rebaseQuickScoreCards, type ScoreField } from "./score-changes";
 
 function today() {
   const value = new Date();
@@ -27,6 +28,7 @@ export function useQuickScoreSessions({
   contextHydrated,
   students,
   cards,
+  originalScores,
   setContext,
   setSemesterId,
   setSessionCode,
@@ -39,6 +41,7 @@ export function useQuickScoreSessions({
   contextHydrated: boolean;
   students: QuickScoreStudent[];
   cards: CardScore[];
+  originalScores: Map<string, OriginalScore>;
   setContext: (context: TeachingContext) => void;
   setSemesterId: (semesterId: string) => void;
   setSessionCode: (sessionCode: string) => void;
@@ -53,6 +56,9 @@ export function useQuickScoreSessions({
   const [hasExistingScores, setHasExistingScores] = useState(false);
   const [deletingSession, setDeletingSession] = useState(false);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [legacyCards, setLegacyCards] = useState<CardScore[]>([]);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const selectedKey = teachingContextWorkspaceKey("quick-score", context);
   const semesterRef = useRef(semesterId);
   const classRef = useRef(className);
   const classIdRef = useRef(classId);
@@ -70,7 +76,7 @@ export function useQuickScoreSessions({
     studentsRef.current = students;
   }, [classId, className, semesterId, sessionCode, students]);
 
-  const workspaceValue = useMemo<QuickScoreSessionState>(() => ({ context, date, cards }), [cards, context, date]);
+  const workspaceValue = useMemo<QuickScoreSessionState>(() => ({ context, date, cards, originalScores: Object.fromEntries(originalScores), legacyCards }), [cards, context, date, originalScores, legacyCards]);
   const workspaceKey = useMemo(
     () => teachingContextWorkspaceKey("quick-score", { ...context, sessionCode: "" }),
     [context],
@@ -80,7 +86,10 @@ export function useQuickScoreSessions({
     value: workspaceValue,
     validate: isQuickScoreSessionState,
     enabled: contextHydrated,
+    writeEnabled: loadedKey === selectedKey,
     restore: (saved) => {
+      setLoadedKey(null);
+      setLegacyCards([]);
       if (!saved) {
         pendingRestoreRef.current = null;
         setOriginalScores(new Map());
@@ -95,14 +104,17 @@ export function useQuickScoreSessions({
         sessionCode: saved.context.sessionCode,
         date: saved.date,
         cards: saved.cards,
+        originalScores: saved.originalScores,
+        legacyCards: saved.legacyCards,
       };
       setDate(saved.date);
-      setCards(saved.cards);
+      setCards([]);
       setResult(null);
     },
   });
 
   const loadSessionCards = useCallback(async (session: SessionInfo) => {
+    setLoadedKey(null);
     const requestId = ++cardsRequestRef.current;
     const selectedSemester = semesterRef.current;
     const selectedClass = classRef.current;
@@ -143,11 +155,13 @@ export function useQuickScoreSessions({
       const pending = pendingRestoreRef.current;
       if (pending && (pending.classId ? pending.classId === selectedClassId : pending.className === selectedClass) && pending.sessionCode === session.code) {
         setDate(pending.date);
-        setCards(pending.cards);
+        setCards(pending.originalScores ? rebaseQuickScoreCards(loadedCards, pending.cards, pending.originalScores) : loadedCards);
+        setLegacyCards(pending.originalScores ? pending.legacyCards ?? [] : pending.cards);
         pendingRestoreRef.current = null;
       } else {
         setCards(loadedCards);
       }
+      setLoadedKey(teachingContextWorkspaceKey("quick-score", { semesterId: selectedSemester, classId: selectedClassId, className: selectedClass, sessionCode: session.code }));
       return true;
     } catch (error) {
       if (!shouldApplyQuickScoreRequest({
@@ -170,10 +184,17 @@ export function useQuickScoreSessions({
     const classStudents = studentsRef.current.filter((student) => selectedClassId
       ? student.classId === selectedClassId
       : student.class === classRef.current);
-    setCards(classStudents.map((student) => ({ studentId: student.id, studentName: student.name, scoreA: 3, scoreB: 3, scoreC: 3, present: true, note: "" })));
-  }, [setCards]);
+    const blankCards = classStudents.map((student) => ({ studentId: student.id, studentName: student.name, scoreA: 3, scoreB: 3, scoreC: 3, present: true, note: "" }));
+    const pending = pendingRestoreRef.current;
+    setOriginalScores(new Map());
+    setCards(pending?.originalScores ? rebaseQuickScoreCards(blankCards, pending.cards, pending.originalScores) : blankCards);
+    setLegacyCards(pending ? pending.originalScores ? pending.legacyCards ?? [] : pending.cards : []);
+    pendingRestoreRef.current = null;
+    setLoadedKey(teachingContextWorkspaceKey("quick-score", { semesterId: semesterRef.current, classId: selectedClassId, className: classRef.current, sessionCode: "" }));
+  }, [setCards, setOriginalScores]);
 
   const fetchSessions = useCallback(async () => {
+    setLoadedKey(null);
     const requestId = ++sessionsRequestRef.current;
     // Once a newer session-list refresh starts, cards selected from an older
     // list must not be allowed to land while this refresh is still in flight.
@@ -199,9 +220,7 @@ export function useQuickScoreSessions({
       if (pending && !pending.sessionCode) {
         setSessionCode("");
         setDate(pending.date);
-        setOriginalScores(new Map());
-        setCards(pending.cards);
-        pendingRestoreRef.current = null;
+        initBlankCards();
         return true;
       }
       const currentDate = today();
@@ -287,12 +306,13 @@ export function useQuickScoreSessions({
   }
 
   function restoreHistory(state: QuickScoreHistoryState) {
+    setLoadedKey(null);
     pendingRestoreRef.current = state;
     if (state.semesterId === semesterId && (state.classId ? state.classId === classId : state.className === className)) {
       setSessionCode(state.sessionCode);
       if (!state.sessionCode) {
         setDate(state.date);
-        setCards(state.cards);
+        initBlankCards();
         setResult(null);
         pendingRestoreRef.current = null;
         return;
@@ -308,12 +328,19 @@ export function useQuickScoreSessions({
     setDate(state.date);
     setResult(null);
     if (!state.sessionCode) {
-      setCards(state.cards);
-      pendingRestoreRef.current = null;
+      setCards([]);
     }
   }
 
   return {
+    legacyCards,
+    dismissLegacyDraft: () => setLegacyCards([]),
+    restoreLegacyField: (studentId: string, field: ScoreField) => {
+      if (loadedKey !== selectedKey) return;
+      const draft = legacyCards.find((card) => card.studentId === studentId);
+      if (draft) setCards((current) => current.map((card) => card.studentId === studentId ? { ...card, [field]: draft[field] } : card));
+    },
+    cardsReady: loadedKey === selectedKey,
     sessions,
     date,
     setDate,

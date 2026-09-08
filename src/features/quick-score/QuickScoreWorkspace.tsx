@@ -7,6 +7,7 @@ import { QuickScoreContextPanel } from "./QuickScoreContextPanel";
 import SaveBar from "./SaveBar";
 import StudentScoreGrid from "./StudentScoreGrid";
 import { useQuickScorePage } from "./useQuickScorePage";
+import { LegacyScoreDraft } from "./LegacyScoreDraft";
 
 export default function QuickScoreWorkspace() {
   const workspace = useQuickScorePage();
@@ -18,6 +19,7 @@ export default function QuickScoreWorkspace() {
 
       {workspace.selectedClass && workspace.cards.length > 0 && (
         <>
+          <LegacyScoreDraft cards={workspace.legacyCards} currentCards={workspace.cards} onRestore={workspace.restoreLegacyField} onDismiss={workspace.dismissLegacyDraft} />
           <BulkScoreToolbar
             cards={workspace.cards}
             changedCount={workspace.changedCount}
