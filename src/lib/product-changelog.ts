@@ -6,6 +6,15 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.3.0-beta.7",
+    title: "反馈计划职责拆分与快速评分修复",
+    changes: [
+      "反馈计划的读取、生命周期、冻结证据、复核和生成运行时分别维护，保持既有生成、暂停、继续、批准与导出行为。",
+      "快速评分只保存本次修改的维度；调整纪律、作业、考勤或备注时保留 PDF 测评分，草稿恢复与切课加载不再覆盖其他维度。",
+      "修复反馈队列刷新后的筛选恢复、附件保存失败后的文件清理，以及单个学生事实变化误使其他学生计划失效的问题。",
+    ],
+  },
+  {
     version: "1.3.0-beta.6",
     title: "受限反馈恢复 ContentBrief 生成链路",
     changes: [
