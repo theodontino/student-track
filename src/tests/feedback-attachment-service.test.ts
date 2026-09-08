@@ -29,7 +29,7 @@ it("cleans up an uploaded file and preserves the database error when its name co
   });
   const plan = await prisma.feedbackPlan.create({
     data: {
-      semesterId: semester.id, classId: classroom.id, type: "event_micro",
+      structureVersion: 2, semesterId: semester.id, classId: classroom.id, type: "event_micro",
       outputRequirement: "合成测试", inputFingerprint: "test-input", status: "ready",
     },
   });

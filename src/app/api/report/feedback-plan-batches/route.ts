@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
-import { FeedbackPlanBatchCreateSchema } from "@/lib/feedback-plan-batch";
-import { createFeedbackPlanBatch, listFeedbackPlanBatches } from "@/services/feedback-plan-batch-service";
+import { listFeedbackPlanBatches } from "@/services/feedback-plan-batch-service";
 
 function errorResponse(error: unknown, fallback: string) {
   const failure = safeApiError(error, fallback);
@@ -21,13 +20,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
-  try {
-    const parsed = FeedbackPlanBatchCreateSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) throw new ApiError("反馈批次参数无效", 400, "invalid_request", false);
-    const batch = await createFeedbackPlanBatch(parsed.data);
-    return NextResponse.json({ batch }, { status: 201 });
-  } catch (error) {
-    return errorResponse(error, "创建反馈批次失败");
-  }
+export async function POST() {
+  return errorResponse(new ApiError("请使用学生反馈计划入口创建，历史批次只读", 409, "conflict", false), "创建反馈批次失败");
 }

@@ -9,6 +9,7 @@ import { feedbackPlanActionBucket as deriveFeedbackPlanActionBucket, type Feedba
 import styles from "./feedback-plan-manager.module.css";
 
 export type FeedbackPlanSummary = {
+  scopes?: Array<{ class: { id: string; code: string; name?: string | null }; session?: { code: string } | null }>;
   id: string; displayName?: string | null; type: string; status: string; archivedAt?: string | null; batchId?: string | null;
   updatedAt?: string; actionBucket?: FeedbackPlanActionBucket; legacyReadonly?: boolean;
   generationApproach?: FeedbackGenerationApproach | null; generationApproachLabel?: string;
@@ -174,13 +175,15 @@ function typeLabel(type: string) {
 }
 
 function planOpenTarget(plan: FeedbackPlanSummary): FeedbackTaskOpenTarget {
-  const session = plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session;
+  const scope = plan.scopes?.[0];
+  const session = scope?.session ?? (plan.type === "stage_trend" || plan.type === "course_end" ? plan.rangeEndSession : plan.session);
+  const klass = scope?.class ?? plan.class;
   return {
     planId: plan.id,
     batchId: "",
     semesterId: plan.semester?.id ?? "",
-    classId: plan.class?.id ?? "",
-    className: plan.class?.name ?? plan.class?.code ?? "",
+    classId: klass?.id ?? "",
+    className: klass?.name ?? klass?.code ?? "",
     sessionCode: session?.code ?? "",
     view: ["draft", "ready", "evidence_ready"].includes(plan.status) ? "plan" : "studio",
   };

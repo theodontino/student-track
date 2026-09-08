@@ -9,7 +9,7 @@ import {
   assertFeedbackPlanAvailable
 } from "@/services/academic-scope-recycle-service";
 import { validateFeedbackPlanAttachments } from "@/services/feedback-attachment-service";
-import { FeedbackPlanDb, generationProgress } from "@/services/feedback-plan/model";
+import { FeedbackPlanDb, generationProgress, isHistoricalStudentPlan, parseStudentContext } from "@/services/feedback-plan/model";
 
 export async function getFeedbackPlan(id: string, db: FeedbackPlanDb = prisma) {
   const plan = await db.feedbackPlan.findUnique({
@@ -28,7 +28,11 @@ export async function getFeedbackPlan(id: string, db: FeedbackPlanDb = prisma) {
   });
   if (!plan) return null;
   await assertFeedbackPlanAvailable(id, db);
-  const checked = await validateFeedbackPlanAttachments(id, db);
+  const checked = await validateFeedbackPlanAttachments(id, db, { persist: !isHistoricalStudentPlan(plan) });
+  if (isHistoricalStudentPlan(plan)) {
+    for (const attachment of [...plan.attachments, ...plan.items.flatMap((item) => item.attachments)]) attachment.status = checked.find((entry) => entry.id === attachment.id)?.status ?? attachment.status;
+    return plan;
+  }
   if (checked.some((entry) => plan.attachments.some((attachment) => attachment.id === entry.id && attachment.status !== entry.status))) {
     return db.feedbackPlan.findUnique({
       where: { id },
@@ -48,12 +52,18 @@ export async function listFeedbackPlans(input: {
   archived?: boolean;
   type?: string;
 }, db: PrismaClient = prisma) {
+  const recycledClassIds = (await db.class.findMany({ where: { deletedAt: { not: null } }, select: { id: true } })).map((entry) => entry.id);
+  const dateSessionIds = input.date ? (await db.classSession.findMany({ where: { date: input.date }, select: { id: true } })).map((session) => session.id) : [];
   const relationFilters = [
+    { OR: [{ class: { deletedAt: null } }, { structureVersion: 2, classId: null, items: { none: { classId: { in: recycledClassIds } } } }] },
+    ...(input.classId ? [{ OR: [{ classId: input.classId }, { items: { some: { classId: input.classId } } }] }] : []),
     ...(input.sessionId ? [{ OR: [
+      { items: { some: { sessionId: input.sessionId } } },
       { type: { in: ["stage_trend", "course_end"] }, rangeEndSessionId: input.sessionId },
       { type: { notIn: ["stage_trend", "course_end"] }, sessionId: input.sessionId },
     ] }] : []),
     ...(input.date ? [{ OR: [
+      { items: { some: { sessionId: { in: dateSessionIds } } } },
       { type: { in: ["stage_trend", "course_end"] }, rangeEndSession: { is: { date: input.date } } },
       { type: { notIn: ["stage_trend", "course_end"] }, session: { is: { date: input.date } } },
     ] }] : []),
@@ -61,12 +71,10 @@ export async function listFeedbackPlans(input: {
   const plans = await db.feedbackPlan.findMany({
     where: {
       semester: { deletedAt: null },
-      class: { deletedAt: null },
       OR: [
         { batchId: null },
         { batch: { is: { plans: { none: { class: { deletedAt: { not: null } } } } } } },
       ],
-      ...(input.classId ? { classId: input.classId } : {}),
       ...(input.semesterId ? { semesterId: input.semesterId } : {}),
       ...(input.studentId ? { items: { some: { studentId: input.studentId } } } : {}),
       ...(relationFilters.length ? { AND: relationFilters } : {}),
@@ -80,7 +88,7 @@ export async function listFeedbackPlans(input: {
       rangeEndSession: { select: { id: true, code: true, date: true, semesterNumber: true } },
       class: { select: { id: true, code: true, name: true } },
       semester: { select: { id: true, name: true } },
-      items: { select: { id: true, studentId: true, status: true, finalTextHash: true, updatedAt: true, student: { select: { id: true, name: true, studentId: true } } } },
+      items: { select: { id: true, studentId: true, classId: true, sessionId: true, contextSnapshot: true, status: true, finalTextHash: true, updatedAt: true, student: { select: { id: true, name: true, studentId: true } } } },
     },
   });
   return plans.map((plan) => ({
@@ -89,9 +97,10 @@ export async function listFeedbackPlans(input: {
       ? null
       : normalizeStoredFeedbackGenerationApproach(plan.generationApproach),
     generationApproachLabel: feedbackGenerationApproachLabel(plan.generationApproach),
-    legacyReadonly: plan.generationApproach === "legacy",
+    legacyReadonly: isHistoricalStudentPlan(plan) || plan.generationApproach === "legacy",
     itemStatusCounts: generationProgress(plan.items),
     actionBucket: feedbackPlanActionBucket(plan.status, generationProgress(plan.items)),
+    scopes: [...new Map(plan.items.flatMap((item) => { const context = parseStudentContext(item.contextSnapshot); return context ? [[context.class.id, context] as const] : []; })).values()],
     studentSummaries: plan.items.filter((item) => item.student).map((item) => ({ id: item.student!.id, name: item.student!.name, studentId: item.student!.studentId })),
   }));
 }
@@ -102,6 +111,7 @@ export async function storedFeedbackPlanDraft(id: string, db: FeedbackPlanDb) {
     where: { id },
     select: {
       id: true,
+      structureVersion: true,
       displayName: true,
       basedOnPlanId: true,
       type: true,
@@ -130,6 +140,9 @@ export async function storedFeedbackPlanDraft(id: string, db: FeedbackPlanDb) {
           id: true,
           studentId: true,
           status: true,
+          classId: true,
+          sessionId: true,
+          contextSnapshot: true,
           evidenceSnapshot: true,
           generationConfigSnapshot: true,
           finalText: true,

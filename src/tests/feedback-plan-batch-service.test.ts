@@ -1682,7 +1682,7 @@ describe("feedback plan batch service", () => {
     expect((await getFeedbackPlanBatch(batch.id))?.plans[1]?.progress.generated).toBe(0);
   });
 
-  it("exports approved student items across classes once, including a prior single-plan export", async () => {
+  it("downloads historical approved student items without updating export records", async () => {
     const batch = await prisma.feedbackPlanBatch.findUniqueOrThrow({ where: { requestKey: `${marker}-CREATE` }, include: { plans: { orderBy: { batchOrder: "asc" }, include: { items: true } } } });
     for (const [index, plan] of batch.plans.entries()) {
       const item = plan.items[0]!;
@@ -1722,11 +1722,11 @@ describe("feedback plan batch service", () => {
       const header = XLSX.utils.sheet_to_json<Array<string>>(workbook.Sheets[sheetName], { header: 1, defval: "" })[0];
       expect(header).toEqual(expect.arrayContaining(["班级编号", "班级名称"]));
     }
-    await expect(prisma.feedbackPlanBatchExportRun.count({ where: { batchId: batch.id } })).resolves.toBe(1);
-    await expect(prisma.feedbackExportRun.count({ where: { batchExportRunId: { not: null }, planId: { in: batch.plans.map((plan) => plan.id) } } })).resolves.toBe(2);
-    await expect(buildFeedbackPlanBatchExportWorkbook(prisma, batch.id, "complete")).rejects.toMatchObject({ code: "repeat_export" });
+    await expect(prisma.feedbackPlanBatchExportRun.count({ where: { batchId: batch.id } })).resolves.toBe(0);
+    await expect(prisma.feedbackExportRun.count({ where: { batchExportRunId: { not: null }, planId: { in: batch.plans.map((plan) => plan.id) } } })).resolves.toBe(0);
+    await expect(buildFeedbackPlanBatchExportWorkbook(prisma, batch.id, "complete")).resolves.toBeInstanceOf(Uint8Array);
     await expect(buildFeedbackPlanBatchExportWorkbook(prisma, batch.id, "complete", { allowRepeat: true })).resolves.toBeInstanceOf(Uint8Array);
     const refreshed = await getFeedbackPlanBatch(batch.id);
-    expect(refreshed?.progress.exported).toBe(2);
+    expect(refreshed?.progress.exported).toBe(0);
   });
 });

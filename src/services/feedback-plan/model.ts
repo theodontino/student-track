@@ -1,3 +1,4 @@
+import { FeedbackStudentContextSchema } from "@/lib/feedback-plan";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import {
@@ -154,14 +155,15 @@ type EffectiveFeedbackPlanConfig = {
   independent: boolean;
 };
 
-export function effectiveFeedbackPlanConfig(plan: { type: string; outputRequirement: string; inputSnapshot: string }, item: { studentId: string | null; generationConfigSnapshot?: string | null }): EffectiveFeedbackPlanConfig {
+export function effectiveFeedbackPlanConfig(plan: { type: string; outputRequirement: string; inputSnapshot: string }, item: { studentId: string | null; generationConfigSnapshot?: string | null; contextSnapshot?: string }): EffectiveFeedbackPlanConfig {
+  const context = parseStudentContext(item.contextSnapshot);
   const baseType = plan.type as typeof FEEDBACK_PLAN_TYPES[number];
   const override = parseGenerationConfigSnapshot(item.generationConfigSnapshot);
   if (!override) {
     return {
       type: baseType,
-      outputRequirement: plan.outputRequirement,
-      generationPreferences: generationPreferencesFromSnapshot(baseType, plan.inputSnapshot),
+      outputRequirement: context?.outputRequirement ?? plan.outputRequirement,
+      generationPreferences: context?.generationPreferences ?? generationPreferencesFromSnapshot(baseType, plan.inputSnapshot),
       independent: false,
     };
   }
@@ -248,6 +250,7 @@ export function parseCompositionSnapshot(value: string | null | undefined, planT
 }
 
 export type StoredFeedbackPlanDraft = {
+  structureVersion?: number;
   id: string;
   displayName: string | null;
   basedOnPlanId: string | null;
@@ -255,7 +258,7 @@ export type StoredFeedbackPlanDraft = {
   outputRequirement: string;
   status: string;
   semesterId: string;
-  classId: string;
+  classId: string | null;
   sessionId: string | null;
   rangeStartSessionId: string | null;
   rangeEndSessionId: string | null;
@@ -274,6 +277,9 @@ export type StoredFeedbackPlanDraft = {
     id: string;
     studentId: string | null;
     status: string;
+    classId?: string | null;
+    sessionId?: string | null;
+    contextSnapshot?: string;
     evidenceSnapshot: string;
     generationConfigSnapshot: string;
     finalText: string | null;
@@ -289,3 +295,16 @@ export type StoredFeedbackPlanDraft = {
   session?: { code: string; date: string } | null;
   rangeEndSession?: { date: string } | null;
 };
+
+export function parseStudentContext(value?: string | null) {
+  const parsed = FeedbackStudentContextSchema.safeParse(parseJson(value, null));
+  return parsed.success ? parsed.data : null;
+}
+
+export function isHistoricalStudentPlan(plan: { type: string; structureVersion?: number }) {
+  return plan.type !== "class_update" && plan.structureVersion === 1;
+}
+
+export function assertStudentPlanWritable(plan: { type: string; structureVersion?: number }) {
+  if (isHistoricalStudentPlan(plan)) throw new ApiError("旧学生计划为只读，请复制为新计划后继续", 409, "conflict", false);
+}

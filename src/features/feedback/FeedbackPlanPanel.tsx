@@ -574,7 +574,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   const [error, setError] = useState("");
   const [contextMetaError, setContextMetaError] = useState("");
   const [contextMetaReloadKey, setContextMetaReloadKey] = useState(0);
-  const [repeatExportRequest, setRepeatExportRequest] = useState<{ planId: string; mode: "complete" | "approved_only" } | null>(null);
+  const [repeatExportRequest, setRepeatExportRequest] = useState<{ planId: string; mode: "complete" | "approved_only"; itemIds?: string[] } | null>(null);
   const [studioFilter, setStudioFilter] = useState<"action" | "review" | "done" | "all">("action");
   const [studioItemId, setStudioItemId] = useState("");
   const candidateDefaultsKey = useRef("");
@@ -1274,15 +1274,15 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     finally { setBusy(false); }
   }
 
-  async function exportPlan(plan: Plan, mode: "complete" | "approved_only", allowRepeat = false) {
+  async function exportPlan(plan: Plan, mode: "complete" | "approved_only", allowRepeat = false, itemIds?: string[]) {
     setBusy(true); setError("");
     try {
       const response = await fetch(`/api/report/feedback-plans/${plan.id}`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "export", mode, allowRepeat }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "export", mode, allowRepeat, itemIds }),
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as ApiFailurePayload | null;
-        if (apiFailureCode(payload) === "repeat_export") setRepeatExportRequest({ planId: plan.id, mode });
+        if (apiFailureCode(payload) === "repeat_export") setRepeatExportRequest({ planId: plan.id, mode, itemIds });
         throw new Error(apiFailureMessage(payload, "反馈计划导出失败"));
       }
       const blob = await response.blob();
@@ -1392,7 +1392,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
   const canGenerate = Boolean(activePlan && !legacyGenerationRetired && !planHasGenerationTrace(activePlan) && activePlan.items.some((item) => selectedItemIds.includes(item.id) && canRegenerate(item)));
   const staleTextCount = activePlan?.items.filter((item) => item.status === "stale" && item.finalText?.trim()).length ?? 0;
   const allItemsApproved = Boolean(activePlan?.items.length && activePlan.items.every((item) => ["approved", "exported"].includes(item.status)));
-  const archivedReadOnly = Boolean(activePlan?.archivedAt);
+  const archivedReadOnly = Boolean(activePlan?.archivedAt || activePlan?.legacyReadonly);
   const llmReady = !llmWorkspace.loading && Boolean(llmWorkspace.form.apiKey?.trim() && llmWorkspace.form.model?.trim());
   const studioItems = activePlan?.items.filter((item) => studioMatches(item, studioFilter)) ?? [];
   const visiblePlanItems = studioMode && studioItemId
@@ -1440,6 +1440,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
         {isExport && !allItemsApproved && <Button uiSize="sm" onClick={() => void approvePlan(activePlan)} disabled={busy || archivedReadOnly || selectedItemIds.length === 0}>批准所选可通过项</Button>}
       </div>
       {isExport && <div className="feedback-plan-tool-actions" role="toolbar" aria-label="计划工具栏">
+        <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete", false, selectedItemIds)} disabled={busy || !selectedItemIds.length}>导出所选学生</Button>
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "complete")} disabled={busy || !allItemsApproved}>完整导出</Button>
         <Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, "approved_only")} disabled={busy || !activePlan.items.some((item) => item.status === "approved")}>仅导出新批准项</Button>
         {capabilities.wecomDraftExport && <Button uiSize="sm" variant="secondary" onClick={() => void exportWeComDrafts(activePlan)} disabled={busy || !activePlan.items.some((item) => item.studentId && ["approved", "exported"].includes(item.status) && item.finalText?.trim())}>导出企微草稿 JSON</Button>}
@@ -1455,7 +1456,7 @@ export function FeedbackPlanPanel({ workspace, presentation = "legacy", batchCon
     {archivedReadOnly && <StatusBanner tone="warning">已归档，只读；请在反馈历史中取消归档后修改。</StatusBanner>}
     {!isReview && !activePlan && (planLoading || !plansLoaded) && <StatusBanner tone="info">正在读取反馈计划…</StatusBanner>}
     {!isReview && !activePlan && !planLoading && plansLoaded && !requestedPlanId && <StatusBanner tone="warning"><span>当前课次还没有可恢复的反馈计划，请先回到“复核”步骤创建计划。</span><Button uiSize="sm" variant="secondary" onClick={() => workspace.setActiveStep("review")}>返回复核</Button></StatusBanner>}
-    {repeatExportRequest && activePlan?.id === repeatExportRequest.planId && <StatusBanner tone="warning"><span>相同文本已经导出过。只有确实需要重新下载时才继续。</span><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, repeatExportRequest.mode, true)} disabled={busy}>确认重复导出</Button><Button uiSize="sm" variant="ghost" onClick={() => setRepeatExportRequest(null)} disabled={busy}>取消</Button></StatusBanner>}
+    {repeatExportRequest && activePlan?.id === repeatExportRequest.planId && <StatusBanner tone="warning"><span>相同文本已经导出过。只有确实需要重新下载时才继续。</span><Button uiSize="sm" variant="secondary" onClick={() => void exportPlan(activePlan, repeatExportRequest.mode, true, repeatExportRequest.itemIds)} disabled={busy}>确认重复导出</Button><Button uiSize="sm" variant="ghost" onClick={() => setRepeatExportRequest(null)} disabled={busy}>取消</Button></StatusBanner>}
     {studioMode && !legacyGenerationRetired && !llmWorkspace.loading && !llmReady && <StatusBanner tone="danger"><span>当前没有可用的 LLM API Key 或模型。已有正文仍可编辑；生成和重试暂时锁定。</span><Link href="/system/configuration">前往系统中心配置</Link></StatusBanner>}
     {studioMode && activePlan && !legacyGenerationRetired && <details className="feedback-plan-studio-models"><summary>模型角色与生成设置</summary><LLMRoleAssignmentsPanel workspace={llmWorkspace} showWecom={false} /></details>}
     {studioMode && activePlan && studioGenerationCounts && ["queued", "generating", "pause_requested", "paused", "generation_failed"].includes(activePlan.status) && <div className="feedback-plan-studio-generation" role="status" aria-label="反馈生成进度">

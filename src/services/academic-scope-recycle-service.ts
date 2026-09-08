@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
+import { FeedbackPlanInputSnapshotV2Schema } from "@/lib/feedback-plan";
+import { derivePlanStatus } from "@/services/feedback-plan/model";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { createDatabaseBackup, verifyDatabaseBackup } from "@/services/database-backup-service";
-import { purgeFeedbackAttachmentDirectories } from "@/services/feedback-attachment-storage";
+import { purgeFeedbackAttachmentDirectories, withFeedbackAttachmentRemoval } from "@/services/feedback-attachment-storage";
 
 export const RECYCLE_RETENTION_DAYS = 30;
 export const RECYCLE_RETENTION_MS = RECYCLE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -88,8 +91,10 @@ export async function assertFeedbackPlanAvailable(planId: string, db: RecycleDb 
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
-  const batchDeletedAt = plan.batch?.plans.find((item) => item.class.deletedAt)?.class.deletedAt ?? null;
-  const effectiveDeletedAt = plan.class.deletedAt ?? plan.semester.deletedAt ?? batchDeletedAt;
+  const batchDeletedAt = plan.batch?.plans.find((item) => item.class?.deletedAt)?.class?.deletedAt ?? null;
+  const scopedItems = await db.feedbackPlanItem.findMany({ where: { planId }, select: { classId: true } });
+  const recycledClass = await db.class.findFirst({ where: { id: { in: scopedItems.flatMap((item) => item.classId ? [item.classId] : []) }, deletedAt: { not: null } }, select: { deletedAt: true } });
+  const effectiveDeletedAt = recycledClass?.deletedAt ?? plan.class?.deletedAt ?? plan.semester.deletedAt ?? batchDeletedAt;
   if (effectiveDeletedAt) {
     throw new ApiError("反馈计划所属范围位于回收站，当前不可用", 409, "scope_in_recycle_bin", false, scopeDetails(effectiveDeletedAt));
   }
@@ -106,7 +111,7 @@ export async function assertFeedbackBatchAvailable(batchId: string, db: RecycleD
     },
   });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
-  const classDeletedAt = batch.plans.find((plan) => plan.class.deletedAt)?.class.deletedAt ?? null;
+  const classDeletedAt = batch.plans.find((plan) => plan.class?.deletedAt)?.class?.deletedAt ?? null;
   const effectiveDeletedAt = batch.semester.deletedAt ?? classDeletedAt;
   if (effectiveDeletedAt) {
     throw new ApiError("多班计划包含回收站班级，整份计划当前不可用", 409, "scope_in_recycle_bin", false, scopeDetails(effectiveDeletedAt));
@@ -132,8 +137,8 @@ export async function getRecycleImpact(kind: ScopeKind, id: string, db: RecycleD
     const batchIds = await impactedBatchIdsForClass(id, db);
     const [sessionCount, directPlanCount, affectedPlanCount, metricCount, attendanceCount, eventCount, intakeRunCount] = await Promise.all([
       db.classSession.count({ where: { classId: id } }),
-      db.feedbackPlan.count({ where: { classId: id } }),
-      db.feedbackPlan.count({ where: { OR: [{ classId: id }, ...(batchIds.length ? [{ batchId: { in: batchIds } }] : [])] } }),
+      db.feedbackPlan.count({ where: { OR: [{ classId: id }, { items: { some: { classId: id } } }] } }),
+      db.feedbackPlan.count({ where: { OR: [{ classId: id }, { items: { some: { classId: id } } }, ...(batchIds.length ? [{ batchId: { in: batchIds } }] : [])] } }),
       db.sessionMetric.count({ where: { session: { classId: id } } }),
       db.attendance.count({ where: { session: { classId: id } } }),
       db.event.count({ where: { session: { classId: id } } }),
@@ -188,7 +193,7 @@ export async function getRecycleImpact(kind: ScopeKind, id: string, db: RecycleD
 async function requestGenerationPause(kind: ScopeKind, id: string, db: RecycleDb) {
   const planWhere: Prisma.FeedbackPlanWhereInput = kind === "semester"
     ? { semesterId: id }
-    : { OR: [{ classId: id }, { batch: { plans: { some: { classId: id } } } }] };
+    : { OR: [{ classId: id }, { items: { some: { classId: id } } }, { batch: { plans: { some: { classId: id } } } }] };
   const plans = await db.feedbackPlan.findMany({ where: planWhere, select: { id: true, batchId: true } });
   const planIds = plans.map((plan) => plan.id);
   const batchIds = [...new Set(plans.flatMap((plan) => plan.batchId ? [plan.batchId] : []))];
@@ -291,7 +296,12 @@ async function collectPurgeTargets(kind: ScopeKind, id: string, db: RecycleDb) {
   const directPlans = await db.feedbackPlan.findMany({ where: { classId: { in: classIds } }, select: { id: true, batchId: true } });
   const batchIds = [...new Set(directPlans.flatMap((plan) => plan.batchId ? [plan.batchId] : []))];
   const planIds = (await db.feedbackPlan.findMany({
-    where: { OR: [{ classId: { in: classIds } }, ...(batchIds.length ? [{ batchId: { in: batchIds } }] : [])] },
+    where: { OR: [
+      ...(kind === "semester" ? [{ semesterId: id }] : []),
+      { classId: { in: classIds }, structureVersion: 1 },
+      { structureVersion: 2, items: { every: { classId: { in: classIds } } } },
+      ...(batchIds.length ? [{ batchId: { in: batchIds } }] : []),
+    ] },
     select: { id: true },
   })).map((plan) => plan.id);
   const sessions = await db.classSession.findMany({
@@ -332,8 +342,17 @@ async function collectPurgeTargets(kind: ScopeKind, id: string, db: RecycleDb) {
 
 async function permanentlyPurgeScope(kind: ScopeKind, id: string, db: PrismaClient) {
   const targets = await collectPurgeTargets(kind, id, db);
-  const itemIds = (await db.feedbackPlanItem.findMany({ where: { planId: { in: targets.planIds } }, select: { id: true } })).map((item) => item.id);
-  await db.$transaction(async (tx) => {
+  const partialPlans = (await db.feedbackPlan.findMany({
+    where: { structureVersion: 2, semesterId: { in: targets.semesterIds }, id: { notIn: targets.planIds } },
+    include: { items: true },
+  })).filter((plan) => {
+    const snapshot = FeedbackPlanInputSnapshotV2Schema.parse(JSON.parse(plan.inputSnapshot));
+    return snapshot.factSnapshot.items.some((fact) => fact.context && targets.classIds.includes(fact.context.class.id));
+  });
+  const partialItemIds = partialPlans.flatMap((plan) => plan.items.filter((item) => item.classId && targets.classIds.includes(item.classId)).map((item) => item.id));
+  const itemIds = [...partialItemIds, ...(await db.feedbackPlanItem.findMany({ where: { planId: { in: targets.planIds } }, select: { id: true } })).map((item) => item.id)];
+  const attachments = await db.feedbackAttachment.findMany({ where: { planItemId: { in: partialItemIds } } });
+  const commit = () => db.$transaction(async (tx) => {
     if (targets.sessionIds.length) {
       await tx.sessionMetricHistory.deleteMany({ where: { sessionId: { in: targets.sessionIds } } });
     }
@@ -372,6 +391,26 @@ async function permanentlyPurgeScope(kind: ScopeKind, id: string, db: PrismaClie
         ],
       },
     });
+    if (partialPlans.length) {
+      await tx.teacherTask.deleteMany({ where: { planItemId: { in: partialItemIds } } });
+      await tx.feedbackAttachment.deleteMany({ where: { planItemId: { in: partialItemIds } } });
+      await tx.feedbackPlanItem.deleteMany({ where: { id: { in: partialItemIds } } });
+      for (const plan of partialPlans) {
+        const snapshot = FeedbackPlanInputSnapshotV2Schema.parse(JSON.parse(plan.inputSnapshot));
+        snapshot.factSnapshot.items = snapshot.factSnapshot.items.filter((fact) => !fact.context || !targets.classIds.includes(fact.context.class.id));
+        const remaining = plan.items.filter((item) => !partialItemIds.includes(item.id));
+        const remainingIds = new Set(remaining.map((item) => item.studentId));
+        snapshot.selectedStudentIds = snapshot.selectedStudentIds.filter((studentId) => remainingIds.has(studentId));
+        snapshot.studentOverrides = snapshot.studentOverrides.filter((entry) => remainingIds.has(entry.studentId));
+        snapshot.intakeSources = snapshot.intakeSources.filter((source) => !targets.intakeRunIds.includes(source.intakeRunId));
+        const inputSnapshot = JSON.stringify(snapshot);
+        await tx.feedbackPlan.update({ where: { id: plan.id }, data: {
+          classId: null, sessionId: null, rangeStartSessionId: null, rangeEndSessionId: null,
+          inputSnapshot, inputFingerprint: createHash("sha256").update(inputSnapshot).digest("hex"),
+          status: derivePlanStatus(remaining), planRevision: { increment: 1 },
+        } });
+      }
+    }
     if (targets.planIds.length) await tx.feedbackPlan.deleteMany({ where: { id: { in: targets.planIds } } });
     if (targets.batchIds.length) await tx.feedbackPlanBatch.deleteMany({ where: { id: { in: targets.batchIds } } });
     await tx.groupLessonSession.deleteMany({ where: { sessionId: { in: targets.sessionIds } } });
@@ -404,6 +443,14 @@ async function permanentlyPurgeScope(kind: ScopeKind, id: string, db: PrismaClie
     await tx.class.deleteMany({ where: { id: { in: targets.classIds } } });
     if (kind === "semester") await tx.semester.delete({ where: { id } });
   }, { timeout: 30_000 });
+  // Keep file removal reversible until the database transaction has committed.
+  const removeFiles = (index: number): Promise<unknown> => {
+    const attachment = attachments[index];
+    return attachment
+      ? withFeedbackAttachmentRemoval(attachment.planId, attachment.relativeLocator, () => removeFiles(index + 1))
+      : commit();
+  };
+  await removeFiles(0);
   await db.systemLog.create({ data: { action: `${kind}.purged`, targetType: kind === "class" ? "Class" : "Semester", targetId: id } }).catch(() => undefined);
   await purgeFeedbackAttachmentDirectories(targets.planIds);
   return targets;

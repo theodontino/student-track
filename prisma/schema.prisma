@@ -606,6 +606,7 @@ model GenerationRecord {
 // 12c. 反馈计划：统一承载班级公共、事件微反馈、阶段趋势和结课教学总结。
 // 业务快照使用版本化 JSON，最终批准文本和导出状态独立于模型原始输出。
 model FeedbackPlan {
+  structureVersion    Int      @default(1)
   id                  String   @id @default(cuid())
   displayName         String?
   basedOnPlanId       String?
@@ -613,7 +614,7 @@ model FeedbackPlan {
   outputRequirement   String
   status              String   @default("draft")
   semesterId          String
-  classId             String
+  classId             String?
   sessionId           String?
   rangeStartSessionId String?
   rangeEndSessionId   String?
@@ -635,7 +636,7 @@ model FeedbackPlan {
   batchOrder          Int?
 
   semester          Semester      @relation(fields: [semesterId], references: [id], onDelete: Cascade)
-  class             Class          @relation(fields: [classId], references: [id], onDelete: Restrict)
+  class             Class?         @relation(fields: [classId], references: [id], onDelete: Restrict)
   session           ClassSession? @relation("FeedbackPlanSession", fields: [sessionId], references: [id], onDelete: SetNull)
   rangeStartSession ClassSession? @relation("FeedbackPlanRangeStart", fields: [rangeStartSessionId], references: [id], onDelete: SetNull)
   rangeEndSession   ClassSession? @relation("FeedbackPlanRangeEnd", fields: [rangeEndSessionId], references: [id], onDelete: SetNull)
@@ -691,6 +692,9 @@ model FeedbackPlanItem {
   id                   String   @id @default(cuid())
   planId               String
   studentId            String?
+  classId              String?
+  sessionId            String?
+  contextSnapshot      String   @default("{}")
   status               String   @default("evidence_ready")
   generationError      String?
   generationConfigSnapshot String  @default("{}") // 版本化学生独立反馈计划配置；空对象表示沿用批次公共配置
@@ -720,6 +724,7 @@ model FeedbackPlanItem {
 
   @@unique([planId, studentId])
   @@index([studentId, status])
+  @@index([classId, sessionId])
   @@index([selectedGenerationId])
 }
 

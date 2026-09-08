@@ -36,6 +36,7 @@ type IntakeSource = {
 };
 
 type FrozenFact = {
+  context?: { class: { id: string; code: string; name?: string | null }; session?: { id?: string; code: string; date?: string } | null; lessonMaterial?: LessonFeedbackMaterial; outputRequirement?: string; generationPreferences?: FeedbackGenerationPreferences };
   studentId: string | null;
   studentName?: string;
   studentNumber?: string;
@@ -234,6 +235,17 @@ function commonPreferences(plans: PlanDetail[]) {
   return mostCommon ? JSON.parse(mostCommon) as FeedbackGenerationPreferences : defaultFeedbackGenerationPreferences(plans[0]?.type ?? "event_micro");
 }
 
+function scopePlans(plan: PlanDetail): PlanDetail[] {
+  const input = parsePlanInput(plan);
+  const contexts = new Map((input.factSnapshot?.items ?? []).flatMap((fact) => fact.context ? [[fact.context.class.id, fact.context] as const] : []));
+  if (!contexts.size) return [plan];
+  return [...contexts.values()].map((context) => ({ ...plan, class: context.class, session: context.session,
+    outputRequirement: context.outputRequirement ?? plan.outputRequirement,
+    input: { ...input, lessonMaterial: context.lessonMaterial ?? input.lessonMaterial, generationPreferences: context.generationPreferences ?? input.generationPreferences },
+    items: plan.items.filter((item) => input.factSnapshot?.items.find((fact) => fact.studentId === item.studentId)?.context?.class.id === context.class.id),
+  }));
+}
+
 function planningFields(document: LoadedDocument): PlanningFields {
   const common = commonPreferences(document.plans);
   const commonRequirement = document.batch?.outputRequirement ?? document.plan.outputRequirement;
@@ -251,16 +263,22 @@ function planningFields(document: LoadedDocument): PlanningFields {
       tone: common.tone ?? "inherit",
       moduleKeys: [...common.moduleKeys],
     },
-    studentSelections: document.plans.map((plan) => ({
-      classId: plan.class?.id ?? "",
-      studentIds: parsePlanInput(plan).selectedStudentIds ?? plan.items.flatMap((item) => item.studentId ? [item.studentId] : []),
-    })).filter((selection) => selection.classId),
-    classOverrides: document.kind === "batch" ? document.plans.flatMap((plan) => {
+    studentSelections: document.plans.flatMap((plan) => {
+      const input = parsePlanInput(plan);
+      const selected = input.selectedStudentIds ?? plan.items.flatMap((item) => item.studentId ? [item.studentId] : []);
+      const groups = new Map<string, string[]>();
+      for (const studentId of selected) {
+        const classId = input.factSnapshot?.items.find((fact) => fact.studentId === studentId)?.context?.class.id ?? plan.class?.id;
+        if (classId) groups.set(classId, [...(groups.get(classId) ?? []), studentId]);
+      }
+      return [...groups].map(([classId, studentIds]) => ({ classId, studentIds }));
+    }),
+    classOverrides: document.plans.flatMap(scopePlans).flatMap((plan) => {
       const preferences = parsePlanInput(plan).generationPreferences ?? defaultFeedbackGenerationPreferences(plan.type);
       const outputRequirement = plan.outputRequirement !== commonRequirement ? plan.outputRequirement : undefined;
       const generationPreferences = JSON.stringify(preferences) !== JSON.stringify(common) ? preferences : undefined;
       return outputRequirement || generationPreferences ? [{ classId: plan.class?.id ?? "", outputRequirement, generationPreferences }] : [];
-    }).filter((item) => item.classId) : [],
+    }).filter((item) => item.classId),
     studentOverrides: document.plans.flatMap((plan) => parsePlanInput(plan).studentOverrides ?? plan.items.flatMap((item) => (
       item.studentId && item.generationConfig ? [{ studentId: item.studentId, generationConfig: item.generationConfig }] : []
     ))),
@@ -494,7 +512,8 @@ export function FeedbackTaskDocumentStage(props: Props) {
               outputRequirement: namedFields.outputRequirement,
               ...(namedFields.generationApproach ? { generationApproach: namedFields.generationApproach } : {}),
               generationPreferences: namedFields.generationPreferences,
-              studentIds: namedFields.studentSelections[0]?.studentIds ?? currentDocument.plan.items.flatMap((item) => item.studentId ? [item.studentId] : []),
+              classOverrides: namedFields.classOverrides,
+              studentIds: namedFields.studentSelections.flatMap((selection) => selection.studentIds),
               studentOverrides: namedFields.studentOverrides,
               expectedPlanRevision,
             },
@@ -600,8 +619,8 @@ export function FeedbackTaskDocumentStage(props: Props) {
         key: `${plan.id}:${studentId}`,
         plan,
         studentId,
-        classId: plan.class?.id ?? "",
-        className: plan.class?.name ?? plan.class?.code ?? "当前班级",
+        classId: fact?.context?.class.id ?? plan.class?.id ?? "",
+        className: fact?.context?.class.name ?? fact?.context?.class.code ?? plan.class?.name ?? plan.class?.code ?? "当前班级",
         name: item?.student?.name ?? fact?.studentName ?? "学生",
         publicStudentId: item?.student?.studentId ?? fact?.studentNumber ?? "",
         independent: fields?.studentOverrides.some((override) => override.studentId === studentId) ?? false,
@@ -617,7 +636,8 @@ export function FeedbackTaskDocumentStage(props: Props) {
   const inputs = document.plans.map((plan) => ({ plan, input: parsePlanInput(plan) }));
   const intakeSources = inputs.flatMap(({ plan, input }) => (input.intakeSources ?? []).map((source) => ({ plan, source })));
   const facts = inputs.flatMap(({ plan, input }) => (input.factSnapshot?.items ?? []).map((fact) => ({ plan, fact, capturedAt: input.factSnapshot?.capturedAt })));
-  const materials = inputs.map(({ plan, input }) => ({ plan, ...materialSnapshot(input.lessonMaterial) }));
+  const scopedPlans = document.plans.flatMap(scopePlans);
+  const materials = scopedPlans.map((plan) => ({ plan, ...materialSnapshot(parsePlanInput(plan).lessonMaterial) }));
   const generationComplete = documentGenerationComplete(document);
 
   function cloneDraft() {
@@ -659,21 +679,20 @@ export function FeedbackTaskDocumentStage(props: Props) {
           classOverrides: currentFields.classOverrides,
           studentOverrides: currentFields.studentOverrides,
         };
-        const { batch } = await requestJson<{ batch: BatchDetail }>(`/api/report/feedback-plan-batches/${encodeURIComponent(currentDocument.batch!.id)}`, {
+        const { plan } = await requestJson<{ plan: PlanDetail }>(`/api/report/feedback-plan-batches/${encodeURIComponent(currentDocument.batch!.id)}`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_as", displayName, patch }),
         });
-        const first = batch.plans[0];
-        if (!first) throw new Error("新计划没有可打开的班级");
         setSaveAsOpen(false);
         props.onPlanChanged();
-        props.onTaskChanged({ id: first.id, batchId: batch.id, classId: first.class.id, className: first.class.name ?? first.class.code, sessionCode: first.session?.code ?? first.rangeEndSession?.code ?? "" });
+        props.onTaskChanged({ id: plan.id, batchId: "", classId: "", className: "学生反馈", sessionCode: "" });
       } else {
         const patch = {
           displayName,
           outputRequirement: currentFields.outputRequirement,
           generationApproach,
           generationPreferences: currentFields.generationPreferences,
-          studentIds: currentFields.studentSelections[0]?.studentIds ?? [],
+          classOverrides: currentFields.classOverrides,
+          studentIds: currentFields.studentSelections.flatMap((selection) => selection.studentIds),
           studentOverrides: currentFields.studentOverrides,
         };
         const { plan } = await requestJson<{ plan: PlanDetail }>(`/api/report/feedback-plans/${encodeURIComponent(currentDocument.plan.id)}`, {
@@ -781,9 +800,9 @@ export function FeedbackTaskDocumentStage(props: Props) {
     });
   }
 
-  function inheritedStudentConfig(plan: PlanDetail): FeedbackPlanItemGenerationConfig {
+  function inheritedStudentConfig(plan: PlanDetail, studentId: string): FeedbackPlanItemGenerationConfig {
     const currentFields = fields!;
-    const classOverride = currentFields.classOverrides.find((override) => override.classId === plan.class?.id);
+    const classOverride = currentFields.classOverrides.find((override) => override.classId === (parsePlanInput(plan).factSnapshot?.items.find((fact) => fact.studentId === studentId)?.context?.class.id ?? plan.class?.id));
     return {
       version: 1,
       type: plan.type,
@@ -796,7 +815,7 @@ export function FeedbackTaskDocumentStage(props: Props) {
     const currentDocument = document;
     const currentFields = fields;
     if (!currentDocument || !currentFields) return;
-    const entries = currentDocument.plans.flatMap((plan) => {
+    const entries = currentDocument.plans.flatMap(scopePlans).flatMap((plan) => {
       const classId = plan.class?.id;
       const sessionCode = plan.session?.code ?? plan.rangeEndSession?.code;
       if (!classId || !sessionCode) return [];
@@ -871,15 +890,15 @@ export function FeedbackTaskDocumentStage(props: Props) {
     <Dialog open={continueIntakeOpen} title="继续录入事实" onClose={() => setContinueIntakeOpen(false)}><div className="dialog-form"><StatusBanner tone="warning">事实已冻结，如需修改，请谨慎录入新事实并新建计划。</StatusBanner><p className="dialog-form__hint">这会开启独立录入，不修改当前计划、正文、批准或导出记录。</p><div className="dialog-form__actions"><Button variant="secondary" onClick={() => setContinueIntakeOpen(false)}>取消</Button><Button onClick={() => { setContinueIntakeOpen(false); continueWithCurrentFacts(); }}>确认并继续录入</Button></div></div></Dialog>
   </div>;
 
-  const frozen = !editable;
-  const readOnly = false;
+  const frozen = !editable || document.plan.legacyReadonly === true || document.batch?.legacyReadonly === true;
+  const readOnly = document.batch?.legacyReadonly === true || document.plan.legacyReadonly === true;
   return <div className={styles.documentStage}>
     <section className={styles.documentHeading}><div><span className={styles.eyebrow}>{frozen ? "计划总览 · 源计划已冻结" : "计划草稿 · 自动保存"}</span><h2>{fields.displayName || "未命名修正计划"}</h2><p>{frozen ? "可以直接试改范围与设置，但只能另存为新计划；原计划和结果不会被覆盖。" : "像文档一样随改随存；也可以点击保存或按 Ctrl/⌘ S。"}</p></div><span className={styles.documentStatus}>{status}</span></section>
     {saveError && <StatusBanner tone="danger"><span>{saveError}；页面中的修改仍然保留。</span><Button uiSize="sm" variant="secondary" onClick={() => void save({ requireName: true })}>重试保存</Button></StatusBanner>}
     {actionError && <StatusBanner tone="danger">{actionError}</StatusBanner>}
     {notice && !saveError && <StatusBanner tone="success">{notice}</StatusBanner>}
     <section className={styles.planDocumentHeader} aria-label="反馈计划名称与保存状态"><label><span>计划名称</span><input aria-label="计划名称" value={fields.displayName} maxLength={120} onChange={(event) => setFields({ ...fields, displayName: event.target.value })} placeholder="请输入一眼能认出的计划名称" /></label><div><span role="status">{frozen ? dirty ? "页面工作副本 · 原计划不可覆盖" : "源计划已冻结" : saving ? "保存中…" : requiresName ? "计划需要名称" : dirty ? "有未保存修改" : "已保存"}</span>{frozen ? <><Button uiSize="sm" variant="ghost" onClick={() => void renameCurrent()} disabled={actionBusy || !fields.displayName.trim()}>重命名</Button><Button uiSize="sm" variant="secondary" onClick={cloneDraft} disabled={actionBusy}>另存为…</Button></> : <Button uiSize="sm" variant="secondary" onClick={() => void save({ requireName: true })} disabled={saving || (!dirty && !requiresName)}>{saving ? "保存中…" : requiresName ? "命名并保存" : dirty ? "保存" : "已保存"}</Button>}<kbd>Ctrl/⌘ S</kbd></div></section>
-    <section className={styles.readonlyScopeSummary}><div><span>{document.kind === "batch" ? "班级组与课次" : "班级与课次"}</span><strong>{document.plans.map((plan) => `${plan.class?.name ?? plan.class?.code ?? "未绑定班级"} · ${plan.session?.code ?? plan.rangeEndSession?.code ?? "未绑定课次"}`).join("、")}</strong><small>{document.kind === "batch" ? `${document.plans.length} 个真实班级；事实、正文、批准和导出仍按班隔离。` : document.plan.type === "class_update" ? "1 条班级公共反馈；生成启动前可以调整统一要求。" : `${fields.studentSelections[0]?.studentIds.length ?? 0} 名反馈对象；生成启动前可以调整范围。`}</small></div></section>
+    <section className={styles.readonlyScopeSummary}><div><span>{document.kind === "batch" ? "班级组与课次" : "班级与课次"}</span><strong>{scopedPlans.map((plan) => `${plan.class?.name ?? plan.class?.code ?? "未绑定班级"} · ${plan.session?.code ?? plan.rangeEndSession?.code ?? "未绑定课次"}`).join("、")}</strong><small>{document.kind === "batch" ? `${document.plans.length} 个真实班级；事实、正文、批准和导出仍按班隔离。` : document.plan.type === "class_update" ? "1 条班级公共反馈；生成启动前可以调整统一要求。" : `${fields.studentSelections.reduce((total, selection) => total + selection.studentIds.length, 0)} 名反馈对象；生成启动前可以调整范围。`}</small></div></section>
     <section className={styles.strategy}>
       <div className={styles.strategyHeading}><div><strong>统一生成设置</strong><span>{frozen ? "当前修改只保留在页面工作副本，另存为后才会成为新草稿。" : "修改会自动保存到当前草稿。"}</span></div></div>
       <div className={styles.strategyRows}>
@@ -895,17 +914,17 @@ export function FeedbackTaskDocumentStage(props: Props) {
       </div>
       <fieldset className={styles.documentModules}><legend>生成模块</legend>{FEEDBACK_MODULES[document.plan.type].map((key) => { const checked = fields.generationPreferences.moduleKeys.includes(key); return <label key={key} className={checked ? styles.documentModuleSelected : ""}><input type="checkbox" checked={checked} disabled={readOnly} onChange={(event) => setFields({ ...fields, generationPreferences: { ...fields.generationPreferences, moduleKeys: event.target.checked ? [...new Set([...fields.generationPreferences.moduleKeys, key])] : fields.generationPreferences.moduleKeys.filter((item) => item !== key) } })} /><span>{moduleLabels[key] ?? key}</span></label>; })}</fieldset>
     </section>
-    {document.kind === "batch" && <section className={styles.documentExceptions}><header><strong>班级例外</strong><span>{fields.classOverrides.length} 个班级使用独立要求或设置</span></header>{document.plans.map((plan) => { const classId = plan.class?.id ?? ""; const override = fields.classOverrides.find((item) => item.classId === classId); const preferences = override?.generationPreferences ?? fields.generationPreferences; return <details key={plan.id} open={Boolean(override)}><summary><span><strong>{plan.class?.name ?? plan.class?.code ?? "当前班级"}</strong><small>{override ? "已调整班级默认" : "跟随班级组默认"}</small></span><span>{readOnly ? "查看" : "调整"}</span></summary><div>{readOnly && override && <div className={styles.documentOverrideSummary}><span>结尾：{closureLabels[preferences.closureType] ?? preferences.closureType}</span><span>模块：{preferences.moduleKeys.map((key) => moduleLabels[key] ?? key).join("、") || "按类型默认"}</span></div>}<label>班级总体要求<Textarea rows={2} disabled={readOnly} value={override?.outputRequirement ?? fields.outputRequirement} onChange={(event) => updateClassOverride(classId, { outputRequirement: event.target.value })} /></label><label>班级详略<select disabled={readOnly} value={preferences.length ?? "inherit"} onChange={(event) => updateClassOverride(classId, { generationPreferences: { ...preferences, length: event.target.value as FeedbackGenerationPreferences["length"] } })}><option value="inherit">随家庭偏好</option><option value="short">简洁</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>班级语气<select disabled={readOnly} value={preferences.tone ?? "inherit"} onChange={(event) => updateClassOverride(classId, { generationPreferences: { ...preferences, tone: event.target.value as FeedbackGenerationPreferences["tone"] } })}><option value="inherit">随现有偏好</option><option value="gentle">温和</option><option value="professional">专业</option></select></label>{override && !readOnly && <Button uiSize="sm" variant="ghost" onClick={() => removeClassOverride(classId)}>恢复班级组默认</Button>}</div></details>; })}</section>}
+    {scopedPlans.length > 1 && <section className={styles.documentExceptions}><header><strong>班级例外</strong><span>{fields.classOverrides.length} 个班级使用独立要求或设置</span></header>{scopedPlans.map((plan) => { const classId = plan.class?.id ?? ""; const override = fields.classOverrides.find((item) => item.classId === classId); const preferences = override?.generationPreferences ?? fields.generationPreferences; return <details key={classId} open={Boolean(override)}><summary><span><strong>{plan.class?.name ?? plan.class?.code ?? "当前班级"}</strong><small>{override ? "已调整班级默认" : "跟随班级组默认"}</small></span><span>{readOnly ? "查看" : "调整"}</span></summary><div>{readOnly && override && <div className={styles.documentOverrideSummary}><span>结尾：{closureLabels[preferences.closureType] ?? preferences.closureType}</span><span>模块：{preferences.moduleKeys.map((key) => moduleLabels[key] ?? key).join("、") || "按类型默认"}</span></div>}<label>班级总体要求<Textarea rows={2} disabled={readOnly} value={override?.outputRequirement ?? fields.outputRequirement} onChange={(event) => updateClassOverride(classId, { outputRequirement: event.target.value })} /></label><label>班级详略<select disabled={readOnly} value={preferences.length ?? "inherit"} onChange={(event) => updateClassOverride(classId, { generationPreferences: { ...preferences, length: event.target.value as FeedbackGenerationPreferences["length"] } })}><option value="inherit">随家庭偏好</option><option value="short">简洁</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>班级语气<select disabled={readOnly} value={preferences.tone ?? "inherit"} onChange={(event) => updateClassOverride(classId, { generationPreferences: { ...preferences, tone: event.target.value as FeedbackGenerationPreferences["tone"] } })}><option value="inherit">随现有偏好</option><option value="gentle">温和</option><option value="professional">专业</option></select></label>{override && !readOnly && <Button uiSize="sm" variant="ghost" onClick={() => removeClassOverride(classId)}>恢复班级组默认</Button>}</div></details>; })}</section>}
     {document.plan.type === "class_update" ? <section className={styles.documentStudents}><header><div><strong>班级公共反馈</strong><span>每个班生成一条公共内容</span></div></header><p>该计划读取班级范围内已确认的课堂事实，不拆成学生条目，也不设置学生例外。</p></section> : <section className={styles.documentStudents}><header><div><strong>学生范围与独立设置</strong><span>{fields.studentSelections.reduce((total, selection) => total + selection.studentIds.length, 0)} 名反馈对象 · {fields.studentOverrides.length} 名有独立设置</span></div></header><div>{candidateStudents.map((student) => { const selected = fields.studentSelections.find((selection) => selection.classId === student.classId)?.studentIds.includes(student.studentId) ?? false; const override = fields.studentOverrides.find((item) => item.studentId === student.studentId); return <article key={student.key} className={selected ? styles.documentStudentSelected : ""}><label><input type="checkbox" checked={selected} disabled={readOnly} onChange={() => toggleStudent(student.classId, student.studentId)} /><span><strong>{student.name}</strong><small>{student.className}{student.publicStudentId ? ` · ${student.publicStudentId}` : ""}</small></span></label>{readOnly && override ? <div className={styles.documentStudentOverride}><strong>{typeLabels[override.generationConfig.type]}</strong><span>{override.generationConfig.outputRequirement}</span><small>{closureLabels[override.generationConfig.generationPreferences.closureType] ?? override.generationConfig.generationPreferences.closureType} · {lengthLabels[override.generationConfig.generationPreferences.length ?? "inherit"]} · {toneLabels[override.generationConfig.generationPreferences.tone ?? "inherit"]}</small><small>{override.generationConfig.generationPreferences.moduleKeys.map((key) => moduleLabels[key] ?? key).join("、") || "按类型默认模块"}</small></div> : <span>{student.independent ? "独立设置" : "跟随默认"}</span>}{!readOnly && <Button uiSize="sm" variant="ghost" onClick={() => setStudentTarget({ plan: student.plan, studentId: student.studentId, studentName: student.name })}>{student.independent ? "调整设置" : "单独设置"}</Button>}</article>; })}</div></section>}
     <div className={styles.documentFooterActions}>{frozen ? <><Button variant="secondary" onClick={cloneDraft} disabled={saving || actionBusy}>另存为新计划…</Button><Button onClick={props.onStudio} disabled={actionBusy}>返回生成与复核</Button></> : <><Button variant="secondary" onClick={() => void save({ requireName: true })} disabled={saving || actionBusy || (!dirty && !requiresName)}>{requiresName ? "命名并保存计划" : "保存计划"}</Button><Button onClick={() => void startGeneration()} disabled={saving || actionBusy || !fields.outputRequirement.trim() || !fields.generationApproach}>{actionBusy ? "正在启动生成…" : "保存并开始生成"}</Button></>}</div>
     {studentTarget && <FeedbackPlanGenerationConfigDialog
       open
       studentName={studentTarget.studentName}
-      initialConfig={independentConfigFromCommon(inheritedStudentConfig(studentTarget.plan), fields.studentOverrides.find((override) => override.studentId === studentTarget.studentId)?.generationConfig)}
+      initialConfig={independentConfigFromCommon(inheritedStudentConfig(studentTarget.plan, studentTarget.studentId), fields.studentOverrides.find((override) => override.studentId === studentTarget.studentId)?.generationConfig)}
       busy={saving}
       onClose={() => setStudentTarget(null)}
       onSave={async (generationConfig) => {
-        const classId = studentTarget.plan.class?.id ?? "";
+        const classId = parsePlanInput(studentTarget.plan).factSnapshot?.items.find((fact) => fact.studentId === studentTarget.studentId)?.context?.class.id ?? studentTarget.plan.class?.id ?? "";
         const selection = fields.studentSelections.find((item) => item.classId === classId) ?? { classId, studentIds: [] };
         setFields({
           ...fields,

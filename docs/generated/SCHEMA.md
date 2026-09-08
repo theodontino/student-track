@@ -153,6 +153,7 @@ erDiagram
     DATETIME updatedAt
   }
   FeedbackPlan {
+    INTEGER structureVersion
     TEXT id PK
     TEXT displayName
     TEXT basedOnPlanId FK
@@ -214,6 +215,9 @@ erDiagram
     TEXT id PK
     TEXT planId FK
     TEXT studentId FK
+    TEXT classId
+    TEXT sessionId
+    TEXT contextSnapshot
     TEXT status
     TEXT generationError
     TEXT generationConfigSnapshot
@@ -552,7 +556,7 @@ erDiagram
   }
   Class o|--o{ ClassGroup : "leadClassId"
   Class o|--o{ ClassSession : "classId"
-  Class ||--o{ FeedbackPlan : "classId"
+  Class o|--o{ FeedbackPlan : "classId"
   Class ||--o{ StudentClassEnrollment : "classId"
   Class ||--o{ TeacherTask : "classId"
   Class ||--o| ClassGroupMembership : "classId"
@@ -834,6 +838,7 @@ erDiagram
 
 | 字段 | SQLite 类型 | 必填 | 约束 / 默认值 |
 |---|---|---|---|
+| `structureVersion` | `INTEGER` | 是 | default: 1 |
 | `id` | `TEXT` | 是 | PK |
 | `displayName` | `TEXT` | 否 |  |
 | `basedOnPlanId` | `TEXT` | 否 | FK |
@@ -841,7 +846,7 @@ erDiagram
 | `outputRequirement` | `TEXT` | 是 |  |
 | `status` | `TEXT` | 是 | default: 'draft' |
 | `semesterId` | `TEXT` | 是 | FK |
-| `classId` | `TEXT` | 是 | FK |
+| `classId` | `TEXT` | 否 | FK |
 | `sessionId` | `TEXT` | 否 | FK |
 | `rangeStartSessionId` | `TEXT` | 否 | FK |
 | `rangeEndSessionId` | `TEXT` | 否 | FK |
@@ -908,6 +913,9 @@ erDiagram
 | `id` | `TEXT` | 是 | PK |
 | `planId` | `TEXT` | 是 | FK |
 | `studentId` | `TEXT` | 否 | FK |
+| `classId` | `TEXT` | 否 |  |
+| `sessionId` | `TEXT` | 否 |  |
+| `contextSnapshot` | `TEXT` | 是 | default: '{}' |
 | `status` | `TEXT` | 是 | default: 'evidence_ready' |
 | `generationError` | `TEXT` | 否 |  |
 | `generationConfigSnapshot` | `TEXT` | 是 | default: '{}' |

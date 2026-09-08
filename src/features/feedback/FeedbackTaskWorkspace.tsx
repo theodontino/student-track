@@ -1632,7 +1632,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       ? []
       : selectedFeedbackTaskStudentOverrides(operationDraft, selectedEntries);
     let planId = "";
-    let batchId = "";
+    const batchId = "";
     if (operationDraft.mode === "single") {
       const target = selectedEntries[0];
       if (!target) throw new Error("没有可建立计划的班级范围");
@@ -1661,7 +1661,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
       if (operationDraft.materialSelection.mode === "session_snapshot") {
         throw new Error("班级组计划只能使用共同课修订或明确不使用公共材料");
       }
-      const created = await requestJson<{ batch: { id: string; plans: Array<{ id: string }> } }>("/api/report/feedback-plan-batches", {
+      const created = await requestJson<{ plan: { id: string } }>("/api/report/feedback-plans", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           requestKey: operationDraft.requestKey,
@@ -1677,7 +1677,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
             sharedLessonRevisionId: operationDraft.materialSelection.revisionId,
             sharedMaterialConfirmed: true,
           } : {}),
-          plans: selectedEntries.map((item) => {
+          scopes: selectedEntries.map((item) => {
             const override = operationDraft.classOverrides.find((candidate) => candidate.sessionCode === item.sessionCode);
             return {
               classId: item.classId,
@@ -1700,8 +1700,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
           }),
         }),
       });
-      batchId = created.batch.id;
-      planId = created.batch.plans[0]?.id ?? "";
+      planId = created.plan.id;
     }
     if (!planId) throw new Error("计划草稿建立后没有返回可打开的计划");
     refreshPlanManager();
@@ -2242,7 +2241,7 @@ export default function FeedbackTaskWorkspace({ initialPlanId = "", initialBatch
         const label = alreadyPlanned ? "已进入生成" : loadingGroupRosters && !studentsBySession[item.sessionCode] ? "读取花名册" : run?.status === "applied" ? "事实已写入" : run ? blocking ? `${blocking} 项待核对` : "可以确认" : "等待共同投料";
         return <article key={item.sessionCode} className={item.sessionCode === entry?.sessionCode ? styles.groupClassActive : ""}><div><strong>{item.className}</strong><small>{item.sessionCode} · {studentsBySession[item.sessionCode]?.length ?? item.studentIds.length} 人 · {alreadyPlanned ? "已进入生成" : item.selected ? "已纳入本轮" : "本轮暂不处理"}</small></div><div><Badge tone={alreadyPlanned || run?.status === "applied" ? "success" : "warning"}>{label}</Badge><Button uiSize="sm" variant="ghost" disabled={busy || loadingGroupRosters || alreadyPlanned} aria-pressed={!item.selected} onClick={() => updateTaskEntry(item.sessionCode, { selected: !item.selected })}>{alreadyPlanned ? "已有计划" : item.selected ? "暂不纳入本轮" : "重新纳入本轮"}</Button><Button uiSize="sm" variant="ghost" disabled={busy || loadingGroupRosters} onClick={() => dispatch({ type: "draft", patch: { activeSessionCode: item.sessionCode } })}>设为当前班</Button></div></article>;
       })}</div>}</section>}
-      <nav className={styles.taskRail} aria-label="反馈计划阶段"><button type="button" className={state.stage === "prepare" ? styles.activeRail : ""} disabled={busy} onClick={() => void showTaskStage("prepare")}><span>1</span><strong>录入</strong><small>{hasPlanDocument ? "查看采用的材料与事实" : state.draft.mode === "group" ? "共同投料、逐班核验" : "材料可选、事实确认"}</small></button><button type="button" className={state.stage === "confirm" ? styles.activeRail : ""} disabled={busy || (!hasPlanDocument && (!allSelectedRunsApplied || contextActionBlocked))} onClick={() => void showTaskStage("confirm")}><span>2</span><strong>规划</strong><small>{hasPlanDocument ? "查看或修正计划" : state.draft.mode === "group" ? "多班范围与例外" : "学生范围与反馈要求"}</small></button><button type="button" className={state.stage === "studio" ? styles.activeRail : ""} disabled={busy || !hasPlanDocument} onClick={() => void showTaskStage("studio")}><span>3</span><strong>生成</strong><small>{state.draft.mode === "group" || state.batchId ? "按班进度与局部重试" : "生成、复核与批准"}</small></button></nav>
+      <nav className={styles.taskRail} aria-label="反馈计划阶段"><button type="button" className={state.stage === "prepare" ? styles.activeRail : ""} disabled={busy} onClick={() => void showTaskStage("prepare")}><span>1</span><strong>录入</strong><small>{hasPlanDocument ? "查看采用的材料与事实" : state.draft.mode === "group" ? "共同投料、逐班核验" : "材料可选、事实确认"}</small></button><button type="button" className={state.stage === "confirm" ? styles.activeRail : ""} disabled={busy || (!hasPlanDocument && (!allSelectedRunsApplied || contextActionBlocked))} onClick={() => void showTaskStage("confirm")}><span>2</span><strong>规划</strong><small>{hasPlanDocument ? "查看或修正计划" : state.draft.mode === "group" ? "多班范围与例外" : "学生范围与反馈要求"}</small></button><button type="button" className={state.stage === "studio" ? styles.activeRail : ""} disabled={busy || !hasPlanDocument} onClick={() => void showTaskStage("studio")}><span>3</span><strong>生成</strong><small>{state.draft.mode === "group" || state.batchId ? "逐学生进度与失败重试" : "生成、复核与批准"}</small></button></nav>
       {hasPlanDocument && state.stage !== "studio" && <FeedbackTaskDocumentStage view={state.stage === "prepare" ? "intake" : "plan"} planId={state.planId} batchId={state.batchId} onPlan={() => void showTaskStage("confirm")} onStudio={() => void showTaskStage("studio")} onSaveHandlerChange={setDocumentSaveHandler} onDocumentResolved={resolveLoadedDocument} onTaskChanged={openChangedTask} onPlanChanged={refreshPlanManager} onContinueIntake={continueIndependentIntake} />}
       {!hasPlanDocument && entry && state.stage === "prepare" && <TaskPreparationStage draft={state.draft} entry={entry} run={currentRun} studentTotal={state.draft.mode === "group" ? selectedEntries.reduce((total, item) => total + (studentsBySession[item.sessionCode]?.length ?? item.studentIds.length), 0) : studentsBySession[entry.sessionCode]?.length ?? entry.studentIds.length} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} confirmDisabled={feedbackIntakeConfirmationDisabled({ contextActionBlocked, selectedEntryCount: selectedEntries.length, actionableUnassignedCount, mode: state.draft.mode, unresolvedBlockingCount })} commonMaterialLabel={materialLabel} commonMaterialPreview={selectedMaterialPreview} commonMaterialOptions={commonMaterialOptions} commonMaterialChoice={commonMaterialChoice} commonMaterialAction={commonMaterialAction} commonMaterialHelp={commonMaterialHelp} sessionMaterial={commonMaterialAction === "session" ? context.data?.sessionCommonMaterial?.material ?? null : null} decisions={currentRun ? decisions[currentRun.id] ?? [] : []} materialSummary={groupMaterialSummary} manualFactsHref={manualFactsHref} semesterMaterialsHref={semesterMaterialsHref} onIgnoreUnassigned={state.draft.mode === "group" && actionableUnassignedCount ? ignoreUnassignedSources : undefined} onIgnoreUnassignedSource={state.draft.mode === "group" ? ignoreUnassignedSource : undefined} onDecision={updateDecision} onCommonMaterialChoice={selectCommonMaterial} onSaveSessionMaterial={commonMaterialAction === "session" ? saveSessionCommonMaterial : undefined} onFiles={(files) => void uploadFiles(files)} onScan={() => void scanInbox()} onUseExistingFacts={() => void scanInbox(true)} onContinue={() => void confirmMaterialsAndContinue()} />}
       {!hasPlanDocument && entry && state.stage === "confirm" && <TaskConfirmationStage draft={state.draft} plannedSessionCodes={[...plannedSessionCodes]} studentsBySession={studentsBySession} scopeSummary={state.draft.mode === "group" ? `${group?.name ?? "共同课"} · 第 ${groupLesson?.sequence ?? "-"} 讲 · ${selectedEntries.map((item) => item.className).join("、")}` : `${entry.className} · ${entry.sessionCode}`} busy={busy || loadingGroupRosters || loadingSingleRoster || contextActionBlocked} onEntry={updateTaskEntry} onDraft={(patch) => dispatch({ type: "draft", patch })} onClassOverrideChange={(sessionCode, override) => dispatch({ type: "class-override", sessionCode, override })} onStudentOverrideChange={(studentId, generationConfig) => dispatch({ type: "student-override", studentId, generationConfig })} onBack={() => void showTaskStage("prepare")} onStart={() => void confirmScopeAndCreate()} />}
