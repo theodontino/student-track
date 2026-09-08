@@ -1,3 +1,4 @@
+import { getFeedbackGenerationCapacity } from "@/services/feedback-plan/generation";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { buildFeedbackPlanExportWorkbook, buildWeComDraftPackage } from "@/services/feedback-export-service";
@@ -55,7 +56,7 @@ export async function GET(_request: NextRequest, context: Context) {
     await assertFeedbackPlanAvailable(id);
     const plan = await getFeedbackPlan(id);
     if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
-    return NextResponse.json({ plan: toFeedbackPlanDetail(plan) });
+    return NextResponse.json({ plan: { ...toFeedbackPlanDetail(plan), generationCapacity: getFeedbackGenerationCapacity(id) } });
   } catch (error) {
     return errorResponse(error, "读取反馈计划失败");
   }

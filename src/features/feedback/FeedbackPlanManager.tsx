@@ -337,7 +337,7 @@ export default function FeedbackPlanManager({ semesterId, currentPlanId, current
 
   function taskClassText(task: FeedbackPlanTaskRow) {
     if (task.kind === "batch") return task.batch.plans.map((plan) => plan.class.name ?? plan.class.code).join("、") || "班级组";
-    return task.plan.class?.name ?? task.plan.class?.code ?? "未绑定班级";
+    return task.plan.scopes?.map((scope) => scope.class.name ?? scope.class.code).join("、") || task.plan.class?.name || task.plan.class?.code || "未绑定班级";
   }
 
   function taskSessionText(task: FeedbackPlanTaskRow) {
@@ -345,7 +345,7 @@ export default function FeedbackPlanManager({ semesterId, currentPlanId, current
       const codes = [...new Set(task.batch.plans.map((plan) => plan.session?.code ?? plan.rangeEndSession?.code).filter(Boolean))];
       return codes.join("、") || "课次待确认";
     }
-    return task.plan.session?.code ?? task.plan.rangeEndSession?.code ?? "课次待确认";
+    return [...new Set(task.plan.scopes?.map((scope) => scope.session?.code).filter(Boolean))].join("、") || task.plan.session?.code || task.plan.rangeEndSession?.code || "课次待确认";
   }
 
   function taskDescription(task: FeedbackPlanTaskRow) {

@@ -15,12 +15,16 @@ const scopes: Array<{ classId: string; sessionId: string; studentIds: string[]; 
 beforeAll(async () => {
   const semester = await prisma.semester.create({ data: { name: marker, startDate: "2097-01-01", endDate: "2097-06-30" } });
   semesterId = semester.id;
-  for (let index = 1; index <= 2; index++) {
+  for (let index = 1; index <= 3; index++) {
     const klass = await prisma.class.create({ data: { semesterId, code: `${marker}-${index}`, name: `合成班级${index}` } });
     const session = await prisma.classSession.create({ data: { semesterId, classId: klass.id, code: `2097010${index}01`, date: `2097-01-0${index}`, semesterNumber: 1 } });
-    const student = await prisma.student.create({ data: { name: `合成学生${index}`, studentId: `${marker}-${index}`, gender: "男", enrollments: { create: { semesterId, classId: klass.id } } } });
-    await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: `学生${index}完成订正`, rawText: "合成事实" } });
-    scopes.push({ classId: klass.id, sessionId: session.id, studentIds: [student.id], outputRequirement: `班级${index}要求` });
+    const studentIds = [];
+    for (let offset = 1; offset <= (index === 1 ? 28 : 26); offset++) {
+      const student = await prisma.student.create({ data: { name: `合成学生${index}-${offset}`, studentId: `${marker}-${index}-${offset}`, gender: "男", enrollments: { create: { semesterId, classId: klass.id } } } });
+      await prisma.event.create({ data: { studentId: student.id, sessionId: session.id, type: "课堂表现", description: `学生${index}-${offset}完成订正`, rawText: "合成事实" } });
+      studentIds.push(student.id);
+    }
+    scopes.push({ classId: klass.id, sessionId: session.id, studentIds, outputRequirement: `班级${index}要求` });
   }
 });
 afterAll(async () => {
@@ -34,11 +38,11 @@ afterAll(async () => {
 function input(key: string) { return { requestKey: `${marker}-${key}`, semesterId, type: "event_micro" as const, outputRequirement: "统一要求", scopes }; }
 
 describe("student centered plan", () => {
-  it("creates exactly one plan with isolated class facts and effective settings", async () => {
+  it("creates one 80-student plan across three classes with isolated facts and settings", async () => {
     const plan = await createStudentFeedbackPlan(input("CREATE"));
     expect(plan.classId).toBeNull();
     expect(plan.structureVersion).toBe(2);
-    expect(plan.items).toHaveLength(2);
+    expect(plan.items).toHaveLength(80);
     expect(await prisma.feedbackPlan.count({ where: { semesterId } })).toBe(1);
     expect((await createStudentFeedbackPlan(input("CREATE"))).id).toBe(plan.id);
     for (const item of plan.items) {
@@ -53,14 +57,14 @@ describe("student centered plan", () => {
     const plan = await createStudentFeedbackPlan(input("SELECT"));
     const reduced = await updateFeedbackPlanDraft(plan.id, { expectedPlanRevision: plan.planRevision, studentIds: scopes[0].studentIds });
     const restored = await updateFeedbackPlanDraft(plan.id, { expectedPlanRevision: reduced.planRevision, studentIds: scopes.flatMap((scope) => scope.studentIds) });
-    expect(restored.items).toHaveLength(2);
+    expect(restored.items).toHaveLength(80);
     expect(restored.items.every((item) => item.classId && item.sessionId && parseStudentContext(item.contextSnapshot))).toBe(true);
   });
   it("copies frozen inputs without student results", async () => {
     const plan = await createStudentFeedbackPlan(input("COPY"));
     await prisma.feedbackPlanItem.updateMany({ where: { planId: plan.id }, data: { status: "approved", finalText: "教师确认内容", approvedAt: new Date() } });
     const copied = await cloneFeedbackPlanDraft({ planId: plan.id });
-    expect(copied.items).toHaveLength(2);
+    expect(copied.items).toHaveLength(80);
     expect(copied.items.every((item) => !item.finalText && !item.approvedAt)).toBe(true);
     expect(parseStudentContext(copied.items[0].contextSnapshot)?.sourcePlanId).toBe(plan.id);
   });
@@ -76,7 +80,7 @@ describe("student centered plan", () => {
     const copied = await copyHistoricalFeedbackBatch({ batchId: batch.id, displayName: "历史修订" });
     expect(await prisma.feedbackPlan.count({ where: { semesterId } })).toBe(before + 1);
     expect(copied.batchId).toBeNull();
-    expect(copied.items).toHaveLength(2);
+    expect(copied.items).toHaveLength(80);
     expect(copied.items.every((item) => parseStudentContext(item.contextSnapshot)?.sourcePlanId)).toBe(true);
   });
   it("keeps the other class after permanent deletion and removes its frozen facts", async () => {
@@ -86,7 +90,8 @@ describe("student centered plan", () => {
     await prisma.class.update({ where: { id: scopes[0].classId }, data: { deletedAt: new Date("2097-01-01") } });
     await purgeExpiredRecycleBin({ now: new Date("2097-03-01"), db: prisma });
     const remaining = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id }, include: { items: true } });
-    expect(remaining.items.map((item) => item.studentId)).toEqual(scopes[1].studentIds);
+    expect(remaining.items).toHaveLength(52);
+    expect(remaining.items.map((item) => item.studentId)).toEqual(expect.arrayContaining(scopes.slice(1).flatMap((scope) => scope.studentIds)));
     expect(remaining.inputSnapshot).not.toContain(scopes[0].studentIds[0]);
     expect(remaining.inputSnapshot).not.toContain(scopes[0].classId);
     await expect(assertFeedbackPlanAvailable(plan.id)).resolves.toBeTruthy();
