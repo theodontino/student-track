@@ -24,7 +24,7 @@ export default function AboutPanel() {
           : "Core 不探测、不启动也不调用 FunASR、通义听悟、阿里云 ASR 或 WCG；普通 LLM、学生档案和反馈工作流仍可使用。"}</p>
       </Section>
     </div>
-    <Section title="版本更新" description="从 1.2 Beta 开始记录每个版本的用户可感知变化。">
+    <Section title="版本更新" description="只展示正式版本和当前开发线中用户能直接感受到的变化。">
       <div className="system-changelog">
         {PRODUCT_CHANGELOG.map((entry, index) => <article key={entry.version} className="system-changelog__entry">
           <header><div><Badge tone={index === 0 ? "info" : "neutral"}>v{entry.version}</Badge>{index === 0 && <span>当前版本</span>}</div><strong>{entry.title}</strong></header>

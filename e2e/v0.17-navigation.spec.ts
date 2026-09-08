@@ -57,8 +57,8 @@ test.describe.serial("v0.17.0 information architecture", () => {
     await expect(page.locator(".system-about-hero")).toBeVisible();
     await expect(page.locator(".system-about-card")).toHaveCount(3);
     await expect(page.getByRole("heading", { name: "版本更新" })).toBeVisible();
-    await expect(page.locator(".system-changelog").getByText("v1.2.0-beta.2", { exact: true })).toBeVisible();
-    await expect(page.getByText("共同课与 STEP 基础", { exact: true })).toBeVisible();
+    await expect(page.locator(".system-changelog").getByText("v1.2.0", { exact: true })).toBeVisible();
+    await expect(page.getByText("公共材料与课后反馈统一", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const licenseTab = page.locator(".system-nav").getByRole("link", { name: "开源许可" });
     await expect(licenseTab).toBeVisible();

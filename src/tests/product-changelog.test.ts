@@ -11,4 +11,9 @@ describe("product changelog", () => {
     expect(new Set(PRODUCT_CHANGELOG.map((entry) => entry.version)).size).toBe(PRODUCT_CHANGELOG.length);
     expect(PRODUCT_CHANGELOG.every((entry) => entry.title.trim() && entry.changes.length > 0)).toBe(true);
   });
+
+  it("folds the 1.2 development snapshots into formal releases", () => {
+    expect(PRODUCT_CHANGELOG.some((entry) => entry.version.startsWith("1.2.0-beta."))).toBe(false);
+    expect(PRODUCT_CHANGELOG.some((entry) => entry.version === "1.2.0")).toBe(true);
+  });
 });

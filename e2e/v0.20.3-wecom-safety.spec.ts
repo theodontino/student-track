@@ -57,8 +57,8 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
   await page.goto("/wecom");
   await page.getByRole("tab", { name: "接收与诊断" }).click();
   await expect(page.getByRole("heading", { name: "接收与诊断" })).toBeVisible();
-  await expect(page.locator(".handoff-panel__metrics span").filter({ hasText: "待匹配" })).toContainText("1");
-  await expect(page.locator(".handoff-panel__metrics span").filter({ hasText: "接收异常" })).toContainText("0");
+  await expect(page.locator(".handoff-metric").filter({ hasText: "待匹配" })).toContainText("1");
+  await expect(page.locator(".handoff-metric").filter({ hasText: "接收异常" })).toContainText("0");
   await page.getByRole("button", { name: "扫描并接收新包" }).click();
   await expect(page.getByText(/已检查 1 个文件包/)).toBeVisible();
   await page.getByLabel("匹配学生").selectOption("student-test");
@@ -67,7 +67,7 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
   await page.getByLabel("归属学期").selectOption("semester-test");
   await page.getByRole("button", { name: "确认匹配并处理" }).click();
   await expect(page.getByText("处理完成", { exact: true })).toBeVisible();
-  await page.getByLabel("查看").selectOption("review");
+  await page.locator(".handoff-filter-select select").selectOption("review");
   await expect(page.getByText("已进入教师复核")).toBeVisible();
   await expect(page.getByText("合成学生", { exact: true })).toBeVisible();
   await expect(page.locator("code", { hasText: "pkg-test-1" })).toBeVisible();
@@ -113,6 +113,7 @@ test("pending alignment recovery requires read-only preview and explicit confirm
   });
 
   await page.goto("/wecom");
+  await page.locator(".handoff-panel__maintenance > summary").click();
   await page.getByRole("button", { name: "只读预检待匹配" }).click();
   await expect(page.getByText("待匹配只读预检完成：146 条可自动恢复，4 条仍需人工确认")).toBeVisible();
   const recover = page.getByRole("button", { name: "确认处理最多 25 条" });
@@ -146,6 +147,7 @@ test("handoff receipt repair requires a read-only preflight and explicit confirm
   });
 
   await page.goto("/wecom");
+  await page.locator(".handoff-panel__maintenance > summary").click();
   await page.getByRole("button", { name: "只读预检历史回执" }).click();
   await expect(page.getByText("回执只读预检完成：2 条可修复，1 条跳过")).toBeVisible();
   const repair = page.getByRole("button", { name: "备份后修复 receiptId" });

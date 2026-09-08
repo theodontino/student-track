@@ -6,7 +6,7 @@
 
 | 组件 | 版本 | 当前关系 |
 |---|---:|---|
-| Student Track | 1.3.0-beta.8 | Core / Full 共用同一业务数据与 Prisma Schema；新学生反馈以单计划组织跨班学生，旧学生计划与批次只读并可复制冻结事实到新计划。全局一次执行一份计划，计划内模型请求自适应并发；Planner → ContentBrief → Writer、候选正文与核验结论分离保持不变。 |
+| Student Track | 1.3.0 | **反馈引擎与多平台分发更新**。Core / Full 共用同一业务数据与 Prisma Schema；新学生反馈以单计划组织跨班学生，旧学生计划与批次只读并可复制冻结事实到新计划。全局一次执行一份计划，计划内模型请求自适应并发；Planner → ContentBrief → Writer、候选正文与核验结论分离保持不变。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 当前正式 WCG；与 ST 通过 `protocol-st-wcg` 管理的 handoff、receipt、已批准草稿包和只读花名册目录契约协作，并保持 no-send 边界。 |
 
 Student Track 与 WCG 的业务交付以本地文件为主；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。

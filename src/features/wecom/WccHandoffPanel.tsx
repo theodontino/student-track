@@ -40,6 +40,8 @@ type AlignmentRecoveryPreview = {
   uninspected: number;
   reasons: Record<string, number>;
 };
+
+type HandoffFilter = "alignment" | "errors" | "review" | "complete" | "all";
 type PackageDetail = {
   id: string;
   packageId: string;
@@ -102,7 +104,7 @@ export default function WccHandoffPanel() {
   const [repairConfirmation, setRepairConfirmation] = useState("");
   const [alignmentPreview, setAlignmentPreview] = useState<AlignmentRecoveryPreview | null>(null);
   const [alignmentConfirmation, setAlignmentConfirmation] = useState("");
-  const [filter, setFilter] = useState<"alignment" | "errors" | "review" | "complete" | "all">("alignment");
+  const [filter, setFilter] = useState<HandoffFilter>("alignment");
   const [selectedRetries, setSelectedRetries] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Record<string, PackageDetail>>({});
   const refresh = () => request("/api/wecom/handoff")
@@ -129,6 +131,14 @@ export default function WccHandoffPanel() {
   );
   const allVisibleRetriesSelected = retryableVisibleIds.length > 0
     && retryableVisibleIds.every((id) => selectedRetries.has(id));
+  const filterOptions: Array<{ value: HandoffFilter; label: string; count: number; tone: string }> = [
+    { value: "alignment", label: "待匹配", count: counts.pendingAlignment, tone: "attention" },
+    { value: "review", label: "教师复核", count: counts.pendingReview, tone: "info" },
+    { value: "errors", label: "接收异常", count: counts.errors, tone: "danger" },
+    { value: "complete", label: "已完成", count: counts.complete, tone: "success" },
+    { value: "all", label: "全部登记", count: data.items.length, tone: "neutral" },
+  ];
+  const activeFilterLabel = filterOptions.find((option) => option.value === filter)?.label || "文件包";
 
   async function scan() {
     setBusy("scan");
@@ -280,65 +290,70 @@ export default function WccHandoffPanel() {
         {busy === "scan" ? "正在扫描与接收…" : "扫描并接收新包"}
       </Button>
     </div>
-    <div className="handoff-panel__metrics">
-      <span><strong>{data.items.length}</strong>已登记</span>
-      <span><strong>{counts.pendingAlignment}</strong>待匹配</span>
-      <span><strong>{counts.pendingReview}</strong>已送教师复核</span>
-      <span><strong>{counts.errors}</strong>接收异常</span>
-      <span><strong>{counts.complete}</strong>已完成</span>
-    </div>
-    {counts.pendingAlignment > 0 && <div className="handoff-item__actions">
-      <Button variant="secondary" onClick={() => void previewAlignments()} disabled={Boolean(busy)}>
-        {busy === "alignment-preview" ? "正在预检待匹配…" : "只读预检待匹配"}
-      </Button>
-      {alignmentPreview && <span>
-        已检查 {alignmentPreview.inspected}/{alignmentPreview.total} · 可自动恢复 {alignmentPreview.eligible} · 仍需人工 {alignmentPreview.manual}
-      </span>}
-      {alignmentPreview?.eligible ? <>
-        <input
-          aria-label="待匹配恢复确认"
-          value={alignmentConfirmation}
-          onChange={(event) => setAlignmentConfirmation(event.target.value)}
-          placeholder="输入 REPROCESS_MATCHABLE_HANDOFFS"
-        />
-        <Button
-          onClick={() => void recoverAlignments()}
-          disabled={alignmentConfirmation !== "REPROCESS_MATCHABLE_HANDOFFS" || Boolean(busy)}
-        >
-          {busy === "alignment-recovery" ? "正在顺序处理…" : "确认处理最多 25 条"}
-        </Button>
-      </> : null}
-    </div>}
-    <div className="handoff-item__actions">
-      <Button variant="secondary" onClick={() => void previewReceipts()} disabled={Boolean(busy)}>
-        {busy === "receipt-preview" ? "正在预检回执…" : "只读预检历史回执"}
-      </Button>
-      {receiptPreview && <span>
-        缺少关联 {receiptPreview.missingReceiptId} · 可关联已有 {receiptPreview.linkExisting} · 可新建 {receiptPreview.createReceipt}
-      </span>}
-      {receiptPreview?.eligible ? <>
-        <input
-          aria-label="回执修复确认"
-          value={repairConfirmation}
-          onChange={(event) => setRepairConfirmation(event.target.value)}
-          placeholder="输入 REPAIR_HANDOFF_RECEIPTS"
-        />
-        <Button
-          variant="secondary"
-          onClick={() => void repairReceipts()}
-          disabled={repairConfirmation !== "REPAIR_HANDOFF_RECEIPTS" || Boolean(busy)}
-        >
-          {busy === "receipt-repair" ? "正在备份并修复…" : "备份后修复 receiptId"}
-        </Button>
-      </> : null}
+    <div className="handoff-panel__metrics" aria-label="按状态查看文件包">
+      {filterOptions.map((option) => <button
+        type="button"
+        key={option.value}
+        className={`handoff-metric handoff-metric--${option.tone}${filter === option.value ? " is-active" : ""}`}
+        aria-pressed={filter === option.value}
+        onClick={() => setFilter(option.value)}
+      >
+        <span>{option.label}</span>
+        <strong>{option.count}</strong>
+        <small>{option.value === "alignment" ? "需要你处理" : option.value === "errors" ? "需要排查" : "点击查看"}</small>
+      </button>)}
     </div>
     {message && <StatusBanner tone={message.includes("失败") ? "warning" : "info"}>{message}</StatusBanner>}
+    <details className="handoff-panel__maintenance">
+      <summary>
+        <span><strong>维护工具</strong><small>历史数据修复与批量恢复，日常接收无需使用</small></span>
+        <span>按需展开</span>
+      </summary>
+      <div className="handoff-maintenance__body">
+        {counts.pendingAlignment > 0 && <section>
+          <div><strong>恢复可自动匹配的旧包</strong><p>只读检查历史待匹配项目，再由你确认是否顺序处理。</p></div>
+          <div className="handoff-item__actions">
+            <Button variant="secondary" onClick={() => void previewAlignments()} disabled={Boolean(busy)}>
+              {busy === "alignment-preview" ? "正在预检待匹配…" : "只读预检待匹配"}
+            </Button>
+            {alignmentPreview && <span>已检查 {alignmentPreview.inspected}/{alignmentPreview.total} · 可恢复 {alignmentPreview.eligible} · 仍需人工 {alignmentPreview.manual}</span>}
+            {alignmentPreview?.eligible ? <>
+              <input aria-label="待匹配恢复确认" value={alignmentConfirmation} onChange={(event) => setAlignmentConfirmation(event.target.value)} placeholder="输入 REPROCESS_MATCHABLE_HANDOFFS" />
+              <Button onClick={() => void recoverAlignments()} disabled={alignmentConfirmation !== "REPROCESS_MATCHABLE_HANDOFFS" || Boolean(busy)}>
+                {busy === "alignment-recovery" ? "正在顺序处理…" : "确认处理最多 25 条"}
+              </Button>
+            </> : null}
+          </div>
+        </section>}
+        <section>
+          <div><strong>修复历史回执关联</strong><p>检查旧记录是否缺少回执关联；实际修复前会创建并校验数据库备份。</p></div>
+          <div className="handoff-item__actions">
+            <Button variant="secondary" onClick={() => void previewReceipts()} disabled={Boolean(busy)}>
+              {busy === "receipt-preview" ? "正在预检回执…" : "只读预检历史回执"}
+            </Button>
+            {receiptPreview && <span>缺少关联 {receiptPreview.missingReceiptId} · 可关联已有 {receiptPreview.linkExisting} · 可新建 {receiptPreview.createReceipt}</span>}
+            {receiptPreview?.eligible ? <>
+              <input aria-label="回执修复确认" value={repairConfirmation} onChange={(event) => setRepairConfirmation(event.target.value)} placeholder="输入 REPAIR_HANDOFF_RECEIPTS" />
+              <Button variant="secondary" onClick={() => void repairReceipts()} disabled={repairConfirmation !== "REPAIR_HANDOFF_RECEIPTS" || Boolean(busy)}>
+                {busy === "receipt-repair" ? "正在备份并修复…" : "备份后修复 receiptId"}
+              </Button>
+            </> : null}
+          </div>
+        </section>
+      </div>
+    </details>
     {data.items.length === 0 ? <EmptyState
       title="还没有收到转交文件"
       description="先在 WeComCatch 的“中转仓库”发布已准备项目，再回到这里扫描。"
     /> : <>
-      <div className="handoff-item__actions">
-        <label>查看
+      <div className="handoff-panel__queue-header">
+        <div>
+          <span className="handoff-panel__eyebrow">处理队列</span>
+          <h4>{activeFilterLabel}</h4>
+          <p>共 {visibleItems.length} 个文件包；逐包核对消息证据，再完成学生和学期匹配。</p>
+        </div>
+        <div className="handoff-item__actions">
+        <label className="handoff-filter-select"><span>筛选</span>
           <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
             <option value="alignment">仅待匹配</option>
             <option value="errors">仅接收异常</option>
@@ -368,11 +383,11 @@ export default function WccHandoffPanel() {
         >
           {busy === "batch-retry" ? `正在顺序处理 ${selectedRetries.size} 项…` : filter === "complete" ? `用当前模型重新分拣 (${selectedRetries.size}/25)` : `顺序批量重试 (${selectedRetries.size}/25)`}
         </Button>}
-        <span>每包均可展开查看完整消息与安全诊断。</span>
+        </div>
       </div>
       {visibleItems.length === 0 ? <EmptyState title="当前筛选没有项目" description="可切换状态查看已送复核或历史完成记录。" /> : <div className="handoff-panel__list">
       {visibleItems.map((item) => <article className={`handoff-item handoff-item--${item.status}`} key={item.id}>
-        <div className="handoff-item__main">
+        <header className="handoff-item__header">
           <div className="handoff-item__title">
             {(item.status === "retryable_failure" || (filter === "complete" && item.status === "no_value")) && <input
               aria-label={`选择重试 ${item.packageId}`}
@@ -387,7 +402,11 @@ export default function WccHandoffPanel() {
             <strong>{item.selectedStudent?.name || "尚未匹配学生"}</strong>
             <span>{STATUS_LABELS[item.status] || item.status}</span>
           </div>
-          <p>{item.messageCount} 条候选消息 · {new Date(item.producedAt).toLocaleString("zh-CN")}</p>
+          <p><strong>{item.messageCount} 条</strong>候选消息<span aria-hidden="true">·</span>{new Date(item.producedAt).toLocaleString("zh-CN")}</p>
+        </header>
+        <div className="handoff-item__body">
+        <div className="handoff-item__main">
+          <span className="handoff-item__section-label">文件包证据</span>
           <code>{item.packageId}</code>
           {item.code && <small>安全错误码：{item.code} · {ERROR_HELP[item.code] || "请查看包内容与本机模型设置。"}</small>}
           <Button variant="secondary" onClick={() => void loadDetail(item)} disabled={busy === `detail-${item.id}`}>
@@ -404,6 +423,7 @@ export default function WccHandoffPanel() {
         </div>
         <div className="handoff-item__controls">
           {["pending_alignment", "retryable_failure"].includes(item.status) && <>
+            <span className="handoff-item__section-label">确认业务归属</span>
             <div className="handoff-item__fields">
               <label className="handoff-item__field">
                 <span>匹配学生</span>
@@ -444,6 +464,7 @@ export default function WccHandoffPanel() {
             {["pending_alignment", "retryable_failure", "rejected"].includes(item.status)
               && <Button variant="secondary" onClick={() => void act(item, "discard")} disabled={busy === item.id}>丢弃</Button>}
           </div>
+        </div>
         </div>
       </article>)}
     </div>}</>}

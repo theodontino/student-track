@@ -26,7 +26,9 @@ export default function WeComWorkspace() {
       <StatusBanner tone="warning">该工作区尚未在本机启用。请先阅读第三方工具使用须知。</StatusBanner>
       <WeComAccessPanel />
     </> : <>
-      <StatusBanner tone="info">业务数据只通过不可变 handoff 文件交付；Student Track 不启动或读取 WCC runtime。云端模型可能接收待提取的会话片段。</StatusBanner>
+      <div className="wecom-workspace__safety-note">
+        <StatusBanner tone="info">业务数据只通过不可变 handoff 文件交付；Student Track 不启动或读取 WCC runtime。云端模型可能接收待提取的会话片段。</StatusBanner>
+      </div>
       <Tabs
         label="企微家校工作区分区"
         value={view}
