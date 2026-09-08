@@ -9,7 +9,7 @@ import type { useQuickScorePage } from "./useQuickScorePage";
 type Workspace = ReturnType<typeof useQuickScorePage>;
 
 export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) {
-  const controlsReady = workspace.contextHydrated && workspace.workspaceHydrated;
+  const controlsReady = workspace.contextHydrated && workspace.workspaceHydrated && !workspace.submitting && !workspace.deletingSession;
   return (
     <>
       <ContextHeader
@@ -32,6 +32,7 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
           <button
             type="button"
             aria-label="新建学期"
+            disabled={!controlsReady}
             onClick={() => workspace.setShowSemesterModal(true)}
             className="border border-gray-300 text-gray-500 px-2 py-2 rounded-lg text-sm hover:bg-gray-50"
             title="新建学期"
@@ -55,6 +56,7 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
               <span className="text-xs text-gray-400">课次</span>
               <select
                 aria-label="课次"
+                disabled={!controlsReady}
                 value={workspace.selectedSessionCode}
                 onChange={(event) => void workspace.handleSessionChange(event.target.value)}
                 className="border border-blue-300 rounded-lg px-3 py-2 text-sm font-mono outline-none bg-blue-50"
@@ -72,14 +74,14 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
             <button
               type="button"
               onClick={workspace.requestDeleteSession}
-              disabled={workspace.deletingSession}
+              disabled={workspace.editingDisabled}
               className="border border-red-200 text-red-600 px-3 py-2 rounded-lg text-sm hover:bg-red-50 disabled:opacity-50"
               title="删除当前课次"
             >{workspace.deletingSession ? "删除中…" : "删除课次"}</button>
           )}
           <Button
             onClick={() => workspace.setSessionDialogOpen(true)}
-            disabled={!workspace.selectedSemesterId || !workspace.selectedClassId}
+            disabled={!controlsReady || !workspace.selectedSemesterId || !workspace.selectedClassId}
           >开始上课</Button>
         </div>
 
@@ -88,11 +90,11 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
             <span>日期</span>
             <input
               aria-label="日期"
+              disabled={workspace.editingDisabled}
               type="date"
               value={workspace.date}
               onChange={(event) => {
                 workspace.setDate(event.target.value);
-                workspace.setSelectedSessionCode("");
               }}
               className="border border-gray-300 rounded px-2 py-1 text-xs outline-none"
             />

@@ -32,8 +32,8 @@ export default function StudentScoreGrid({ cards, originals, genders, onScore, o
                 return (
                   <div key={dimension.key} className="quick-score-card__dimension">
                     <span>{dimension.label}</span>
-                    <output aria-label={`${card.studentName} ${dimension.key} 当前分数`}>{score}{`score${dimension.key}` in changes ? " · 已修改" : ""}</output>
-                    <div>{[0, 1, 2, 3, 4, 5].map((value) => (
+                    <output className="col-start-1 row-start-2 text-[0.65rem] text-gray-500" aria-label={`${card.studentName} ${dimension.key} 当前分数`}>{score}{`score${dimension.key}` in changes ? " · 已修改" : ""}</output>
+                    <div className="col-start-2 row-start-1 row-span-2">{[0, 1, 2, 3, 4, 5].map((value) => (
                       <button
                         key={value}
                         type="button"

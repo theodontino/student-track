@@ -158,7 +158,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { scores, sessionCode, attendances } = body as {
-      scores: QuickScoreEntry[];
+      scores?: QuickScoreEntry[];
       sessionCode?: string;
       attendances?: QuickAttendanceEntry[];
     };

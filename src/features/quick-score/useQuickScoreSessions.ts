@@ -58,6 +58,7 @@ export function useQuickScoreSessions({
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [legacyCards, setLegacyCards] = useState<CardScore[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const selectedKey = teachingContextWorkspaceKey("quick-score", context);
   const semesterRef = useRef(semesterId);
   const classRef = useRef(className);
@@ -115,6 +116,8 @@ export function useQuickScoreSessions({
 
   const loadSessionCards = useCallback(async (session: SessionInfo) => {
     setLoadedKey(null);
+    setLoadError(false);
+    sessionCodeRef.current = session.code;
     const requestId = ++cardsRequestRef.current;
     const selectedSemester = semesterRef.current;
     const selectedClass = classRef.current;
@@ -124,7 +127,7 @@ export function useQuickScoreSessions({
     setNotice(null);
     try {
       const data = await loadQuickScoreSession(selectedClass, session.code, selectedSemester, selectedClassId);
-      if (!shouldApplyQuickScoreRequest({
+      if (sessionCodeRef.current !== session.code || !shouldApplyQuickScoreRequest({
         requestId,
         latestRequestId: cardsRequestRef.current,
         requestedSemesterId: selectedSemester,
@@ -153,7 +156,7 @@ export function useQuickScoreSessions({
         };
       });
       const pending = pendingRestoreRef.current;
-      if (pending && (pending.classId ? pending.classId === selectedClassId : pending.className === selectedClass) && pending.sessionCode === session.code) {
+      if (pending && pending.semesterId === selectedSemester && (pending.classId ? pending.classId === selectedClassId : pending.className === selectedClass) && pending.sessionCode === session.code) {
         setDate(pending.date);
         setCards(pending.originalScores ? rebaseQuickScoreCards(loadedCards, pending.cards, pending.originalScores) : loadedCards);
         setLegacyCards(pending.originalScores ? pending.legacyCards ?? [] : pending.cards);
@@ -164,7 +167,7 @@ export function useQuickScoreSessions({
       setLoadedKey(teachingContextWorkspaceKey("quick-score", { semesterId: selectedSemester, classId: selectedClassId, className: selectedClass, sessionCode: session.code }));
       return true;
     } catch (error) {
-      if (!shouldApplyQuickScoreRequest({
+      if (sessionCodeRef.current !== session.code || !shouldApplyQuickScoreRequest({
         requestId,
         latestRequestId: cardsRequestRef.current,
         requestedSemesterId: selectedSemester,
@@ -174,6 +177,7 @@ export function useQuickScoreSessions({
         requestedClassName: selectedClass,
         currentClassName: classRef.current,
       })) return false;
+      setLoadError(true);
       setNotice({ tone: "danger", message: error instanceof Error ? error.message : "加载课次评分失败" });
       return false;
     }
@@ -195,6 +199,7 @@ export function useQuickScoreSessions({
 
   const fetchSessions = useCallback(async () => {
     setLoadedKey(null);
+    setLoadError(false);
     const requestId = ++sessionsRequestRef.current;
     // Once a newer session-list refresh starts, cards selected from an older
     // list must not be allowed to land while this refresh is still in flight.
@@ -224,7 +229,7 @@ export function useQuickScoreSessions({
         return true;
       }
       const currentDate = today();
-      const restoredCode = pending?.sessionCode || sessionCodeRef.current;
+      const restoredCode = sessionCodeRef.current || pending?.sessionCode || "";
       const target = selectQuickScoreSession(data, restoredCode, currentDate);
       if (target) {
         setSessionCode(target.code);
@@ -244,10 +249,11 @@ export function useQuickScoreSessions({
         requestedClassName,
         currentClassName: classRef.current,
       })) return false;
+      setLoadError(true);
       setNotice({ tone: "danger", message: error instanceof Error ? error.message : "加载课次列表失败" });
       return false;
     }
-  }, [classId, className, initBlankCards, loadSessionCards, semesterId, setCards, setNotice, setOriginalScores, setSessionCode]);
+  }, [classId, className, initBlankCards, loadSessionCards, semesterId, setNotice, setSessionCode]);
 
   useEffect(() => {
     if (!contextHydrated || !workspaceHydrated) return;
@@ -255,6 +261,7 @@ export function useQuickScoreSessions({
       sessionsRequestRef.current += 1;
       cardsRequestRef.current += 1;
       setSessions([]);
+      setLoadedKey(null);
       setSessionCode("");
       setCards([]);
       return;
@@ -263,6 +270,10 @@ export function useQuickScoreSessions({
   }, [classId, className, contextHydrated, fetchSessions, semesterId, setCards, setSessionCode, workspaceHydrated]);
 
   async function changeSession(code: string) {
+    setLoadedKey(null);
+    setLegacyCards([]);
+    pendingRestoreRef.current = null;
+    sessionCodeRef.current = code;
     setSessionCode(code);
     if (!code) { cardsRequestRef.current += 1; setCards([]); return; }
     const session = sessions.find((item) => item.code === code);
@@ -333,6 +344,24 @@ export function useQuickScoreSessions({
   }
 
   return {
+    loadError,
+    retryLoad: fetchSessions,
+    invalidateSelection: () => {
+      cardsRequestRef.current += 1;
+      sessionsRequestRef.current += 1;
+      pendingRestoreRef.current = null;
+      setLoadedKey(null);
+      setLegacyCards([]);
+    },
+    changeDate: (nextDate: string) => {
+      cardsRequestRef.current += 1;
+      pendingRestoreRef.current = null;
+      sessionCodeRef.current = "";
+      setSessionCode("");
+      setDate(nextDate);
+      setResult(null);
+      initBlankCards();
+    },
     legacyCards,
     dismissLegacyDraft: () => setLegacyCards([]),
     restoreLegacyField: (studentId: string, field: ScoreField) => {

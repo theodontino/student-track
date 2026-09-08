@@ -34,7 +34,7 @@ export function useQuickScorePage() {
   const save = useQuickScoreSave({
     changedCards: scoreCards.changedCards,
     originalScores: scoreCards.originalScores,
-    ready: contextHydrated && session.workspaceHydrated,
+    ready: contextHydrated && session.workspaceHydrated && session.cardsReady && !session.deletingSession,
     date: session.date,
     sessionCode: selectedSessionCode,
     sessions: session.sessions,
@@ -53,6 +53,8 @@ export function useQuickScorePage() {
   const selectedSemester = reference.semesters.find((semester) => semester.id === selectedSemesterId);
   const genders = useMemo(() => new Map(reference.students.map((student) => [student.id, student.gender])), [reference.students]);
   const setSelectedClassId = useCallback((classId: string) => {
+    if (save.submitting || classId === selectedClassId) return;
+    session.invalidateSelection();
     const klass = reference.classes.find((item) => item.id === classId);
     teachingContext.setContext((current) => ({
       ...current,
@@ -60,7 +62,7 @@ export function useQuickScorePage() {
       className: klass?.name ?? klass?.code ?? "",
       sessionCode: "",
     }));
-  }, [reference.classes, teachingContext]);
+  }, [reference.classes, teachingContext, save.submitting, selectedClassId, session]);
 
   useEffect(() => {
     if (!selectedClass || selectedClassId || reference.classes.length === 0) return;
@@ -69,6 +71,10 @@ export function useQuickScorePage() {
   }, [reference.classes, selectedClass, selectedClassId, setSelectedClassId]);
 
   return {
+    cardsReady: session.cardsReady,
+    editingDisabled: !session.cardsReady || save.submitting || session.deletingSession,
+    loadError: session.loadError,
+    retryLoad: session.retryLoad,
     legacyCards: session.legacyCards,
     dismissLegacyDraft: session.dismissLegacyDraft,
     restoreLegacyField: session.restoreLegacyField,
@@ -101,12 +107,16 @@ export function useQuickScorePage() {
     sessionDialogOpen,
     semesters: reference.semesters,
     sessions: session.sessions,
-    setDate: session.setDate,
+    setDate: session.changeDate,
     setDeleteConfirmationOpen: session.setDeleteConfirmationOpen,
     setNote: scoreCards.setNote,
     setScore: scoreCards.setScore,
     setSelectedClassId,
-    setSelectedSemesterId: teachingContext.setSemesterId,
+    setSelectedSemesterId: (id: string) => {
+      if (save.submitting || id === selectedSemesterId) return;
+      session.invalidateSelection();
+      teachingContext.setSemesterId(id);
+    },
     setSelectedSessionCode: teachingContext.setSessionCode,
     setSessionDialogOpen,
     setSemesters: reference.setSemesters,
