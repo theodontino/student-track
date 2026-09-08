@@ -20,10 +20,7 @@ import { sha256 } from "@/services/feedback-plan-audit";
 import { FeedbackPlanDb, feedbackPlanDraftFingerprint, normalizedStudentOverrides, parseGenerationConfigSnapshot, parseJson, StoredFeedbackPlanDraft } from "@/services/feedback-plan/model";
 import { semesterStudentWhere } from "@/services/student-enrollment-service";
 
-
 type NormalizedPlanAssessmentEvidence = Record<string, StudentAssessmentEvidence[]>;
-
-
 
 export function normalizePlanAssessmentEvidence(input: {
   assessmentEvidence?: FeedbackPlanAssessmentEvidenceInput;
@@ -54,8 +51,6 @@ export function normalizePlanAssessmentEvidence(input: {
   }
   return normalized;
 }
-
-
 
 function assessmentEvidenceItems(items: StudentAssessmentEvidence[]): FeedbackEvidenceBundle["assessmentEvidence"] {
   return items.map((evidence) => {
@@ -89,20 +84,14 @@ function assessmentEvidenceItems(items: StudentAssessmentEvidence[]): FeedbackEv
   });
 }
 
-
-
 export function persistedAssessmentEvidence(snapshot: string): FeedbackEvidenceBundle["assessmentEvidence"] {
   const parsed = FeedbackEvidenceBundleSchema.safeParse(parseJson(snapshot, null));
   return parsed.success ? sanitizeFeedbackEvidenceBundle(parsed.data).assessmentEvidence : [];
 }
 
-
-
 export function activeTaskIds(tasks: Array<{ id: string; status: string }>) {
   return new Set(tasks.filter((task) => task.status !== "cancelled").map((task) => task.id));
 }
-
-
 
 export function auditTaskIdsForBundle(
   bundle: FeedbackEvidenceBundle,
@@ -113,8 +102,6 @@ export function auditTaskIdsForBundle(
     ...activeTaskIds(tasks),
   ]);
 }
-
-
 
 export function auditIdentityForPlanItem(
   plan: {
@@ -147,8 +134,6 @@ export function auditIdentityForPlanItem(
   };
 }
 
-
-
 export function defaultLessonMaterial(): LessonFeedbackMaterial {
   return LessonFeedbackMaterialSchema.parse({
     version: 1,
@@ -165,8 +150,6 @@ export function defaultLessonMaterial(): LessonFeedbackMaterial {
   });
 }
 
-
-
 function lessonMaterialBackground(material: LessonFeedbackMaterial | undefined) {
   if (!material) return [];
   return [
@@ -181,8 +164,6 @@ function lessonMaterialBackground(material: LessonFeedbackMaterial | undefined) 
     ...material.otherNotes.map((value) => `课程备注：${value}`),
   ].filter(Boolean).slice(0, 100);
 }
-
-
 
 function historySnapshot(student: FeedbackContextStudent | null): FeedbackHistorySnapshot | null {
   if (!student) return null;
@@ -225,15 +206,11 @@ function historySnapshot(student: FeedbackContextStudent | null): FeedbackHistor
   });
 }
 
-
-
 function planAnchorSession(input: FeedbackPlanCreateInput) {
   return input.type === "stage_trend" || input.type === "course_end"
     ? input.rangeEndSessionId ?? input.sessionId ?? input.rangeStartSessionId
     : input.sessionId ?? input.rangeEndSessionId ?? input.rangeStartSessionId;
 }
-
-
 
 export async function resolveSession(db: FeedbackPlanDb, value: string | undefined) {
   if (!value) return null;
@@ -246,8 +223,6 @@ export async function resolveSession(db: FeedbackPlanDb, value: string | undefin
     select: { id: true, code: true, classId: true, semesterId: true, date: true, semesterNumber: true },
   });
 }
-
-
 
 export async function assertPlanScope(db: FeedbackPlanDb, input: FeedbackPlanCreateInput) {
   if (!planAnchorSession(input)) throw new ApiError("反馈计划必须关联课次或阶段范围", 400, "invalid_request", false);
@@ -280,8 +255,6 @@ export async function assertPlanScope(db: FeedbackPlanDb, input: FeedbackPlanCre
     if (students.length !== studentIds.length) throw new ApiError("反馈计划包含不属于当前班级的学生", 400, "invalid_request", false);
   }
 }
-
-
 
 export function evidenceFromStudent(input: {
   planType: FeedbackPlanCreateInput["type"];
@@ -392,8 +365,6 @@ export function evidenceFromStudent(input: {
   });
 }
 
-
-
 export function evidenceFromClassContext(input: {
   planType: FeedbackPlanCreateInput["type"];
   students: FeedbackContextStudent[];
@@ -440,8 +411,6 @@ export function evidenceFromClassContext(input: {
   });
 }
 
-
-
 export async function findContextForPlan(db: FeedbackPlanDb, input: FeedbackPlanCreateInput) {
   const anchor = planAnchorSession(input);
   if (!anchor) return null;
@@ -469,8 +438,6 @@ export async function findContextForPlan(db: FeedbackPlanDb, input: FeedbackPlan
   });
 }
 
-
-
 export function candidateStudentIds(input: FeedbackPlanCreateInput, context: Awaited<ReturnType<typeof buildFeedbackContext>> | null) {
   if (input.type === "class_update") return [null];
   if (input.studentIds) return [...new Set(input.studentIds)];
@@ -481,13 +448,9 @@ export function candidateStudentIds(input: FeedbackPlanCreateInput, context: Awa
     .map((student) => student.id) ?? [];
 }
 
-
-
 function numberFromSnapshot(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
-
-
 
 export async function feedbackPlanIntakeSources(
   db: FeedbackPlanDb,
@@ -546,8 +509,6 @@ export async function feedbackPlanIntakeSources(
     };
   });
 }
-
-
 
 export function feedbackPlanSnapshotV2(plan: StoredFeedbackPlanDraft) {
   const parsed = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(plan.inputSnapshot, null));

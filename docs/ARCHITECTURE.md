@@ -135,7 +135,7 @@ Page / Component
 
 提示词的硬边界、软引导、教师文本保护与修改方式统一遵循 [`PROMPTING.md`](PROMPTING.md)；不得把表达偏好不断升级为程序门禁，也不得在缺少明确授权时大规模重排教师已调整的提示词。
 
-反馈计划由 `feedback-plan-service` 统一负责范围、课程材料快照、证据快照、录入来源摘要、草稿并发修订、来源克隆、模块依赖、偏好失效、任务事务、审批和导出；页面只调用 `/api/report/feedback-plans` 及其子路由。创建与启动生成是两个动作：草稿 `PATCH` 只在尚未生成时接受配置变化，启动时在同一持久化边界冻结快照，生成后只有显示名称可重命名；`clone_draft` 建立新行和新条目并保留来源 ID，不复制模型结果、正文、批准或导出账本，legacy 来源还必须明确选择 `restricted` 或 `free`。V2 输入快照保存本次事实包与所采用 IntakeRun 的来源摘要；`FeedbackIntakeRun.planId` 只保留物理历史值，不再参与创建、复用、归档或身份判断。旧 V1 和没有名称的记录仍可读取。生成顺序固定为：服务从冻结的课次评价、事件、沟通、测验证据和已确认偏好构建 `FeedbackEvidenceBundle`；其中个人测评通过独立 `assessmentEvidence` 通道进入，按课次与学生校验，旧证据快照缺少该字段时按空数组兼容。课程公共材料只写入 `teachingBackground`，不能被当成学生表现证据。教师最终文本可自动保存但仍需批准，未批准条目不能进入 Excel。
+反馈计划的状态与配置纯函数归属 `feedback-plan/model`，公开字段转换归属 `view`，带附件校验的读取归属 `query`，冻结证据构建归属 `evidence`，计划创建、保存、克隆和归档归属 `lifecycle`，正文复核、批准及关联教师任务归属 `review`。`feedback-plan-service` 保留兼容转导出及待拆出的生成运行时；页面只调用 `/api/report/feedback-plans` 及其子路由。创建与启动生成是两个动作：草稿 `PATCH` 只在尚未生成时接受配置变化，启动时在同一持久化边界冻结快照，生成后只有显示名称可重命名；`clone_draft` 建立新行和新条目并保留来源 ID，不复制模型结果、正文、批准或导出账本，legacy 来源还必须明确选择 `restricted` 或 `free`。V2 输入快照保存本次事实包与所采用 IntakeRun 的来源摘要；`FeedbackIntakeRun.planId` 只保留物理历史值，不再参与创建、复用、归档或身份判断。旧 V1 和没有名称的记录仍可读取。生成顺序固定为：服务从冻结的课次评价、事件、沟通、测验证据和已确认偏好构建 `FeedbackEvidenceBundle`；其中个人测评通过独立 `assessmentEvidence` 通道进入，按课次与学生校验，旧证据快照缺少该字段时按空数组兼容。课程公共材料只写入 `teachingBackground`，不能被当成学生表现证据。教师最终文本可自动保存但仍需批准，未批准条目不能进入 Excel。
 
 正式事实变更后的计划失效传播由独立的 `feedback-plan-invalidation-service` 负责，考勤、快速评分、复核和共同课服务直接调用它；该服务只依赖数据库、快照 Schema 和 `feedback-plan/model` 中的纯函数，不依赖生成执行器、反馈上下文或批次编排。旧 `feedback-plan-service` 保留转导出以兼容现有入口。失效规则保持原有语义：V2 冻结事实快照及已有生成痕迹的计划不因后续事实变化而原位失效。
 

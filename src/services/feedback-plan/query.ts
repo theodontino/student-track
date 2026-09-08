@@ -11,8 +11,6 @@ import {
 import { validateFeedbackPlanAttachments } from "@/services/feedback-attachment-service";
 import { FeedbackPlanDb, generationProgress } from "@/services/feedback-plan/model";
 
-
-
 export async function getFeedbackPlan(id: string, db: FeedbackPlanDb = prisma) {
   const plan = await db.feedbackPlan.findUnique({
     where: { id },
@@ -39,8 +37,6 @@ export async function getFeedbackPlan(id: string, db: FeedbackPlanDb = prisma) {
   }
   return plan;
 }
-
-
 
 export async function listFeedbackPlans(input: {
   classId?: string;
@@ -99,8 +95,6 @@ export async function listFeedbackPlans(input: {
     studentSummaries: plan.items.filter((item) => item.student).map((item) => ({ id: item.student!.id, name: item.student!.name, studentId: item.student!.studentId })),
   }));
 }
-
-
 
 export async function storedFeedbackPlanDraft(id: string, db: FeedbackPlanDb) {
   await assertFeedbackPlanAvailable(id, db);

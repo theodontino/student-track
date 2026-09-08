@@ -66,18 +66,14 @@ export function feedbackPlanHasGenerationTrace(plan: {
     ));
 }
 
-
-
 export function parseJson<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
-
 export function json(value: unknown) {
   return JSON.stringify(value);
 }
-
 
 export function restrictedWriterBlockerFromAuditSnapshot(value: string | null | undefined) {
   const parsed = FeedbackAuditSnapshotSchema.safeParse(parseJson(value, null));
@@ -85,7 +81,6 @@ export function restrictedWriterBlockerFromAuditSnapshot(value: string | null | 
     ? parsed.data.items.find((issue) => issue.code === RESTRICTED_WRITER_OUTPUT_INVALID_CODE) ?? null
     : null;
 }
-
 
 export function feedbackPlanDraftFingerprint(input: {
   snapshot: Extract<FeedbackPlanInputSnapshot, { version: 2 }>;
@@ -119,7 +114,6 @@ export function feedbackPlanDraftFingerprint(input: {
   }));
 }
 
-
 export function generationPreferencesFromSnapshot(planType: string, inputSnapshot: string): FeedbackGenerationPreferences | undefined {
   if (!FEEDBACK_PLAN_TYPES.includes(planType as typeof FEEDBACK_PLAN_TYPES[number])) return undefined;
   const parsed = FeedbackPlanInputSnapshotSchema.safeParse(parseJson(inputSnapshot, null));
@@ -130,7 +124,6 @@ export function generationPreferencesFromSnapshot(planType: string, inputSnapsho
   );
 }
 
-
 export function parseGenerationConfigSnapshot(value: string | null | undefined): FeedbackPlanItemGenerationConfig | null {
   if (!value) return null;
   const raw = parseJson(value, null);
@@ -138,7 +131,6 @@ export function parseGenerationConfigSnapshot(value: string | null | undefined):
   const parsed = FeedbackPlanItemGenerationConfigSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
-
 
 export function normalizeStudentGenerationConfig(value: unknown): FeedbackPlanItemGenerationConfig {
   const parsed = FeedbackPlanItemGenerationConfigSchema.parse(value);
@@ -155,14 +147,12 @@ export function normalizeStudentGenerationConfig(value: unknown): FeedbackPlanIt
   }
 }
 
-
 type EffectiveFeedbackPlanConfig = {
   type: typeof FEEDBACK_PLAN_TYPES[number];
   outputRequirement: string;
   generationPreferences?: FeedbackGenerationPreferences;
   independent: boolean;
 };
-
 
 export function effectiveFeedbackPlanConfig(plan: { type: string; outputRequirement: string; inputSnapshot: string }, item: { studentId: string | null; generationConfigSnapshot?: string | null }): EffectiveFeedbackPlanConfig {
   const baseType = plan.type as typeof FEEDBACK_PLAN_TYPES[number];
@@ -184,11 +174,9 @@ export function effectiveFeedbackPlanConfig(plan: { type: string; outputRequirem
   };
 }
 
-
 export function bundleForPlanConfig(bundle: FeedbackEvidenceBundle, config: EffectiveFeedbackPlanConfig): FeedbackEvidenceBundle {
   return bundle.planType === config.type ? bundle : { ...bundle, planType: config.type } as FeedbackEvidenceBundle;
 }
-
 
 export function normalizedStudentOverrides(input: {
   overrides?: FeedbackPlanStudentOverride[];
@@ -209,14 +197,11 @@ export function normalizedStudentOverrides(input: {
   return result;
 }
 
-
 export function normalizedCoverageText(value: string) {
   return value.normalize("NFKC").replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
-
 export type FeedbackPlanDb = PrismaClient | Prisma.TransactionClient;
-
 
 export function derivePlanStatus(items: Array<{ status: string }>) {
   if (!items.length) return "draft";
@@ -232,11 +217,9 @@ export function derivePlanStatus(items: Array<{ status: string }>) {
   return "draft";
 }
 
-
 export function generationProgress(items: Array<{ status: string }>) {
   return feedbackPlanItemStatusCounts(items);
 }
-
 
 export function assertLegacyFeedbackGenerationAvailable(generationApproach: unknown) {
   if (generationApproach === "legacy") {
@@ -248,7 +231,6 @@ export function assertLegacyFeedbackGenerationAvailable(generationApproach: unkn
     );
   }
 }
-
 
 export function parseCompositionSnapshot(value: string | null | undefined, planType: string, draftFeedback = "") {
   const parsed = FeedbackCompositionPlanSchema.safeParse(parseJson(value, null));
@@ -264,7 +246,6 @@ export function parseCompositionSnapshot(value: string | null | undefined, planT
   });
   return sanitizeFeedbackComposition(fallback);
 }
-
 
 export type StoredFeedbackPlanDraft = {
   id: string;

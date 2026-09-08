@@ -15,7 +15,6 @@ import { feedbackPlanActionBucket } from "@/lib/feedback-plan-summary";
 import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
 import { generationProgress, parseCompositionSnapshot, parseGenerationConfigSnapshot, parseJson } from "@/services/feedback-plan/model";
 
-
 function generationTiming(plan: {
   generationElapsedMs?: number;
   generationRunStartedAt?: Date | null;
@@ -42,7 +41,6 @@ function generationTiming(plan: {
     asOf: now,
   };
 }
-
 
 /**
  * Routes keep the pre-beta.3 legacy snapshot columns for historical readers.
@@ -71,7 +69,6 @@ export function toFeedbackPlanItemView<T extends {
     generationExecution: feedbackGenerationExecutionPublicView(generationExecutionSnapshot ?? null),
   };
 }
-
 
 export function toFeedbackPlanDetail<T extends {
   type: string;
