@@ -84,7 +84,7 @@ AI 任务通过 `src/features/ai-workflow/` 的判别联合与 reducer 表达校
 
 助教表检查结果在同一 IntakeRun 快照中保存班级命中、学生行命中和课次核对三个阶段的确定性统计。学生异常决定以行级 issue ID 为边界；`skip_student` 只排除该行，`bind_student` 只绑定当前班候选，来源级 `accept_source` 只允许解决日期或课次边界。旧运行没有阶段字段时，客户端按既有 issue code 和 sourceFacts 还原展示，不要求重新上传原文件。
 
-默认 `/feedback` 只有一套三段式控制器：录入、规划、生成。三个步骤始终可见，`view=intake|plan|studio` 只控制页面投影，刷新和深链接都能恢复，而计划的 `status` 与 `generationStartedAt` 独立决定可编辑性。当前课次属于至少含两个真实课次的共同课时，教师可在录入页切换“本班”和“共同课”；共同课模式一次编排全部班级，但事实、范围和计划仍按真实课次分别保存。没有计划时录入页允许核验并写入事实；打开既有计划时录入页从其 V2 快照只读展示采用事实、材料来源、异常决策和确认时间，不实时重算旧计划。有效 `planId` 或 `batchId` 都投影到同一组三步视图；顶部当前计划栏只保留当前对象与主要操作，其余 Plan / Batch 在当前学期切换 Drawer 中按派生 action bucket 分组，Batch 只显示一行。生成页继续复用 `FeedbackPlanStudio`，班级组工作室提供跨班学生导航。`/feedback/tools` 继续提供人工事实、PDF、公共材料、特殊计划和活动计划工具；`/feedback/advanced` 仅做兼容重定向。
+默认 `/feedback` 只有一套三段式控制器：录入、规划、生成。三个步骤始终可见，`view=intake|plan|studio` 只控制页面投影，刷新和深链接都能恢复，而计划的 `status` 与 `generationStartedAt` 独立决定可编辑性。当前课次属于至少含两个真实课次的共同课时，教师可在录入页切换“本班”和“共同课”；共同课模式逐真实课次确认事实与范围，再以一份计划组织本轮学生，各条目冻结自己的班级和课次上下文。没有计划时录入页允许核验并写入事实；打开既有计划时录入页从其 V2 快照只读展示采用事实、材料来源、异常决策和确认时间，不实时重算旧计划。有效 `planId` 或 `batchId` 都投影到同一组三步视图；顶部当前计划栏只保留当前对象与主要操作，其余 Plan / Batch 在当前学期切换 Drawer 中按派生 action bucket 分组，Batch 只显示一行。生成页继续复用 `FeedbackPlanStudio`，班级组工作室提供跨班学生导航。`/feedback/tools` 继续提供人工事实、PDF、公共材料、特殊计划和活动计划工具；`/feedback/advanced` 仅做兼容重定向。
 
 当前学期优先选择日期范围覆盖今天且 `startDate` 最新的学期；无匹配时回退到拥有最近课次的学期，再回退到开始日期最新的学期。学生是否参与某学期由 `StudentClassEnrollment` 明确记录；升级旧数据时才从课次证据推导历史归属，历史班级归属以日期最新的课次为当前推导结果。
 
@@ -137,7 +137,7 @@ Page / Component
 
 提示词的硬边界、软引导、教师文本保护与修改方式统一遵循 [`PROMPTING.md`](PROMPTING.md)；不得把表达偏好不断升级为程序门禁，也不得在缺少明确授权时大规模重排教师已调整的提示词。
 
-反馈计划的状态与配置纯函数归属 `feedback-plan/model`，公开字段转换归属 `view`，带附件校验的读取归属 `query`，冻结证据构建归属 `evidence`，计划创建、保存、克隆和归档归属 `lifecycle`，正文复核、批准及关联教师任务归属 `review`。生成执行、队列控制、重启恢复和运行计时归属 `generation`；其任务注册表和并发许可池保持模块内唯一实例，Batch 通过明确的生命周期与生成入口编排子计划。`feedback-plan-service` 仅保留兼容转导出；页面只调用 `/api/report/feedback-plans` 及其子路由。创建与启动生成是两个动作：草稿 `PATCH` 只在尚未生成时接受配置变化，启动时在同一持久化边界冻结快照，生成后只有显示名称可重命名；`clone_draft` 建立新行和新条目并保留来源 ID，不复制模型结果、正文、批准或导出账本，legacy 来源还必须明确选择 `restricted` 或 `free`。V2 输入快照保存本次事实包与所采用 IntakeRun 的来源摘要；`FeedbackIntakeRun.planId` 只保留物理历史值，不再参与创建、复用、归档或身份判断。旧 V1 和没有名称的记录仍可读取。生成顺序固定为：服务从冻结的课次评价、事件、沟通、测验证据和已确认偏好构建 `FeedbackEvidenceBundle`；其中个人测评通过独立 `assessmentEvidence` 通道进入，按课次与学生校验，旧证据快照缺少该字段时按空数组兼容。课程公共材料只写入 `teachingBackground`，不能被当成学生表现证据。教师最终文本可自动保存但仍需批准，未批准条目不能进入 Excel。
+反馈计划的状态与配置纯函数归属 `feedback-plan/model`，公开字段转换归属 `view`，带附件校验的读取归属 `query`，冻结证据构建归属 `evidence`，计划创建、保存、克隆和归档归属 `lifecycle`，正文复核、批准及关联教师任务归属 `review`。生成执行、队列控制、重启恢复和运行计时归属 `generation`；其任务注册表保持唯一实例；`generation-lane` 约束全局一次运行一份计划，`generation-capacity` 的单实例控制真实模型请求容量，`generation-client` 在取得许可后调用模型客户端。历史 Batch 不再拥有调度器。`feedback-plan-service` 仅保留兼容转导出；页面只调用 `/api/report/feedback-plans` 及其子路由。创建与启动生成是两个动作：草稿 `PATCH` 只在尚未生成时接受配置变化，启动时在同一持久化边界冻结快照，生成后只有显示名称可重命名；`clone_draft` 建立新行和新条目并保留来源 ID，不复制模型结果、正文、批准或导出账本，legacy 来源还必须明确选择 `restricted` 或 `free`。V2 输入快照保存本次事实包与所采用 IntakeRun 的来源摘要；`FeedbackIntakeRun.planId` 只保留物理历史值，不再参与创建、复用、归档或身份判断。旧 V1 和没有名称的记录仍可读取。生成顺序固定为：服务从冻结的课次评价、事件、沟通、测验证据和已确认偏好构建 `FeedbackEvidenceBundle`；其中个人测评通过独立 `assessmentEvidence` 通道进入，按课次与学生校验，旧证据快照缺少该字段时按空数组兼容。课程公共材料只写入 `teachingBackground`，不能被当成学生表现证据。教师最终文本可自动保存但仍需批准，未批准条目不能进入 Excel。
 
 正式事实变更后的计划失效传播由独立的 `feedback-plan-invalidation-service` 负责，考勤、快速评分、复核和共同课服务直接调用它；该服务只依赖数据库、快照 Schema 和 `feedback-plan/model` 中的纯函数，不依赖生成执行器、反馈上下文或批次编排。旧 `feedback-plan-service` 保留转导出以兼容现有入口。失效规则保持原有语义：V2 冻结事实快照及已有生成痕迹的计划不因后续事实变化而原位失效。
 
