@@ -402,37 +402,48 @@ export default function WccHandoffPanel() {
             </blockquote>)}
           </div>}
         </div>
-        <div className="handoff-item__actions">
+        <div className="handoff-item__controls">
           {["pending_alignment", "retryable_failure"].includes(item.status) && <>
-            <select
-              aria-label="匹配学生"
-              value={selection[item.id] || item.selectedStudent?.id || ""}
-              disabled={busy === item.id}
-              onChange={(event) => {
-                setSelection({ ...selection, [item.id]: event.target.value });
-                setSemesterSelection({ ...semesterSelection, [item.id]: "" });
-              }}
-            >
-              <option value="">选择学生…</option>
-              {data.students.map((student) => <option value={student.id} key={student.id}>{student.name} · {student.studentId}</option>)}
-            </select>
-            <select
-              aria-label="归属学期"
-              value={semesterSelection[item.id] || ""}
-              disabled={busy === item.id || !(selection[item.id] || item.selectedStudent?.id)}
-              onChange={(event) => setSemesterSelection({ ...semesterSelection, [item.id]: event.target.value })}
-            >
-              <option value="">按沟通日期自动匹配</option>
-              {data.students.find((student) => student.id === (selection[item.id] || item.selectedStudent?.id))?.enrollments?.map(({ semester, class: studentClass }) =>
-                <option key={semester.id} value={semester.id}>{semester.name} · {studentClass.code}（{semester.startDate} 至 {semester.endDate}）</option>)}
-            </select>
-            <span>开学前沟通可手动选择归属学期，原始日期不变。</span>
-            <Button onClick={() => void act(item, "align")} disabled={busy === item.id}>确认匹配并处理</Button>
+            <div className="handoff-item__fields">
+              <label className="handoff-item__field">
+                <span>匹配学生</span>
+                <select
+                  aria-label="匹配学生"
+                  value={selection[item.id] || item.selectedStudent?.id || ""}
+                  disabled={busy === item.id}
+                  onChange={(event) => {
+                    setSelection({ ...selection, [item.id]: event.target.value });
+                    setSemesterSelection({ ...semesterSelection, [item.id]: "" });
+                  }}
+                >
+                  <option value="">选择学生…</option>
+                  {data.students.map((student) => <option value={student.id} key={student.id}>{student.name} · {student.studentId}</option>)}
+                </select>
+              </label>
+              <label className="handoff-item__field">
+                <span>归属学期</span>
+                <select
+                  aria-label="归属学期"
+                  value={semesterSelection[item.id] || ""}
+                  disabled={busy === item.id || !(selection[item.id] || item.selectedStudent?.id)}
+                  onChange={(event) => setSemesterSelection({ ...semesterSelection, [item.id]: event.target.value })}
+                >
+                  <option value="">按沟通日期自动匹配</option>
+                  {data.students.find((student) => student.id === (selection[item.id] || item.selectedStudent?.id))?.enrollments?.map(({ semester, class: studentClass }) =>
+                    <option key={semester.id} value={semester.id}>{semester.name} · {studentClass.code}（{semester.startDate} 至 {semester.endDate}）</option>)}
+                </select>
+              </label>
+            </div>
+            <p className="handoff-item__hint">开学前沟通可手动选择归属学期，原始日期不变。</p>
           </>}
-          {item.status === "retryable_failure" && <Button onClick={() => void act(item, "retry")} disabled={busy === item.id}>重试</Button>}
-          {filter === "complete" && item.status === "no_value" && <Button onClick={() => void act(item, "retry")} disabled={busy === item.id}>重新分拣</Button>}
-          {["pending_alignment", "retryable_failure", "rejected"].includes(item.status)
-            && <Button variant="secondary" onClick={() => void act(item, "discard")} disabled={busy === item.id}>丢弃</Button>}
+          <div className="handoff-item__buttons">
+            {["pending_alignment", "retryable_failure"].includes(item.status) &&
+              <Button onClick={() => void act(item, "align")} disabled={busy === item.id}>确认匹配并处理</Button>}
+            {item.status === "retryable_failure" && <Button onClick={() => void act(item, "retry")} disabled={busy === item.id}>重试</Button>}
+            {filter === "complete" && item.status === "no_value" && <Button onClick={() => void act(item, "retry")} disabled={busy === item.id}>重新分拣</Button>}
+            {["pending_alignment", "retryable_failure", "rejected"].includes(item.status)
+              && <Button variant="secondary" onClick={() => void act(item, "discard")} disabled={busy === item.id}>丢弃</Button>}
+          </div>
         </div>
       </article>)}
     </div>}</>}
