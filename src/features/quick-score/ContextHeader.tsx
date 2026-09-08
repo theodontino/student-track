@@ -8,7 +8,7 @@ export default function ContextHeader({ semesterName, sessionCount, history, chi
     <section className="quick-score-context">
       <PageHeader
         title="手动评分"
-        description="录入三项评分与考勤；页面只保存有变动的学生。"
+        description="录入三项评分与考勤；只保存本次修改的维度。"
         actions={history}
         context={<span className="quick-score-context__summary">{contextDescription}</span>}
       />

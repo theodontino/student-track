@@ -32,6 +32,8 @@ export function useQuickScorePage() {
   });
   const save = useQuickScoreSave({
     changedCards: scoreCards.changedCards,
+    originalScores: scoreCards.originalScores,
+    ready: contextHydrated && session.workspaceHydrated,
     date: session.date,
     sessionCode: selectedSessionCode,
     sessions: session.sessions,
@@ -70,6 +72,7 @@ export function useQuickScorePage() {
     bulkSet: scoreCards.bulkSet,
     cards: scoreCards.cards,
     changedCount: scoreCards.changedCount,
+    originalScores: scoreCards.originalScores,
     classes: reference.classes,
     contextHydrated,
     date: session.date,

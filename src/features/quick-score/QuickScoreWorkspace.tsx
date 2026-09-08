@@ -26,6 +26,7 @@ export default function QuickScoreWorkspace() {
           />
           <StudentScoreGrid
             cards={workspace.cards}
+            originals={workspace.originalScores}
             genders={workspace.genders}
             onScore={workspace.setScore}
             onPresent={workspace.togglePresent}

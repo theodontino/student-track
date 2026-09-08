@@ -78,6 +78,44 @@ afterEach(async () => {
 });
 
 describe("core transactional workflows", () => {
+  it("preserves assessment A when only B, C, attendance or notes are submitted", async () => {
+    const studentId = studentIds[0];
+    const metric = await prisma.sessionMetric.create({
+      data: { studentId, sessionId, date: "2098-01-01", scoreA: 4.2, scoreB: 3, scoreC: 3, operator: "quickScore" },
+    });
+    await submitQuickScores({ sessionCode, scores: [{ studentId, scoreB: 4 }] });
+    await submitQuickScores({ sessionCode, scores: [{ studentId, scoreC: 2 }] });
+    await expect(submitQuickScores({ sessionCode, attendances: [{ studentId, present: false }] })).resolves.toMatchObject({ count: 0, attUpdated: 1 });
+    const beforeNote = await prisma.sessionMetric.findUniqueOrThrow({ where: { id: metric.id } });
+    await submitQuickScores({ sessionCode, scores: [{ studentId, note: "合成课堂备注" }] });
+    expect(await prisma.sessionMetric.findUniqueOrThrow({ where: { id: metric.id } })).toEqual(beforeNote);
+    expect(beforeNote).toMatchObject({ scoreA: 4.2, scoreB: 4, scoreC: 2, scoreD: 0 });
+    // Another input updates A after the quick-score page has been opened.
+    await prisma.sessionMetric.update({ where: { id: metric.id }, data: { scoreA: 4.6 } });
+    await submitQuickScores({ sessionCode, scores: [{ studentId, scoreB: 5 }] });
+    expect(await prisma.sessionMetric.findUniqueOrThrow({ where: { id: metric.id } })).toMatchObject({ scoreA: 4.6, scoreB: 5 });
+    await submitQuickScores({ sessionCode, scores: [{ studentId, scoreA: 4 }] });
+    expect(await prisma.sessionMetric.findUniqueOrThrow({ where: { id: metric.id } })).toMatchObject({ scoreA: 4, scoreB: 5, scoreC: 2 });
+  });
+
+  it("uses neutral scores only for missing dimensions on first creation", async () => {
+    await submitQuickScores({ sessionCode, scores: [{ studentId: studentIds[0], scoreB: 5 }] });
+    expect(await prisma.sessionMetric.findFirstOrThrow({ where: { sessionId, studentId: studentIds[0] } })).toMatchObject({ scoreA: 3, scoreB: 5, scoreC: 3 });
+  });
+
+  it("rolls back partial scores, history, notes and attendance when a later attendance is invalid", async () => {
+    const studentId = studentIds[0];
+    const metric = await prisma.sessionMetric.create({ data: { studentId, sessionId, date: "2098-01-01", scoreA: 4.2, scoreB: 3, scoreC: 3, operator: "quickScore" } });
+    await expect(submitQuickScores({
+      sessionCode, scores: [{ studentId, scoreB: 5, note: "合成回滚备注" }],
+      attendances: [{ studentId, present: false }, { studentId: studentIds[1], present: "invalid" as unknown as boolean }],
+    })).rejects.toMatchObject({ status: 400 });
+    expect(await prisma.sessionMetric.findUniqueOrThrow({ where: { id: metric.id } })).toEqual(metric);
+    expect(await prisma.sessionMetricHistory.count({ where: { studentId } })).toBe(0);
+    expect(await prisma.event.count({ where: { sessionId } })).toBe(0);
+    expect(await prisma.attendance.findUniqueOrThrow({ where: { sessionId_studentId: { sessionId, studentId } } })).toMatchObject({ present: true });
+  });
+
   it("rolls back an entire quick-score submission when a later score is invalid", async () => {
     await expect(submitQuickScores({
       sessionCode,

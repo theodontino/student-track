@@ -102,7 +102,7 @@ export function QuickScoreContextPanel({ workspace }: { workspace: Workspace }) 
               <span className="ml-1">· 考勤 {workspace.selectedSession.attendanceCount} 人</span>
             </span>
             {workspace.hasExistingScores && (
-              <span className="text-amber-600 text-xs font-medium">已有评分记录，提交将覆盖</span>
+              <span className="text-amber-600 text-xs font-medium">已有评分记录，未修改的维度会保留</span>
             )}
           </div>
         )}

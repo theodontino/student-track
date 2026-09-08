@@ -20,9 +20,9 @@ export interface QuickScoreSavePayload {
   scores: Array<{
     studentId: string;
     date: string;
-    scoreA: number;
-    scoreB: number;
-    scoreC: number;
+    scoreA?: number;
+    scoreB?: number;
+    scoreC?: number;
     note?: string;
   }>;
   sessionCode?: string;
