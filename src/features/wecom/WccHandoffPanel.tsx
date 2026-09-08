@@ -3,7 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, EmptyState, StatusBanner } from "@/components/ui";
 
-type StudentOption = { id: string; name: string; studentId: string };
+type StudentOption = { id: string; name: string; studentId: string; enrollments?: Array<{
+  semester: { id: string; name: string; startDate: string; endDate: string };
+  class: { code: string };
+}> };
 type HandoffItem = {
   id: string;
   packageId: string;
@@ -69,6 +72,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const ERROR_HELP: Record<string, string> = {
+  student_semester_invalid: "该学生在所选学期没有可用班级归属，请重新选择。",
   service_unavailable: "提取模型当时不可用或返回了无法处理的结果；修复模型后可批量重试。",
   internal_error: "本机处理未完成；可先查看包内容与运行状态，再重试。",
   evidence_mismatch: "模型生成的摘要或引用不能由原始消息逐字证明，已阻止写入。",
@@ -91,6 +95,7 @@ async function request(path: string, init?: RequestInit) {
 export default function WccHandoffPanel() {
   const [data, setData] = useState<HandoffResponse>({ items: [], students: [] });
   const [selection, setSelection] = useState<Record<string, string>>({});
+  const [semesterSelection, setSemesterSelection] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [receiptPreview, setReceiptPreview] = useState<ReceiptRepairPreview | null>(null);
@@ -152,16 +157,16 @@ export default function WccHandoffPanel() {
     try {
       const result = await request(`/api/wecom/handoff/${encodeURIComponent(item.id)}`, {
         method: "PATCH",
-        body: JSON.stringify({ action, studentId }),
+        body: JSON.stringify({ action, studentId, semesterId: semesterSelection[item.id] || undefined }),
       });
       setMessage(action === "discard"
         ? "已丢弃；WCC 原始归档未被删除"
         : result.status === "pending_alignment"
-          ? "所选学生在证据对应学期没有唯一归属，请核对学期名单"
+          ? "无法按沟通日期确定学期，请选择该学生的归属学期后重试"
           : "处理完成");
       await refresh();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "处理失败");
+      setMessage(error instanceof Error ? ERROR_HELP[error.message] || error.message : "处理失败");
     } finally {
       setBusy("");
     }
@@ -398,15 +403,30 @@ export default function WccHandoffPanel() {
           </div>}
         </div>
         <div className="handoff-item__actions">
-          {item.status === "pending_alignment" && <>
+          {["pending_alignment", "retryable_failure"].includes(item.status) && <>
             <select
               aria-label="匹配学生"
-              value={selection[item.id] || ""}
-              onChange={(event) => setSelection({ ...selection, [item.id]: event.target.value })}
+              value={selection[item.id] || item.selectedStudent?.id || ""}
+              disabled={busy === item.id}
+              onChange={(event) => {
+                setSelection({ ...selection, [item.id]: event.target.value });
+                setSemesterSelection({ ...semesterSelection, [item.id]: "" });
+              }}
             >
               <option value="">选择学生…</option>
               {data.students.map((student) => <option value={student.id} key={student.id}>{student.name} · {student.studentId}</option>)}
             </select>
+            <select
+              aria-label="归属学期"
+              value={semesterSelection[item.id] || ""}
+              disabled={busy === item.id || !(selection[item.id] || item.selectedStudent?.id)}
+              onChange={(event) => setSemesterSelection({ ...semesterSelection, [item.id]: event.target.value })}
+            >
+              <option value="">按沟通日期自动匹配</option>
+              {data.students.find((student) => student.id === (selection[item.id] || item.selectedStudent?.id))?.enrollments?.map(({ semester, class: studentClass }) =>
+                <option key={semester.id} value={semester.id}>{semester.name} · {studentClass.code}（{semester.startDate} 至 {semester.endDate}）</option>)}
+            </select>
+            <span>开学前沟通可手动选择归属学期，原始日期不变。</span>
             <Button onClick={() => void act(item, "align")} disabled={busy === item.id}>确认匹配并处理</Button>
           </>}
           {item.status === "retryable_failure" && <Button onClick={() => void act(item, "retry")} disabled={busy === item.id}>重试</Button>}

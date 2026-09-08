@@ -34,7 +34,9 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
     if (path === "/api/wecom/handoff" && request.method() === "GET") {
       return route.fulfill({ json: {
         items: [item],
-        students: [{ id: "student-test", name: "合成学生", studentId: "TEST-001" }],
+        students: [{ id: "student-test", name: "合成学生", studentId: "TEST-001", enrollments: [{
+          semester: { id: "semester-test", name: "合成秋季", startDate: "2026-09-05", endDate: "2027-01-23" }, class: { code: "TEST-CLASS" },
+        }] }],
       } });
     }
     if (path === "/api/wecom/handoff" && request.method() === "POST") {
@@ -43,6 +45,8 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
       } });
     }
     if (path === "/api/wecom/handoff/handoff-test-1" && request.method() === "PATCH") {
+      if (!request.postDataJSON().semesterId) return route.fulfill({ json: item });
+      expect(request.postDataJSON()).toMatchObject({ studentId: "student-test", semesterId: "semester-test" });
       item.status = "pending_review";
       item.selectedStudent = { id: "student-test", name: "合成学生", studentId: "TEST-001" };
       return route.fulfill({ json: item });
@@ -58,6 +62,9 @@ test("local WCC relay exposes scan, alignment and review handoff without the WCC
   await page.getByRole("button", { name: "扫描并接收新包" }).click();
   await expect(page.getByText(/已检查 1 个文件包/)).toBeVisible();
   await page.getByLabel("匹配学生").selectOption("student-test");
+  await page.getByRole("button", { name: "确认匹配并处理" }).click();
+  await expect(page.getByText("无法按沟通日期确定学期，请选择该学生的归属学期后重试")).toBeVisible();
+  await page.getByLabel("归属学期").selectOption("semester-test");
   await page.getByRole("button", { name: "确认匹配并处理" }).click();
   await expect(page.getByText("处理完成", { exact: true })).toBeVisible();
   await page.getByLabel("查看").selectOption("review");

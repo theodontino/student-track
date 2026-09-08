@@ -52,6 +52,7 @@ export async function consumeWccHandoffPackage(
   selectedStudentId: string,
   lineage?: {
     handoffPackageId: string;
+    semesterId?: string;
     kind: "standard" | "replacement" | "correction";
     supersedesDraftId?: string;
     communicationId?: string;
@@ -77,7 +78,10 @@ export async function consumeWccHandoffPackage(
   // handoff 包不携带 ST 身份或课次。候选范围只使用 ST 本端唯一匹配或教师选择的学生。
   const candidateStudentIds = students.map((student) => student.id);
   const evidenceDates = handoffEvidenceDates(payload);
-  const candidateSemesterIds = await candidateSemesterIdsForEvidence(prisma, evidenceDates);
+  if (lineage?.semesterId && !students[0].enrollments.some((entry) => entry.semesterId === lineage.semesterId)) {
+    throw new Error("student_semester_invalid");
+  }
+  const candidateSemesterIds = lineage?.semesterId ? [lineage.semesterId] : await candidateSemesterIdsForEvidence(prisma, evidenceDates);
   const selectedSemesterIds = [...new Set(students[0].enrollments
     .filter((enrollment) => candidateSemesterIds.includes(enrollment.semesterId))
     .map((enrollment) => enrollment.semesterId))];

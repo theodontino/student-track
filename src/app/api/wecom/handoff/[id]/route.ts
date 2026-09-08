@@ -27,15 +27,19 @@ export async function PATCH(
 ) {
   try {
     const { id } = await context.params;
-    const body = await request.json() as { action?: HandoffAction; studentId?: string };
+    const body = await request.json() as { action?: HandoffAction; studentId?: string; semesterId?: string };
     if (!body.action || !ACTIONS.has(body.action)) {
       return NextResponse.json({ error: "invalid_action" }, { status: 400 });
+    }
+    if (body.semesterId !== undefined && (typeof body.semesterId !== "string" || !body.semesterId.trim())) {
+      return NextResponse.json({ error: "student_semester_invalid" }, { status: 400 });
     }
     const result = await actOnWccHandoffPackage(
       prisma,
       id,
       body.action,
       body.studentId,
+      body.semesterId,
     );
     return NextResponse.json(result);
   } catch (error) {
@@ -44,6 +48,7 @@ export async function PATCH(
       "package_not_found",
       "invalid_action",
       "student_required",
+      "student_semester_invalid",
       "package_conflict",
       "invalid_package",
       "hash_mismatch",

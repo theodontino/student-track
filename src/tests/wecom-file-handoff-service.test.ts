@@ -490,6 +490,42 @@ describe("WCC file handoff consumer", () => {
     });
   });
 
+  it("uses an explicitly selected semester for pre-term communication without changing evidence dates", async () => {
+    const student = await prisma.student.findFirstOrThrow({
+      where: { enrollments: { some: { rosterStatus: "ACTIVE" } } },
+      include: { enrollments: { where: { rosterStatus: "ACTIVE" } } },
+    });
+    const semesterId = student.enrollments[0].semesterId;
+    extraction.generate.mockResolvedValue({
+      bridgeJson: { records: [{
+        matchedStudent: { id: student.id, confidence: "high" }, messageIds: ["message-pre-term"],
+        factualSummary: "家长希望开学后关注学习习惯。",
+        feedbackUse: { relevant: true, category: "learning-habit", priority: "medium" },
+        evidence: [{ messageId: "message-pre-term", quote: "开学后关注学习习惯" }],
+      }] }, diagnostics: { modelName: "synthetic-model" },
+    });
+    await publishSynthetic(packagePayload({
+      packageId: "pkg-pre-term", conversation: { id: "conversation-pre-term", title: "合成会话" },
+      classification: { worthProcessing: true, decision: "student_related", reasons: ["synthetic"], classifier: "test" },
+      messages: [{ id: "message-pre-term", sentAt: "2020-01-01T10:00:00+08:00", content: "开学后关注学习习惯" }],
+    }));
+    await scanAndConsumeWccPackages(prisma);
+    const item = await prisma.weComHandoffPackage.findFirstOrThrow({ where: { packageId: "pkg-pre-term" } });
+    await expect(actOnWccHandoffPackage(prisma, item.id, "align", student.id)).resolves.toMatchObject({ status: "pending_alignment" });
+    expect(extraction.generate).not.toHaveBeenCalled();
+    await expect(actOnWccHandoffPackage(prisma, item.id, "align", student.id, "test-unrelated-semester")).rejects.toThrow("student_semester_invalid");
+    await expect(actOnWccHandoffPackage(prisma, item.id, "align", student.id, semesterId)).resolves.toMatchObject({ status: "pending_review" });
+    expect(extraction.generate).toHaveBeenLastCalledWith(prisma, expect.objectContaining({ semesterId, candidateStudentIds: [student.id] }));
+    const draft = await prisma.draftRecord.findFirstOrThrow({ where: { handoffPackageId: item.id } });
+    expect(draft.sessionCode).toBeNull();
+    expect(draft.parsedResult).toContain("2020-01-01");
+    expect(draft.status).toBe("pending");
+    const listed = await listWccHandoffPackages(prisma);
+    expect(listed.students.find((entry) => entry.id === student.id)?.enrollments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ semester: expect.objectContaining({ id: semesterId }) }),
+    ]));
+  });
+
   it("reuses an explicitly confirmed student for later packages in the same conversation", async () => {
     const student = await prisma.student.findFirstOrThrow({
       where: { enrollments: { some: { rosterStatus: "ACTIVE" } } },
