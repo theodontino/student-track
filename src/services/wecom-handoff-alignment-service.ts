@@ -77,8 +77,15 @@ export async function resolveWccHandoffAlignment(
   input: {
     payload: WccStudentTrackFileV1;
     selectedStudentId?: string;
+    selectedSemesterId?: string;
   },
 ): Promise<WccAlignmentResolution> {
+  if (input.selectedSemesterId) {
+    if (!input.selectedStudentId) throw new Error("student_required");
+    const semesterId = await resolveStudentSemesterInCandidates(prisma, input.selectedStudentId, [input.selectedSemesterId]);
+    if (!semesterId) throw new Error("student_semester_invalid");
+    return { studentId: input.selectedStudentId, semesterId, candidateSemesterIds: [semesterId], method: "explicit" as const, reason: "matched" as const };
+  }
   const evidenceDates = handoffEvidenceDates(input.payload);
   if (evidenceDates.length === 0) {
     return { studentId: null, semesterId: null, candidateSemesterIds: [], method: null, reason: "missing_evidence_date" };

@@ -244,6 +244,7 @@ async function consumeValidatedPackage(
   sha256: string,
   selectedStudentId?: string,
   force = false,
+  selectedSemesterId?: string,
 ) {
   const lineage = parseHandoffPackageLineage(payload.packageId);
   const existingIdentity = await prisma.weComHandoffPackage.findMany({
@@ -431,6 +432,7 @@ async function consumeValidatedPackage(
   const alignment = await resolveWccHandoffAlignment(prisma, {
     payload,
     selectedStudentId: matchedStudentId,
+    selectedSemesterId,
   });
   matchedStudentId = alignment.studentId || undefined;
   if (!matchedStudentId) {
@@ -461,6 +463,7 @@ async function consumeValidatedPackage(
   try {
     const result = await consumeWccHandoffPackage(prisma, payload, matchedStudentId, {
       handoffPackageId: ledger.id,
+      semesterId: alignment.semesterId ?? undefined,
       kind: revisionKind,
       supersedesDraftId: lineageDraft?.id,
       communicationId: revisionKind === "correction" ? lineageDraft?.communicationId ?? undefined : undefined,
@@ -598,7 +601,13 @@ export async function listWccHandoffPackages(prisma: PrismaClient) {
     prisma.student.findMany({
       where: { enrollments: { some: { rosterStatus: "ACTIVE" } } },
       orderBy: { name: "asc" },
-      select: { id: true, name: true, studentId: true },
+      select: { id: true, name: true, studentId: true,
+        enrollments: {
+          where: { class: { deletedAt: null }, semester: { deletedAt: null } },
+          orderBy: { semester: { startDate: "desc" } },
+          select: { semester: { select: { id: true, name: true, startDate: true, endDate: true } }, class: { select: { code: true } } },
+        },
+      },
     }),
   ]);
   return {
@@ -831,6 +840,7 @@ export async function actOnWccHandoffPackage(
   id: string,
   action: HandoffAction,
   studentId?: string,
+  semesterId?: string,
 ) {
   if (action === "discard") {
     const current = await prisma.weComHandoffPackage.findUnique({ where: { id } });
@@ -867,11 +877,19 @@ export async function actOnWccHandoffPackage(
     return discarded;
   }
   if (action === "align" && !studentId) throw new Error("student_required");
+  if (semesterId) {
+    await resolveWccHandoffAlignment(prisma, {
+      payload: loaded.payload,
+      selectedStudentId: studentId || loaded.item.selectedStudentId || undefined,
+      selectedSemesterId: semesterId,
+    });
+  }
   return consumeValidatedPackage(
     prisma,
     loaded.payload,
     loaded.sha256,
     studentId || loaded.item.selectedStudentId || undefined,
     true,
+    semesterId,
   );
 }
