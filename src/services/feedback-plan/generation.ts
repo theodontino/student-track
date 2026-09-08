@@ -1,3 +1,4 @@
+import { assertStudentPlanWritable, isHistoricalStudentPlan, parseStudentContext } from "./model";
 import type { PrismaClient } from "@/generated/prisma/client";
 
 import { ApiError } from "@/lib/api-errors";
@@ -194,6 +195,7 @@ export async function generateFeedbackPlanItems(input: {
 }, db: PrismaClient = prisma) {
   let plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, include: { items: { include: { student: true, tasks: true } } } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(plan);
   assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   let selected = input.itemIds
@@ -223,7 +225,7 @@ export async function generateFeedbackPlanItems(input: {
     type: plan.type as FeedbackPlanCreateInput["type"],
     outputRequirement: plan.outputRequirement,
     semesterId: plan.semesterId,
-    classId: plan.classId,
+    classId: plan.classId ?? "",
     sessionId: plan.sessionId ?? undefined,
     rangeStartSessionId: plan.rangeStartSessionId ?? undefined,
     rangeEndSessionId: plan.rangeEndSessionId ?? undefined,
@@ -239,7 +241,7 @@ export async function generateFeedbackPlanItems(input: {
           enrollments: {
             some: {
               semesterId: plan.semesterId,
-              classId: plan.classId,
+              classId: plan.classId ?? "",
             },
           },
         },
@@ -489,7 +491,7 @@ export async function generateFeedbackPlanItems(input: {
               planType: effectiveConfig.type as "event_micro" | "stage_trend" | "course_end",
               outputRequirement: effectiveConfig.outputRequirement,
               evidenceBundle: bundle,
-              lessonMaterial: lessonMaterial ?? defaultLessonMaterial(),
+              lessonMaterial: frozenFact?.context?.lessonMaterial ?? parseStudentContext(item.contextSnapshot)?.lessonMaterial ?? lessonMaterial ?? defaultLessonMaterial(),
               communicationPreference: preference ?? null,
               style,
               length,
@@ -578,8 +580,8 @@ export async function generateFeedbackPlanItems(input: {
                   ? "plan-restricted"
                   : "plan-free",
                 semesterId: plan.semesterId,
-                classId: plan.classId,
-                sessionId: plan.sessionId,
+                classId: item.classId ?? plan.classId,
+                sessionId: item.sessionId ?? plan.sessionId,
                 studentId: item.studentId,
                 feedbackPlanItemId: item.id,
                 sourceRefs: item.studentId ? [{ type: "student", id: item.studentId }] : [],
@@ -920,6 +922,8 @@ async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prism
         status: true,
         batchId: true,
         generationApproach: true,
+      structureVersion: true,
+      type: true,
         items: { select: { status: true } },
         batch: {
           select: {
@@ -936,7 +940,8 @@ async function runFeedbackGenerationJob(planId: string, db: PrismaClient = prism
       },
     });
     if (!plan) return;
-    assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
+    assertStudentPlanWritable(plan);
+  assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
     if (!["queued", "generating", "pause_requested"].includes(plan.status)) return;
 
     const parentAllowsClaims = !plan.batchId || plan.batch?.status === "running";
@@ -1076,7 +1081,7 @@ async function prepareQueuedGenerationEvidence(input: {
     type: plan.type as FeedbackPlanCreateInput["type"],
     outputRequirement: plan.outputRequirement,
     semesterId: plan.semesterId,
-    classId: plan.classId,
+    classId: plan.classId ?? "",
     sessionId: plan.sessionId ?? undefined,
     rangeStartSessionId: plan.rangeStartSessionId ?? undefined,
     rangeEndSessionId: plan.rangeEndSessionId ?? undefined,
@@ -1195,9 +1200,12 @@ export async function startFeedbackPlanGeneration(input: {
       planRevision: true,
       generationStartedAt: true,
       generationApproach: true,
+      structureVersion: true,
+      type: true,
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(plan);
   assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchStart) {
@@ -1231,6 +1239,8 @@ export async function startFeedbackPlanGeneration(input: {
         archivedAt: true,
         planRevision: true,
         generationApproach: true,
+      structureVersion: true,
+      type: true,
         generationStartedAt: true,
         items: {
           select: {
@@ -1440,6 +1450,8 @@ async function settleInterruptedFeedbackPlanItems(input: {
 
 export async function reconcileInterruptedFeedbackPlanGeneration(planId: string, db: PrismaClient = prisma) {
   if (feedbackGenerationJobs.has(planId)) return 0;
+  const plan = await db.feedbackPlan.findUnique({ where: { id: planId }, select: { type: true, structureVersion: true } });
+  if (!plan || isHistoricalStudentPlan(plan)) return 0;
   const orphaned = await db.feedbackPlanItem.count({
     where: { planId, status: { in: ["queued", "generating"] } },
   });
@@ -1500,9 +1512,10 @@ export async function continueFeedbackPlanGeneration(
 ) {
   const plan = await db.feedbackPlan.findUnique({
     where: { id: planId },
-    select: { id: true, archivedAt: true, generationStartedAt: true, batchId: true, generationApproach: true },
+    select: { id: true, type: true, structureVersion: true, archivedAt: true, generationStartedAt: true, batchId: true, generationApproach: true },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(plan);
   assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划不能继续生成", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {
@@ -1573,6 +1586,8 @@ export async function retryFeedbackPlanGeneration(
       id: true,
       archivedAt: true,
       generationApproach: true,
+      structureVersion: true,
+      type: true,
       batchId: true,
       status: true,
       generationStartedAt: true,
@@ -1580,6 +1595,7 @@ export async function retryFeedbackPlanGeneration(
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(plan);
   assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {
@@ -1667,6 +1683,8 @@ export async function retryFeedbackPlanGenerationWithFree(
       archivedAt: true,
       batchId: true,
       generationApproach: true,
+      structureVersion: true,
+      type: true,
       generationStartedAt: true,
       status: true,
       items: {
@@ -1683,6 +1701,7 @@ export async function retryFeedbackPlanGenerationWithFree(
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(plan);
   assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (plan.batchId && !options.allowBatchControl) {

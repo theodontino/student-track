@@ -517,7 +517,7 @@ export function feedbackPlanSnapshotV2(plan: StoredFeedbackPlanDraft) {
   const factItems = plan.items.flatMap((item) => {
     const evidence = FeedbackEvidenceBundleSchema.safeParse(parseJson(item.evidenceSnapshot, null));
     if (!evidence.success) return [];
-    const communicationPreference = item.student?.communicationPreference
+    const communicationPreference = plan.structureVersion !== 1 && item.student?.communicationPreference
       ? CommunicationPreferenceSchema.safeParse(parseJson(item.student.communicationPreference.preferenceSnapshot, null))
       : null;
     return [{
@@ -634,6 +634,16 @@ export async function buildFeedbackPlanFrozenInput(
   }));
 
   const factStudentIds: Array<string | null> = input.type === "class_update" ? [null] : contextStudentIds;
+  const scopedClass = await db.class.findUniqueOrThrow({ where: { id: input.classId }, select: { id: true, code: true, name: true } });
+  const scopedSession = await resolveSession(db, rangeEndSessionId ?? input.sessionId);
+  const studentContext = {
+    version: 1 as const,
+    class: scopedClass,
+    session: scopedSession ? { id: scopedSession.id, code: scopedSession.code, date: scopedSession.date, semesterNumber: scopedSession.semesterNumber } : null,
+    rangeStartSessionId: rangeStartSessionId ?? null,
+    rangeEndSessionId: rangeEndSessionId ?? null,
+    lessonMaterial,
+  };
   const frozenFacts = factStudentIds.map((studentId) => {
     const student = studentId ? contextByStudent.get(studentId) ?? null : null;
     const evidence = input.type === "class_update"
@@ -655,6 +665,7 @@ export async function buildFeedbackPlanFrozenInput(
       });
     return {
       studentId,
+      context: studentContext,
       ...(student ? {
         studentName: student.name,
         studentNumber: student.studentId,

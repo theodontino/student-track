@@ -1,3 +1,4 @@
+import { assertStudentPlanWritable } from "@/services/feedback-plan/model";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
@@ -9,7 +10,7 @@ import { createHash } from "node:crypto";
 
 import { readFeedbackAttachment, withFeedbackAttachmentRemoval, writeFeedbackAttachment } from "@/services/feedback-attachment-storage";
 type FeedbackPlanDb = PrismaClient | Prisma.TransactionClient;
-export async function validateFeedbackPlanAttachments(planId: string, db: FeedbackPlanDb = prisma) {
+export async function validateFeedbackPlanAttachments(planId: string, db: FeedbackPlanDb = prisma, options: { persist?: boolean } = {}) {
   const attachments = await db.feedbackAttachment.findMany({ where: { planId } });
   const result: Array<{ id: string; status: "available" | "missing" }> = [];
   for (const attachment of attachments) {
@@ -21,7 +22,7 @@ export async function validateFeedbackPlanAttachments(planId: string, db: Feedba
     } catch {
       status = "missing";
     }
-    if (attachment.status !== status) await db.feedbackAttachment.update({ where: { id: attachment.id }, data: { status } });
+    if (options.persist !== false && attachment.status !== status) await db.feedbackAttachment.update({ where: { id: attachment.id }, data: { status } });
     result.push({ id: attachment.id, status });
   }
   return result;
@@ -36,8 +37,9 @@ export async function addFeedbackAttachment(input: {
 }, db: PrismaClient = prisma) {
   if (input.bytes.byteLength === 0 || input.bytes.byteLength > 25 * 1024 * 1024) throw new ApiError("附件大小必须在 1B 到 25MB 之间", 400, "invalid_request", false);
   await assertFeedbackPlanAvailable(input.planId, db);
-  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true } });
+  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true, type: true, structureVersion: true } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(plan);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (input.planItemId) {
     const item = await db.feedbackPlanItem.findFirst({ where: { id: input.planItemId, planId: input.planId }, select: { id: true } });
@@ -64,8 +66,9 @@ export async function addFeedbackAttachment(input: {
 
 export async function removeFeedbackAttachment(input: { planId: string; attachmentId: string }, db: PrismaClient = prisma) {
   await assertFeedbackPlanAvailable(input.planId, db);
-  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true } });
+  const plan = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true, type: true, structureVersion: true } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(plan);
   if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   const attachment = await db.feedbackAttachment.findFirst({ where: { id: input.attachmentId, planId: input.planId } });
   if (!attachment) throw new ApiError("反馈附件不存在", 404, "not_found", false);

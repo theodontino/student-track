@@ -445,43 +445,24 @@ test("group task advances a ready class and later scans only the unfinished clas
     progress: { total: 1, generated: 0, approved: 0, exported: 0, failed: 0 },
     items: [],
   };
-  const partialBatch = () => ({
-    id: "batch-partial-a",
-    displayName: "初版计划",
-    type: "event_micro",
-    status: batchStatus,
-    outputRequirement: "只推进已经准备好的班级",
-    generationMode: "fast",
-    generationApproach: "free",
-    legacyReadonly: false,
-    actionBucket: batchStatus === "completed" ? "completed" : "needs_continue",
-    planRevision: 1,
-    archivedAt: null,
-    semester: { id: TEST_FIXTURE.semester.id, name: TEST_FIXTURE.semester.name },
-    progress: { total: 1, generated: batchStatus === "completed" ? 1 : 0, approved: 0, exported: 0, failed: 0, completedClasses: batchStatus === "completed" ? 1 : 0, totalClasses: 1 },
-    plans: [{ ...batchPlan, progress: { ...batchPlan.progress, generated: batchStatus === "completed" ? 1 : 0 } }],
-  });
-  await page.route("**/api/report/feedback-plan-batches", async (route) => {
-    const body = route.request().postDataJSON() as { plans: Array<{ classId: string; intakeRunId: string }> };
-    batchRequests.push(body);
-    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ batch: partialBatch() }) });
-  });
-  await page.route("**/api/report/feedback-plan-batches/batch-partial-a", async (route) => {
-    if (route.request().method() === "POST") {
-      expect(route.request().postDataJSON()).toMatchObject({ action: "start" });
-      batchStatus = "completed";
-      await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ accepted: true, status: batchStatus }) });
-      return;
-    }
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ batch: partialBatch() }) });
+  await page.route("**/api/report/feedback-plans", async (route) => {
+    const body = route.request().postDataJSON() as { scopes: Array<{ classId: string; intakeRunId: string }> };
+    batchRequests.push({ plans: body.scopes });
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ plan: { id: "plan-partial-a" } }) });
   });
   await page.route("**/api/report/feedback-plans/plan-partial-a", async (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toMatchObject({ action: "start_generation" });
+      batchStatus = "completed";
+      await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ accepted: true, status: "queued" }) });
+      return;
+    }
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         plan: {
           id: "plan-partial-a",
-          displayName: null,
+          displayName: "初版计划",
           type: "event_micro",
           outputRequirement: "只推进已经准备好的班级",
           status: batchStatus === "draft" ? "draft" : "in_review",
@@ -516,7 +497,8 @@ test("group task advances a ready class and later scans only the unfinished clas
           type: "event_micro",
           status: "in_review",
           archivedAt: null,
-          batchId: "batch-partial-a",
+          batchId: null,
+          displayName: "初版计划",
           generationApproach: "free",
           legacyReadonly: false,
           actionBucket: "completed",
@@ -531,7 +513,7 @@ test("group task advances a ready class and later scans only the unfinished clas
   await page.route("**/api/report/feedback-plan-batches?*", async (route) => {
     const url = new URL(route.request().url());
     if (url.searchParams.get("archived") !== "false") return route.continue();
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ batches: [partialBatch()] }) });
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ batches: [] }) });
   });
 
   const groupScanBodies: Array<{ groupLessonId: string; sessionCodes: string[]; runIds?: Record<string, string> }> = [];
@@ -572,10 +554,10 @@ test("group task advances a ready class and later scans only the unfinished clas
   await expect(classBCard).toContainText("本轮暂不处理");
 
   await page.getByRole("button", { name: "确认事实并建立计划" }).click();
-  await expect(page).toHaveURL(/batchId=batch-partial-a/);
+  await expect(page).toHaveURL(/planId=plan-partial-a/);
   await expect(page).toHaveURL(/view=plan/);
   await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
-  await expect(page.getByText("1 个真实班级", { exact: false })).toBeVisible();
+  await expect(page.getByText("1 名反馈对象；生成启动前可以调整范围。", { exact: true })).toBeVisible();
   await expect(page.getByText(TEST_FIXTURE.classTwo.name, { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "保存并开始生成" }).click();
 
@@ -633,14 +615,14 @@ test("golden C: active task is visible, archivable, and the same run can create 
   await expect(page.getByRole("heading", { name: "高级工具" })).toBeVisible();
 });
 
-test("current batch draft opens its named plan view from an empty same-page workbench", async ({ page, request }) => {
-  const created = await request.post("/api/report/feedback-plan-batches", { data: {
+test("current student plan opens its named plan view from an empty same-page workbench", async ({ page, request }) => {
+  const created = await request.post("/api/report/feedback-plans", { data: {
     requestKey: "e2e-open-current-batch",
     semesterId: TEST_FIXTURE.semester.id,
     type: "event_micro",
     generationApproach: "free",
     outputRequirement: "E2E 打开当前班级组任务",
-    plans: [
+    scopes: [
       {
         classId: TEST_FIXTURE.class.id,
         sessionId: TEST_FIXTURE.sessions[1].id,
@@ -654,8 +636,8 @@ test("current batch draft opens its named plan view from an empty same-page work
     ],
   } });
   expect(created.ok()).toBeTruthy();
-  const batch = (await created.json()).batch as { id: string; displayName: string; plans: Array<{ id: string }> };
-  const firstPlanId = batch.plans[0]!.id;
+  const batch = (await created.json()).plan as { id: string; displayName: string };
+  const firstPlanId = batch.id;
 
   await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}`);
   await expect(page.getByText("请先选择真实课次。")).toBeVisible();
@@ -673,7 +655,7 @@ test("current batch draft opens its named plan view from an empty same-page work
   await openButton.click();
   await contextRequest;
 
-  await expect(page).toHaveURL(new RegExp(`batchId=${batch.id}`));
+  await expect(page).not.toHaveURL(/batchId=/);
   await expect(page).toHaveURL(new RegExp(`planId=${firstPlanId}`));
   await expect(page).toHaveURL(/view=plan/);
   await expect(page).toHaveURL(new RegExp(`classId=${TEST_FIXTURE.class.id}`));
@@ -909,15 +891,15 @@ test("named plan draft supports Command-S, autosave and reload recovery", async 
   await expect(page.getByLabel("总体要求")).toHaveValue("E2E 自动保存后的总体要求");
 });
 
-test("named multi-class draft saves and a batch-only legacy link restores the workflow", async ({ page, request }) => {
-  const created = await request.post("/api/report/feedback-plan-batches", { data: {
+test("named student plan saves both classes and restores the workflow", async ({ page, request }) => {
+  const created = await request.post("/api/report/feedback-plans", { data: {
     requestKey: "e2e-named-batch-document",
     displayName: "E2E 多班文档草稿",
     semesterId: TEST_FIXTURE.semester.id,
     type: "event_micro",
-    generationMode: "fast",
+    generationApproach: "free",
     outputRequirement: "E2E 多班初始要求",
-    plans: [
+    scopes: [
       {
         classId: TEST_FIXTURE.class.id,
         sessionId: TEST_FIXTURE.sessions[1].id,
@@ -931,14 +913,14 @@ test("named multi-class draft saves and a batch-only legacy link restores the wo
     ],
   } });
   expect(created.ok()).toBeTruthy();
-  const batch = (await created.json()).batch as {
+  const batch = (await created.json()).plan as {
     id: string;
     planRevision: number;
     plans: Array<{ id: string }>;
   };
-  const firstPlanId = batch.plans[0]!.id;
-  const detailPath = `/api/report/feedback-plan-batches/${batch.id}`;
-  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[1].code}&planId=${firstPlanId}&batchId=${batch.id}&view=plan`);
+  const firstPlanId = batch.id;
+  const detailPath = `/api/report/feedback-plans/${batch.id}`;
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&classId=${TEST_FIXTURE.class.id}&class=${encodeURIComponent(TEST_FIXTURE.class.name)}&sessionCode=${TEST_FIXTURE.sessions[1].code}&planId=${firstPlanId}&view=plan`);
   await expect(page.getByText("计划草稿 · 自动保存", { exact: true })).toBeVisible();
 
   const nameInput = page.getByRole("textbox", { name: "计划名称" });
@@ -953,7 +935,7 @@ test("named multi-class draft saves and a batch-only legacy link restores the wo
   expect(commandSaveResponse.ok()).toBeTruthy();
   expect(commandSaveResponse.request().postDataJSON()).toMatchObject({
     action: "plan_draft",
-    displayName: "E2E 多班快捷键草稿",
+    patch: { displayName: "E2E 多班快捷键草稿" },
   });
   await expect(page.getByLabel("反馈计划名称与保存状态").getByRole("status")).toHaveText("已保存");
 
@@ -970,19 +952,19 @@ test("named multi-class draft saves and a batch-only legacy link restores the wo
   expect(automaticSaveResponse.ok()).toBeTruthy();
   expect(automaticSaveResponse.request().postDataJSON()).toMatchObject({
     action: "plan_draft",
-    outputRequirement: "E2E 多班自动保存后的要求",
+    patch: { outputRequirement: "E2E 多班自动保存后的要求" },
   });
 
   await page.reload();
   await expect(page.getByRole("textbox", { name: "总体要求", exact: true })).toHaveValue("E2E 多班自动保存后的要求");
   await page.getByRole("button", { name: "保存并开始生成" }).click();
   await expect(page).toHaveURL(/view=studio/);
-  await expect(page.getByRole("heading", { name: "班级组生成与复核" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "生成与复核", exact: true })).toBeVisible();
 
-  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&batchId=${batch.id}`);
+  await page.goto(`/feedback?semesterId=${TEST_FIXTURE.semester.id}&planId=${batch.id}`);
   await expect(page).toHaveURL(new RegExp(`planId=${firstPlanId}`));
   await expect(page).toHaveURL(/view=studio/);
-  await expect(page.getByRole("heading", { name: "班级组生成与复核" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "生成与复核", exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /规划 查看或修正计划/ }).click();
   await expect(page).toHaveURL(/view=plan/);

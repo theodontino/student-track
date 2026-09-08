@@ -252,7 +252,23 @@ export const CommunicationPreferenceSchema = z.object({
 });
 export type CommunicationPreference = z.infer<typeof CommunicationPreferenceSchema>;
 
+export const FeedbackStudentContextSchema = z.object({
+  version: z.literal(1),
+  class: z.object({ id: z.string(), code: z.string(), name: z.string().nullable() }),
+  session: z.object({ id: z.string(), code: z.string(), date: z.string(), semesterNumber: z.number() }).nullable(),
+  rangeStartSessionId: z.string().nullable(),
+  rangeEndSessionId: z.string().nullable(),
+  groupLessonId: z.string().nullable().optional(),
+  lessonMaterial: LessonFeedbackMaterialSchema,
+  outputRequirement: z.string().optional(),
+  generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
+  sourcePlanId: z.string().optional(),
+  sourceItemId: z.string().optional(),
+});
+export type FeedbackStudentContext = z.infer<typeof FeedbackStudentContextSchema>;
+
 export const FeedbackPlanFrozenFactItemSchema = z.object({
+  context: FeedbackStudentContextSchema.optional(),
   studentId: z.string().max(200).nullable(),
   studentName: z.string().max(200).optional(),
   studentNumber: z.string().max(200).optional(),
@@ -265,6 +281,7 @@ export const FeedbackPlanInputSnapshotV2Schema = z.object({
   ...feedbackPlanInputSnapshotFields,
   version: z.literal(2),
   draftRequestKey: z.string().min(8).max(200).optional(),
+  draftRequestFingerprint: z.string().optional(),
   batchGenerationPreferences: FeedbackGenerationPreferencesSchema.optional(),
   selectedStudentIds: z.array(z.string().max(200)).max(200),
   studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200),
@@ -428,6 +445,10 @@ export const FeedbackPlanDraftPatchSchema = z.object({
   type: z.enum(FEEDBACK_PLAN_TYPES).optional(),
   outputRequirement: z.string().trim().min(1).max(2000).optional(),
   generationApproach: FeedbackGenerationApproachSchema.optional(),
+  classOverrides: z.array(z.object({
+    classId: z.string().min(1), outputRequirement: z.string().trim().min(1).max(2000).optional(),
+    generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
+  })).max(20).optional(),
   studentIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
   generationPreferences: FeedbackGenerationPreferencesSchema.optional(),
   studentOverrides: z.array(FeedbackPlanStudentOverrideSchema).max(200).superRefine((overrides, ctx) => {

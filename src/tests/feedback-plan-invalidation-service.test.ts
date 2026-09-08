@@ -38,15 +38,12 @@ async function createLegacyDraft() {
 }
 
 describe("feedback plan invalidation service", () => {
-  it("invalidates the selected student and class item without changing another student's draft", async () => {
+  it("preserves historical student drafts after facts change", async () => {
     const { plan, session, students } = await createLegacyDraft();
-    await expect(invalidateFeedbackPlans({ sessionId: session.id, studentIds: [students[0].id] })).resolves.toBe(2);
-    const updated = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id }, include: { items: true } });
-    expect(updated.status).toBe("stale");
-    expect(updated.items.find((item) => item.studentId === students[0].id)?.status).toBe("stale");
-    expect(updated.items.find((item) => item.studentId === null)?.status).toBe("stale");
-    expect(updated.items.find((item) => item.studentId === students[1].id)?.status).toBe("evidence_ready");
     await expect(invalidateFeedbackPlans({ sessionId: session.id, studentIds: [students[0].id] })).resolves.toBe(0);
+    const updated = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id }, include: { items: true } });
+    expect(updated.status).toBe("ready");
+    expect(updated.items.every((item) => item.status === "evidence_ready")).toBe(true);
   });
 
   it("keeps another student's V1 plan unchanged when only the selected student's facts change", async () => {
@@ -72,11 +69,11 @@ describe("feedback plan invalidation service", () => {
       },
     });
 
-    await expect(invalidateFeedbackPlans({ sessionId: session.id, studentIds: [students[0].id] })).resolves.toBe(1);
+    await expect(invalidateFeedbackPlans({ sessionId: session.id, studentIds: [students[0].id] })).resolves.toBe(0);
 
     const selected = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id }, include: { items: true } });
-    expect(selected.status).toBe("stale");
-    expect(selected.items.map((item) => item.status)).toEqual(["stale"]);
+    expect(selected.status).toBe("ready");
+    expect(selected.items.map((item) => item.status)).toEqual(["evidence_ready"]);
     const untouched = await prisma.feedbackPlan.findUniqueOrThrow({ where: { id: otherPlan.id }, include: { items: true } });
     expect(untouched.status).toBe("ready");
     expect(untouched.items.map((item) => item.status)).toEqual(["evidence_ready"]);
@@ -84,6 +81,7 @@ describe("feedback plan invalidation service", () => {
 
   it("keeps plan and item invalidation inside the caller's transaction", async () => {
     const { plan, session } = await createLegacyDraft();
+    await prisma.feedbackPlan.update({ where: { id: plan.id }, data: { type: "class_update" } });
     await expect(prisma.$transaction(async (tx) => {
       expect(await invalidateFeedbackPlans({ sessionId: session.id }, tx)).toBe(3);
       expect((await tx.feedbackPlan.findUniqueOrThrow({ where: { id: plan.id } })).status).toBe("stale");

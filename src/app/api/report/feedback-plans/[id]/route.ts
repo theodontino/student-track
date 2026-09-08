@@ -36,6 +36,12 @@ import {
   updateTeacherTaskStatus,
 } from "@/services/feedback-plan-service";
 
+async function assertWritablePlan(id: string) {
+  const plan = await prisma.feedbackPlan.findUnique({ where: { id }, select: { type: true, structureVersion: true } });
+  if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  if (plan.type !== "class_update" && plan.structureVersion === 1) throw new ApiError("历史学生计划只读，请复制为新计划后继续", 409, "conflict", false);
+}
+
 function errorResponse(error: unknown, fallback: string) {
   const failure = safeApiError(error, fallback);
   return NextResponse.json(apiErrorBody(failure), { status: failure.status });
@@ -102,6 +108,7 @@ export async function POST(request: NextRequest, context: Context) {
     if (body?.action === "export_wecom_drafts") assertProductCapability("wecomDraftExport");
     await assertFeedbackPlanAvailable(id);
     if (!body || typeof body.action !== "string") throw new ApiError("反馈计划操作无效", 400, "invalid_request", false);
+    if (!["clone_draft", "save_as", "export", "export_wecom_drafts", "archive", "unarchive", "task_status"].includes(body.action)) await assertWritablePlan(id);
     if (body.action === "clone_draft") {
       const parsed = FeedbackPlanCloneDraftSchema.safeParse(body);
       if (!parsed.success) throw new ApiError("修正计划参数无效", 400, "invalid_request", false);
@@ -129,7 +136,7 @@ export async function POST(request: NextRequest, context: Context) {
     }
     if (body.action === "export") {
       const mode = body.mode === "approved_only" ? "approved_only" : "complete";
-      const buffer = await buildFeedbackPlanExportWorkbook(prisma, id, mode, { allowRepeat: body.allowRepeat === true });
+      const buffer = await buildFeedbackPlanExportWorkbook(prisma, id, mode, { allowRepeat: body.allowRepeat === true, itemIds: Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined });
       return new Response(buffer, {
         headers: {
           "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -140,13 +147,13 @@ export async function POST(request: NextRequest, context: Context) {
       });
     }
     if (body.action === "export_wecom_drafts") {
-      const draftPackage = await buildWeComDraftPackage(prisma, id);
-      const body = JSON.stringify(draftPackage, null, 2);
-      return new Response(body, {
+      const draftPackage = await buildWeComDraftPackage(prisma, id, { itemIds: Array.isArray(body.itemIds) ? body.itemIds.filter((value): value is string => typeof value === "string") : undefined });
+      const packageBody = JSON.stringify(draftPackage, null, 2);
+      return new Response(packageBody, {
         headers: {
           "Content-Type": "application/json; charset=utf-8",
           "Content-Disposition": `attachment; filename="wecom-drafts_${id}.json"`,
-          "Content-Length": String(Buffer.byteLength(body)),
+          "Content-Length": String(Buffer.byteLength(packageBody)),
           "Cache-Control": "no-store",
         },
       });

@@ -1,3 +1,4 @@
+import { createStudentFeedbackPlan, hasStudentScopes } from "@/services/feedback-plan/student-plan";
 import { NextRequest, NextResponse } from "next/server";
 import { apiErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
 import { FeedbackPlanCreateSchema } from "@/lib/feedback-plan";
@@ -29,7 +30,12 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const parsed = FeedbackPlanCreateSchema.safeParse(await request.json().catch(() => null));
+    const raw = await request.json().catch(() => null);
+    if (hasStudentScopes(raw)) {
+      const plan = await createStudentFeedbackPlan(raw);
+      return NextResponse.json({ plan: toFeedbackPlanDetail(plan) }, { status: 201 });
+    }
+    const parsed = FeedbackPlanCreateSchema.safeParse(raw);
     if (!parsed.success) throw new ApiError("反馈计划参数无效", 400, "invalid_request", false);
     const plan = await createFeedbackPlan(parsed.data);
     return NextResponse.json({ plan: toFeedbackPlanDetail(plan) }, { status: 201 });

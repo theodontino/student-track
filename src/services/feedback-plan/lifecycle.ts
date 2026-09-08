@@ -1,3 +1,4 @@
+import { assertStudentPlanWritable } from "./model";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import {
@@ -32,7 +33,7 @@ import { getFeedbackPlan, storedFeedbackPlanDraft } from "@/services/feedback-pl
 
 type FeedbackPlanNameScope = {
   semesterId: string;
-  classId: string;
+  classId: string | null;
   sessionId?: string | null;
   rangeStartSessionId?: string | null;
   rangeEndSessionId?: string | null;
@@ -64,17 +65,10 @@ async function allocateFeedbackPlanDisplayName(
   return `${baseName} ${suffix}`;
 }
 
-export async function createFeedbackPlan(
-  rawInput: FeedbackPlanCreateInput,
-  db: FeedbackPlanDb = prisma,
-  options: { withinTransaction?: boolean } = {},
-): Promise<NonNullable<Awaited<ReturnType<typeof getFeedbackPlan>>>> {
+export async function prepareFeedbackPlanCreation(rawInput: FeedbackPlanCreateInput, db: FeedbackPlanDb) {
   const parsedInput = FeedbackPlanCreateSchema.parse(rawInput);
   await assertSemesterAvailable(parsedInput.semesterId, db);
   await assertClassAvailable(parsedInput.classId, db);
-  if (parsedInput.requestKey && !options.withinTransaction && "$transaction" in db) {
-    return (db as PrismaClient).$transaction((tx) => createFeedbackPlan(parsedInput, tx, { withinTransaction: true }));
-  }
   let generationPreferences: FeedbackGenerationPreferences;
   try {
     generationPreferences = normalizeFeedbackGenerationPreferences(parsedInput.type, parsedInput.generationPreferences);
@@ -152,6 +146,21 @@ export async function createFeedbackPlan(
     }))?.id;
   }
 
+  return { input, rangeStartSessionId, rangeEndSessionId };
+}
+
+export async function createFeedbackPlan(
+  rawInput: FeedbackPlanCreateInput,
+  db: FeedbackPlanDb = prisma,
+  options: { withinTransaction?: boolean } = {},
+): Promise<NonNullable<Awaited<ReturnType<typeof getFeedbackPlan>>>> {
+  const parsedInput = FeedbackPlanCreateSchema.parse(rawInput);
+  await assertSemesterAvailable(parsedInput.semesterId, db);
+  await assertClassAvailable(parsedInput.classId, db);
+  if (parsedInput.requestKey && !options.withinTransaction && "$transaction" in db) {
+    return (db as PrismaClient).$transaction((tx) => createFeedbackPlan(parsedInput, tx, { withinTransaction: true }));
+  }
+  const { input, rangeStartSessionId, rangeEndSessionId } = await prepareFeedbackPlanCreation(parsedInput, db);
   if (input.requestKey) {
     const candidates = await db.feedbackPlan.findMany({
       where: { semesterId: input.semesterId, archivedAt: null },
@@ -198,6 +207,7 @@ export async function createFeedbackPlan(
       }, parsedInput.displayName ?? "初版计划");
     const plan = await tx.feedbackPlan.create({
       data: {
+        structureVersion: input.type === "class_update" ? 1 : 2,
         displayName,
         basedOnPlanId: input.basedOnPlanId,
         type: input.type,
@@ -216,6 +226,9 @@ export async function createFeedbackPlan(
             if (!bundle) throw new ApiError("反馈计划冻结事实缺少所选学生", 409, "conflict", false);
             return {
               studentId,
+              classId: input.classId,
+              sessionId: input.sessionId ?? rangeEndSessionId,
+              contextSnapshot: json(inputSnapshot.version === 2 ? inputSnapshot.factSnapshot.items.find((fact) => fact.studentId === studentId)?.context ?? {} : {}),
               evidenceSnapshot: json(bundle),
               generationConfigSnapshot: studentId && studentOverridesById.has(studentId)
                 ? json({ ...studentOverridesById.get(studentId), version: 1 })
@@ -271,6 +284,7 @@ export async function updateFeedbackPlanDraft(
     const plan = await storedFeedbackPlanDraft(id, tx);
     if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
     assertLegacyFeedbackGenerationAvailable(plan.generationApproach);
+    assertStudentPlanWritable(plan);
     assertMutableFeedbackPlanDraft(plan, patch.expectedPlanRevision, options.allowBatchDraftUpdate === true);
     const snapshot = feedbackPlanSnapshotV2(plan);
     const nextType = patch.type ?? plan.type as FeedbackPlanCreateInput["type"];
@@ -284,6 +298,15 @@ export async function updateFeedbackPlanDraft(
       generationPreferences = normalizeFeedbackGenerationPreferences(nextType, patch.generationPreferences ?? snapshot.generationPreferences);
     } catch (error) {
       throw new ApiError(error instanceof Error ? error.message : "生成结构设置无效", 400, "invalid_request", false);
+    }
+    if (patch.classOverrides) {
+      const knownClasses = new Set(snapshot.factSnapshot.items.map((fact) => fact.context?.class.id));
+      if (patch.classOverrides.some((override) => !knownClasses.has(override.classId))) throw new ApiError("班级设置不属于该计划", 400, "invalid_request", false);
+      snapshot.factSnapshot.items = snapshot.factSnapshot.items.map((fact) => {
+        if (!fact.context) return fact;
+        const override = patch.classOverrides!.find((entry) => entry.classId === fact.context!.class.id);
+        return { ...fact, context: { ...fact.context, outputRequirement: override?.outputRequirement, generationPreferences: override?.generationPreferences } };
+      });
     }
     const factByStudent = new Map(snapshot.factSnapshot.items.map((item) => [item.studentId, item.evidence]));
     const currentStudentIds = plan.items.flatMap((item) => item.studentId ? [item.studentId] : []);
@@ -361,10 +384,11 @@ export async function updateFeedbackPlanDraft(
         : "{}";
       const existing = existingByKey.get(studentId ?? "__class__");
       if (existing) {
-        if (existing.generationConfigSnapshot !== generationConfigSnapshot) {
+        const contextSnapshot = json(snapshot.factSnapshot.items.find((fact) => fact.studentId === studentId)?.context ?? {});
+        if (existing.generationConfigSnapshot !== generationConfigSnapshot || existing.contextSnapshot !== contextSnapshot) {
           await tx.feedbackPlanItem.update({
             where: { id: existing.id },
-            data: { generationConfigSnapshot, itemRevision: { increment: 1 } },
+            data: { generationConfigSnapshot, contextSnapshot, itemRevision: { increment: 1 } },
           });
         }
       } else {
@@ -372,6 +396,9 @@ export async function updateFeedbackPlanDraft(
           data: {
             planId: plan.id,
             studentId,
+            classId: snapshot.factSnapshot.items.find((fact) => fact.studentId === studentId)?.context?.class.id ?? plan.classId,
+            sessionId: snapshot.factSnapshot.items.find((fact) => fact.studentId === studentId)?.context?.session?.id ?? plan.sessionId,
+            contextSnapshot: json(snapshot.factSnapshot.items.find((fact) => fact.studentId === studentId)?.context ?? {}),
             evidenceSnapshot: json(factByStudent.get(studentId)),
             generationConfigSnapshot,
           },
@@ -428,6 +455,17 @@ export async function cloneFeedbackPlanDraft(
       throw new ApiError("班级组子计划不能单独修正，请从班级组计划建立修正计划", 409, "conflict", false);
     }
     const snapshot = feedbackPlanSnapshotV2(source);
+    if (source.items.some((item) => !snapshot.factSnapshot.items.some((fact) => fact.studentId === item.studentId))) throw new ApiError("历史计划冻结事实不完整，无法复制", 409, "conflict", false);
+    const sourceClass = source.classId ? await tx.class.findUnique({ where: { id: source.classId }, select: { id: true, code: true, name: true } }) : null;
+    const sourceSession = await resolveSession(tx, source.rangeEndSessionId ?? source.sessionId ?? undefined);
+    snapshot.factSnapshot.items = snapshot.factSnapshot.items.map((fact) => ({ ...fact,
+      context: { ...(fact.context ?? (sourceClass ? {
+        version: 1 as const, class: sourceClass,
+        session: sourceSession ? { id: sourceSession.id, code: sourceSession.code, date: sourceSession.date, semesterNumber: sourceSession.semesterNumber } : null,
+        rangeStartSessionId: source.rangeStartSessionId, rangeEndSessionId: source.rangeEndSessionId,
+        lessonMaterial: snapshot.lessonMaterial,
+      } : undefined)), sourcePlanId: source.id, sourceItemId: source.items.find((item) => item.studentId === fact.studentId)?.id } as NonNullable<typeof fact.context>,
+    }));
     if (source.generationApproach === "legacy" && input.generationApproach === undefined) {
       throw new ApiError("旧生成方式计划另存为时必须选择受限反馈或自由反馈", 409, "conflict", false);
     }
@@ -455,6 +493,7 @@ export async function cloneFeedbackPlanDraft(
       : null;
     const clone = await tx.feedbackPlan.create({
       data: {
+        structureVersion: source.type === "class_update" ? 1 : 2,
         displayName,
         basedOnPlanId: source.id,
         type: source.type,
@@ -469,6 +508,7 @@ export async function cloneFeedbackPlanDraft(
         inputSnapshot: json({
           ...snapshot,
           draftRequestKey: undefined,
+          draftRequestFingerprint: undefined,
           selectedStudentIds,
           studentOverrides: [...studentOverrides.entries()].map(([studentId, generationConfig]) => ({ studentId, generationConfig })),
         }),
@@ -476,6 +516,9 @@ export async function cloneFeedbackPlanDraft(
         items: {
           create: source.items.map((item) => ({
             studentId: item.studentId,
+            classId: item.classId ?? source.classId,
+            sessionId: item.sessionId ?? source.sessionId ?? source.rangeEndSessionId,
+            contextSnapshot: json(snapshot.factSnapshot.items.find((fact) => fact.studentId === item.studentId)?.context ?? {}),
             evidenceSnapshot: item.evidenceSnapshot,
             generationConfigSnapshot: item.generationConfigSnapshot,
           })),
@@ -539,10 +582,10 @@ export async function deleteFeedbackPlan(id: string, db: PrismaClient = prisma) 
 }
 
 export async function archiveFeedbackPlan(id: string, db: PrismaClient = prisma) {
-  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, batchId: true, status: true } });
+  const plan = await db.feedbackPlan.findUnique({ where: { id }, select: { id: true, batchId: true, status: true, type: true, structureVersion: true } });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
   if (plan.batchId) throw new ApiError("班级组子计划不能单独归档，请从班级组计划操作", 409, "conflict", false);
-  if (["generating", "queued", "pause_requested"].includes(plan.status)) {
+  if (!(plan.structureVersion === 1 && plan.type !== "class_update") && ["generating", "queued", "pause_requested"].includes(plan.status)) {
     throw new ApiError("生成中的反馈计划不能直接归档，请先暂停并等待进行中任务完成", 409, "conflict", false);
   }
   return db.feedbackPlan.update({ where: { id }, data: { archivedAt: new Date() } });

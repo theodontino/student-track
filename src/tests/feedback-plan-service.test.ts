@@ -486,7 +486,7 @@ describe("feedback plan service", () => {
       referenceDate: "2099-01-01",
       communicationPreference: { length: "short", terminology: "plain" },
     });
-    expect(JSON.parse(correction.inputSnapshot).factSnapshot).toEqual(JSON.parse(source.inputSnapshot).factSnapshot);
+    expect(JSON.parse(correction.inputSnapshot).factSnapshot).toMatchObject(JSON.parse(source.inputSnapshot).factSnapshot);
 
     await prisma.student.update({ where: { id: student.id }, data: { name: "后来改名" } });
     await prisma.communicationPreference.update({

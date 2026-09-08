@@ -1,3 +1,4 @@
+import { assertStudentPlanWritable, isHistoricalStudentPlan, parseStudentContext } from "./model";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-errors";
 import {
@@ -23,6 +24,7 @@ export async function patchFeedbackPlanItem(id: string, rawPatch: FeedbackPlanIt
   const patch = FeedbackPlanItemPatchSchema.parse(rawPatch);
   const item = await db.feedbackPlanItem.findUnique({ include: { plan: { include: { batch: { select: { status: true, archivedAt: true } }, items: { include: { student: true } } } }, student: true, tasks: true } , where: { id } });
   if (!item) throw new ApiError("反馈计划条目不存在", 404, "not_found", false);
+  assertStudentPlanWritable(item.plan);
   if (item.plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (["approved", "exported"].includes(item.status)) throw new ApiError("已批准或已导出的反馈不可原位修改，请新建反馈计划", 409, "conflict", false);
   if (["queued", "generating", "pause_requested"].includes(item.status)) {
@@ -141,8 +143,9 @@ export async function retainStaleFeedbackPlanItems(input: {
   planId: string;
   itemIds?: string[];
 }, db: PrismaClient = prisma) {
-  const planState = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true } });
+  const planState = await db.feedbackPlan.findUnique({ where: { id: input.planId }, select: { id: true, archivedAt: true, type: true, structureVersion: true } });
   if (!planState) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+  assertStudentPlanWritable(planState);
   if (planState.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   const requestedIds = input.itemIds ? [...new Set(input.itemIds)] : undefined;
   const items = await db.feedbackPlanItem.findMany({
@@ -189,17 +192,18 @@ export async function createTeacherTask(input: {
     },
   });
   if (!item) throw new ApiError("反馈计划条目不存在", 404, "not_found", false);
+  assertStudentPlanWritable(item.plan);
   if (item.plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
   if (item.status !== "needs_review") throw new ApiError("只有待教师审核的反馈才能批准未来任务", 409, "conflict", false);
   if (!input.action.trim()) throw new ApiError("教师任务不能为空", 400, "invalid_request", false);
   if (input.dueType === "date" && !input.dueDate) throw new ApiError("日期任务缺少截止日期", 400, "invalid_request", false);
   let resolvedDueSessionId = input.dueSessionId;
   if (input.dueType === "session" && !resolvedDueSessionId) {
-    const anchor = item.plan.rangeEndSession ?? item.plan.session;
+    const anchor = parseStudentContext(item.contextSnapshot)?.session ?? item.plan.rangeEndSession ?? item.plan.session;
     if (!anchor) throw new ApiError("没有可推断的后续课次，请选择日期或课次", 400, "invalid_request", false);
     const nextSession = await db.classSession.findFirst({
       where: {
-        classId: item.plan.classId,
+        classId: (item.classId ?? item.plan.classId)!,
         semesterId: item.plan.semesterId,
         OR: [{ date: { gt: anchor.date } }, { date: anchor.date, semesterNumber: { gt: anchor.semesterNumber } }],
       },
@@ -210,9 +214,9 @@ export async function createTeacherTask(input: {
   }
   if (input.dueType === "session" && !resolvedDueSessionId) throw new ApiError("没有下一节同班课次，请选择日期或课次", 400, "invalid_request", false);
   if (input.dueType === "session" && resolvedDueSessionId) {
-    const dueSession = await db.classSession.findFirst({ where: { id: resolvedDueSessionId, classId: item.plan.classId, semesterId: item.plan.semesterId }, select: { id: true, date: true, semesterNumber: true } });
+    const dueSession = await db.classSession.findFirst({ where: { id: resolvedDueSessionId, classId: (item.classId ?? item.plan.classId)!, semesterId: item.plan.semesterId }, select: { id: true, date: true, semesterNumber: true } });
     if (!dueSession) throw new ApiError("截止课次必须属于同一班级和学期", 400, "invalid_request", false);
-    const anchor = item.plan.rangeEndSession ?? item.plan.session;
+    const anchor = parseStudentContext(item.contextSnapshot)?.session ?? item.plan.rangeEndSession ?? item.plan.session;
     if (anchor && (dueSession.date < anchor.date || (dueSession.date === anchor.date && dueSession.semesterNumber <= anchor.semesterNumber))) {
       throw new ApiError("教师任务截止课次必须晚于反馈计划课次", 400, "invalid_request", false);
     }
@@ -227,7 +231,7 @@ export async function createTeacherTask(input: {
         planId: item.planId,
         planItemId: item.id,
         studentId: item.studentId,
-        classId: item.plan.classId,
+        classId: (item.classId ?? item.plan.classId)!,
         action: input.action.trim(),
         promiseExcerpt: input.promiseExcerpt?.trim() || null,
         dueType: input.dueType,
@@ -266,6 +270,7 @@ export async function approveFeedbackPlanItems(input: { planId: string; itemIds?
   const approved = await db.$transaction(async (tx) => {
     const plan = await tx.feedbackPlan.findUnique({ where: { id: input.planId }, include: { items: { include: { tasks: true, student: true } } } });
     if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
+    assertStudentPlanWritable(plan);
     if (plan.archivedAt) throw new ApiError("已归档反馈计划为只读，请先取消归档", 409, "conflict", false);
     const itemIds = input.itemIds ? new Set(input.itemIds) : new Set(plan.items.map((item) => item.id));
     const selected = plan.items.filter((item) => itemIds.has(item.id));
@@ -325,9 +330,10 @@ export async function approveFeedbackPlanItems(input: { planId: string; itemIds?
 
 export async function updateTeacherTaskStatus(id: string, status: "pending" | "completed" | "cancelled", db: PrismaClient = prisma) {
   return db.$transaction(async (tx) => {
-    const existing = await tx.teacherTask.findUnique({ where: { id }, select: { planId: true } });
+    const existing = await tx.teacherTask.findUnique({ where: { id }, select: { planId: true, plan: { select: { type: true, structureVersion: true } } } });
     if (!existing) throw new ApiError("教师任务不存在", 404, "not_found", false);
     await assertFeedbackPlanAvailable(existing.planId, tx);
+    if (status === "pending") assertStudentPlanWritable(existing.plan);
     const task = await tx.teacherTask.update({
       where: { id },
       data: { status, completedAt: status === "completed" ? new Date() : null },
@@ -342,7 +348,7 @@ export async function updateTeacherTaskStatus(id: string, status: "pending" | "c
       },
     });
     const item = task.planItem;
-    if (item && ["evidence_ready", "needs_review"].includes(item.status)) {
+    if (item && !isHistoricalStudentPlan(item.plan) && ["evidence_ready", "needs_review"].includes(item.status)) {
       const effectiveConfig = effectiveFeedbackPlanConfig(item.plan, item);
       const bundle = bundleForPlanConfig(FeedbackEvidenceBundleSchema.parse(parseJson(item.evidenceSnapshot, {})), effectiveConfig);
       const composition = parseCompositionSnapshot(item.compositionSnapshot, effectiveConfig.type, item.finalText ?? "");

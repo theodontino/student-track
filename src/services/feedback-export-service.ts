@@ -1,3 +1,4 @@
+import { isHistoricalStudentPlan, parseStudentContext } from "@/services/feedback-plan/model";
 import * as XLSX from "xlsx";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { FeedbackSections } from "@/lib/feedback-sections";
@@ -218,9 +219,9 @@ export async function buildFeedbackPlanExportWorkbook(
   prisma: PrismaClient,
   planId: string,
   mode: "complete" | "approved_only" = "complete",
-  options: { allowRepeat?: boolean } = {},
+  options: { allowRepeat?: boolean; itemIds?: string[] } = {},
 ) {
-  await validateFeedbackPlanAttachments(planId, prisma);
+
   const plan = await prisma.feedbackPlan.findUnique({
     where: { id: planId },
     include: {
@@ -231,10 +232,16 @@ export async function buildFeedbackPlanExportWorkbook(
     },
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
-  const pendingCount = plan.items.filter((item) => item.status !== "approved" && item.status !== "exported").length;
+  const historical = isHistoricalStudentPlan(plan);
+  const checkedAttachments = await validateFeedbackPlanAttachments(planId, prisma, { persist: !historical });
+  const attachmentStatus = new Map(checkedAttachments.map((attachment) => [attachment.id, attachment.status]));
+  plan.attachments = plan.attachments.map((attachment) => ({ ...attachment, status: attachmentStatus.get(attachment.id) ?? attachment.status }));
+  const scopedItems = options.itemIds ? plan.items.filter((item) => options.itemIds!.includes(item.id)) : plan.items;
+  if (options.itemIds?.some((id) => !plan.items.some((item) => item.id === id))) throw new ApiError("所选条目不属于该计划", 400, "invalid_request", false);
+  const pendingCount = scopedItems.filter((item) => item.status !== "approved" && item.status !== "exported").length;
   if (mode === "complete" && pendingCount > 0) throw new ApiError(`还有 ${pendingCount} 条反馈未批准`, 409, "conflict", false);
-  const approvedItems = plan.items.filter((item) => (item.status === "approved" || item.status === "exported") && item.finalText?.trim());
-  let items = mode === "approved_only"
+  const approvedItems = scopedItems.filter((item) => (item.status === "approved" || item.status === "exported") && item.finalText?.trim());
+  let items = mode === "approved_only" && !historical
     ? approvedItems.filter((item) => item.status === "approved")
     : approvedItems;
   const fallbackManifest = approvedItems.map((item) => ({ itemId: item.id, finalTextHash: item.finalTextHash ?? "" }));
@@ -254,7 +261,7 @@ export async function buildFeedbackPlanExportWorkbook(
   const fallbackManifestHash = createHash("sha256").update(JSON.stringify(fallbackManifest)).digest("hex");
   if (!items.length && mode === "approved_only" && approvedItems.length > 0) {
     const latest = plan.exportRuns[0];
-    if (latest && (latest.manifestHash === fallbackManifestHash || normalizedManifestHash(latest.itemManifest) === fallbackManifestHash) && !options.allowRepeat) {
+    if (latest && (latest.manifestHash === fallbackManifestHash || normalizedManifestHash(latest.itemManifest) === fallbackManifestHash) && !options.allowRepeat && !historical) {
       throw new ApiError("这批反馈已经按相同文本导出过；如需重复下载，请确认后重试", 409, "repeat_export", false);
     }
     if (options.allowRepeat) items = approvedItems;
@@ -271,7 +278,7 @@ export async function buildFeedbackPlanExportWorkbook(
   const manifest = items.map((item) => ({ itemId: item.id, finalTextHash: item.finalTextHash ?? "" }));
   const manifestHash = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
   const latestRun = plan.exportRuns[0];
-  if (latestRun && (latestRun.manifestHash === manifestHash || normalizedManifestHash(latestRun.itemManifest) === manifestHash) && !options.allowRepeat) {
+  if (latestRun && (latestRun.manifestHash === manifestHash || normalizedManifestHash(latestRun.itemManifest) === manifestHash) && !options.allowRepeat && !historical) {
     throw new ApiError("这批反馈已经按相同文本导出过；如需重复下载，请确认后重试", 409, "repeat_export", false);
   }
   const compositions = new Map(items.map((item) => {
@@ -280,6 +287,8 @@ export async function buildFeedbackPlanExportWorkbook(
   }));
   const feedbackRows = items.map((item) => ({
     类型: plan.type,
+    班级: parseStudentContext(item.contextSnapshot)?.class.code ?? "",
+    课次: parseStudentContext(item.contextSnapshot)?.session?.code ?? "",
     姓名: item.student?.name ?? "班级公共反馈",
     学号: item.student?.studentId ?? "",
     反馈状态: item.status,
@@ -324,7 +333,7 @@ export async function buildFeedbackPlanExportWorkbook(
   if (taskRows.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(taskRows), "教师待办");
   if (attachmentRows.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(attachmentRows), "附件清单");
   const buffer = new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
-  await prisma.$transaction(async (tx) => {
+  if (!historical) await prisma.$transaction(async (tx) => {
     await tx.feedbackExportRun.create({ data: { planId, mode, itemManifest: JSON.stringify(manifest), manifestHash, isRepeat: options.allowRepeat === true } });
     await tx.feedbackPlanItem.updateMany({ where: { id: { in: items.map((item) => item.id) } }, data: { status: "exported", exportedAt: new Date() } });
     const allExported = plan.items.every((item) => items.some((selected) => selected.id === item.id) || item.status === "exported");
@@ -338,8 +347,9 @@ export async function buildFeedbackPlanBatchExportWorkbook(
   prisma: PrismaClient,
   batchId: string,
   mode: "complete" | "approved_only" = "approved_only",
-  options: { allowRepeat?: boolean } = {},
+  _options: { allowRepeat?: boolean } = {},
 ) {
+  void _options;
   const batch = await prisma.feedbackPlanBatch.findUnique({
     where: { id: batchId },
     include: {
@@ -356,28 +366,19 @@ export async function buildFeedbackPlanBatchExportWorkbook(
     },
   });
   if (!batch) throw new ApiError("反馈批次不存在", 404, "not_found", false);
-  if (batch.archivedAt) throw new ApiError("已归档反馈批次为只读", 409, "conflict", false);
 
-  const initiallyExported = new Set<string>();
-  for (const run of batch.exportRuns) {
-    try {
-      const entries = JSON.parse(run.itemManifest) as Array<{ itemId?: unknown }>;
-      for (const entry of Array.isArray(entries) ? entries : []) {
-        if (typeof entry.itemId === "string") initiallyExported.add(entry.itemId);
-      }
-    } catch { /* malformed historical ledgers do not authorize skipping items */ }
-  }
+
   const initialItems = batch.plans.flatMap((plan) => plan.items.map((item) => ({ plan, item })));
   const initialPending = initialItems.filter(({ item }) => !["approved", "exported"].includes(item.status) || !item.finalText?.trim());
   if (mode === "complete" && initialPending.length) throw new ApiError(`还有 ${initialPending.length} 条反馈未批准`, 409, "conflict", false);
   const initiallySelected = initialItems.filter(({ item }) => (
     ["approved", "exported"].includes(item.status)
     && item.finalText?.trim()
-    && (mode === "complete" || !initiallyExported.has(item.id))
   ));
   if (!initiallySelected.length) throw new ApiError("没有新的已批准反馈可合并导出", 409, "conflict", false);
   const relevantPlanIds = new Set(initiallySelected.map(({ plan }) => plan.id));
-  for (const planId of relevantPlanIds) await validateFeedbackPlanAttachments(planId, prisma);
+  const checkedAttachments = (await Promise.all([...relevantPlanIds].map((planId) => validateFeedbackPlanAttachments(planId, prisma, { persist: false })))).flat();
+  const attachmentStatuses = new Map(checkedAttachments.map((attachment) => [attachment.id, attachment.status]));
   const refreshed = await prisma.feedbackPlanBatch.findUnique({
     where: { id: batchId },
     include: {
@@ -395,45 +396,24 @@ export async function buildFeedbackPlanBatchExportWorkbook(
   });
   if (!refreshed) throw new ApiError("反馈批次不存在", 404, "not_found", false);
 
-  const previouslyBatchExported = new Set<string>();
-  for (const run of refreshed.exportRuns) {
-    try {
-      const manifest = JSON.parse(run.itemManifest) as Array<{ itemId?: unknown }>;
-      for (const entry of Array.isArray(manifest) ? manifest : []) {
-        if (typeof entry.itemId === "string") previouslyBatchExported.add(entry.itemId);
-      }
-    } catch { /* malformed historical ledgers do not authorize skipping items */ }
-  }
   const allItems = refreshed.plans.flatMap((plan) => plan.items.map((item) => ({ plan, item })));
   const notApproved = allItems.filter(({ item }) => !["approved", "exported"].includes(item.status) || !item.finalText?.trim());
   if (mode === "complete" && notApproved.length) throw new ApiError(`还有 ${notApproved.length} 条反馈未批准`, 409, "conflict", false);
   const approved = allItems.filter(({ item }) => ["approved", "exported"].includes(item.status) && item.finalText?.trim());
-  const selected = mode === "approved_only"
-    ? approved.filter(({ item }) => !previouslyBatchExported.has(item.id))
-    : approved;
+  const selected = approved;
   if (!selected.length) throw new ApiError("没有新的已批准反馈可合并导出", 409, "conflict", false);
 
   const selectedIds = new Set(selected.map(({ item }) => item.id));
   for (const plan of refreshed.plans) {
     const hasSelectedItem = plan.items.some((item) => selectedIds.has(item.id));
     if (!hasSelectedItem) continue;
-    const missing = plan.attachments.filter((attachment) => attachment.status === "missing" && (!attachment.planItemId || selectedIds.has(attachment.planItemId)));
-    if (missing.length) throw new ApiError(`班级 ${plan.class.code} 有 ${missing.length} 个本次导出所需附件缺失`, 409, "conflict", false);
-  }
-
-  const manifest = selected.map(({ plan, item }) => ({
-    planId: plan.id,
-    itemId: item.id,
-    finalTextHash: item.finalTextHash ?? createHash("sha256").update(item.finalText ?? "").digest("hex"),
-  }));
-  const manifestHash = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
-  if (refreshed.exportRuns.some((run) => run.manifestHash === manifestHash) && !options.allowRepeat) {
-    throw new ApiError("相同条目和文本已经合并导出；如需完整重导，请二次确认", 409, "repeat_export", false);
+    const missing = plan.attachments.filter((attachment) => (attachmentStatuses.get(attachment.id) ?? attachment.status) === "missing" && (!attachment.planItemId || selectedIds.has(attachment.planItemId)));
+    if (missing.length) throw new ApiError(`班级 ${plan.class?.code ?? ""} 有 ${missing.length} 个本次导出所需附件缺失`, 409, "conflict", false);
   }
 
   const feedbackRows = selected.map(({ plan, item }) => ({
-    班级编号: plan.class.code,
-    班级名称: plan.class.name,
+    班级编号: plan.class?.code ?? "",
+    班级名称: plan.class?.name ?? "",
     类型: plan.type,
     姓名: item.student?.name ?? "",
     学号: item.student?.studentId ?? "",
@@ -444,8 +424,8 @@ export async function buildFeedbackPlanBatchExportWorkbook(
     const evidence = (() => { try { return JSON.parse(item.evidenceSnapshot) as { teachingEvidence?: Array<{ content: string }> }; } catch { return {}; } })();
     const composition = (() => { try { return JSON.parse(item.compositionSnapshot) as { modules?: Array<{ key: string; status: string }> }; } catch { return {}; } })();
     return {
-      班级编号: plan.class.code,
-      班级名称: plan.class.name,
+      班级编号: plan.class?.code ?? "",
+      班级名称: plan.class?.name ?? "",
       姓名: item.student?.name ?? "",
       证据: evidence.teachingEvidence?.map((entry) => entry.content).join("；") ?? "",
       采用模块: composition.modules?.filter((module) => module.status === "included").map((module) => module.key).join("、") ?? "",
@@ -456,8 +436,8 @@ export async function buildFeedbackPlanBatchExportWorkbook(
   const taskRows = refreshed.plans.flatMap((plan) => {
     if (!plan.items.some((item) => selectedIds.has(item.id))) return [];
     return plan.tasks.filter((task) => !task.planItemId || selectedIds.has(task.planItemId)).map((task) => ({
-      班级编号: plan.class.code,
-      班级名称: plan.class.name,
+      班级编号: plan.class?.code ?? "",
+      班级名称: plan.class?.name ?? "",
       学生: task.student?.name ?? "班级",
       任务: task.action,
       截止: task.dueSession ? `${task.dueSession.date} ${task.dueSession.code}` : task.dueDate ?? "",
@@ -468,8 +448,8 @@ export async function buildFeedbackPlanBatchExportWorkbook(
   const attachmentRows = refreshed.plans.flatMap((plan) => {
     if (!plan.items.some((item) => selectedIds.has(item.id))) return [];
     return plan.attachments.filter((attachment) => !attachment.planItemId || selectedIds.has(attachment.planItemId)).map((attachment) => ({
-      班级编号: plan.class.code,
-      班级名称: plan.class.name,
+      班级编号: plan.class?.code ?? "",
+      班级名称: plan.class?.name ?? "",
       文件名: attachment.displayName,
       类型: attachment.mimeType,
       大小: attachment.sizeBytes,
@@ -484,31 +464,6 @@ export async function buildFeedbackPlanBatchExportWorkbook(
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(taskRows.length ? taskRows : [{ 班级编号: "", 班级名称: "", 学生: "", 任务: "", 截止: "", 预计分钟: "", 状态: "" }]), "教师待办");
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(attachmentRows.length ? attachmentRows : [{ 班级编号: "", 班级名称: "", 文件名: "", 类型: "", 大小: "", SHA256: "", 定位符: "", 状态: "" }]), "附件清单");
   const buffer = new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
-  const workbookSha256 = createHash("sha256").update(buffer).digest("hex");
-
-  await prisma.$transaction(async (tx) => {
-    const batchRun = await tx.feedbackPlanBatchExportRun.create({
-      data: { batchId, mode, itemManifest: JSON.stringify(manifest), manifestHash, workbookSha256, isRepeat: options.allowRepeat === true },
-    });
-    for (const plan of refreshed.plans) {
-      const planItems = selected.filter((entry) => entry.plan.id === plan.id).map((entry) => entry.item);
-      if (!planItems.length) continue;
-      const childManifest = planItems.map((item) => ({ itemId: item.id, finalTextHash: item.finalTextHash ?? createHash("sha256").update(item.finalText ?? "").digest("hex") }));
-      await tx.feedbackExportRun.create({
-        data: {
-          planId: plan.id,
-          batchExportRunId: batchRun.id,
-          mode,
-          itemManifest: JSON.stringify(childManifest),
-          manifestHash: createHash("sha256").update(JSON.stringify(childManifest)).digest("hex"),
-          isRepeat: options.allowRepeat === true,
-        },
-      });
-      await tx.feedbackPlanItem.updateMany({ where: { id: { in: planItems.map((item) => item.id) } }, data: { status: "exported", exportedAt: new Date() } });
-      const allExported = plan.items.every((item) => item.status === "exported" || planItems.some((selectedItem) => selectedItem.id === item.id));
-      await tx.feedbackPlan.update({ where: { id: plan.id }, data: { status: allExported ? "exported" : "partially_exported", exportedAt: new Date() } });
-    }
-  });
   return buffer;
 }
 
@@ -516,6 +471,7 @@ export async function buildFeedbackPlanBatchExportWorkbook(
 export async function buildWeComDraftPackage(
   prisma: PrismaClient,
   planId: string,
+  options: { itemIds?: string[] } = {},
 ): Promise<WeComDraftPackageV1> {
   assertProductCapability("wecomDraftExport");
   const plan = await prisma.feedbackPlan.findUnique({
@@ -539,7 +495,9 @@ export async function buildWeComDraftPackage(
   });
   if (!plan) throw new ApiError("反馈计划不存在", 404, "not_found", false);
 
+  if (options.itemIds?.some((id) => !plan.items.some((item) => item.id === id))) throw new ApiError("所选条目不属于该计划", 400, "invalid_request", false);
   const items = plan.items.flatMap((item) => {
+    if (options.itemIds && !options.itemIds.includes(item.id)) return [];
     const text = item.finalText?.trim() ?? "";
     if (!item.studentId || !item.student || !item.approvedAt || !text || !["approved", "exported"].includes(item.status)) return [];
     const textSha256 = createHash("sha256").update(text).digest("hex");

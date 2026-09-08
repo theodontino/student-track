@@ -29,7 +29,7 @@ type Props = {
 };
 
 type QueueFilter = "action" | "review" | "done" | "all";
-type QueueItem = FeedbackBatchClient["plans"][number]["items"][number];
+type QueueItem = FeedbackBatchClient["plans"][number]["items"][number] & { context?: { class: QueuePlan["class"] | null; session?: QueuePlan["session"] } | null };
 type QueuePlan = FeedbackBatchClient["plans"][number];
 type QueueTarget = { planId: string; itemId: string };
 type QueueEntry = {
@@ -138,12 +138,13 @@ function writeQueueUrl(values: { itemId?: string; queue?: QueueFilter | null; cl
 }
 
 function singlePlanAsQueuePlan(plan: {
-  id: string; status: string; class: QueuePlan["class"]; session?: QueuePlan["session"]; rangeEndSession?: QueuePlan["rangeEndSession"];
+  id: string; status: string; class: QueuePlan["class"] | null; session?: QueuePlan["session"]; rangeEndSession?: QueuePlan["rangeEndSession"];
   items: QueueItem[]; generationProgress?: { total: number; completed: number; failed: number };
 }): QueuePlan {
   const generated = plan.items.filter((item) => ["needs_review", "approved", "exported"].includes(item.status)).length;
   return {
     ...plan,
+    class: plan.class ?? { id: "", code: "学生反馈", name: null },
     progress: {
       total: plan.items.length,
       generated,
@@ -230,7 +231,19 @@ export function FeedbackTaskStudioStage(props: Props) {
     contextStudents: props.context?.students ?? [], confirmedAssessmentEvidence: {},
   }), [props.className, props.context, props.semesterId, props.sessionCode]);
 
-  const plans = useMemo(() => batch?.plans ?? (singlePlan ? [singlePlan] : []), [batch?.plans, singlePlan]);
+  const plans = useMemo(() => {
+    if (batch) return batch.plans;
+    if (!singlePlan) return [];
+    const groups = new Map<string, QueuePlan>();
+    for (const item of singlePlan.items as QueueItem[]) {
+      const context = item.context;
+      const scopeClass = context?.class ?? singlePlan.class;
+      const group = groups.get(scopeClass.id) ?? { ...singlePlan, class: scopeClass, session: context?.session ?? singlePlan.session, items: [] };
+      group.items.push(item);
+      groups.set(scopeClass.id, group);
+    }
+    return [...groups.values()].map(singlePlanAsQueuePlan);
+  }, [batch, singlePlan]);
   const queue = useMemo(() => plans.flatMap((plan) => plan.items.map((item) => ({ item, plan }))), [plans]);
   const filter = selectedFilter ?? defaultFeedbackQueueFilter(queue, classFilter);
   const filteredQueue = queue.filter((entry) => feedbackQueueMatches(entry, filter, classFilter));
@@ -332,14 +345,14 @@ export function FeedbackTaskStudioStage(props: Props) {
   const activeQueueEntry = filteredQueue.find(({ item, plan }) => item.id === target.itemId && plan.id === target.planId);
   const renderQueueContents = () => <>
     <header><div><strong>反馈队列</strong><span>按班级与任务状态筛选；一次只处理一条</span></div></header>
-    {plans.length > 1 && <label className="feedback-queue-class-filter">班级<select value={classFilter} onChange={(event) => changeClassFilter(event.target.value)}><option value="all">全部班级</option>{plans.map((plan) => <option key={plan.id} value={plan.class.id}>{plan.class.name ?? plan.class.code}</option>)}</select></label>}
+    {plans.length > 1 && <label className="feedback-queue-class-filter">班级<select value={classFilter} onChange={(event) => changeClassFilter(event.target.value)}><option value="all">全部班级</option>{plans.map((plan) => <option key={plan.class.id} value={plan.class.id}>{plan.class.name ?? plan.class.code}</option>)}</select></label>}
     <div className="feedback-plan-studio-filters">{(Object.keys(filterLabels) as QueueFilter[]).map((key) => <button type="button" key={key} aria-pressed={filter === key} className={filter === key ? "is-active" : ""} onClick={() => changeFilter(key)}>{filterLabels[key]}<small>{counts[key]}</small></button>)}</div>
     <nav className="feedback-queue-groups">{!filteredQueue.length
       ? <p className="feedback-queue-empty" role="status">当前班级与任务状态下没有学生任务。</p>
-      : plans.filter((plan) => (classFilter === "all" || plan.class.id === classFilter) && plan.items.some((item) => feedbackQueueMatches({ item, plan }, filter, classFilter))).map((plan) => <section key={plan.id}><header><div><strong>{plan.class.name ?? plan.class.code}</strong><small>{feedbackStudioConfiguredApproachLabel(plan as QueuePlan & { legacyReadonly?: boolean })} · 生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></div>{plan.progress.failed > 0 && <Badge tone="danger">失败 {plan.progress.failed}</Badge>}</header><div>{plan.items.filter((item) => feedbackQueueMatches({ item, plan }, filter, classFilter)).map((item) => { const active = target.planId === plan.id && target.itemId === item.id; const attempts = item.generationExecution?.attempts ?? []; const actualApproach = attempts[attempts.length - 1]?.actualApproach; const currentStage = feedbackPlanItemCurrentStageLabel(item); return <button type="button" key={`${plan.id}:${item.id}`} aria-current={active ? "true" : undefined} className={active ? "is-active" : ""} onClick={() => selectItem(plan, item)}><span><strong>{item.student?.name ?? (item.studentId ? "学生信息待加载" : "班级公共反馈")}</strong><small>{item.student?.studentId ?? (item.studentId ? "身份待加载" : "公共条目")} · {plan.class.name ?? plan.class.code} · {currentStage ?? (actualApproach ? `${feedbackGenerationApproachLabel(actualApproach)}实际执行` : "尚未执行")}</small></span><Badge tone={feedbackQueueCategory(item.status) === "done" ? "success" : item.status === "generation_failed" || item.status === "stale" ? "danger" : "warning"}>{feedbackQueueItemStatusLabel(item)}</Badge></button>; })}</div></section>)}</nav>
+      : plans.filter((plan) => (classFilter === "all" || plan.class.id === classFilter) && plan.items.some((item) => feedbackQueueMatches({ item, plan }, filter, classFilter))).map((plan) => <section key={plan.class.id}><header><div><strong>{plan.class.name ?? plan.class.code}</strong><small>{feedbackStudioConfiguredApproachLabel(plan as QueuePlan & { legacyReadonly?: boolean })} · 生成 {plan.progress.generated}/{plan.progress.total} · 批准 {plan.progress.approved} · 导出 {plan.progress.exported}</small></div>{plan.progress.failed > 0 && <Badge tone="danger">失败 {plan.progress.failed}</Badge>}</header><div>{plan.items.filter((item) => feedbackQueueMatches({ item, plan }, filter, classFilter)).map((item) => { const active = target.planId === plan.id && target.itemId === item.id; const attempts = item.generationExecution?.attempts ?? []; const actualApproach = attempts[attempts.length - 1]?.actualApproach; const currentStage = feedbackPlanItemCurrentStageLabel(item); return <button type="button" key={`${plan.id}:${item.id}`} aria-current={active ? "true" : undefined} className={active ? "is-active" : ""} onClick={() => selectItem(plan, item)}><span><strong>{item.student?.name ?? (item.studentId ? "学生信息待加载" : "班级公共反馈")}</strong><small>{item.student?.studentId ?? (item.studentId ? "身份待加载" : "公共条目")} · {plan.class.name ?? plan.class.code} · {currentStage ?? (actualApproach ? `${feedbackGenerationApproachLabel(actualApproach)}实际执行` : "尚未执行")}</small></span><Badge tone={feedbackQueueCategory(item.status) === "done" ? "success" : item.status === "generation_failed" || item.status === "stale" ? "danger" : "warning"}>{feedbackQueueItemStatusLabel(item)}</Badge></button>; })}</div></section>)}</nav>
   </>;
   return <div className={styles.studioStage}>
-    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "班级组生成与复核" : "生成与复核"}</h2><p>计划已落账；生成、批准和导出分别记录，失败项留在队列中重试。{batch ? `跨班按学生共享 2 个生成槽位；计划方式：${feedbackStudioConfiguredApproachLabel(batch as FeedbackBatchClient & { legacyReadonly?: boolean })}` : ""}</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}{batchGenerationActive && <Button variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch?.status === "pause_requested"}>{batch?.status === "pause_requested" ? "正在安全暂停…" : "暂停整批"}</Button>}{batchGenerationActive && <Button variant="danger" onClick={() => void batchAction("force_stop")} disabled={busy}>强制终止整批</Button>}{batch?.status === "paused" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续整批</Button>}{batch?.status === "failed" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("retry")} disabled={busy || batchGenerationActive}>重试失败条目</Button>}{batch?.status === "failed" && !batchLegacyReadonly && batch.generationApproach === "restricted" && <Button variant="secondary" onClick={() => void batchAction("retry_with_free")} disabled={busy || batchGenerationActive}>改用自由反馈</Button>}<Button variant="ghost" onClick={props.onNewTask}>归档当前计划并新建</Button></div></header>
+    <header className={styles.studioHeader}><div><span className={styles.eyebrow}>第三阶段</span><h2>{batch ? "学生生成与复核" : "生成与复核"}</h2><p>计划已落账；生成、批准和导出分别记录，失败项留在队列中重试。{batch ? `跨班按学生共享 2 个生成槽位；计划方式：${feedbackStudioConfiguredApproachLabel(batch as FeedbackBatchClient & { legacyReadonly?: boolean })}` : ""}</p></div><div className={styles.batchControls}>{Boolean(props.pendingClassCount && props.onResumePending) && <Button variant="secondary" onClick={props.onResumePending}>继续处理 {props.pendingClassCount} 个未完成班</Button>}{batchGenerationActive && <Button variant="secondary" onClick={() => void batchAction("pause")} disabled={busy || batch?.status === "pause_requested"}>{batch?.status === "pause_requested" ? "正在安全暂停…" : "暂停整批"}</Button>}{batchGenerationActive && <Button variant="danger" onClick={() => void batchAction("force_stop")} disabled={busy}>强制终止整批</Button>}{batch?.status === "paused" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("continue")} disabled={busy}>继续整批</Button>}{batch?.status === "failed" && !batchLegacyReadonly && <Button variant="secondary" onClick={() => void batchAction("retry")} disabled={busy || batchGenerationActive}>重试失败条目</Button>}{batch?.status === "failed" && !batchLegacyReadonly && batch.generationApproach === "restricted" && <Button variant="secondary" onClick={() => void batchAction("retry_with_free")} disabled={busy || batchGenerationActive}>改用自由反馈</Button>}<Button variant="ghost" onClick={props.onNewTask}>归档当前计划并新建</Button></div></header>
     {batchLegacyReadonly && <StatusBanner tone="warning">旧生成方式已退役，当前班级组只读保留历史生成状态。已有正文仍可编辑、批准和导出；如需重新生成，请另存为并选择受限反馈或自由反馈。</StatusBanner>}
     {error && <StatusBanner tone="danger">{error}</StatusBanner>}{notice && <StatusBanner tone="success">{notice}</StatusBanner>}
     <button ref={queueTriggerRef} type="button" className="feedback-queue-mobile-trigger" aria-haspopup="dialog" aria-expanded={queueOpen} onClick={() => setQueueOpen(true)}>{activeQueueEntry ? `${activeQueueEntry.item.student?.name ?? "反馈队列"} · ${itemStatusLabels[activeQueueEntry.item.status] ?? "选择条目"} · ${filteredQueue.findIndex(({ item, plan }) => item.id === target.itemId && plan.id === target.planId) + 1}/${filteredQueue.length}` : "当前筛选下没有学生任务"}</button>

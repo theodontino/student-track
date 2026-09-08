@@ -13,7 +13,7 @@ import {
 } from "@/lib/feedback-plan";
 import { feedbackPlanActionBucket } from "@/lib/feedback-plan-summary";
 import { stripFeedbackInternalBoundary } from "@/lib/feedback-text-safety";
-import { generationProgress, parseCompositionSnapshot, parseGenerationConfigSnapshot, parseJson } from "@/services/feedback-plan/model";
+import { isHistoricalStudentPlan, parseStudentContext, generationProgress, parseCompositionSnapshot, parseGenerationConfigSnapshot, parseJson } from "@/services/feedback-plan/model";
 
 function generationTiming(plan: {
   generationElapsedMs?: number;
@@ -48,6 +48,7 @@ function generationTiming(plan: {
  * progress view may leave the service boundary.
  */
 export function toFeedbackPlanItemView<T extends {
+  contextSnapshot?: string;
   evidenceSnapshot: string;
   compositionSnapshot: string;
   auditSnapshot: string;
@@ -61,6 +62,7 @@ export function toFeedbackPlanItemView<T extends {
   const { generationExecutionSnapshot, ...publicItem } = item;
   return {
     ...publicItem,
+    context: parseStudentContext((item as { contextSnapshot?: string }).contextSnapshot),
     finalText: typeof item.finalText === "string" ? stripFeedbackInternalBoundary(item.finalText) : item.finalText,
     evidence: evidence.success ? sanitizeFeedbackEvidenceBundle(evidence.data) : null,
     composition: composition.success ? sanitizeFeedbackComposition(composition.data) : parseCompositionSnapshot(item.compositionSnapshot, planType, item.finalText ?? ""),
@@ -72,6 +74,7 @@ export function toFeedbackPlanItemView<T extends {
 
 export function toFeedbackPlanDetail<T extends {
   type: string;
+  structureVersion?: number;
   items: Array<{
     status: string;
     evidenceSnapshot: string;
@@ -90,7 +93,7 @@ export function toFeedbackPlanDetail<T extends {
   const storedGenerationApproach = normalizeStoredFeedbackGenerationApproach(
     (plan as { generationApproach?: unknown }).generationApproach,
   );
-  const legacyReadonly = (plan as { generationApproach?: unknown }).generationApproach === "legacy";
+  const legacyReadonly = isHistoricalStudentPlan(plan) || storedGenerationApproach === "legacy";
   const itemStatusCounts = generationProgress(plan.items);
   return {
     ...plan,

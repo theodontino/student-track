@@ -28,6 +28,7 @@ export async function invalidateFeedbackPlans(input: {
   const semesterId = input.semesterId ?? targetSession?.semesterId ?? undefined;
   const plans = await db.feedbackPlan.findMany({
     where: {
+      OR: [{ structureVersion: 2 }, { type: "class_update" }],
       archivedAt: null,
       generationStartedAt: null,
       ...(classId ? { classId } : {}),

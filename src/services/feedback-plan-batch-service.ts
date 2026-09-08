@@ -55,7 +55,7 @@ function assertLegacyBatchGenerationAvailable(generationApproach: unknown) {
 
 type FeedbackPlanBatchNameScope = {
   semesterId: string;
-  plans: Array<{ classId: string; sessionId?: string | null; rangeEndSessionId?: string | null }>;
+  plans: Array<{ classId: string | null; sessionId?: string | null; rangeEndSessionId?: string | null }>;
 };
 
 function feedbackPlanBatchScopeKey(plans: FeedbackPlanBatchNameScope["plans"]) {
@@ -180,7 +180,7 @@ export function toFeedbackPlanBatchView<T extends {
       ...plan,
       generationApproach: storedGenerationApproach === "legacy" ? null : storedGenerationApproach,
       generationApproachLabel: feedbackGenerationApproachLabel(storedGenerationApproach),
-      legacyReadonly: plan.generationApproach === "legacy",
+      legacyReadonly: true,
       itemStatusCounts,
       actionBucket: feedbackPlanActionBucket((plan as { status?: string }).status ?? "draft", itemStatusCounts),
       input: parsedInput,
@@ -223,7 +223,7 @@ export function toFeedbackPlanBatchView<T extends {
     ...batch,
     generationApproach: storedGenerationApproach === "legacy" ? null : storedGenerationApproach,
     generationApproachLabel: feedbackGenerationApproachLabel(storedGenerationApproach),
-    legacyReadonly: batch.generationApproach === "legacy",
+    legacyReadonly: true,
     plans,
     itemStatusCounts: allItemStatusCounts,
     actionBucket: feedbackPlanActionBucket((batch as { status?: string }).status ?? "draft", allItemStatusCounts, "batch"),
@@ -483,7 +483,7 @@ export async function updateFeedbackPlanBatchDraft(
     const selectionByClassId = new Map(patch.studentSelections.map((selection) => [selection.classId, selection]));
     const studentPlanById = new Map<string, (typeof batch.plans)[number]>();
     for (const plan of batch.plans) {
-      const selection = selectionByClassId.get(plan.classId);
+      const selection = selectionByClassId.get(plan.classId ?? "");
       if (!selection) {
         throw new ApiError("学生范围必须完整包含批次中的每个班级", 400, "invalid_request", false);
       }
@@ -513,8 +513,8 @@ export async function updateFeedbackPlanBatchDraft(
     const generationApproach = patch.generationApproach
       ?? normalizeStoredFeedbackGenerationApproach(batch.generationApproach);
     for (const plan of batch.plans) {
-      const classOverride = classOverrideById.get(plan.classId);
-      const selection = selectionByClassId.get(plan.classId)!;
+      const classOverride = classOverrideById.get(plan.classId ?? "");
+      const selection = selectionByClassId.get(plan.classId ?? "")!;
       const studentOverrides = patch.studentOverrides.filter((override) => studentPlanById.get(override.studentId)?.id === plan.id);
       const updatedPlan = await updateFeedbackPlanDraft(plan.id, {
         expectedPlanRevision: plan.planRevision,
