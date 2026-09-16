@@ -67,13 +67,14 @@ export interface ProductEvidenceInput {
   headSha: string;
   productVerifiedSha?: string;
   productVerifiedShaIsAncestor: boolean;
+  treeEquivalentEvidence?: boolean;
   cumulativeChanges: ChangedPath[];
 }
 
 export interface ProductEvidenceDecision {
   canInherit: boolean;
   productVerifiedShaCandidate: string;
-  reason: "current" | "docs-only-descendant" | "missing" | "not-ancestor" | "product-changed";
+  reason: "current" | "tree-equivalent" | "docs-only-descendant" | "missing" | "not-ancestor" | "product-changed";
   cumulativeClassification: CiClassification;
 }
 
@@ -428,7 +429,7 @@ export function decideProductEvidenceInheritance(
     return {
       canInherit: true,
       productVerifiedShaCandidate: productVerifiedSha,
-      reason: "current",
+      reason: input.treeEquivalentEvidence ? "tree-equivalent" : "current",
       cumulativeClassification,
     };
   }

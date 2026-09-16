@@ -219,7 +219,7 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundleTest).toContain("卸载并重新安装后未读到原学期");
     expect(ciWorkflow).toContain("Build and verify the offline Windows Core package");
     expect(ciWorkflow).toContain("Upload verified offline Windows Core package");
-    expect(ciWorkflow).toContain("student-track-core-windows-x64-${{ github.sha }}");
+    expect(ciWorkflow).toContain("student-track-core-windows-x64-${{ needs.classify.outputs.head_sha }}");
     expect(ciWorkflow).toContain("Build-StudentTrackCoreOfflineBundle.ps1");
     expect(ciWorkflow).toContain("Test-StudentTrackCoreOfflineBundle.ps1");
     expect(offlineBundleWorkflow).toContain("workflow_dispatch");

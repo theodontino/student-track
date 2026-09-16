@@ -78,20 +78,82 @@ jobs:
           PRODUCT_SHA: ${{ steps.release.outputs.product_sha }}
         run: |
           set -euo pipefail
-          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${PRODUCT_SHA}&status=completed&per_page=100" \
-            --jq '.workflow_runs[] | select(.name == "CI policy" and .conclusion == "success") | .id' | head -n1)"
-          if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+          evidence_artifact="student-track-product-evidence-${PRODUCT_SHA}"
+          windows_artifact="student-track-core-windows-x64-${PRODUCT_SHA}"
+          macos_artifact="student-track-full-macos-${PRODUCT_SHA}"
+          evidence_run_id=""
+          source_run_id=""
+          run_ids="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${PRODUCT_SHA}&status=completed&per_page=100" \
+            --jq '.workflow_runs[] | select(.name == "CI policy" and .conclusion == "success") | .id')"
+          for run_id in $run_ids; do
+            artifact_names="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .name')"
+            if grep -Fxq "$evidence_artifact" <<<"$artifact_names"; then
+              evidence_run_id="$run_id"
+              break
+            fi
+            if [[ -z "$source_run_id" ]] \
+              && grep -Fxq "$windows_artifact" <<<"$artifact_names" \
+              && grep -Fxq "$macos_artifact" <<<"$artifact_names"; then
+              source_run_id="$run_id"
+            fi
+          done
+          if [[ -z "$evidence_run_id" && -z "$source_run_id" ]]; then
             echo "No successful CI policy run found for $PRODUCT_SHA." >&2
             exit 1
           fi
 
-          windows_artifact="student-track-core-windows-x64-${PRODUCT_SHA}"
-          macos_artifact="student-track-full-macos-${PRODUCT_SHA}"
-          artifact_names="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" --jq '.artifacts[].name')"
-          grep -Fxq "$windows_artifact" <<<"$artifact_names" || { echo "Missing artifact $windows_artifact" >&2; exit 1; }
-          grep -Fxq "$macos_artifact" <<<"$artifact_names" || { echo "Missing artifact $macos_artifact" >&2; exit 1; }
+          echo "evidence_run_id=$evidence_run_id" >> "$GITHUB_OUTPUT"
+          echo "evidence_artifact=$evidence_artifact" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=$source_run_id" >> "$GITHUB_OUTPUT"
+          echo "windows_artifact=$windows_artifact" >> "$GITHUB_OUTPUT"
+          echo "macos_artifact=$macos_artifact" >> "$GITHUB_OUTPUT"
 
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Resolve verified artifact source
+        id: source
+        if: steps.release.outputs.skip != 'true' && steps.artifacts.outputs.evidence_run_id != ''
+        shell: bash
+        env:
+          EVIDENCE_RUN_ID: ${{ steps.artifacts.outputs.evidence_run_id }}
+          EVIDENCE_ARTIFACT: ${{ steps.artifacts.outputs.evidence_artifact }}
+          PRODUCT_SHA: ${{ steps.release.outputs.product_sha }}
+        run: |
+          set -euo pipefail
+          evidence_root="$RUNNER_TEMP/product-evidence"
+          gh run download "$EVIDENCE_RUN_ID" -n "$EVIDENCE_ARTIFACT" -D "$evidence_root"
+          manifest="$(find "$evidence_root" -maxdepth 2 -type f -name 'student-track-product-evidence.json' -print -quit)"
+          [[ -n "$manifest" && -f "$manifest" ]] || { echo "Product evidence manifest not found." >&2; exit 1; }
+
+          schema_version="$(jq -r '.schemaVersion' "$manifest")"
+          repository="$(jq -r '.repository' "$manifest")"
+          manifest_product_sha="$(jq -r '.productSha' "$manifest")"
+          level="$(jq -r '.level' "$manifest")"
+          source_run_id="$(jq -r '.source.runId' "$manifest")"
+          source_product_sha="$(jq -r '.source.productSha' "$manifest")"
+          windows_artifact="$(jq -r '.source.windowsArtifact' "$manifest")"
+          macos_artifact="$(jq -r '.source.macosArtifact' "$manifest")"
+
+          [[ "$schema_version" == "1" ]] || { echo "Unsupported product evidence manifest schema." >&2; exit 1; }
+          [[ "$repository" == "$GITHUB_REPOSITORY" ]] || { echo "Product evidence repository mismatch." >&2; exit 1; }
+          [[ "$manifest_product_sha" == "$PRODUCT_SHA" ]] || { echo "Product evidence SHA mismatch." >&2; exit 1; }
+          [[ "$level" == "L3" ]] || { echo "Release artifacts require L3 evidence." >&2; exit 1; }
+          [[ "$source_run_id" =~ ^[0-9]+$ ]] || { echo "Invalid source run id." >&2; exit 1; }
+          [[ "$source_product_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid source product SHA." >&2; exit 1; }
+          [[ "$windows_artifact" == "student-track-core-windows-x64-${source_product_sha}" ]] || { echo "Windows artifact identity mismatch." >&2; exit 1; }
+          [[ "$macos_artifact" == "student-track-full-macos-${source_product_sha}" ]] || { echo "macOS artifact identity mismatch." >&2; exit 1; }
+
+          source_run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}")"
+          [[ "$(jq -r '.status' <<<"$source_run")" == "completed" ]] || { echo "Source run is incomplete." >&2; exit 1; }
+          [[ "$(jq -r '.conclusion' <<<"$source_run")" == "success" ]] || { echo "Source run did not succeed." >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$source_run")" == ".github/workflows/ci.yml" ]] || { echo "Source workflow mismatch." >&2; exit 1; }
+          source_event="$(jq -r '.event' <<<"$source_run")"
+          [[ "$source_event" =~ ^(pull_request|push|merge_group|workflow_dispatch)$ ]] || { echo "Source run event is not eligible." >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$source_run")" == "$source_product_sha" ]] || { echo "Source run SHA mismatch." >&2; exit 1; }
+
+          source_artifacts="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .name')"
+          grep -Fxq "$windows_artifact" <<<"$source_artifacts" || { echo "Missing artifact $windows_artifact" >&2; exit 1; }
+          grep -Fxq "$macos_artifact" <<<"$source_artifacts" || { echo "Missing artifact $macos_artifact" >&2; exit 1; }
+
+          echo "run_id=$source_run_id" >> "$GITHUB_OUTPUT"
           echo "windows_artifact=$windows_artifact" >> "$GITHUB_OUTPUT"
           echo "macos_artifact=$macos_artifact" >> "$GITHUB_OUTPUT"
 
@@ -99,9 +161,9 @@ jobs:
         if: steps.release.outputs.skip != 'true'
         shell: bash
         env:
-          RUN_ID: ${{ steps.artifacts.outputs.run_id }}
-          WINDOWS_ARTIFACT: ${{ steps.artifacts.outputs.windows_artifact }}
-          MACOS_ARTIFACT: ${{ steps.artifacts.outputs.macos_artifact }}
+          RUN_ID: ${{ steps.source.outputs.run_id || steps.artifacts.outputs.source_run_id }}
+          WINDOWS_ARTIFACT: ${{ steps.source.outputs.windows_artifact || steps.artifacts.outputs.windows_artifact }}
+          MACOS_ARTIFACT: ${{ steps.source.outputs.macos_artifact || steps.artifacts.outputs.macos_artifact }}
           VERSION: ${{ steps.release.outputs.version }}
           TAG: ${{ steps.release.outputs.tag }}
         run: |

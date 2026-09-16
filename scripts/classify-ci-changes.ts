@@ -22,6 +22,7 @@ type CliOptions = {
   forceLevel?: CiLevel;
   forceScopes: CiScope[];
   productVersionChanged?: boolean;
+  treeEquivalentEvidence?: boolean;
 };
 
 function git(args: string[]) {
@@ -95,11 +96,11 @@ function parseScopes(values: string[]) {
   return [...new Set(scopes)] as CiScope[];
 }
 
-function parseBoolean(value: string | undefined) {
+function parseBoolean(value: string | undefined, option: string) {
   if (value === undefined) return undefined;
   if (value === "1" || value === "true") return true;
   if (value === "0" || value === "false") return false;
-  throw new Error("--product-version-changed must be true or false");
+  throw new Error(`${option} must be true or false`);
 }
 
 function parseOptions(argv: string[]): CliOptions {
@@ -109,6 +110,7 @@ function parseOptions(argv: string[]): CliOptions {
   let forceLevelValue = process.env.CI_FORCE_LEVEL;
   const forceScopeValues = process.env.CI_FORCE_SCOPES ? [process.env.CI_FORCE_SCOPES] : [];
   let productVersionChangedValue = process.env.CI_PRODUCT_VERSION_CHANGED;
+  let treeEquivalentEvidenceValue = process.env.CI_TREE_EQUIVALENT_EVIDENCE;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -131,6 +133,9 @@ function parseOptions(argv: string[]): CliOptions {
     } else if (argument === "--product-version-changed" && value) {
       productVersionChangedValue = value;
       index += 1;
+    } else if (argument === "--tree-equivalent-evidence" && value) {
+      treeEquivalentEvidenceValue = value;
+      index += 1;
     } else {
       throw new Error(`Unknown or incomplete argument: ${argument}`);
     }
@@ -142,7 +147,8 @@ function parseOptions(argv: string[]): CliOptions {
     productVerifiedSha,
     forceLevel: parseLevel(forceLevelValue, "--force-level"),
     forceScopes: parseScopes(forceScopeValues),
-    productVersionChanged: parseBoolean(productVersionChangedValue),
+    productVersionChanged: parseBoolean(productVersionChangedValue, "--product-version-changed"),
+    treeEquivalentEvidence: parseBoolean(treeEquivalentEvidenceValue, "--tree-equivalent-evidence"),
   };
 }
 
@@ -194,6 +200,7 @@ function main() {
     headSha,
     productVerifiedSha,
     productVerifiedShaIsAncestor,
+    treeEquivalentEvidence: options.treeEquivalentEvidence,
     cumulativeChanges,
   });
   const executionChecks = planCiExecution(checks, evidence.canInherit);

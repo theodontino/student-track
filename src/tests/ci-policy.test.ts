@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   classifyCiChanges,
@@ -7,6 +9,10 @@ import {
   planCiExecution,
   type ChangedPath,
 } from "../../scripts/ci-policy";
+import {
+  selectTreeEquivalentEvidence,
+  type TreeEquivalentEvidenceCandidate,
+} from "../../scripts/resolve-ci-evidence";
 
 describe("CI change classification", () => {
   it.each([
@@ -349,5 +355,108 @@ describe("product verification evidence", () => {
       productVerifiedShaCandidate: "head",
       reason: "current",
     });
+  });
+
+  it("records same-tree squash evidence separately from ordinary current evidence", () => {
+    const decision = decideProductEvidenceInheritance({
+      headSha: "squash-head",
+      productVerifiedSha: "squash-head",
+      productVerifiedShaIsAncestor: true,
+      treeEquivalentEvidence: true,
+      cumulativeChanges: [{ path: "package.json" }],
+    });
+
+    expect(decision).toMatchObject({
+      canInherit: true,
+      productVerifiedShaCandidate: "squash-head",
+      reason: "tree-equivalent",
+    });
+  });
+});
+
+describe("same-tree pull request evidence", () => {
+  const productSha = "a".repeat(40);
+  const baseSha = "b".repeat(40);
+  const treeSha = "c".repeat(40);
+  const candidate: TreeEquivalentEvidenceCandidate = {
+    artifactNames: [
+      `student-track-core-windows-x64-${productSha}`,
+      `student-track-full-macos-${productSha}`,
+    ],
+    baseIsAncestor: true,
+    baseSha,
+    conclusion: "success",
+    event: "pull_request",
+    headTreeSha: treeSha,
+    level: "L3",
+    markerRunId: "123",
+    productSha,
+    repository: "example/student-track",
+    runId: "123",
+    status: "completed",
+    workflowPath: ".github/workflows/ci.yml",
+  };
+
+  it("reuses a successful same-repository L3 run for a one-parent squash commit", () => {
+    expect(selectTreeEquivalentEvidence({
+      baseSha,
+      currentParents: [baseSha],
+      currentTreeSha: treeSha,
+      repository: "example/student-track",
+      candidates: [candidate],
+    })).toEqual({
+      sourceRunId: "123",
+      sourceProductSha: productSha,
+      windowsArtifact: `student-track-core-windows-x64-${productSha}`,
+      macosArtifact: `student-track-full-macos-${productSha}`,
+    });
+  });
+
+  it.each([
+    ["tree changed", { headTreeSha: "d".repeat(40) }],
+    ["base changed", { baseSha: "e".repeat(40) }],
+    ["platform artifact missing", { artifactNames: [`student-track-core-windows-x64-${productSha}`] }],
+    ["different repository", { repository: "fork/student-track" }],
+    ["the source run did not pass", { conclusion: "failure" }],
+    ["the source run was not L3", { level: "L2" }],
+    ["the evidence marker belongs to another run", { markerRunId: "456" }],
+  ])("fails closed when %s", (_label, change) => {
+    expect(selectTreeEquivalentEvidence({
+      baseSha,
+      currentParents: [baseSha],
+      currentTreeSha: treeSha,
+      repository: "example/student-track",
+      candidates: [{ ...candidate, ...change }],
+    })).toBeUndefined();
+  });
+
+  it("does not reuse evidence for a multi-parent or unrelated main update", () => {
+    expect(selectTreeEquivalentEvidence({
+      baseSha,
+      currentParents: [baseSha, "f".repeat(40)],
+      currentTreeSha: treeSha,
+      repository: "example/student-track",
+      candidates: [candidate],
+    })).toBeUndefined();
+  });
+});
+
+describe("CI workflow evidence wiring", () => {
+  const ciWorkflow = readFileSync(resolve(process.cwd(), ".github/workflows/ci.yml"), "utf8");
+  const releaseWorkflow = readFileSync(
+    resolve(process.cwd(), ".github/workflows/publish-release-assets.yml"),
+    "utf8",
+  );
+
+  it("does not rerun the product matrix for a version tag", () => {
+    expect(ciWorkflow).not.toContain('tags: ["v*"]');
+    expect(ciWorkflow).toContain("branches: [main]");
+  });
+
+  it("records and resolves same-tree release artifact evidence", () => {
+    expect(ciWorkflow).toContain("student-track-product-evidence-${{ needs.classify.outputs.effective_product_sha }}");
+    expect(ciWorkflow).toContain("student-track-full-macos-${{ needs.classify.outputs.head_sha }}");
+    expect(releaseWorkflow).toContain('evidence_artifact="student-track-product-evidence-${PRODUCT_SHA}"');
+    expect(releaseWorkflow).toContain("Source run SHA mismatch.");
   });
 });

@@ -4,7 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["v*"]
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -63,6 +62,12 @@ jobs:
       effective_level: ${{ steps.effective.outputs.level }}
       effective_scopes: ${{ steps.effective.outputs.scopes }}
       evidence_base: ${{ steps.effective.outputs.base }}
+      evidence_reason: ${{ steps.classify.outputs.product_evidence_reason }}
+      tree_equivalent_evidence: ${{ steps.prior_evidence.outputs.tree_equivalent_evidence }}
+      tree_equivalent_source_run_id: ${{ steps.prior_evidence.outputs.tree_equivalent_source_run_id }}
+      tree_equivalent_source_product_sha: ${{ steps.prior_evidence.outputs.tree_equivalent_source_product_sha }}
+      tree_equivalent_windows_artifact: ${{ steps.prior_evidence.outputs.tree_equivalent_windows_artifact }}
+      tree_equivalent_macos_artifact: ${{ steps.prior_evidence.outputs.tree_equivalent_macos_artifact }}
     env:
       CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
       CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
@@ -85,8 +90,9 @@ jobs:
         id: classify
         env:
           PRIOR_PRODUCT_SHA: ${{ steps.prior_evidence.outputs.prior_product_verified_sha }}
-          CI_FORCE_LEVEL: ${{ startsWith(github.ref, 'refs/tags/') && 'L3' || (github.event_name == 'workflow_dispatch' && inputs.minimum_level || '') }}
-          CI_FORCE_SCOPES: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || (github.event_name == 'workflow_dispatch' && inputs.minimum_level == 'L3' && 'release' || (github.event_name == 'workflow_dispatch' && inputs.minimum_level == 'L2' && 'ci' || '')) }}
+          CI_FORCE_LEVEL: ${{ github.event_name == 'workflow_dispatch' && inputs.minimum_level || '' }}
+          CI_FORCE_SCOPES: ${{ github.event_name == 'workflow_dispatch' && inputs.minimum_level == 'L3' && 'release' || (github.event_name == 'workflow_dispatch' && inputs.minimum_level == 'L2' && 'ci' || '') }}
+          TREE_EQUIVALENT_EVIDENCE: ${{ steps.prior_evidence.outputs.tree_equivalent_evidence }}
         run: |
           args=(--head "$CI_HEAD_SHA")
           if [[ -n "$CI_BASE_SHA" && ! "$CI_BASE_SHA" =~ ^0+$ ]]; then
@@ -94,6 +100,9 @@ jobs:
           fi
           if [[ -n "$PRIOR_PRODUCT_SHA" ]]; then
             args+=(--product-verified-sha "$PRIOR_PRODUCT_SHA")
+          fi
+          if [[ "$TREE_EQUIVALENT_EVIDENCE" == "true" ]]; then
+            args+=(--tree-equivalent-evidence true)
           fi
           node --import tsx scripts/classify-ci-changes.ts "${args[@]}"
       - name: Resolve effective evidence identity
@@ -125,6 +134,8 @@ jobs:
           LEVEL: ${{ steps.effective.outputs.level }}
           SCOPES: ${{ steps.effective.outputs.scopes }}
           INHERITED: ${{ steps.classify.outputs.product_evidence_inherited }}
+          EVIDENCE_REASON: ${{ steps.classify.outputs.product_evidence_reason }}
+          SOURCE_RUN_ID: ${{ steps.prior_evidence.outputs.tree_equivalent_source_run_id }}
         run: |
           {
             echo "## CI classification"
@@ -137,6 +148,10 @@ jobs:
             echo "| Level | $LEVEL |"
             echo "| Scopes | $SCOPES |"
             echo "| Product evidence inherited | $INHERITED |"
+            echo "| Evidence reason | $EVIDENCE_REASON |"
+            if [[ -n "$SOURCE_RUN_ID" ]]; then
+              echo "| Source L3 run | $SOURCE_RUN_ID |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   documentation:
@@ -464,7 +479,7 @@ jobs:
       - name: Upload verified offline macOS Full bundle
         uses: actions/upload-artifact@v7
         with:
-          name: student-track-full-macos-${{ github.sha }}
+          name: student-track-full-macos-${{ needs.classify.outputs.head_sha }}
           path: ${{ runner.temp }}/student-track-full-offline-bundle/StudentTrackFull-macOS-*.zip
           if-no-files-found: error
           retention-days: 14
@@ -561,7 +576,7 @@ jobs:
       - name: Upload verified offline Windows Core package
         uses: actions/upload-artifact@v7
         with:
-          name: student-track-core-windows-x64-${{ github.sha }}
+          name: student-track-core-windows-x64-${{ needs.classify.outputs.head_sha }}
           path: ${{ runner.temp }}/student-track-core-offline-package/StudentTrackCore-Windows-x64-*.zip
           if-no-files-found: error
           retention-days: 14
@@ -629,6 +644,11 @@ jobs:
       RELEASE_RECOVERY_RESULT: ${{ needs.release_recovery.result }}
       MACOS_RESULT: ${{ needs.macos_full.result }}
       WINDOWS_RESULT: ${{ needs.windows_core.result }}
+      EVIDENCE_REASON: ${{ needs.classify.outputs.evidence_reason }}
+      TREE_SOURCE_RUN_ID: ${{ needs.classify.outputs.tree_equivalent_source_run_id }}
+      TREE_SOURCE_PRODUCT_SHA: ${{ needs.classify.outputs.tree_equivalent_source_product_sha }}
+      TREE_WINDOWS_ARTIFACT: ${{ needs.classify.outputs.tree_equivalent_windows_artifact }}
+      TREE_MACOS_ARTIFACT: ${{ needs.classify.outputs.tree_equivalent_macos_artifact }}
     steps:
       - name: Verify required product jobs
         run: |
@@ -692,7 +712,57 @@ jobs:
             echo "Level/scopes: $LEVEL / $SCOPES"
             echo
             echo "Inherited: $INHERITED"
+            echo
+            echo "Evidence reason: $EVIDENCE_REASON"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Write release artifact evidence manifest
+        if: needs.classify.outputs.effective_level == 'L3'
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          VALIDATED_SHA: ${{ needs.classify.outputs.validated_sha }}
+          LEVEL: ${{ needs.classify.outputs.effective_level }}
+          SCOPES: ${{ needs.classify.outputs.effective_scopes }}
+        run: |
+          evidence_path="$RUNNER_TEMP/student-track-product-evidence.json"
+          export SOURCE_RUN_ID="${TREE_SOURCE_RUN_ID:-$RUN_ID}"
+          export SOURCE_PRODUCT_SHA="${TREE_SOURCE_PRODUCT_SHA:-$HEAD_SHA}"
+          export WINDOWS_ARTIFACT="${TREE_WINDOWS_ARTIFACT:-student-track-core-windows-x64-$SOURCE_PRODUCT_SHA}"
+          export MACOS_ARTIFACT="${TREE_MACOS_ARTIFACT:-student-track-full-macos-$SOURCE_PRODUCT_SHA}"
+          node -e '
+            const fs = require("node:fs");
+            const sha = /^[0-9a-f]{40}$/;
+            const runId = Number(process.env.SOURCE_RUN_ID);
+            if (!sha.test(process.env.PRODUCT_SHA || "") || !sha.test(process.env.SOURCE_PRODUCT_SHA || "") || !Number.isSafeInteger(runId) || runId <= 0) {
+              throw new Error("Invalid product evidence manifest identity");
+            }
+            const data = {
+              schemaVersion: 1,
+              repository: process.env.REPOSITORY,
+              productSha: process.env.PRODUCT_SHA,
+              headSha: process.env.HEAD_SHA,
+              validatedSha: process.env.VALIDATED_SHA,
+              level: process.env.LEVEL,
+              scopes: (process.env.SCOPES || "").split(",").filter(Boolean),
+              inherited: process.env.INHERITED === "true",
+              evidenceReason: process.env.EVIDENCE_REASON,
+              source: {
+                runId,
+                productSha: process.env.SOURCE_PRODUCT_SHA,
+                windowsArtifact: process.env.WINDOWS_ARTIFACT,
+                macosArtifact: process.env.MACOS_ARTIFACT,
+              },
+            };
+            fs.writeFileSync(process.argv[1], `${JSON.stringify(data, null, 2)}\n`, "utf8");
+          ' "$evidence_path"
+      - name: Upload release artifact evidence manifest
+        if: needs.classify.outputs.effective_level == 'L3'
+        uses: actions/upload-artifact@v7
+        with:
+          name: student-track-product-evidence-${{ needs.classify.outputs.effective_product_sha }}
+          path: ${{ runner.temp }}/student-track-product-evidence.json
+          if-no-files-found: error
+          retention-days: 14
 
   gate:
     name: CI / gate

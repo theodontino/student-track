@@ -180,9 +180,11 @@ E2E 使用独立应用副本、端口、LLM 配置和转写目录，不复用已
 - **L2 平台或构建敏感改动**：运行适用的通用检查，再追加受影响 scope 的平台、集成或 E2E。只有 Windows 敏感改动要求 Windows，只有浏览器敏感改动要求完整浏览器矩阵。
 - **L3 发布或高风险改动**：运行当前实际支持的完整发布矩阵，包括 macOS Full 生产构建与启动、Windows Core 离线包构建、安装、启动和重启持久化、Chromium 与 WebKit 发布 E2E，以及发布级隐私、迁移、备份和恢复检查。仓库具备签名和公证流程前，不把 macOS 步骤称为 packaging。
 
-CI 分别记录当前候选 `HEAD_SHA` 和最近完成产品验证的 `PRODUCT_VERIFIED_SHA`，最终 gate 始终在当前 `HEAD_SHA` 上运行。产品改动通过相应门禁后更新 `PRODUCT_VERIFIED_SHA`；其后的严格 L0 提交只重新运行文档与隐私门禁，并在 gate 确认 `PRODUCT_VERIFIED_SHA` 是当前提交的可信祖先、累计差异仍为 L0 后继承产品证据。无法证明时不得继承。workflow 应始终触发，由 job 条件决定运行范围，最终 gate 汇总当前提交所需证据并作为 required check。
+CI 分别记录当前候选 `HEAD_SHA` 和最近完成产品验证的 `PRODUCT_VERIFIED_SHA`，最终 gate 始终在当前 `HEAD_SHA` 上运行。产品改动通过相应门禁后更新 `PRODUCT_VERIFIED_SHA`；其后的严格 L0 提交只重新运行文档与隐私门禁，并在 gate 确认 `PRODUCT_VERIFIED_SHA` 是当前提交的可信祖先、累计差异仍为 L0 后继承产品证据。
 
-同一 `HEAD_SHA` 下，确认属于抖动的失败 job 可以单独重试一次，不重启整个矩阵，也不重跑同一提交中无关的成功 job。修复产生新提交后必须重新分类，并运行该新提交计划要求的全部 job；除严格 L0 按上一段继承产品证据外，不跨 SHA 沿用 job 结果。成功和预期跳过的 job 不需要调查，也不启动审计或评审 subagent；任何 in-scope job 出现失败、超时、取消或异常跳过都必须调查。
+发布 PR 被 squash 合并时允许一种受控例外：只有同仓 PR 已完成 L3、PR base 等于本次 main push 的唯一父提交、PR head tree 与合并后 main tree 完全一致、且该 L3 的 Windows/macOS 产物仍齐全时，main 才继承产品结果并生成指向原 L3 产物的版本化证据清单；分类等级保持 L3，只跳过重复执行。任一条件不成立都回退完整 L3。tag 本身不再触发产品矩阵；正式资产工作流仍要求 tag 精确指向发布记录中的 `PRODUCT_VERIFIED_SHA`、该 SHA 有成功 CI gate，并通过证据清单找到成功 L3 产物。无法证明时不得继承或发布。workflow 应始终触发，由 job 条件决定运行范围，最终 gate 汇总当前提交所需证据并作为 required check。
+
+同一 `HEAD_SHA` 下，确认属于抖动的失败 job 可以单独重试一次，不重启整个矩阵，也不重跑同一提交中无关的成功 job。修复产生新提交后必须重新分类，并运行该新提交计划要求的全部 job；除严格 L0 和上一段受控的同 tree squash 合并外，不跨 SHA 沿用 job 结果。成功和预期跳过的 job 不需要调查，也不启动审计或评审 subagent；任何 in-scope job 出现失败、超时、取消或异常跳过都必须调查。
 
 需要验证一整个课程反馈周期时，运行：
 
