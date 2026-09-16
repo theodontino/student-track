@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { ApiError, apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { assertProductCapability } from "@/lib/product-capability-guard";
 import { hasProductCapability } from "@/lib/product-edition";
 import {
@@ -35,7 +35,8 @@ function settingsResponse(store: LLMSettingsStore) {
 
 function errorResponse(error: unknown, fallback: string) {
   if (error instanceof ApiError) {
-    return NextResponse.json(apiErrorBody(error), { status: error.status });
+    const failure = error.status >= 500 ? safeApiError(error, fallback) : error;
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
   return NextResponse.json(
     { error: error instanceof Error && error.message ? error.message : fallback },
@@ -101,25 +102,42 @@ export async function DELETE(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  let settings: ReturnType<typeof validateLLMSettings>;
   try {
     const body = await request.json();
-    const settings = validateLLMSettings(body);
+    settings = validateLLMSettings(body);
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error && error.message ? error.message : "LLM 配置无效" },
+      { status: 400 },
+    );
+  }
+
+  try {
     const response = await fetch(`${settings.apiBaseUrl.replace(/\/$/, "")}/models`, {
       headers: { Authorization: `Bearer ${settings.apiKey}` },
       cache: "no-store",
     });
 
     if (!response.ok) {
+      const failure = safeApiError(
+        new ApiError(`连接失败：HTTP ${response.status}`, 502, "llm_service_error", true),
+        "LLM 服务暂时不可用",
+      );
       return NextResponse.json(
-        { ok: false, error: `连接失败：HTTP ${response.status}` },
-        { status: 502 }
+        { ok: false, ...apiErrorBody(failure) },
+        { status: failure.status },
       );
     }
 
     const data = await response.json();
     const models = Array.isArray(data?.data) ? data.data.map((item: any) => item.id).filter(Boolean) : [];
     return NextResponse.json({ ok: true, models });
-  } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error.message || "测试连接失败" }, { status: 400 });
+  } catch {
+    const failure = safeApiError(
+      new ApiError("测试连接失败", 502, "llm_service_error", true),
+      "测试连接失败",
+    );
+    return NextResponse.json({ ok: false, ...apiErrorBody(failure) }, { status: failure.status });
   }
 }

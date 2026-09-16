@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { ServiceError } from "@/services/service-error";
 import { assertClassInSemester, requireSemesterId } from "@/services/student-enrollment-service";
@@ -51,8 +52,9 @@ export async function GET(request: NextRequest) {
       }))
     );
   } catch (error) {
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
     console.error("[/api/sessions] error:", error);
-    return NextResponse.json({ error: "获取课次列表失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取课次列表失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

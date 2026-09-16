@@ -1,5 +1,5 @@
-export { ApiError } from "@/lib/api-errors";
-import { ApiError as UnifiedApiError, isApiErrorCode } from "@/lib/api-errors";
+export { ApiError } from "@/lib/api-error-core";
+import { ApiError as UnifiedApiError, isApiErrorCode } from "@/lib/api-error-core";
 import { ApiErrorResponseSchema, type ApiErrorResponse } from "@/lib/contracts/api";
 import type { z } from "zod";
 

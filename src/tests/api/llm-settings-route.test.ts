@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { GET, PATCH } from "@/app/api/settings/llm/route";
+import { GET, PATCH, POST } from "@/app/api/settings/llm/route";
 import {
   getLLMSettingsStore,
   saveLLMProfile,
@@ -39,10 +39,12 @@ function prepareProfiles() {
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "student-track-llm-route-"));
   vi.stubEnv("LLM_SETTINGS_PATH", path.join(tempDir, "settings.json"));
+  vi.stubEnv("STUDENT_TRACK_DIAGNOSTICS_PATH", path.join(tempDir, "diagnostics", "failure-events.jsonl"));
   vi.stubEnv("NEXT_PUBLIC_STUDENT_TRACK_EDITION", "full");
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -125,5 +127,34 @@ describe("/api/settings/llm Core edition", () => {
     });
     expect(roleAssignmentsRequestForEdition(roles, false)).not.toHaveProperty("wecomExtractionProfileId");
     expect(roleAssignmentsRequestForEdition(roles, true)).toEqual(roles);
+  });
+
+  it("returns a retryable diagnostic envelope without exposing the upstream response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("synthetic upstream detail", { status: 503 })));
+
+    const response = await POST(new NextRequest("http://localhost/api/settings/llm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiBaseUrl: "http://localhost:1234/v1",
+        apiKey: "synthetic-key",
+        model: "synthetic-model",
+      }),
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({
+      ok: false,
+      error: "连接失败：HTTP 503",
+      code: "llm_service_error",
+      retryable: true,
+      diagnosticId: expect.any(String),
+    });
+    expect(JSON.stringify(body)).not.toContain("synthetic upstream detail");
+    await vi.waitFor(() => {
+      expect(fs.readFileSync(path.join(tempDir, "diagnostics", "failure-events.jsonl"), "utf8"))
+        .toContain(body.diagnosticId);
+    });
   });
 });

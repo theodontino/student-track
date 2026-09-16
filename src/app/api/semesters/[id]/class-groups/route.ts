@@ -3,14 +3,18 @@ import { ZodError } from "zod";
 import { ClassGroupWriteSchema } from "@/lib/contracts/group-lessons";
 import { createClassGroup, listSemesterClassGroups } from "@/services/group-lesson-service";
 import { ServiceError } from "@/services/service-error";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { ApiError, apiErrorBody, safeApiError } from "@/lib/api-errors";
 
 function failure(error: unknown, fallback: string) {
-  if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-  if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+  if (error instanceof ApiError) {
+    const failure = safeApiError(error, fallback);
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+  }
+  if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
   if (error instanceof ZodError) return NextResponse.json({ error: "班级组参数无效" }, { status: 400 });
   console.error(fallback, error);
-  return NextResponse.json({ error: fallback }, { status: 500 });
+  const failure = safeApiError(error, fallback);
+  return NextResponse.json(apiErrorBody(failure), { status: failure.status });
 }
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

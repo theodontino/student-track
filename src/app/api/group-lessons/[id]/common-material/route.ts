@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { setGroupLessonCommonMaterial } from "@/services/common-material-service";
 import { ServiceError } from "@/services/service-error";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { ApiError, apiErrorBody, safeApiError } from "@/lib/api-errors";
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -14,8 +14,14 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     }
     return NextResponse.json(await setGroupLessonCommonMaterial(id, lessonNumber, prisma));
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    const status = error instanceof ServiceError ? error.status : 400;
-    return NextResponse.json({ error: error instanceof Error ? error.message : "保存共同课公共材料失败" }, { status });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "保存共同课公共材料失败");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
+    if (error instanceof ServiceError && error.status < 500) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    const failure = safeApiError(error, "保存共同课公共材料失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

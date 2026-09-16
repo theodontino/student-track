@@ -129,7 +129,7 @@ test.describe("教师纯页面课后验收", () => {
       await page.reload();
       await expect(page.getByRole("heading", { name: "生成与复核" })).toBeVisible();
       await expect(page.getByLabel("反馈队列")).toBeVisible();
-      await expect(page.getByRole("button", { name: "完整导出" })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "导出全部反馈" })).toBeDisabled();
 
       await page.getByRole("button", { name: /录入 查看采用的材料与事实/ }).click();
       await expect(page).toHaveURL(/view=intake/);
@@ -174,20 +174,55 @@ test.describe("教师纯页面课后验收", () => {
         await page.getByRole("button", { name: "批准当前反馈" }).click();
         await expect(page.getByRole("button", { name: `已完成 ${index + 1}`, exact: true })).toBeVisible();
       }
-      await expect(page.getByRole("button", { name: "完整导出" })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "导出全部反馈" })).toBeEnabled();
     });
 
     await test.step("教师下载 Excel 和 no-send 草稿，再归档并从历史查看", async () => {
+      const currentItemBeforeSelection = new URL(page.url()).searchParams.get("itemId");
+      const selectedStudents = students.slice(0, 2);
+      const planSnapshot = await request.get(`/api/report/feedback-plans/${planId}`);
+      expect(planSnapshot.ok()).toBeTruthy();
+      const planPayload = await planSnapshot.json() as { plan: { items: Array<{ id: string; student?: { name?: string } | null }> } };
+      const expectedItemIds = selectedStudents.map((student) => (
+        planPayload.plan.items.find((item) => item.student?.name === student.name)?.id ?? ""
+      ));
+      expect(expectedItemIds.every(Boolean)).toBe(true);
+      for (const student of selectedStudents) {
+        await page.getByLabel(`勾选导出${student.name}反馈`).check();
+      }
+      expect(new URL(page.url()).searchParams.get("itemId")).toBe(currentItemBeforeSelection);
+      await page.getByRole("button", { name: /^待处理/ }).click();
+      await page.getByRole("button", { name: /^全部/ }).click();
+      for (const student of selectedStudents) {
+        await expect(page.getByLabel(`勾选导出${student.name}反馈`)).toBeChecked();
+      }
+      const selectedExportRequest = page.waitForRequest((outgoing) => (
+        new URL(outgoing.url()).pathname === `/api/report/feedback-plans/${planId}`
+        && outgoing.method() === "POST"
+        && outgoing.postDataJSON()?.action === "export"
+        && Array.isArray(outgoing.postDataJSON()?.itemIds)
+      ));
+      const selectedDownload = page.waitForEvent("download");
+      await page.getByRole("button", { name: `导出已勾选反馈（${selectedStudents.length}）` }).click();
+      const exportBody = (await selectedExportRequest).postDataJSON() as { itemIds: string[] };
+      expect(new Set(exportBody.itemIds)).toEqual(new Set(expectedItemIds));
+      const selectedPath = await (await selectedDownload).path();
+      expect(selectedPath).toBeTruthy();
+      const selectedWorkbook = XLSX.read(await readFile(selectedPath!), { type: "buffer" });
+      const selectedRows = XLSX.utils.sheet_to_json<Record<string, string>>(selectedWorkbook.Sheets["课后反馈"], { range: 1, defval: "" });
+      expect(new Set(selectedRows.map((row) => row["学生姓名"]))).toEqual(new Set(selectedStudents.map((student) => student.name)));
+      await expect(page.getByRole("button", { name: "导出已勾选反馈（0）" })).toBeDisabled();
+
       const excelDownload = page.waitForEvent("download");
-      await page.getByRole("button", { name: "完整导出" }).click();
+      await page.getByRole("button", { name: "导出全部反馈" }).click();
       const excel = await excelDownload;
       const excelPath = await excel.path();
       expect(excelPath).toBeTruthy();
       const workbook = XLSX.read(await readFile(excelPath!), { type: "buffer" });
-      const rows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"]);
+      const rows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"], { range: 1, defval: "" });
       expect(rows).toHaveLength(3);
-      expect(new Set(rows.map((row) => row["姓名"]))).toEqual(new Set(students.map((student) => student.name)));
-      expect(new Set(rows.map((row) => row["最终反馈"]))).toEqual(new Set(teacherTexts.values()));
+      expect(new Set(rows.map((row) => row["学生姓名"]))).toEqual(new Set(students.map((student) => student.name)));
+      expect(new Set(rows.map((row) => row["*文本1"]))).toEqual(new Set(teacherTexts.values()));
 
       const draftDownload = page.waitForEvent("download");
       await page.getByRole("button", { name: "导出企微草稿 JSON" }).click();

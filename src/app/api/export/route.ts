@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import * as XLSX from "xlsx";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { requireSemesterId, semesterStudentWhere } from "@/services/student-enrollment-service";
 
 export async function POST(request: NextRequest) {
@@ -98,6 +99,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("[/api/export] error:", error);
-    return NextResponse.json({ error: "导出失败" }, { status: 500 });
+    const failure = safeApiError(error, "导出失败", "api.export");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

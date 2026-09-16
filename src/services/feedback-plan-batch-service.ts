@@ -102,6 +102,7 @@ const batchInclude = {
         select: {
           id: true,
           status: true,
+          finalText: true,
           studentId: true,
           generationConfigSnapshot: true,
           generationExecutionSnapshot: true,

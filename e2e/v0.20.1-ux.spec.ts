@@ -62,6 +62,38 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     })).toBeVisible();
   });
 
+  test("roster picker analyzes immediately and rejects replacements without keeping the old file", async ({ page }) => {
+    await page.setViewportSize({ width: 520, height: 820 });
+    await page.goto(`/students?semesterId=${TEST_FIXTURE.semester.id}`);
+    await page.getByRole("button", { name: "导入花名册" }).click();
+    const dialog = page.getByRole("dialog", { name: "导入花名册" });
+    const input = dialog.locator("#student-import-file");
+    const longName = "合成数据-用于验证窄屏下超长花名册文件名仍可完整换行显示-2026秋季.csv";
+    await input.setInputFiles({
+      name: longName,
+      mimeType: "text/csv",
+      buffer: Buffer.from("姓名,班级,学号,性别\n合成导入学生,E2E-SYNTHETIC,TEST-E2E-IMPORT,未知\n"),
+    });
+    await expect(dialog.getByText(longName, { exact: true }).first()).toBeVisible();
+    await expect(dialog.getByText("选择本学期要导入的班级")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "预览导入" })).toBeEnabled();
+
+    await input.setInputFiles({ name: "invalid.txt", mimeType: "text/plain", buffer: Buffer.from("synthetic") });
+    await expect(dialog.getByText("仅支持 .xlsx 或 .csv 花名册文件。")).toBeVisible();
+    await expect(dialog.getByText(longName, { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("选择本学期要导入的班级")).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "预览导入" })).toBeDisabled();
+
+    await dialog.locator(".student-import-file-picker").evaluate((element) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["姓名,班级,学号\n甲,A,TEST-A"], "first.csv", { type: "text/csv" }));
+      transfer.items.add(new File(["姓名,班级,学号\n乙,B,TEST-B"], "second.csv", { type: "text/csv" }));
+      element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    });
+    await expect(dialog.getByText(/一次只能选择一个花名册文件/)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "预览导入" })).toBeDisabled();
+  });
+
   test("student transfer is a separate row action and refreshes the class grouping", async ({ page }) => {
     const created = await page.request.post(`/api/semesters/${TEST_FIXTURE.semester.id}/classes`, {
       data: { code: "E2E-TRANSFER-TARGET", name: "E2E转入班" },
@@ -69,7 +101,25 @@ test.describe.serial("v0.20.1 interaction polish", () => {
     expect(created.ok()).toBeTruthy();
     const targetClass = await created.json() as { id: string; name: string };
     const studentId = TEST_FIXTURE.students[0].id;
+    let classListRequests = 0;
+    let releaseFirstClassListRequest = () => {};
+    const firstClassListRequestRelease = new Promise<void>((resolve) => {
+      releaseFirstClassListRequest = resolve;
+    });
     try {
+      await page.route(`**/api/semesters/${TEST_FIXTURE.semester.id}/classes`, async (route) => {
+        classListRequests += 1;
+        if (classListRequests > 1) {
+          await route.continue();
+          return;
+        }
+        await firstClassListRequestRelease;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "班级列表暂时不可用", code: "internal_error", retryable: true, diagnosticId: "e2e-class-list" }),
+        });
+      });
       await page.goto(`/students?semesterId=${TEST_FIXTURE.semester.id}`);
       const studentRow = page.getByRole("button", {
         name: `打开${TEST_FIXTURE.students[0].name}的学生档案`,
@@ -77,6 +127,12 @@ test.describe.serial("v0.20.1 interaction polish", () => {
       await studentRow.getByRole("button", { name: "转班" }).click();
       const dialog = page.getByRole("dialog", { name: `转班：${TEST_FIXTURE.students[0].name}` });
       await expect(dialog).toBeVisible();
+      await expect(dialog.getByText("正在加载当前学期的班级列表")).toBeVisible();
+      releaseFirstClassListRequest();
+      await expect(dialog.getByText("班级列表加载失败：班级列表暂时不可用")).toBeVisible();
+      await expect(dialog.getByText("诊断编号：e2e-class-list")).toBeVisible();
+      await dialog.getByRole("button", { name: "重试" }).click();
+      await expect(dialog.getByLabel("目标班级")).toBeEnabled();
       await dialog.getByRole("button", { name: "取消" }).click();
       await expect(dialog).toHaveCount(0);
 
@@ -88,14 +144,33 @@ test.describe.serial("v0.20.1 interaction polish", () => {
         contentType: "application/json",
         body: JSON.stringify({ error: "学生班级归属已变化，请刷新后重试" }),
       }));
+      const studentListPattern = /\/api\/students\?.*/;
+      await page.route(studentListPattern, (route) => route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "名单暂时不可用", code: "internal_error", retryable: true, diagnosticId: "e2e-student-list" }),
+      }));
       await reopened.getByRole("button", { name: "确认转班" }).click();
-      await expect(reopened.getByText("学生班级归属已变化，请刷新后重试")).toBeVisible();
+      await expect(reopened.getByText(/名单刷新失败，弹窗已保留/)).toBeVisible();
+      await expect(reopened.getByLabel("目标班级")).toHaveValue("");
+      await expect(reopened.getByRole("button", { name: "确认转班" })).toBeDisabled();
+      await page.unroute(studentListPattern);
+
+      await reopened.getByLabel("目标班级").selectOption(targetClass.id);
+      await reopened.getByRole("button", { name: "确认转班" }).click();
+      await expect(reopened.getByText(/学生班级归属已变化.*名单已刷新/)).toBeVisible();
+      await expect(reopened.getByLabel("目标班级")).toHaveValue("");
+      await expect(reopened.getByRole("button", { name: "确认转班" })).toBeDisabled();
       await page.unroute(`**/api/students/${studentId}/enrollment`);
 
+      await reopened.getByLabel("目标班级").selectOption(targetClass.id);
       await reopened.getByRole("button", { name: "确认转班" }).click();
       await expect(reopened).toHaveCount(0);
       await expect(page.locator(".student-class-group__toggle").filter({ hasText: targetClass.name })).toBeVisible();
     } finally {
+      releaseFirstClassListRequest();
+      await page.unroute(/\/api\/students\?.*/);
+      await page.unroute(`**/api/semesters/${TEST_FIXTURE.semester.id}/classes`);
       await page.unroute(`**/api/students/${studentId}/enrollment`);
       const restored = await page.request.patch(`/api/students/${studentId}/enrollment`, {
         data: { semesterId: TEST_FIXTURE.semester.id, classId: TEST_FIXTURE.class.id },

@@ -99,6 +99,7 @@ export type FeedbackBatchClient = {
     items: Array<{
       id: string;
       status: string;
+      finalText?: string | null;
       studentId: string | null;
       student: { id: string; name: string; studentId: string } | null;
       generationExecution?: {

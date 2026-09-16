@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { GroupProgressIntentSchema, SessionCreationRequestKeySchema } from "@/lib/contracts/session-creation";
 import { createClassSession, deleteClassSession, getClassSessionCreationOptions } from "@/services/session-service";
 import { ServiceError } from "@/services/service-error";
@@ -25,10 +26,11 @@ export async function GET(
     return NextResponse.json(await getClassSessionCreationOptions({ semesterId, classId, classCode, date }));
   } catch (error) {
     console.error("GET session creation options error:", error);
-    if (error instanceof ServiceError) {
+    if (error instanceof ServiceError && error.status < 500) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ error: "读取课次创建选项失败" }, { status: 500 });
+    const failure = safeApiError(error, "读取课次创建选项失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -76,10 +78,11 @@ export async function POST(
     return NextResponse.json(session, { status: session.idempotentReplay ? 200 : 201 });
   } catch (error) {
     console.error("POST session error:", error);
-    if (error instanceof ServiceError) {
+    if (error instanceof ServiceError && error.status < 500) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ error: "创建课次失败" }, { status: 500 });
+    const failure = safeApiError(error, "创建课次失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -100,9 +103,10 @@ export async function DELETE(
     return NextResponse.json(await deleteClassSession({ semesterId, code }));
   } catch (error) {
     console.error("DELETE session error:", error);
-    if (error instanceof ServiceError) {
+    if (error instanceof ServiceError && error.status < 500) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ error: "删除课次失败" }, { status: 500 });
+    const failure = safeApiError(error, "删除课次失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
 // GET /api/semesters - list all semesters
@@ -18,7 +19,8 @@ export async function GET() {
     );
   } catch (error) {
     console.error("[/api/semesters] error:", error);
-    return NextResponse.json({ error: "获取学期列表失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取学期列表失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -35,6 +37,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(semester, { status: 201 });
   } catch (error) {
     console.error("[/api/semesters] error:", error);
-    return NextResponse.json({ error: "创建学期失败" }, { status: 500 });
+    const failure = safeApiError(error, "创建学期失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

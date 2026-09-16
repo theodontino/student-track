@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { deleteDiarizeTask, readDiarizeTask, taskToView } from "@/lib/diarize-tasks";
 
 export const runtime = "nodejs";
@@ -24,7 +25,8 @@ export async function DELETE(
     const { id } = await params;
     await deleteDiarizeTask(id);
     return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json({ error: "删除转写任务失败" }, { status: 500 });
+  } catch (error) {
+    const failure = safeApiError(error, "删除转写任务失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

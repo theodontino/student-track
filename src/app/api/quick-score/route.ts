@@ -8,7 +8,7 @@ import {
 import { ServiceError } from "@/services/service-error";
 import { requireSemesterId } from "@/services/student-enrollment-service";
 import { assertClassAvailable, assertSessionAvailable } from "@/services/academic-scope-recycle-service";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 
 // GET /api/quick-score?class=&date=&sessionCode= — get existing scores for a class/session
 export async function GET(request: NextRequest) {
@@ -146,11 +146,11 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("[/api/quick-score] error:", error);
-    if (error instanceof ServiceError) {
+    if (error instanceof ServiceError && error.status < 500) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    return NextResponse.json({ error: "获取评分数据失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取评分数据失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -165,10 +165,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(await submitQuickScores({ scores, sessionCode, attendances }));
   } catch (error) {
     console.error("[/api/quick-score] error:", error);
-    if (error instanceof ServiceError) {
+    if (error instanceof ServiceError && error.status < 500) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    return NextResponse.json({ error: "提交失败" }, { status: 500 });
+    const failure = safeApiError(error, "提交失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

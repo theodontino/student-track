@@ -204,6 +204,10 @@ describe("Windows Core PowerShell entrypoints", () => {
     expect(offlineBundleTest).toContain("Get-NetTCPConnection -State Listen -LocalPort 3000");
     expect(offlineBundleTest).toContain('LocalAddress -ne "127.0.0.1"');
     expect(offlineBundleTest).toContain("Offline Core CI Semester");
+    expect(offlineBundleTest).toContain("OFFLINE-TRANSFER-CLASS");
+    expect(offlineBundleTest).toContain("OFFLINE-TRANSFER-STUDENT");
+    expect(offlineBundleTest).toContain("/api/students/$($createdStudent.id)/enrollment");
+    expect(offlineBundleTest).toContain("重启后未保留合成学生的转班结果");
     expect(offlineBundleTest).toContain("Test-BundledPdfParser");
     expect(offlineBundleTest).toContain("System.Net.Http.MultipartFormDataContent");
     expect(offlineBundleTest).toContain("/api/feedback/assessment-pdf");

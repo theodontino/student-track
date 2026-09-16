@@ -1,4 +1,4 @@
-import { ApiError } from "@/lib/api-errors";
+import { ApiError } from "@/lib/api-error-core";
 import {
   hasProductCapability,
   type ProductCapability,

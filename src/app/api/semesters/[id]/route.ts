@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { listSemesterClasses } from "@/services/student-enrollment-service";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { ApiError, apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { assertSemesterAvailable, moveScopeToRecycleBin } from "@/services/academic-scope-recycle-service";
 
 // GET /api/semesters/[id] - semester detail with session breakdown
@@ -48,9 +48,13 @@ export async function GET(
       classes,
     });
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "获取学期详情失败");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
     console.error("[/api/semesters/[id]] error:", error);
-    return NextResponse.json({ error: "获取学期详情失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取学期详情失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -73,8 +77,12 @@ export async function PUT(
     });
     return NextResponse.json(semester);
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    return NextResponse.json({ error: "更新失败" }, { status: 500 });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "更新失败");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
+    const failure = safeApiError(error, "更新失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -88,7 +96,11 @@ export async function DELETE(
     const result = await moveScopeToRecycleBin("semester", id);
     return NextResponse.json({ success: true, ...result });
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    return NextResponse.json({ error: "删除失败" }, { status: 500 });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "删除失败");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
+    const failure = safeApiError(error, "删除失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

@@ -162,10 +162,11 @@ export function TaskPreparationStage(props: TaskPreparationStageProps) {
   }
 
   return <div className={styles.stageContent}>
-    {props.draft.mode === "single" && <section className={styles.intakePaths}>
-      <div><strong>先补录课堂记录</strong><span>可以像原来一样手动写课堂回顾；有助教表、STEP 或测评文件时，再在下面补充。</span></div>
-      <Link className="ui-button ui-button--secondary ui-button--sm" href={props.manualFactsHref}>补录课堂记录</Link>
-    </section>}
+    <section className={styles.intakePaths}>
+      <div><strong>准备课堂记录</strong><span>可手动补录，也可下载已带班级、课次和花名册的助教评分表，填写后原样上传。</span></div>
+      {props.draft.mode === "single" && <Link className="ui-button ui-button--secondary ui-button--sm" href={props.manualFactsHref}>补录课堂记录</Link>}
+      <a className="ui-button ui-button--ghost ui-button--sm" href={`/api/sessions/${encodeURIComponent(props.entry.sessionCode)}/assistant-roster-template`}>下载助教评分表</a>
+    </section>
     <ScoreDimensionLegend showAssessmentRule />
     <MaterialIntakeCard
       summary={materialSummary}

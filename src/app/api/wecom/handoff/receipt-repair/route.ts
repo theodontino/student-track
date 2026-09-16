@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import {
   previewWccHandoffReceiptRepair,
@@ -11,8 +12,9 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     return NextResponse.json(await previewWccHandoffReceiptRepair(prisma));
-  } catch {
-    return NextResponse.json({ error: "handoff_receipt_preview_failed" }, { status: 500 });
+  } catch (error) {
+    const failure = safeApiError(error, "handoff_receipt_preview_failed");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -24,6 +26,7 @@ export async function POST(request: NextRequest) {
     if (error instanceof Error && error.message === "confirmation_required") {
       return NextResponse.json({ error: "confirmation_required" }, { status: 400 });
     }
-    return NextResponse.json({ error: "handoff_receipt_repair_failed" }, { status: 500 });
+    const failure = safeApiError(error, "handoff_receipt_repair_failed");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

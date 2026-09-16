@@ -191,6 +191,26 @@ try {
     if (-not $createdClass.id) {
         throw "离线 Core 生产服务未创建 PDF 验收班级。"
     }
+    $transferClassBody = @{ code = "OFFLINE-TRANSFER-CLASS"; name = "Offline Transfer Synthetic Class" } | ConvertTo-Json
+    $transferClass = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3000/api/semesters/$createdId/classes" -ContentType "application/json" -Body $transferClassBody
+    if (-not $transferClass.id) {
+        throw "离线 Core 生产服务未创建转班验收班级。"
+    }
+    $studentBody = @{ name = "离线合成学生"; studentId = "OFFLINE-TRANSFER-STUDENT"; gender = "未知"; semesterId = $createdId; classId = $createdClass.id } | ConvertTo-Json
+    $createdStudent = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3000/api/students" -ContentType "application/json" -Body $studentBody
+    if (-not $createdStudent.id) {
+        throw "离线 Core 生产服务未创建转班验收学生。"
+    }
+    $classResponse = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/semesters/$createdId/classes"
+    $classIds = @($classResponse.id)
+    if ($classIds.Count -lt 2 -or $createdClass.id -notin $classIds -or $transferClass.id -notin $classIds) {
+        throw "离线 Core 班级列表未包含两个转班验收班级（预期：$($createdClass.id), $($transferClass.id)；实际：$($classIds -join ', ')）。"
+    }
+    $transferBody = @{ semesterId = $createdId; classId = $transferClass.id } | ConvertTo-Json
+    $transferred = Invoke-RestMethod -Method Patch -Uri "http://127.0.0.1:3000/api/students/$($createdStudent.id)/enrollment" -ContentType "application/json" -Body $transferBody
+    if (-not $transferred.changed -or $transferred.currentClass.id -ne $transferClass.id) {
+        throw "离线 Core 未完成合成学生转班。"
+    }
     $sessionBody = @{ classId = $createdClass.id; date = "2099-02-01"; requestKey = "offline-core-pdf-session-1" } | ConvertTo-Json
     $createdSession = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3000/api/semesters/$createdId/session" -ContentType "application/json" -Body $sessionBody
     if (-not $createdSession.code) {
@@ -206,6 +226,11 @@ try {
     $persisted = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/semesters/$createdId"
     if ($persisted.id -ne $createdId) {
         throw "离线 Core 重启后未读到先前写入的学期。"
+    }
+    $persistedStudentResponse = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/students?semesterId=$createdId"
+    $persistedStudent = @($persistedStudentResponse | Where-Object { $_.id -eq $createdStudent.id })[0]
+    if ($null -eq $persistedStudent -or $persistedStudent.classId -ne $transferClass.id) {
+        throw "离线 Core 重启后未保留合成学生的转班结果。"
     }
 
     $preservationMarker = Join-Path $installedRoot "data\uninstall-preservation-marker.txt"

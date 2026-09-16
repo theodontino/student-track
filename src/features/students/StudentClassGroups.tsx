@@ -33,7 +33,7 @@ export function StudentClassGroups({ workspace }: { workspace: Workspace }) {
             onClick={() => workspace.openStudent(student.id)}
             aria-label={`打开${student.name}的学生档案`}
           >
-            <span className={`student-list-row__avatar ${student.gender === "男" ? "is-male" : "is-female"}`} aria-hidden="true">{student.name[0]}</span>
+            <span className={`student-list-row__avatar ${student.gender === "男" ? "is-male" : student.gender === "女" ? "is-female" : "is-unknown"}`} aria-hidden="true">{student.name[0]}</span>
             <span className="student-list-row__identity">
               <span><strong>{student.name}</strong><small>{student.studentId}</small></span>
               <span>{student.rosterStatus === "INACTIVE" && <Badge tone="warning">非活跃</Badge>}{student.labels.map((label) => <Badge key={label.id}>{label.name}</Badge>)}</span>

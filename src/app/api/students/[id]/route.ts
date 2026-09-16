@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { logAction, logStudentEnrollmentTransfer } from "@/lib/logger";
 import { ServiceError } from "@/services/service-error";
@@ -105,8 +106,9 @@ export async function GET(
     });
   } catch (error) {
     console.error("[/api/students/[id]] error:", error);
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
-    return NextResponse.json({ error: "获取学生详情失败" }, { status: 500 });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
+    const failure = safeApiError(error, "获取学生详情失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -172,11 +174,12 @@ export async function PUT(
     }
     return NextResponse.json(serializeStudent(result.student));
   } catch (error: any) {
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error?.code === "P2002") return NextResponse.json({ error: "学号已存在" }, { status: 409 });
     if (error?.code === "P2025") return NextResponse.json({ error: "学生不存在" }, { status: 404 });
     console.error("[/api/students/[id]] error:", error);
-    return NextResponse.json({ error: "更新学生失败" }, { status: 500 });
+    const failure = safeApiError(error, "更新学生失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -193,6 +196,7 @@ export async function DELETE(
   } catch (error: any) {
     if (error?.code === "P2025") return NextResponse.json({ error: "学生不存在" }, { status: 404 });
     console.error("[/api/students/[id]] error:", error);
-    return NextResponse.json({ error: "删除学生失败" }, { status: 500 });
+    const failure = safeApiError(error, "删除学生失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

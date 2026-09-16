@@ -6,13 +6,33 @@ import { ACTION_LABELS, formatLogDetail, TARGET_LABELS } from "./maintenance-typ
 import { useMaintenanceLogs } from "./useMaintenanceLogs";
 import LLMCachePanel from "./LLMCachePanel";
 import { GenerationHistoryPanel } from "@/features/reports/GenerationHistoryPanel";
+import { useState } from "react";
 
 export default function MaintenancePanel() {
   const workspace = useMaintenanceLogs();
+  const [diagnosticError, setDiagnosticError] = useState("");
+  const downloadDiagnostics = async () => {
+    setDiagnosticError("");
+    try {
+      const response = await fetch("/api/system/diagnostics/export", { cache: "no-store" });
+      if (!response.ok) throw new Error("download_failed");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const filename = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1];
+      link.download = filename ?? "student-track-diagnostics.json";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setDiagnosticError("下载诊断包失败，请稍后重试。");
+    }
+  };
   return (
     <main className="system-maintenance-workspace">
       <PageHeader title="维护与操作日志" description="集中管理本机备份、模型缓存和关键操作记录。" />
       <Section title="数据库备份" description="创建一致性备份并记录校验信息，不改变业务数据。"><div className="system-backup-action"><ArchiveButton /></div></Section>
+      <Section title="隐私安全诊断包" description="下载仅含版本、运行状态和近期结构化故障事件的 JSON，不包含学生、业务日志、文件或设置内容；下载后请手动发送给维护人员。"><div className="system-backup-action"><Button onClick={() => void downloadDiagnostics()}>下载诊断包</Button>{diagnosticError && <p className="ui-field-error" role="alert">{diagnosticError}</p>}</div></Section>
       <LLMCachePanel />
       <Section title="AI 生成审计与教学记忆" description="这里保留模型生成账本和教学记忆维护；教师日常反馈恢复请使用反馈历史。"><GenerationHistoryPanel /></Section>
       <Section className="system-log-section" title="操作日志" description={`记录评分变更、预警触发和数据删除等关键操作，共 ${workspace.total} 条；保留 90 天。`}>

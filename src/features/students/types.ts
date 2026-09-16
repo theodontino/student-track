@@ -27,9 +27,10 @@ export interface StudentFormState {
 
 export interface StudentImportResult {
   success?: boolean;
-  mode?: "preview" | "committed";
+  mode?: "analyze" | "preview" | "committed";
   semesterId?: string;
   fingerprint?: string;
+  selectionKey?: string;
   blocked?: boolean;
   changes?: Array<Record<string, unknown>>;
   rowCount?: number;
@@ -41,6 +42,20 @@ export interface StudentImportResult {
   errorCount?: number;
   errors?: string[];
   error?: string;
+  detectedColumns?: Record<string, string>;
+  subjects?: string[];
+  teachers?: string[];
+  classes?: StudentImportClassGroup[];
+  defaultSelectedClassCodes?: string[];
+}
+
+export interface StudentImportClassGroup {
+  classCode: string;
+  className: string;
+  subject: string;
+  teacher: string;
+  rowCount: number;
+  searchText: string;
 }
 
 export interface StudentEvent {

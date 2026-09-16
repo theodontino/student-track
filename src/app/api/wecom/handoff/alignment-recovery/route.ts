@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import {
   previewWccPendingAlignmentRecovery,
@@ -11,8 +12,9 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     return NextResponse.json(await previewWccPendingAlignmentRecovery(prisma));
-  } catch {
-    return NextResponse.json({ error: "handoff_alignment_preview_failed" }, { status: 500 });
+  } catch (error) {
+    const failure = safeApiError(error, "handoff_alignment_preview_failed");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -28,10 +30,10 @@ export async function POST(request: NextRequest) {
       body.limit || 25,
     ));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "handoff_alignment_recovery_failed";
-    return NextResponse.json(
-      { error: message },
-      { status: message === "confirmation_required" ? 400 : 500 },
-    );
+    if (error instanceof Error && error.message === "confirmation_required") {
+      return NextResponse.json({ error: "confirmation_required" }, { status: 400 });
+    }
+    const failure = safeApiError(error, "handoff_alignment_recovery_failed");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

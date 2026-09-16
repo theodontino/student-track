@@ -268,9 +268,9 @@ test.describe("Student Track Core edition", () => {
       } }));
       expect(exportResponse.headers()["content-type"]).toContain("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       const workbook = XLSX.read(await exportResponse.body(), { type: "buffer" });
-      const rows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"]);
+      const rows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"], { range: 1, defval: "" });
       expect(rows).toHaveLength(1);
-      expect(rows[0]?.["姓名"]).toBe("合成学生甲");
+      expect(rows[0]?.["学生姓名"]).toBe("合成学生甲");
     });
 
     await test.step("在同一隔离运行目录创建数据库备份", async () => {

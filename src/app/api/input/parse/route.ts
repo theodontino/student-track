@@ -7,7 +7,7 @@ import { withLLMCacheOperation } from "@/services/llm-cache-service";
 import { compactHotGenerationRecordsForClass, recordSuccessfulGeneration } from "@/services/generation-memory-service";
 import { DraftStructuredResultSchema, ParseRequestSchema } from "@/lib/contracts/classroom-parse";
 import type { DraftStructuredResult } from "@/lib/types";
-import { apiErrorBody, apiStreamErrorBody, ApiError } from "@/lib/api-errors";
+import { apiErrorBody, apiStreamErrorBody, ApiError, safeApiError } from "@/lib/api-errors";
 import { ZodError } from "zod";
 import { isStepClassroomExport } from "@/lib/step-classroom-format";
 import { StepClassroomImportError, createStepClassroomDraft } from "@/services/step-classroom-import-service";
@@ -138,7 +138,7 @@ ${fixedText}
             });
             controller.close();
           } catch (error: unknown) {
-            const failure = parseError(error);
+            const failure = safeApiError(parseError(error), "课堂解析失败，请稍后重试");
             controller.enqueue(encoder.encode(
               `data: ${JSON.stringify({ type: "error", ...apiStreamErrorBody(failure) })}\n\n`
             ));
@@ -212,7 +212,7 @@ ${fixedText}
     });
     return NextResponse.json(result);
   } catch (error: unknown) {
-    const failure = parseError(error);
+    const failure = safeApiError(parseError(error), "课堂解析失败，请稍后重试");
     return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

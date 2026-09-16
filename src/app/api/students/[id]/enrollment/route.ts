@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { logStudentEnrollmentTransfer } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { ServiceError } from "@/services/service-error";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { requireSemesterId, transferStudentEnrollment } from "@/services/student-enrollment-service";
 
 export async function PATCH(
@@ -51,7 +52,8 @@ export async function PATCH(
     });
   } catch (error) {
     console.error("PATCH /api/students/[id]/enrollment", error);
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
-    return NextResponse.json({ error: "转班失败" }, { status: 500 });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
+    const failure = safeApiError(error, "转班失败", "api.student_enrollment");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

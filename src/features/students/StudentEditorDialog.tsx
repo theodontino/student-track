@@ -32,7 +32,7 @@ export function StudentEditorDialog({ workspace }: { workspace: Workspace }) {
           </FormField>
         </div>
         <FormField id="student-gender" label="性别">
-          <Select id="student-gender" value={workspace.form.gender} onChange={(event) => workspace.setForm({ ...workspace.form, gender: event.target.value })}><option value="男">男</option><option value="女">女</option></Select>
+          <Select id="student-gender" value={workspace.form.gender} onChange={(event) => workspace.setForm({ ...workspace.form, gender: event.target.value })}><option value="未知">未知</option><option value="男">男</option><option value="女">女</option></Select>
         </FormField>
         <FormField id="student-label" label="标签" description="输入后按回车，或选择下方常用标签。">
           <div className="student-editor-form__label-input">
