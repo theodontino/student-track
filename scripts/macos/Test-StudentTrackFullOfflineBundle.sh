@@ -88,6 +88,9 @@ export HTTP_PROXY="http://127.0.0.1:9"
 export HTTPS_PROXY="http://127.0.0.1:9"
 export NO_PROXY="127.0.0.1,localhost"
 export CI="true"
+# Match a teacher Mac that has no Homebrew/system Node on PATH. The installer
+# and launcher must bootstrap exclusively from the runtime inside the bundle.
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
 /bin/bash "$installer" --skip-desktop-shortcuts
 installed_root="$STUDENT_TRACK_RUNTIME_ROOT"

@@ -6,7 +6,7 @@
 
 | 组件 | 版本 | 当前关系 |
 |---|---:|---|
-| Student Track | 1.3.0 | **反馈引擎与多平台分发更新**。Core / Full 共用同一业务数据与 Prisma Schema；新学生反馈以单计划组织跨班学生，旧学生计划与批次只读并可复制冻结事实到新计划。全局一次执行一份计划，计划内模型请求自适应并发；Planner → ContentBrief → Writer、候选正文与核验结论分离保持不变。 |
+| Student Track | 1.3.1 | **表格工作流与维护性更新**。机构原始花名册可直接分析并按班筛选，反馈 Excel 首表兼容教师精灵，真实课次可下载助教评分模板；诊断包、Windows 转班恢复和反馈勾选导出得到补强。Core / Full 继续共用同一业务数据与 Prisma Schema。 |
 | WCG（WeComCatch GUI） | 0.6.0 | 当前正式 WCG；与 ST 通过 `protocol-st-wcg` 管理的 handoff、receipt、已批准草稿包和只读花名册目录契约协作，并保持 no-send 边界。 |
 
 Student Track 与 WCG 的业务交付以本地文件为主；唯一在线耦合是 WCG 用户显式刷新时调用 ST 的认证只读花名册 API。WCL（WeComCatch Legacy）只保留历史 OpenClaw 能力，不参与当前交付链。
@@ -25,6 +25,8 @@ Student Track 与 WCG 的业务交付以本地文件为主；唯一在线耦合�
 ## STEP Bridge 的发布边界
 
 ST ↔ STEP 当前桥接是 `experimental`，不属于 Student Track 当前稳定产品承诺，也不作为正式协议交付条件。现阶段只保证当前已验证的 ST + STEP 组合；实验文件格式可以随两端数据模型调整，旧实验格式不承诺长期兼容。
+
+1.3.1 只发布既有人工文件桥；附近设备直连顺延到 1.3.2，不属于本次发布及验证范围。
 
 正式 `.stsession/.stlesson`、canonical Schema、revision/ledger、compatibility matrix 和联合 conformance 只有在 STEP 核心课堂模型与真实桥接需求稳定后，才由 `Protocol-of-sts` 重新建立 RFC。已长期延期的历史提案不作为当前实现蓝图。
 

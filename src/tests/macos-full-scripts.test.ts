@@ -21,7 +21,8 @@ describe("macOS Full offline bundle scripts", () => {
     expect(common).toContain("11.*");
     expect(common).toContain('node_version="$("$node_executable" --version)"');
     expect(common).toContain('node_architecture="$("$node_executable" -p \'process.arch\')"');
-    expect(common).toContain('npm_version="$("$npm_executable" --version)"');
+    expect(common).toContain('npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"');
+    expect(common).toContain('npm_version="$("$node_executable" "$npm_cli" --version)"');
     expect(common).toContain('export STUDENT_TRACK_EDITION="full"');
     expect(common).toContain('$HOME/Library/Application Support/Student Track');
     for (const directory of ["database", "data", "feedback-attachments", "feedback-inbox", "archives"]) {
@@ -75,6 +76,7 @@ describe("macOS Full offline bundle scripts", () => {
 
   it("verifies install, persistence, data-preserving uninstall, and reinstall", () => {
     expect(bundleTest).toContain("HTTP_PROXY");
+    expect(bundleTest).toContain('export PATH="/usr/bin:/bin:/usr/sbin:/sbin"');
     expect(bundleTest).toContain('STUDENT_TRACK_DATA_ROOT="$STUDENT_TRACK_RUNTIME_ROOT/data"');
     expect(bundleTest).toContain('STUDENT_TRACK_ARCHIVES_ROOT="$STUDENT_TRACK_RUNTIME_ROOT/archives"');
     expect(bundleTest).toContain('STUDENT_TRACK_FEEDBACK_ATTACHMENTS_ROOT="$STUDENT_TRACK_RUNTIME_ROOT/feedback-attachments"');
