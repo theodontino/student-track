@@ -201,9 +201,10 @@ try {
     if (-not $createdStudent.id) {
         throw "离线 Core 生产服务未创建转班验收学生。"
     }
-    $classes = @(Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/semesters/$createdId/classes")
-    if ($classes.Count -lt 2 -or @($classes | Where-Object id -eq $createdClass.id).Count -ne 1 -or @($classes | Where-Object id -eq $transferClass.id).Count -ne 1) {
-        throw "离线 Core 班级列表未包含两个转班验收班级。"
+    $classResponse = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/semesters/$createdId/classes"
+    $classIds = @($classResponse.id)
+    if ($classIds.Count -lt 2 -or $createdClass.id -notin $classIds -or $transferClass.id -notin $classIds) {
+        throw "离线 Core 班级列表未包含两个转班验收班级（预期：$($createdClass.id), $($transferClass.id)；实际：$($classIds -join ', ')）。"
     }
     $transferBody = @{ semesterId = $createdId; classId = $transferClass.id } | ConvertTo-Json
     $transferred = Invoke-RestMethod -Method Patch -Uri "http://127.0.0.1:3000/api/students/$($createdStudent.id)/enrollment" -ContentType "application/json" -Body $transferBody
@@ -226,8 +227,8 @@ try {
     if ($persisted.id -ne $createdId) {
         throw "离线 Core 重启后未读到先前写入的学期。"
     }
-    $persistedStudents = @(Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/students?semesterId=$createdId")
-    $persistedStudent = @($persistedStudents | Where-Object id -eq $createdStudent.id)[0]
+    $persistedStudentResponse = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:3000/api/students?semesterId=$createdId"
+    $persistedStudent = @($persistedStudentResponse | Where-Object { $_.id -eq $createdStudent.id })[0]
     if ($null -eq $persistedStudent -or $persistedStudent.classId -ne $transferClass.id) {
         throw "离线 Core 重启后未保留合成学生的转班结果。"
     }
