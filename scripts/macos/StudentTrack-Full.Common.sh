@@ -35,8 +35,9 @@ student_track_assert_portable_node() {
   local node_root="$1"
   local node_executable="$node_root/bin/node"
   local npm_executable="$node_root/bin/npm"
+  local npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
 
-  if [ ! -x "$node_executable" ] || [ ! -x "$npm_executable" ]; then
+  if [ ! -x "$node_executable" ] || [ ! -x "$npm_executable" ] || [ ! -f "$npm_cli" ]; then
     echo "Node.js 运行时不完整：$node_root" >&2
     return 1
   fi
@@ -46,7 +47,9 @@ student_track_assert_portable_node() {
   local npm_version
   node_version="$("$node_executable" --version)"
   node_architecture="$("$node_executable" -p 'process.arch')"
-  npm_version="$("$npm_executable" --version)"
+  # npm's launcher uses `#!/usr/bin/env node`. Invoke its CLI with the bundled
+  # Node directly so validation also works on a clean Mac without system Node.
+  npm_version="$("$node_executable" "$npm_cli" --version)"
   case "$node_version" in
     v24.*) ;;
     *)

@@ -6,6 +6,16 @@ export interface ProductChangelogEntry {
 
 export const PRODUCT_CHANGELOG: ProductChangelogEntry[] = [
   {
+    version: "1.3.1",
+    title: "表格工作流与维护性更新",
+    changes: [
+      "机构原始花名册无需先删列或改表头，可以直接选择文件、按科目和班级筛选，并在确认前预览变化。",
+      "反馈 Excel 首表可以直接用于教师精灵；真实课次可以下载助教评分模板，填写后原样回传统一材料入口。",
+      "逐学生反馈改为在左侧明确勾选导出对象；文件选择、Windows 转班失败重试和窄屏操作提示更清楚。",
+      "系统中心可以下载不含教学正文和个人路径的诊断包；macOS Full 离线包在没有系统 Node 的电脑上也能完成安装和启动检查。",
+    ],
+  },
+  {
     version: "1.3.0",
     title: "反馈引擎与多平台分发更新",
     changes: [
