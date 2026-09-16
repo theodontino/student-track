@@ -3,7 +3,8 @@ import { basename } from "node:path";
 export const forbiddenPrivacyNames = [
   /(^|\/)\.env$/,
   /\.(db|sqlite|sqlite3)$/i,
-  /(^|\/)(archives|runtime|data|exports|diagnostics|local-backups)\//i,
+  /(^|\/)(archives|runtime|data|exports|local-backups)\//i,
+  /^diagnostics\//i,
   /(^|\/)config\.local\.json$/i,
   /(^|\/)\.DS_Store$/,
   /\.(pem|p12|pfx)$/i,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { buildFeedbackContext } from "@/services/feedback-context-service";
 import { buildFeedbackRouting } from "@/services/feedback-intensity-service";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 
 // GET /api/report/feedback-context?sessionCode=xxx
 export async function GET(request: NextRequest) {
@@ -22,9 +23,12 @@ export async function GET(request: NextRequest) {
     }
     const routing = await buildFeedbackRouting(prisma, context);
     return NextResponse.json({ ...context, routing });
-  } catch (error: any) {
-    const message = error.message || "读取反馈上下文失败";
-    const status = ["课次不存在", "该课次未关联班级", "该班级无学生"].includes(message) ? 404 : 500;
-    return NextResponse.json({ error: message }, { status });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "";
+    if (["课次不存在", "该课次未关联班级", "该班级无学生"].includes(message)) {
+      return NextResponse.json({ error: message }, { status: 404 });
+    }
+    const failure = safeApiError(error, "读取反馈上下文失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

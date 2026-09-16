@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
 // GET /api/system/logs — query log entries with optional filters
@@ -37,6 +38,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("[/api/system/logs] error:", error);
-    return NextResponse.json({ error: "获取日志失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取日志失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

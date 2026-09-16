@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { processDraftReview } from "@/services/review-service";
 import { ServiceError } from "@/services/service-error";
 import { assertClassInSemester, requireSemesterId } from "@/services/student-enrollment-service";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { hasProductCapability } from "@/lib/product-edition";
 
 // GET /api/review - list all drafts
@@ -81,9 +81,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     console.error("[/api/review] error:", error);
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
-    return NextResponse.json({ error: "获取草稿列表失败" }, { status: 500 });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
+    const failure = safeApiError(error, "获取草稿列表失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -94,10 +94,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(await processDraftReview({ draftId: body.draftId, action: body.action, edits: body.edits, semesterId: body.semesterId }));
   } catch (error) {
     console.error("[/api/review] error:", error);
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    if (error instanceof ServiceError) {
+    if (error instanceof ServiceError && error.status < 500) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ error: "操作失败" }, { status: 500 });
+    const failure = safeApiError(error, "操作失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

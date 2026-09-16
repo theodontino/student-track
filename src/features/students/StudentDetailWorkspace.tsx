@@ -49,7 +49,7 @@ export default function StudentDetailWorkspace() {
       {loadError && <StatusBanner tone="danger"><span>{loadError}</span><Button variant="secondary" uiSize="sm" onClick={() => void fetchStudent()}>重试</Button></StatusBanner>}
 
       <header className="student-profile-header">
-        <div className={`student-profile-header__avatar ${student.gender === "男" ? "is-male" : "is-female"}`} aria-hidden="true">{student.name[0]}</div>
+        <div className={`student-profile-header__avatar ${student.gender === "男" ? "is-male" : student.gender === "女" ? "is-female" : "is-unknown"}`} aria-hidden="true">{student.name[0]}</div>
         <div className="student-profile-header__identity">
           <p>学生档案</p>
           <h1>{student.name}</h1>

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { getRecycleImpact } from "@/services/academic-scope-recycle-service";
 
 export async function GET(request: NextRequest) {
@@ -11,8 +11,8 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json(await getRecycleImpact(kind, id));
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
     console.error("GET /api/recycle-bin/impact", error);
-    return NextResponse.json({ error: "读取删除影响失败" }, { status: 500 });
+    const failure = safeApiError(error, "读取删除影响失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

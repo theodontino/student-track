@@ -4,7 +4,7 @@ import {
   getLLMCacheOverview,
   type LLMTaskType,
 } from "@/services/llm-cache-service";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { assertProductCapability } from "@/lib/product-capability-guard";
 import { hasProductCapability } from "@/lib/product-edition";
 
@@ -17,8 +17,9 @@ export async function GET() {
   try {
     const visibleTaskTypes = hasProductCapability("wecomIntegration") ? undefined : coreTaskTypes;
     return NextResponse.json(await getLLMCacheOverview(visibleTaskTypes));
-  } catch {
-    return NextResponse.json({ error: "读取 LLM 缓存清单失败" }, { status: 500 });
+  } catch (error) {
+    const failure = safeApiError(error, "读取 LLM 缓存清单失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -42,9 +43,7 @@ export async function DELETE(request: NextRequest) {
       wecomAvailable ? undefined : coreTaskTypes,
     ));
   } catch (error) {
-    if (error instanceof ApiError) {
-      return NextResponse.json(apiErrorBody(error), { status: error.status });
-    }
-    return NextResponse.json({ error: "清理 LLM 缓存失败" }, { status: 500 });
+    const failure = safeApiError(error, "清理 LLM 缓存失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

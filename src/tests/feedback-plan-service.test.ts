@@ -2,6 +2,7 @@ import { isFeedbackPlanGenerationRunning as isDirectGenerationRunning, pauseFeed
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as XLSX from "xlsx";
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -1046,13 +1047,66 @@ describe("feedback plan service", () => {
     expect((await getFeedbackPlan(plan.id))!.items[0]!.status).toBe("approved");
     const workbook = await buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete");
     const parsed = XLSX.read(workbook, { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(parsed.Sheets["课后反馈"]!, { defval: "" });
-    expect(rows[0]).toMatchObject({ 姓名: "测试学生", 最终反馈: "教师修改后的事件反馈：第二道同类题能够独立完成，学习测验4分，课堂状态4分。" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(parsed.Sheets["课后反馈"]!, { range: 1, defval: "" });
+    expect(rows[0]).toMatchObject({ 学员号: expect.any(String), 学生姓名: "测试学生", "*文本1": "教师修改后的事件反馈：第二道同类题能够独立完成，学习测验4分，课堂状态4分。" });
     await expect(buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete")).rejects.toThrow("已经按相同文本导出过");
     await buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete", { allowRepeat: true });
     const exportRuns = await prisma.feedbackExportRun.findMany({ where: { planId: plan.id }, orderBy: { createdAt: "asc" } });
     expect(exportRuns.map((run) => run.isRepeat)).toEqual([false, true]);
     expect(JSON.parse(exportRuns[0]!.itemManifest)[0]).toEqual({ itemId: item.id, finalTextHash: patched.finalTextHash });
+  });
+
+  it("warns when the same selected export recurs after a different selection", async () => {
+    const { plan } = await createQueueControlPlan(2);
+    const [itemA, itemB] = plan.items;
+    const textA = "调度学生1本讲已完成固定课堂练习。";
+    const textB = "调度学生2本讲已完成固定课堂练习。";
+    await Promise.all([
+      prisma.feedbackPlanItem.update({
+        where: { id: itemA!.id },
+        data: { status: "approved", finalText: textA, finalTextHash: createHash("sha256").update(textA).digest("hex"), approvedAt: new Date() },
+      }),
+      prisma.feedbackPlanItem.update({
+        where: { id: itemB!.id },
+        data: { status: "approved", finalText: textB, finalTextHash: createHash("sha256").update(textB).digest("hex"), approvedAt: new Date() },
+      }),
+    ]);
+
+    await buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete", { itemIds: [itemA!.id] });
+    await buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete", { itemIds: [itemB!.id] });
+    const runs = await prisma.feedbackExportRun.findMany({ where: { planId: plan.id } });
+    const runA = runs.find((run) => JSON.parse(run.itemManifest)[0]?.itemId === itemA!.id)!;
+    const runB = runs.find((run) => JSON.parse(run.itemManifest)[0]?.itemId === itemB!.id)!;
+    await Promise.all([
+      prisma.feedbackExportRun.update({ where: { id: runA.id }, data: { createdAt: new Date("2098-01-01T00:00:00.000Z") } }),
+      prisma.feedbackExportRun.update({ where: { id: runB.id }, data: { createdAt: new Date("2099-01-01T00:00:00.000Z") } }),
+    ]);
+
+    await expect(buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete", { itemIds: [itemA!.id] }))
+      .rejects.toMatchObject({ status: 409, code: "repeat_export" });
+    await expect(buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete", { itemIds: [itemA!.id], allowRepeat: true }))
+      .resolves.toBeInstanceOf(Uint8Array);
+    await expect(prisma.feedbackExportRun.count({ where: { planId: plan.id, isRepeat: true } })).resolves.toBe(1);
+  });
+
+  it("keeps class-wide notes in the detail sheets but out of the teacher-genie student sheet", async () => {
+    const semester = await prisma.semester.create({ data: { name: `${semesterName}-PUBLIC-EXPORT`, startDate: "2099-01-01", endDate: "2099-12-31" } });
+    const classRecord = await prisma.class.create({ data: { semesterId: semester.id, code: `${classCode}-PUBLIC-EXPORT`, name: "公共反馈导出测试班" } });
+    await prisma.student.create({ data: { name: "公共反馈范围学生", studentId: `${studentNumber}-PUBLIC-EXPORT`, gender: "未知", enrollments: { create: { semesterId: semester.id, classId: classRecord.id } } } });
+    const session = await prisma.classSession.create({ data: { code: `${sessionCode}-PUBLIC-EXPORT`, semesterId: semester.id, semesterNumber: 1, date: "2099-01-01", classId: classRecord.id } });
+    const plan = await createFeedbackPlan({ type: "class_update", outputRequirement: "测试班级公共反馈", semesterId: semester.id, classId: classRecord.id, sessionId: session.id, rangeEndSessionId: session.id });
+    const item = plan.items[0]!;
+    const finalText = "这是只进入内部明细的班级公共反馈。";
+    await prisma.feedbackPlanItem.update({
+      where: { id: item.id },
+      data: { status: "approved", finalText, finalTextHash: createHash("sha256").update(finalText).digest("hex"), approvedAt: new Date() },
+    });
+
+    const workbook = XLSX.read(await buildFeedbackPlanExportWorkbook(prisma, plan.id, "complete"), { type: "array" });
+    const uploadRows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"]!, { range: 1, defval: "" });
+    const detailRows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["反馈明细"]!, { defval: "" });
+    expect(uploadRows).toEqual([]);
+    expect(detailRows).toEqual(expect.arrayContaining([expect.objectContaining({ 姓名: "班级公共反馈", 最终反馈: finalText })]));
   });
 
   const fullOnlyIt = (

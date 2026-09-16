@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import {
   createFeedbackGroupIntake,
   parseFeedbackGroupRunIds,
@@ -32,8 +33,9 @@ export async function POST(request: NextRequest) {
         });
     return NextResponse.json({ ...result, source: useExistingFacts ? "existing_facts" : "inbox" });
   } catch (error) {
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
     console.error("POST /api/feedback/intake/group-scan", error);
-    return NextResponse.json({ error: "准备班级组反馈材料失败" }, { status: 500 });
+    const failure = safeApiError(error, "准备班级组反馈材料失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

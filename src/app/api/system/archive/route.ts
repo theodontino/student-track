@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { createDatabaseBackup } from "@/services/database-backup-service";
 
 export async function POST() {
@@ -13,6 +14,7 @@ export async function POST() {
     });
   } catch (error) {
     console.error("[/api/system/archive] error:", error);
-    return NextResponse.json({ error: "数据库备份失败" }, { status: 500 });
+    const failure = safeApiError(error, "数据库备份失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

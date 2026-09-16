@@ -18,6 +18,7 @@ import {
   defaultFeedbackQueueFilter,
   feedbackBatchGenerationIsActive,
   feedbackQueueCategory,
+  feedbackQueueExportReason,
   parseFeedbackQueueInitialState,
   resolveFeedbackQueueTarget,
   feedbackStudioInitialPlanTarget,
@@ -127,6 +128,14 @@ describe("feedback task group workspace state", () => {
     for (const status of ["evidence_ready", "queued", "generating", "pause_requested", "paused", "generation_failed", "stale"]) {
       expect(feedbackQueueCategory(status)).toBe("action");
     }
+  });
+
+  it("only enables export selection for final approved text in the active plan", () => {
+    const ready = { status: "approved", finalText: "合成最终正文", studentId: "student-a", student: { id: "student-a" } };
+    expect(feedbackQueueExportReason(ready, "plan-a", "plan-a")).toBe("");
+    expect(feedbackQueueExportReason({ ...ready, status: "needs_review" }, "plan-a", "plan-a")).toContain("先批准");
+    expect(feedbackQueueExportReason({ ...ready, finalText: "" }, "plan-a", "plan-a")).toContain("最终正文");
+    expect(feedbackQueueExportReason(ready, "plan-b", "plan-a")).toContain("所属计划");
   });
 
   it("parses queue URL state after hydration instead of during the server render", () => {
@@ -260,6 +269,8 @@ describe("feedback task group workspace state", () => {
       manualFactsHref="/feedback/tools?tool=manual"
     />);
     expect(markup).toContain("草稿中保存的历史共同课修订");
+    expect(markup).toContain("下载助教评分表");
+    expect(markup).toContain("/api/sessions/session-a/assistant-roster-template");
     expect(markup).not.toContain("最新材料正文");
   });
 

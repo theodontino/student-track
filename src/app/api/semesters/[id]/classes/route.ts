@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ServiceError } from "@/services/service-error";
 import { listSemesterClasses } from "@/services/student-enrollment-service";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { ApiError, apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { assertSemesterAvailable } from "@/services/academic-scope-recycle-service";
 
 export async function GET(
@@ -14,10 +14,14 @@ export async function GET(
     await assertSemesterAvailable(id);
     return NextResponse.json(await listSemesterClasses(prisma, id));
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "获取学期班级失败", "api.classes");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
     console.error("GET /api/semesters/[id]/classes", error);
-    return NextResponse.json({ error: "获取学期班级失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取学期班级失败", "api.classes");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -35,9 +39,13 @@ export async function POST(
     const klass = await prisma.class.create({ data: { semesterId, code, name: name || null } });
     return NextResponse.json({ ...klass, activeStudentCount: 0, inactiveStudentCount: 0, sessionCount: 0 }, { status: 201 });
   } catch (error: any) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "创建班级失败", "api.classes");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
     if (error?.code === "P2002") return NextResponse.json({ error: "该学期内班级编号已存在" }, { status: 409 });
     console.error("POST /api/semesters/[id]/classes", error);
-    return NextResponse.json({ error: "创建班级失败" }, { status: 500 });
+    const failure = safeApiError(error, "创建班级失败", "api.classes");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

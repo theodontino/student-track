@@ -756,11 +756,15 @@ describe("feedback plan batch service", () => {
 
     const buffer = await buildFeedbackPlanBatchExportWorkbook(prisma, batch.id, "approved_only");
     const workbook = XLSX.read(buffer, { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"], { defval: "" });
+    const uploadRows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"], { range: 1, defval: "" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["反馈明细"], { defval: "" });
+    expect(uploadRows).toHaveLength(2);
+    expect(uploadRows.map((row) => row.学生姓名)).toEqual(expect.arrayContaining([expect.any(String), expect.any(String)]));
+    expect(uploadRows.every((row) => Boolean(row.学员号) && Boolean(row["*文本1"]))).toBe(true);
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.班级编号)).toEqual([`${marker}-1`, `${marker}-2`]);
     expect(Object.keys(rows[0]!)).toEqual(expect.arrayContaining(["班级编号", "班级名称", "最终反馈"]));
-    for (const sheetName of ["课后反馈", "教师内部研判", "教师待办", "附件清单"]) {
+    for (const sheetName of ["反馈明细", "教师内部研判", "教师待办", "附件清单"]) {
       const header = XLSX.utils.sheet_to_json<Array<string>>(workbook.Sheets[sheetName], { header: 1, defval: "" })[0];
       expect(header).toEqual(expect.arrayContaining(["班级编号", "班级名称"]));
     }

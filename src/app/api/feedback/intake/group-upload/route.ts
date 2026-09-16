@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import {
   createFeedbackGroupIntake,
   parseFeedbackGroupRunIds,
@@ -52,9 +53,10 @@ export async function POST(request: NextRequest) {
     };
     return NextResponse.json(await createFeedbackGroupIntake(input));
   } catch (error) {
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error instanceof SyntaxError) return NextResponse.json({ error: "组投料参数不是有效 JSON" }, { status: 400 });
     console.error("POST /api/feedback/intake/group-upload", error);
-    return NextResponse.json({ error: "班级组材料导入失败" }, { status: 500 });
+    const failure = safeApiError(error, "班级组材料导入失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

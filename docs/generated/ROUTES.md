@@ -50,6 +50,7 @@
 | `/api/semesters/[id]` | `DELETE`, `GET`, `PUT` |
 | `/api/semesters/[id]/session` | `DELETE`, `GET`, `POST` |
 | `/api/semesters` | `GET`, `POST` |
+| `/api/sessions/[id]/assistant-roster-template` | `GET` |
 | `/api/sessions/[id]/common-material` | `PUT` |
 | `/api/sessions/[id]/facts` | `DELETE`, `GET` |
 | `/api/sessions/[id]/group-progress` | `GET`, `PUT` |
@@ -64,6 +65,7 @@
 | `/api/students/import` | `POST` |
 | `/api/students` | `GET`, `POST` |
 | `/api/system/archive` | `POST` |
+| `/api/system/diagnostics/export` | `GET` |
 | `/api/system/llm-cache` | `DELETE`, `GET` |
 | `/api/system/local-tools` | `GET` |
 | `/api/system/logs` | `GET` |

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ServiceError } from "@/services/service-error";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { getStudentSemesterSummaries } from "@/services/student-semester-summary-service";
 import {
   assertClassInSemester,
@@ -32,6 +33,11 @@ function serializeStudent(student: any) {
     labels: (student.studentLabels ?? []).map((sl: any) => ({ id: sl.label.id, name: sl.label.name })),
     studentLabels: undefined,
   };
+}
+
+function internalError(error: unknown, fallback: string) {
+  const failure = safeApiError(error, fallback, "api.students");
+  return NextResponse.json(apiErrorBody(failure), { status: failure.status });
 }
 
 // GET /api/students - list students projected into a semester.
@@ -89,8 +95,8 @@ export async function GET(request: NextRequest) {
     })));
   } catch (error) {
     console.error("[/api/students] error:", error);
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
-    return NextResponse.json({ error: "获取学生列表失败" }, { status: 500 });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
+    return internalError(error, "获取学生列表失败");
   }
 }
 
@@ -136,9 +142,9 @@ export async function POST(request: NextRequest) {
     });
     return NextResponse.json(serializeStudent(result), { status: 201 });
   } catch (error: any) {
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error?.code === "P2002") return NextResponse.json({ error: "学号已存在" }, { status: 409 });
     console.error("[/api/students] error:", error);
-    return NextResponse.json({ error: "创建学生失败" }, { status: 500 });
+    return internalError(error, "创建学生失败");
   }
 }

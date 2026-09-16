@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { ApiError, apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { assertClassAvailable, moveScopeToRecycleBin } from "@/services/academic-scope-recycle-service";
 
 const STEP_ROSTER_FORMAT = "student-track.step-roster.v1";
@@ -56,9 +56,13 @@ export async function GET(
       },
     });
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "导出 STEP 花名册失败", "api.classes");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
     console.error("GET /api/classes/[id] step-roster", error);
-    return NextResponse.json({ error: "导出 STEP 花名册失败" }, { status: 500 });
+    const failure = safeApiError(error, "导出 STEP 花名册失败", "api.classes");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -81,11 +85,15 @@ export async function PUT(
     const klass = await prisma.class.update({ where: { id }, data });
     return NextResponse.json(klass);
   } catch (error: any) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "更新班级失败", "api.classes");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
     if (error?.code === "P2025") return NextResponse.json({ error: "班级不存在" }, { status: 404 });
     if (error?.code === "P2002") return NextResponse.json({ error: "该学期内班级编号已存在" }, { status: 409 });
     console.error("PUT /api/classes/[id]", error);
-    return NextResponse.json({ error: "更新班级失败" }, { status: 500 });
+    const failure = safeApiError(error, "更新班级失败", "api.classes");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -98,8 +106,12 @@ export async function DELETE(
     const result = await moveScopeToRecycleBin("class", id);
     return NextResponse.json({ success: true, ...result });
   } catch (error) {
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
+    if (error instanceof ApiError) {
+      const failure = safeApiError(error, "删除班级失败", "api.classes");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
     console.error("DELETE /api/classes/[id]", error);
-    return NextResponse.json({ error: "删除班级失败" }, { status: 500 });
+    const failure = safeApiError(error, "删除班级失败", "api.classes");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

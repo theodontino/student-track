@@ -75,6 +75,24 @@ function scoreBar(value: number | "", maximum = 5) {
   return value === "" ? "" : textBar(value, maximum, 10);
 }
 
+const TEACHER_GENIE_INSTRUCTIONS = "填写说明：\n1-学员限制：学员号、学生姓名至少填写一项，最多上传2000条数据。\n2-匹配规则：有学员号时优先按学员号匹配；未填学员号时，才按学生姓名匹配。\n3-文本限制：每个学生可填写1-5条文本（至少填写1个），单条文本字数上限为1000字。";
+
+function teacherGenieWorksheet(rows: Array<{ studentId: string; name: string; text: string }>) {
+  if (rows.length > 2000) throw new ApiError("教师精灵单次最多上传 2000 名学生，请拆分后再导出", 409, "conflict", false);
+  const tooLong = rows.find((row) => row.text.length > 1000);
+  if (tooLong) throw new ApiError(`${tooLong.name || tooLong.studentId} 的最终反馈超过 1000 字，请缩短后再导出`, 409, "conflict", false);
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    [TEACHER_GENIE_INSTRUCTIONS],
+    ["学员号", "学生姓名", "*文本1", "文本2", "文本3", "文本4", "文本5"],
+    ...rows.map((row) => [row.studentId, row.name, row.text, "", "", "", ""]),
+  ]);
+  worksheet["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }];
+  worksheet["!cols"] = [{ wch: 22 }, { wch: 14 }, { wch: 70 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
+  worksheet["!rows"] = [{ hpt: 73 }, { hpt: 28 }];
+  worksheet["!freeze"] = { ySplit: 2 };
+  return worksheet;
+}
+
 /** Builds the standard post-class feedback workbook from persisted session data. */
 export async function buildFeedbackExportWorkbook(
   prisma: PrismaClient,
@@ -102,7 +120,7 @@ export async function buildFeedbackExportWorkbook(
     orderBy: [{ date: "desc" }, { semesterNumber: "desc" }, { createdAt: "desc" }],
   });
 
-  const [currentMetrics, previousMetrics] = await Promise.all([
+  const [currentMetrics, previousMetrics, students] = await Promise.all([
     prisma.sessionMetric.findMany({
       where: { sessionId: session.id, studentId: { in: studentIds } },
     }),
@@ -110,7 +128,9 @@ export async function buildFeedbackExportWorkbook(
       where: { sessionId: { in: previousSessions.map((item) => item.id) }, studentId: { in: studentIds } },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     }),
+    prisma.student.findMany({ where: { id: { in: studentIds } }, select: { id: true, studentId: true, name: true } }),
   ]);
+  const studentById = new Map(students.map((student) => [student.id, student]));
 
   const currentByStudent = new Map(currentMetrics.map((metric) => [metric.studentId, metric]));
   const previousByStudent = new Map<string, typeof previousMetrics[number]>();
@@ -208,7 +228,8 @@ export async function buildFeedbackExportWorkbook(
   overviewWorksheet["!freeze"] = { ySplit: 3 };
 
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, teacherGenieWorksheet(cards.map((card) => ({ studentId: studentById.get(card.id)?.studentId ?? "", name: card.name, text: card.feedback }))), "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, worksheet, "反馈明细");
   XLSX.utils.book_append_sheet(workbook, teacherWorksheet, "教师内部研判");
   XLSX.utils.book_append_sheet(workbook, overviewWorksheet, "导出概览");
   return new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }));
@@ -258,10 +279,12 @@ export async function buildFeedbackPlanExportWorkbook(
       return "";
     }
   };
+  const hasMatchingExportRun = (manifestHash: string) => plan.exportRuns.some((run) => (
+    run.manifestHash === manifestHash || normalizedManifestHash(run.itemManifest) === manifestHash
+  ));
   const fallbackManifestHash = createHash("sha256").update(JSON.stringify(fallbackManifest)).digest("hex");
   if (!items.length && mode === "approved_only" && approvedItems.length > 0) {
-    const latest = plan.exportRuns[0];
-    if (latest && (latest.manifestHash === fallbackManifestHash || normalizedManifestHash(latest.itemManifest) === fallbackManifestHash) && !options.allowRepeat && !historical) {
+    if (hasMatchingExportRun(fallbackManifestHash) && !options.allowRepeat && !historical) {
       throw new ApiError("这批反馈已经按相同文本导出过；如需重复下载，请确认后重试", 409, "repeat_export", false);
     }
     if (options.allowRepeat) items = approvedItems;
@@ -277,8 +300,7 @@ export async function buildFeedbackPlanExportWorkbook(
   }
   const manifest = items.map((item) => ({ itemId: item.id, finalTextHash: item.finalTextHash ?? "" }));
   const manifestHash = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
-  const latestRun = plan.exportRuns[0];
-  if (latestRun && (latestRun.manifestHash === manifestHash || normalizedManifestHash(latestRun.itemManifest) === manifestHash) && !options.allowRepeat && !historical) {
+  if (hasMatchingExportRun(manifestHash) && !options.allowRepeat && !historical) {
     throw new ApiError("这批反馈已经按相同文本导出过；如需重复下载，请确认后重试", 409, "repeat_export", false);
   }
   const compositions = new Map(items.map((item) => {
@@ -328,7 +350,8 @@ export async function buildFeedbackPlanExportWorkbook(
   feedbackWorksheet["!freeze"] = { xSplit: 1, ySplit: 1 };
   const teacherWorksheet = XLSX.utils.json_to_sheet(teacherRows);
   teacherWorksheet["!cols"] = [{ wch: 16 }, { wch: 70 }, { wch: 36 }, { wch: 60 }, { wch: 70 }];
-  XLSX.utils.book_append_sheet(workbook, feedbackWorksheet, "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, teacherGenieWorksheet(items.flatMap((item) => item.student ? [{ studentId: item.student.studentId, name: item.student.name, text: item.finalText ?? "" }] : [])), "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, feedbackWorksheet, "反馈明细");
   XLSX.utils.book_append_sheet(workbook, teacherWorksheet, "教师内部研判");
   if (taskRows.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(taskRows), "教师待办");
   if (attachmentRows.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(attachmentRows), "附件清单");
@@ -459,7 +482,8 @@ export async function buildFeedbackPlanBatchExportWorkbook(
     }));
   });
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(feedbackRows), "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, teacherGenieWorksheet(selected.flatMap(({ item }) => item.student ? [{ studentId: item.student.studentId, name: item.student.name, text: item.finalText ?? "" }] : [])), "课后反馈");
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(feedbackRows), "反馈明细");
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(teacherRows), "教师内部研判");
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(taskRows.length ? taskRows : [{ 班级编号: "", 班级名称: "", 学生: "", 任务: "", 截止: "", 预计分钟: "", 状态: "" }]), "教师待办");
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(attachmentRows.length ? attachmentRows : [{ 班级编号: "", 班级名称: "", 文件名: "", 类型: "", 大小: "", SHA256: "", 定位符: "", 状态: "" }]), "附件清单");

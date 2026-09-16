@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
 // GET /api/students/[id]/history — 查看评分版本历史
@@ -26,6 +27,7 @@ export async function GET(
     return NextResponse.json(history.filter((item) => !item.sessionId || availableSessionIds.has(item.sessionId)));
   } catch (error) {
     console.error("[/api/students/[id]/history] error:", error);
-    return NextResponse.json({ error: "获取历史失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取历史失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

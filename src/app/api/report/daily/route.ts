@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { TeachingSummaryRequestSchema } from "@/lib/contracts/teaching-summary";
 import { generateTeachingSummary } from "@/services/teaching-summary-service";
 
@@ -26,6 +27,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("[/api/report/daily] error:", error);
-    return NextResponse.json({ error: "生成日报失败" }, { status: 500 });
+    const failure = safeApiError(error, "生成日报失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

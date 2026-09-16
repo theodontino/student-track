@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { updateSessionAttendance, type AttendanceUpdate } from "@/services/attendance-service";
 import { ServiceError } from "@/services/service-error";
 import { requireSemesterId } from "@/services/student-enrollment-service";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { assertSessionAvailable } from "@/services/academic-scope-recycle-service";
 
 // GET /api/attendance?sessionId=xxx - get attendance for a session
@@ -76,8 +76,8 @@ export async function GET(request: NextRequest) {
     })));
   } catch (error) {
     console.error("[/api/attendance] error:", error);
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    return NextResponse.json({ error: "获取考勤失败" }, { status: 500 });
+    const failure = safeApiError(error, "获取考勤失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }
 
@@ -88,10 +88,10 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(await updateSessionAttendance(body.sessionId, body.updates));
   } catch (error) {
     console.error("[/api/attendance] error:", error);
-    if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
-    if (error instanceof ServiceError) {
+    if (error instanceof ServiceError && error.status < 500) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    return NextResponse.json({ error: "更新考勤失败" }, { status: 500 });
+    const failure = safeApiError(error, "更新考勤失败");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

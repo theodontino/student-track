@@ -128,7 +128,7 @@ async function exportWorkbook(request: APIRequestContext, planId: string) {
   await expectOk(response);
   expect(response.headers()["content-type"]).toContain("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   const workbook = XLSX.read(await response.body(), { type: "buffer" });
-  return XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"]);
+  return XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["课后反馈"], { range: 1, defval: "" });
 }
 
 async function createRangePlan(request: APIRequestContext, input: {
@@ -460,8 +460,8 @@ test.describe("完整课程反馈周期", () => {
       await approveAll(request, dailyPlanId);
       const leadRows = await exportWorkbook(request, dailyPlanId);
       expect(leadRows).toHaveLength(3);
-      expect(new Set(leadRows.map((row) => row["姓名"]))).toEqual(new Set(classStudents(0).map((student) => student.name)));
-      expect(leadRows.some((row) => row["最终反馈"] === teacherText)).toBeTruthy();
+      expect(new Set(leadRows.map((row) => row["学生姓名"]))).toEqual(new Set(classStudents(0).map((student) => student.name)));
+      expect(leadRows.some((row) => row["*文本1"] === teacherText)).toBeTruthy();
 
       const drafts = await request.post(`/api/report/feedback-plans/${dailyPlanId}`, { data: { action: "export_wecom_drafts" } });
       await expectOk(drafts);

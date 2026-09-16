@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
-import { ApiError, apiErrorBody } from "@/lib/api-errors";
+import { ApiError, apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { clearSessionFacts, getSessionFactsImpact } from "@/services/session-facts-service";
 
 function failure(error: unknown, operation: string) {
-  if (error instanceof ApiError) return NextResponse.json(apiErrorBody(error), { status: error.status });
+  const fallback = `${operation}课次事实失败`;
+  if (error instanceof ApiError) {
+    const failure = safeApiError(error, fallback);
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+  }
   console.error(`${operation} /api/sessions/[id]/facts`, error);
-  return NextResponse.json({ error: `${operation}课次事实失败` }, { status: 500 });
+  const failure = safeApiError(error, fallback);
+  return NextResponse.json(apiErrorBody(failure), { status: failure.status });
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {

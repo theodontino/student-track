@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorBody, safeApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { buildWccRosterSnapshot } from "@/services/wecom-roster-directory-service";
 import { ServiceError } from "@/services/service-error";
@@ -15,7 +16,8 @@ export async function GET(request: NextRequest) {
   try {
     return NextResponse.json(await buildWccRosterSnapshot(prisma, semesterId, classId));
   } catch (error) {
-    if (error instanceof ServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
-    return NextResponse.json({ error: "directory_failed" }, { status: 500 });
+    if (error instanceof ServiceError && error.status < 500) return NextResponse.json({ error: error.message }, { status: error.status });
+    const failure = safeApiError(error, "directory_failed");
+    return NextResponse.json(apiErrorBody(failure), { status: failure.status });
   }
 }

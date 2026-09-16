@@ -25,6 +25,12 @@ describe("feedback export service", () => {
             { studentId: "student-2", date: "2026-07-01", createdAt: new Date(), scoreA: 4, scoreB: 4, scoreC: 2 },
           ]),
       },
+      student: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "student-1", studentId: "TEST-001", name: "学生甲" },
+          { id: "student-2", studentId: "TEST-002", name: "学生乙" },
+        ]),
+      },
     };
 
     const buffer = await buildFeedbackExportWorkbook(
@@ -57,7 +63,15 @@ describe("feedback export service", () => {
     );
 
     const workbook = XLSX.read(buffer, { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["课后反馈"], {
+    const uploadRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["课后反馈"], {
+      range: 1,
+      defval: "",
+    });
+    expect(uploadRows).toEqual([
+      { 学员号: "TEST-001", 学生姓名: "学生甲", "*文本1": "甲最终反馈", 文本2: "", 文本3: "", 文本4: "", 文本5: "" },
+      { 学员号: "TEST-002", 学生姓名: "学生乙", "*文本1": "乙最终反馈", 文本2: "", 文本3: "", 文本4: "", 文本5: "" },
+    ]);
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["反馈明细"], {
       defval: "",
     });
 
@@ -125,6 +139,7 @@ describe("feedback export service", () => {
         findMany: vi.fn().mockResolvedValue([]),
       },
       sessionMetric: { findMany: vi.fn().mockResolvedValue([]) },
+      student: { findMany: vi.fn().mockResolvedValue([{ id: "student-1", studentId: "TEST-001", name: "学生甲" }]) },
     };
 
     const buffer = await buildFeedbackExportWorkbook(
@@ -146,7 +161,7 @@ describe("feedback export service", () => {
     );
 
     const workbook = XLSX.read(buffer, { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["课后反馈"], {
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["反馈明细"], {
       defval: "",
     });
     expect(rows[0]).toMatchObject({
@@ -159,5 +174,22 @@ describe("feedback export service", () => {
     expect(rows[0].预警).not.toContain("家长担心");
     expect(rows[0].预警).not.toContain("警告");
     expect(rows[1]).toMatchObject({ 姓名: "班级均分", 本次学习测验: "" });
+  });
+
+  it("blocks teacher-genie text longer than 1000 characters without truncating it", async () => {
+    const prisma = {
+      classSession: {
+        findUnique: vi.fn().mockResolvedValue({ id: "session-current", classId: "class-1", date: "2099-08-13", semesterNumber: 1 }),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      sessionMetric: { findMany: vi.fn().mockResolvedValue([]) },
+      student: { findMany: vi.fn().mockResolvedValue([{ id: "student-1", studentId: "TEST-001", name: "张三" }]) },
+    };
+    await expect(buildFeedbackExportWorkbook(
+      prisma as never,
+      "TEST-SESSION",
+      [{ id: "student-1", name: "张三", feedback: "合".repeat(1001) }],
+      [],
+    )).rejects.toThrow("超过 1000 字");
   });
 });

@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTeachingContext } from "@/features/teaching-context/use-teaching-context";
-import { useClasses } from "@/features/teaching-context/use-options";
-import { requestJson } from "@/lib/api-client";
+import { useClassOptionsResource } from "@/features/teaching-context/use-options";
+import { ApiError, requestJson } from "@/lib/api-client";
 import { filterStudents, groupStudentsByClass, sortStudents, type StudentSort } from "./student-list-utils";
 import type {
   StudentFormState,
@@ -16,7 +16,7 @@ const EMPTY_FORM: StudentFormState = {
   name: "",
   classCode: "",
   studentId: "",
-  gender: "男",
+  gender: "未知",
   labelNames: [],
 };
 const STUDENT_PREVIEW_DELAY_MS = 120;
@@ -25,7 +25,8 @@ export function useStudentsWorkspace() {
   const router = useRouter();
   const { context, hydrated, setSemesterId } = useTeachingContext();
   const selectedSemesterId = context.semesterId;
-  const semesterClasses = useClasses(selectedSemesterId);
+  const classOptions = useClassOptionsResource(selectedSemesterId);
+  const semesterClasses = classOptions.items;
   const [students, setStudents] = useState<StudentListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -41,6 +42,11 @@ export function useStudentsWorkspace() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<StudentImportResult | null>(null);
+  const [importAnalysis, setImportAnalysis] = useState<StudentImportResult | null>(null);
+  const [importSubject, setImportSubjectState] = useState("");
+  const [importTeacher, setImportTeacherState] = useState("");
+  const [importSearch, setImportSearch] = useState("");
+  const [selectedImportClassCodes, setSelectedImportClassCodes] = useState<Set<string>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<StudentListItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -73,8 +79,10 @@ export function useStudentsWorkspace() {
           if (semesters[0]?.id) setSemesterId(semesters[0].id);
         }
       }
+      return data;
     } catch (reason) {
       setLoadError(reason instanceof Error ? reason.message : "获取学生列表失败");
+      return null;
     } finally {
       setLoading(false);
     }
@@ -106,6 +114,15 @@ export function useStudentsWorkspace() {
     if (closeGraceTimer.current) clearTimeout(closeGraceTimer.current);
     if (animationTimer.current) clearTimeout(animationTimer.current);
   }, []);
+
+  // A transfer target belongs to the semester that was visible when the
+  // dialog opened. Do not let a quick semester switch submit it against a
+  // newly loaded class list.
+  useEffect(() => {
+    setTransferTarget(null);
+    setTransferClassId("");
+    setTransferError("");
+  }, [selectedSemesterId]);
 
   function clearPreviewTimers() {
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
@@ -325,7 +342,19 @@ export function useStudentsWorkspace() {
       setTransferClassId("");
       await fetchStudents();
     } catch (reason) {
-      setTransferError(reason instanceof Error ? reason.message : "转班失败");
+      if (reason instanceof ApiError && reason.status === 409) {
+        const refreshed = await fetchStudents();
+        const current = refreshed?.find((student) => student.id === transferTarget.id) ?? null;
+        setTransferTarget(current ?? transferTarget);
+        setTransferClassId("");
+        setTransferError(refreshed === null
+          ? `${reason.message}。名单刷新失败，弹窗已保留；请稍后重试或取消。`
+          : current
+            ? `${reason.message}。名单已刷新，请按当前班级重新选择目标班级。`
+            : `${reason.message}。名单已刷新，但该学生已不在当前名单；请取消后重新选择。`);
+      } else {
+        setTransferError(reason instanceof Error ? reason.message : "转班失败");
+      }
     } finally {
       setTransferring(false);
     }
@@ -334,6 +363,11 @@ export function useStudentsWorkspace() {
   function openImport() {
     setImportFile(null);
     setImportResult(null);
+    setImportAnalysis(null);
+    setImportSubjectState("");
+    setImportTeacherState("");
+    setImportSearch("");
+    setSelectedImportClassCodes(new Set());
     setShowImportDialog(true);
   }
 
@@ -342,6 +376,76 @@ export function useStudentsWorkspace() {
     setShowImportDialog(false);
     setImportFile(null);
     setImportResult(null);
+    setImportAnalysis(null);
+  }
+
+  const availableImportTeachers = useMemo(() => [...new Set((importAnalysis?.classes ?? [])
+    .filter((item) => !importSubject || item.subject === importSubject)
+    .map((item) => item.teacher))], [importAnalysis?.classes, importSubject]);
+
+  const visibleImportClasses = useMemo(() => {
+    const query = importSearch.trim().toLowerCase();
+    return (importAnalysis?.classes ?? []).filter((item) => (
+      (!importSubject || item.subject === importSubject)
+      && (!importTeacher || item.teacher === importTeacher)
+      && (!query || item.searchText.includes(query))
+    ));
+  }, [importAnalysis?.classes, importSearch, importSubject, importTeacher]);
+
+  function restoreImportAnalysis() {
+    setImportResult(importAnalysis);
+  }
+
+  function setImportSubject(value: string) {
+    setImportSubjectState(value);
+    setImportTeacherState("");
+    restoreImportAnalysis();
+  }
+
+  function setImportTeacher(value: string) {
+    setImportTeacherState(value);
+    restoreImportAnalysis();
+  }
+
+  function toggleImportClass(classCode: string) {
+    setSelectedImportClassCodes((current) => {
+      const next = new Set(current);
+      if (next.has(classCode)) next.delete(classCode);
+      else next.add(classCode);
+      return next;
+    });
+    restoreImportAnalysis();
+  }
+
+  async function selectImportFile(file: File | null) {
+    setImportFile(file);
+    setImportResult(null);
+    setImportAnalysis(null);
+    setImportSubjectState("");
+    setImportTeacherState("");
+    setImportSearch("");
+    setSelectedImportClassCodes(new Set());
+    if (!file || !selectedSemesterId) return;
+    setImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("semesterId", selectedSemesterId);
+      formData.append("mode", "analyze");
+      const analysis = await requestJson<StudentImportResult>("/api/students/import", { method: "POST", body: formData });
+      setImportAnalysis(analysis);
+      setImportResult(analysis);
+      const classes = analysis.classes ?? [];
+      const subjects = analysis.subjects ?? [];
+      if (subjects.length === 1) setImportSubjectState(subjects[0]!);
+      const teachers = [...new Set(classes.map((item) => item.teacher))];
+      if (teachers.length === 1) setImportTeacherState(teachers[0]!);
+      setSelectedImportClassCodes(new Set(analysis.defaultSelectedClassCodes ?? []));
+    } catch (reason) {
+      setImportResult({ error: reason instanceof Error ? reason.message : "分析花名册失败" });
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function importStudents() {
@@ -355,20 +459,28 @@ export function useStudentsWorkspace() {
       const formData = new FormData();
       formData.append("file", importFile);
       formData.append("semesterId", selectedSemesterId);
+      formData.append("selectedClassCodes", JSON.stringify([...selectedImportClassCodes]));
       if (importResult?.mode === "preview" && importResult.fingerprint) {
         formData.append("mode", "confirm");
         formData.append("previewFingerprint", importResult.fingerprint);
+        if (importResult.selectionKey) formData.append("previewSelectionKey", importResult.selectionKey);
         if (importResult.semesterId) formData.append("previewSemesterId", importResult.semesterId);
-      }
+      } else formData.append("mode", "preview");
       const result = await requestJson<StudentImportResult>("/api/students/import", {
         method: "POST",
         body: formData,
       });
       setImportResult(result);
       if (result.mode === "committed") setImportFile(null);
-      await fetchStudents();
+      if (result.mode === "committed") await fetchStudents();
     } catch (reason) {
-      setImportResult({ error: reason instanceof Error ? reason.message : "导入失败" });
+      const details = reason instanceof ApiError && reason.details && typeof reason.details === "object"
+        ? reason.details as StudentImportResult
+        : null;
+      setImportResult({
+        ...(details ?? {}),
+        error: reason instanceof Error ? reason.message : "导入失败",
+      });
     } finally {
       setImporting(false);
     }
@@ -404,9 +516,15 @@ export function useStudentsWorkspace() {
     formError,
     hydrated,
     importFile,
+    importAnalysis,
+    importSearch,
+    importSubject,
+    importTeacher,
     importResult,
     importing,
     importStudents,
+    availableImportTeachers,
+    visibleImportClasses,
     labelInput,
     loadError,
     loading,
@@ -422,6 +540,7 @@ export function useStudentsWorkspace() {
     sort,
     statusUpdatingId,
     semesterClasses,
+    classOptions,
     openTransfer,
     closeTransfer,
     submitTransfer,
@@ -444,6 +563,12 @@ export function useStudentsWorkspace() {
     setForm,
     setImportFile,
     setImportResult,
+    selectImportFile,
+    selectedImportClassCodes,
+    setImportSearch,
+    setImportSubject,
+    setImportTeacher,
+    toggleImportClass,
     setLabelInput,
     setSearch,
     setSemesterId,

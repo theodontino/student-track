@@ -8,6 +8,7 @@ import {
 } from "@/lib/diarize-tasks";
 import { runDiarizeTask } from "@/lib/diarize-runner";
 import { preflightDiarize } from "@/services/local-tool-status-service";
+import { ApiError, apiErrorBody, apiStreamErrorBody, safeApiError } from "@/lib/api-errors";
 
 export const runtime = "nodejs";
 
@@ -44,19 +45,34 @@ export async function POST(request: NextRequest) {
 
     const preflight = preflightDiarize(engine);
     if (!preflight.ready) {
+      const failure = safeApiError(
+        new ApiError(
+          `转写环境不可用：${preflight.blockers.join("；")}`,
+          503,
+          "feature_unavailable",
+          false,
+        ),
+        "转写环境不可用",
+      );
       return NextResponse.json({
-        error: `转写环境不可用：${preflight.blockers.join("；")}`,
+        ...apiErrorBody(failure),
         preflight,
-      }, { status: 503 });
+      }, { status: failure.status });
     }
 
-    const task = await createDiarizeTask({
-      title: audio.name,
-      engine,
-      speakerCount,
-      inputFileName: audio.name,
-    });
-    await fs.promises.writeFile(task.inputPath, Buffer.from(await audio.arrayBuffer()));
+    let task: Awaited<ReturnType<typeof createDiarizeTask>>;
+    try {
+      task = await createDiarizeTask({
+        title: audio.name,
+        engine,
+        speakerCount,
+        inputFileName: audio.name,
+      });
+      await fs.promises.writeFile(task.inputPath, Buffer.from(await audio.arrayBuffer()));
+    } catch (error: unknown) {
+      const failure = safeApiError(error, "创建转写任务失败");
+      return NextResponse.json(apiErrorBody(failure), { status: failure.status });
+    }
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -65,8 +81,9 @@ export async function POST(request: NextRequest) {
         try {
           emit({ type: "created", task: await taskToView(task) });
           await runDiarizeTask(task, emit);
-        } catch (error: any) {
-          emit({ type: "error", message: error.message || "转写任务失败" });
+        } catch (error: unknown) {
+          const failure = safeApiError(error, "转写任务失败");
+          emit({ type: "error", ...apiStreamErrorBody(failure) });
         } finally {
           controller.close();
         }
@@ -80,7 +97,10 @@ export async function POST(request: NextRequest) {
         "X-Accel-Buffering": "no",
       },
     });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "创建转写任务失败" }, { status: 400 });
+  } catch (error: unknown) {
+    const message = error instanceof Error && error.message === "说话人数必须是非负整数"
+      ? error.message
+      : "请求格式无效";
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
